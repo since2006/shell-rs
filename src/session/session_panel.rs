@@ -1,4 +1,4 @@
-use std::{collections::HashSet, rc::Rc};
+use std::{cell::Cell, collections::HashSet, rc::Rc};
 
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
@@ -7,7 +7,7 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     list::ListItem,
-    menu::PopupMenu,
+    menu::{ContextMenuExt as _, PopupMenu},
     tree::{TreeEntry, TreeEvent, TreeState, tree},
     v_flex,
 };
@@ -37,6 +37,10 @@ pub struct SessionPanel {
     /// revealed without the dialog having to report back to the panel.
     known_groups: HashSet<GroupId>,
     known_sessions: HashSet<SessionId>,
+    /// Which node the last right-click landed on, `None` for the blank space
+    /// below the rows. Shared with the row renderer and the context menu
+    /// builder, both of which run outside this entity.
+    right_clicked: Rc<Cell<Option<SessionNode>>>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -97,6 +101,7 @@ impl SessionPanel {
             expanded,
             known_groups,
             known_sessions,
+            right_clicked: Rc::new(Cell::new(None)),
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
@@ -317,6 +322,9 @@ impl Render for SessionPanel {
                 .collect(),
         );
         let connected_for_menu = connected.clone();
+        let clicked_row = self.right_clicked.clone();
+        let clicked_blank = self.right_clicked.clone();
+        let clicked_menu = self.right_clicked.clone();
 
         v_flex()
             .id("session-panel")
@@ -336,20 +344,42 @@ impl Render for SessionPanel {
                 ),
             )
             .child(
-                div().id("session-tree").flex_1().min_h_0().child(
-                    tree(&self.tree_state, move |_, entry, _, _, cx| {
-                        render_row(entry, &connected, cx)
+                div()
+                    .id("session-tree")
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        tree(&self.tree_state, move |_, entry, _, _, cx| {
+                            render_row(entry, &connected, &clicked_row, cx)
+                        })
+                        .px_1(),
+                    )
+                    // The menu hangs off the container, not off the rows: a
+                    // row's menu would be built while the virtualized list is
+                    // being prepainted, and the focus it takes there lands in
+                    // the middle of the frame, which trips gpui's "set_focus
+                    // called more than once in a single frame" assertion.
+                    // Capture runs before every bubble handler, so this clears
+                    // the target and the row that was hit writes itself back;
+                    // a click on blank space leaves it cleared.
+                    .capture_any_mouse_down(move |event, _, _| {
+                        if event.button == MouseButton::Right {
+                            clicked_blank.set(None);
+                        }
                     })
-                    .context_menu(move |_, entry, menu, _, _| {
-                        build_context_menu(entry, &connected_for_menu, menu)
-                    })
-                    .px_1(),
-                ),
+                    .context_menu(move |menu, _, _| {
+                        build_context_menu(clicked_menu.get(), &connected_for_menu, menu)
+                    }),
             )
     }
 }
 
-fn render_row(entry: &TreeEntry, connected: &HashSet<SessionId>, cx: &mut App) -> ListItem {
+fn render_row(
+    entry: &TreeEntry,
+    connected: &HashSet<SessionId>,
+    right_clicked: &Rc<Cell<Option<SessionNode>>>,
+    cx: &mut App,
+) -> ListItem {
     let item = entry.item();
     let node = SessionNode::parse(&item.id);
     let (icon, row_id): (Icon, ElementId) = match node {
@@ -401,14 +431,20 @@ fn render_row(entry: &TreeEntry, connected: &HashSet<SessionId>, cx: &mut App) -
                 }
             })
         })
+        .when_some(node, |row, node| {
+            let right_clicked = right_clicked.clone();
+            row.on_mouse_down(MouseButton::Right, move |_, _, _| {
+                right_clicked.set(Some(node));
+            })
+        })
 }
 
 fn build_context_menu(
-    entry: &TreeEntry,
+    node: Option<SessionNode>,
     connected: &HashSet<SessionId>,
     menu: PopupMenu,
 ) -> PopupMenu {
-    match SessionNode::parse(&entry.item().id) {
+    match node {
         Some(SessionNode::Session(id)) => menu
             .menu_with_icon(
                 "连接",
