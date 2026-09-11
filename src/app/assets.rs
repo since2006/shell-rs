@@ -8,7 +8,8 @@ use gpui_kit::{AssetSource, Result, SharedString};
 icon_assets!(
     ExtraIcons,
     [
-        Server, Terminal, Upload, Download, Trash, Pencil, RefreshCw, Plug, Unplug, FolderTree
+        Server, Terminal, Upload, Download, Trash, Pencil, RefreshCw, Plug, Unplug, FolderTree,
+        FolderPlus
     ]
 );
 

@@ -4,13 +4,18 @@
 use gpui_kit::*;
 use serde::Deserialize;
 
-use crate::{session::SessionId, terminal::LocalTerminalId};
+use crate::{
+    session::{GroupId, SessionId},
+    terminal::LocalTerminalId,
+};
 
 gpui_kit::actions!(
     shellr,
     [
-        /// Open the new-session dialog.
+        /// Open the new-session dialog for a session at the root of the tree.
         NewSession,
+        /// Open the new-group dialog for a top-level group.
+        NewGroup,
         /// Open a new local login-shell terminal.
         NewLocalTerminal,
         /// Copy the active terminal selection.
@@ -44,6 +49,15 @@ macro_rules! session_action {
         #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
         #[action(namespace = shellr, no_json)]
         pub struct $name(pub SessionId);
+    };
+}
+
+macro_rules! group_action {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+        #[action(namespace = shellr, no_json)]
+        pub struct $name(pub GroupId);
     };
 }
 
@@ -91,6 +105,23 @@ session_action!(
 session_action!(
     /// Ask for confirmation, then delete a session.
     DeleteSession
+);
+
+group_action!(
+    /// Open the new-session dialog with this group pre-selected.
+    NewSessionInGroup
+);
+group_action!(
+    /// Open the new-group dialog for a group nested inside this one.
+    NewChildGroup
+);
+group_action!(
+    /// Open the rename-group dialog.
+    RenameGroup
+);
+group_action!(
+    /// Ask for confirmation, then delete a group with everything inside it.
+    DeleteGroup
 );
 
 local_terminal_action!(

@@ -12,7 +12,10 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{AuthKind, GroupId, Session, SessionDraft, SessionId, SessionStore};
+use super::{AuthKind, GroupId, Session, SessionDraft, SessionId, SessionStore, group_options};
+
+/// The label of the row that puts a session at the root of the tree.
+pub const NO_GROUP_LABEL: &str = "（无分组）";
 
 /// What runs when the user confirms deleting a session.
 pub type DeleteHandler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -28,36 +31,36 @@ pub struct SessionForm {
     user: Entity<InputState>,
     auth: Entity<SelectState<Vec<&'static str>>>,
     group: Entity<SelectState<Vec<SharedString>>>,
-    group_ids: Vec<GroupId>,
+    /// Parallel to the group select's rows; `None` is the root of the tree.
+    group_ids: Vec<Option<GroupId>>,
     error: Option<SharedString>,
 }
 
 impl SessionForm {
     pub fn new(
         editing: Option<SessionId>,
+        preselect_group: Option<GroupId>,
         store: Entity<SessionStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (draft, groups) = {
-            let store = store.read(cx);
+        let (draft, options) = {
+            let read = store.read(cx);
             (
-                editing.and_then(|id| store.session(id)).map(Session::draft),
-                store.groups().to_vec(),
+                editing.and_then(|id| read.session(id)).map(Session::draft),
+                group_options(read.groups(), &[]),
             )
         };
-        let group_ids: Vec<GroupId> = groups.iter().map(|group| group.id).collect();
-        let group_names: Vec<SharedString> =
-            groups.iter().map(|group| group.name.clone()).collect();
+        // A session with no group sits at the root of the tree, which is where
+        // every session starts when the database is still empty.
+        let mut group_ids: Vec<Option<GroupId>> = vec![None];
+        let mut group_names: Vec<SharedString> = vec![NO_GROUP_LABEL.into()];
+        for (id, path) in options {
+            group_ids.push(Some(id));
+            group_names.push(path);
+        }
         let draft = draft.unwrap_or_else(|| {
-            SessionDraft::new(
-                "",
-                "",
-                22,
-                "root",
-                AuthKind::Key,
-                group_ids.first().copied().unwrap_or(GroupId(0)),
-            )
+            SessionDraft::new("", "", 22, "root", AuthKind::Key, preselect_group)
         });
 
         let name = cx.new(|cx| {
@@ -149,8 +152,7 @@ impl SessionForm {
             .read(cx)
             .selected_index(cx)
             .and_then(|ix| self.group_ids.get(ix.row).copied())
-            .or_else(|| self.group_ids.first().copied())
-            .unwrap_or(GroupId(0));
+            .unwrap_or(None);
         let draft = SessionDraft::new(
             name,
             host,
@@ -233,13 +235,16 @@ impl Render for SessionForm {
 }
 
 /// Open the new-session (`editing == None`) or edit-session dialog.
+/// `preselect_group` fills in the group field of a new session, so creating
+/// one from a group's context menu lands it in that group.
 pub fn open_session_dialog(
     editing: Option<SessionId>,
+    preselect_group: Option<GroupId>,
     store: Entity<SessionStore>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let form = cx.new(|cx| SessionForm::new(editing, store, window, cx));
+    let form = cx.new(|cx| SessionForm::new(editing, preselect_group, store, window, cx));
     let title: SharedString = if editing.is_some() {
         "编辑会话"
     } else {

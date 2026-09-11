@@ -12,7 +12,8 @@ use gpui_kit::{
     MouseMoveEvent, TestAppContext, WindowHandle, point, px, size,
 };
 
-use shellr::session::SessionId;
+use shellr::app::{DeleteGroup, NewSessionInGroup, RenameGroup};
+use shellr::session::{GroupId, SessionDatabase, SessionId, SessionStore};
 use shellr::terminal::{
     LocalTerminalId, TerminalLifecycle, TerminalSize, TerminalTransport, TerminalTransportCommand,
     TerminalTransportEvent, TerminalTransportFactory,
@@ -23,12 +24,25 @@ use shellr::workspace::Workspace;
 const WEB_01: u64 = 1;
 const DB_01: u64 = 3;
 const STAGING_API: u64 = 4;
+/// Seeded group ids, in insertion order: 生产, 测试, 开发.
+const PRODUCTION: u64 = 1;
+const DEVELOPMENT: u64 = 3;
 
 fn open_workspace(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<Workspace>) {
+    open_workspace_with_store(cx, SessionStore::seed())
+}
+
+/// Production loads the store from the database; the tests hand one in
+/// directly so they get the fixed shape `SessionStore::seed` describes.
+fn open_workspace_with_store(
+    cx: &mut TestAppContext,
+    store: SessionStore,
+) -> (WindowHandle<Root>, Entity<Workspace>) {
     cx.update(shellr::init);
     let mut workspace = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
-        let view = cx.new(|cx| Workspace::new(window, cx));
+        let store = cx.new(|_| store);
+        let view = cx.new(|cx| Workspace::new(store, window, cx));
         workspace = Some(view.clone());
         Root::new(view, window, cx)
     });
@@ -152,8 +166,10 @@ fn open_workspace_with_factory(
     cx.update(shellr::init);
     let mut workspace = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
-        let view =
-            cx.new(|cx| Workspace::new_with_local_terminal_factory(factory.clone(), window, cx));
+        let store = cx.new(|_| SessionStore::seed());
+        let view = cx.new(|cx| {
+            Workspace::new_with_local_terminal_factory(store, factory.clone(), window, cx)
+        });
         workspace = Some(view.clone());
         Root::new(view, window, cx)
     });
@@ -880,4 +896,277 @@ async fn cjk_input_is_sent_once_and_resize_commands_are_deduplicated(cx: &mut Te
         .unwrap_or_else(|error| error.into_inner());
     assert!(!resizes.is_empty());
     assert!(resizes.windows(2).all(|sizes| sizes[0] != sizes[1]));
+}
+
+#[gpui_kit::test]
+async fn new_group_from_the_toolbar_appears_in_the_tree(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("new-group", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("commit").visible());
+        // An unnamed group is rejected and the dialog stays open.
+        window.click("group-name", cx);
+        window.click("commit", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("form-error").visible());
+        window.click("group-name", cx);
+        window.input("预发", cx);
+        window.click("commit", cx);
+    })
+    .unwrap();
+
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("commit").is_none()
+    })
+    .await;
+
+    let created = cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let created = store.groups().last().expect("group inserted");
+        assert_eq!(created.name.as_ref(), "预发");
+        assert_eq!(created.parent, None);
+        created.id
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let tree = window.within("session-tree");
+        assert!(tree.find(("group-row", created.0)).visible());
+    })
+    .unwrap();
+}
+
+/// The action a group row's 新建会话… menu entry dispatches.
+#[gpui_kit::test]
+async fn a_new_session_in_a_group_starts_out_in_that_group(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(NewSessionInGroup(GroupId(DEVELOPMENT))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("session-name", cx);
+        window.input("dev-02", cx);
+        window.click("session-host", cx);
+        window.input("192.168.1.21", cx);
+        window.click("commit", cx);
+    })
+    .unwrap();
+
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("commit").is_none()
+    })
+    .await;
+
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let created = store
+            .sessions()
+            .iter()
+            .find(|session| session.name == "dev-02")
+            .expect("dev-02 inserted");
+        // The form opened with 开发 pre-selected and nothing changed it.
+        assert_eq!(created.group, Some(GroupId(DEVELOPMENT)));
+    });
+}
+
+#[gpui_kit::test]
+async fn renaming_a_group_keeps_the_sessions_under_it(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(RenameGroup(GroupId(PRODUCTION))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("commit").visible());
+        window.click("group-name", cx);
+        window.press("cmd-a", cx);
+        window.input("生产环境", cx);
+        window.click("commit", cx);
+    })
+    .unwrap();
+
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("commit").is_none()
+    })
+    .await;
+
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let group = store.group(GroupId(PRODUCTION)).expect("group kept");
+        assert_eq!(group.name.as_ref(), "生产环境");
+        assert_eq!(store.group_path(GroupId(PRODUCTION)), "生产环境");
+        // The three sessions still belong to it.
+        assert_eq!(
+            store
+                .sessions()
+                .iter()
+                .filter(|s| s.group == Some(GroupId(PRODUCTION)))
+                .count(),
+            3
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn deleting_a_group_removes_its_sessions_and_closes_their_tabs(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+
+    // db-01 joins web-01, which starts connected, in having an open tab.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("session-tree")
+            .double_click(("session-row", DB_01), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert!(workspace.terminal(SessionId(WEB_01)).is_some());
+        assert!(workspace.terminal(SessionId(DB_01)).is_some());
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(DeleteGroup(GroupId(PRODUCTION))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("ok", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert!(workspace.terminal(SessionId(WEB_01)).is_none());
+        assert!(workspace.terminal(SessionId(DB_01)).is_none());
+        // staging-api is in another group and keeps its tab.
+        assert!(workspace.terminal(SessionId(STAGING_API)).is_some());
+
+        let store = workspace.store().read(cx);
+        assert!(store.group(GroupId(PRODUCTION)).is_none());
+        assert_eq!(store.groups().len(), 2);
+        let names: Vec<_> = store
+            .sessions()
+            .iter()
+            .map(|session| session.name.as_ref())
+            .collect();
+        assert_eq!(names, ["staging-api", "qa-runner", "dev-box"]);
+    });
+}
+
+#[gpui_kit::test]
+async fn groups_and_sessions_are_read_back_from_the_database(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("shellr.db");
+    let store = SessionStore::load(SessionDatabase::open(&path).expect("database opened"))
+        .expect("store loaded");
+    // A first launch starts with nothing at all.
+    assert_eq!(store.groups().len(), 0);
+    assert_eq!(store.sessions().len(), 0);
+    let (handle, workspace) = open_workspace_with_store(cx, store);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("new-group", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("group-name", cx);
+        window.input("生产", cx);
+        window.click("commit", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("commit").is_none()
+    })
+    .await;
+
+    let group = cx.update(|cx| workspace.read(cx).store().read(cx).groups()[0].id);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // A closed dialog leaves nothing focused, and an action only reaches
+        // handlers on the focused element's path.
+        window.click("session-search", cx);
+        window.dispatch_action(Box::new(NewSessionInGroup(group)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("session-name", cx);
+        window.input("web-01", cx);
+        window.click("session-host", cx);
+        window.input("10.0.1.12", cx);
+        window.click("commit", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("commit").is_none()
+    })
+    .await;
+
+    let session = cx.update(|cx| workspace.read(cx).store().read(cx).sessions()[0].id);
+
+    // Connecting is what puts a session on the start page's recent list.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("session-tree")
+            .double_click(("session-row", session.0), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Everything above went through the real write path; read it back with a
+    // second connection to the same file.
+    let reloaded = SessionStore::load(SessionDatabase::open(&path).expect("database reopened"))
+        .expect("store reloaded");
+    assert_eq!(reloaded.groups().len(), 1);
+    assert_eq!(reloaded.groups()[0].name.as_ref(), "生产");
+    assert_eq!(reloaded.sessions().len(), 1);
+    let saved = &reloaded.sessions()[0];
+    assert_eq!(saved.name.as_ref(), "web-01");
+    assert_eq!(saved.host.as_ref(), "10.0.1.12");
+    assert_eq!(saved.port, 22);
+    assert_eq!(saved.group, Some(group));
+    // Runtime state is not persisted, but the last connection time is.
+    assert!(!saved.state.is_connected());
+    assert_eq!(
+        reloaded.recent_sessions().map(|s| s.id).collect::<Vec<_>>(),
+        [session]
+    );
 }

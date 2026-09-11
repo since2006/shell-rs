@@ -10,12 +10,15 @@ gpui-kit = "0.6.1"
 alacritty_terminal = "0.26"
 anyhow = "1"
 async-channel = "2"
+dirs = "6"
 portable-pty = "0.9"
+rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 unicode-width = "0.2"
 
 [dev-dependencies]
 gpui-kit = { version = "0.6.1", features = ["test-support"] }
+tempfile = "3"
 
 # Optimize the rendering stack in debug builds (per gpui-kit's installation
 # guide); shellr itself stays unoptimized and debuggable.

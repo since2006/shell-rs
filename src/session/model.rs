@@ -27,9 +27,28 @@ impl AuthKind {
             AuthKind::Key => "密钥",
         }
     }
+
+    /// The stored spelling. Kept separate from `label` so translating the UI
+    /// cannot rewrite what is already in the database.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuthKind::Password => "password",
+            AuthKind::Key => "key",
+        }
+    }
+
+    /// Parse a stored spelling, falling back to the default for anything a
+    /// newer version might have written.
+    pub fn from_stored(value: &str) -> Self {
+        match value {
+            "password" => AuthKind::Password,
+            _ => AuthKind::Key,
+        }
+    }
 }
 
-/// Connection state of a session. Mock only: nothing is connected for real.
+/// Connection state of a session. Runtime only: it is never persisted, so a
+/// freshly loaded session always starts disconnected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ConnectionState {
     #[default]
@@ -52,7 +71,8 @@ impl ConnectionState {
     }
 }
 
-/// A saved SSH session.
+/// A saved SSH session. `group` is `None` for a session that sits at the root
+/// of the tree rather than inside a folder.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct Session {
@@ -62,7 +82,7 @@ pub struct Session {
     pub port: u16,
     pub user: SharedString,
     pub auth: AuthKind,
-    pub group: GroupId,
+    pub group: Option<GroupId>,
     pub state: ConnectionState,
 }
 
@@ -98,19 +118,30 @@ impl Session {
     }
 }
 
-/// A folder in the session tree.
+/// A folder in the session tree. Groups nest: `parent` is `None` for a
+/// top-level folder.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct SessionGroup {
     pub id: GroupId,
     pub name: SharedString,
+    pub parent: Option<GroupId>,
 }
 
 impl SessionGroup {
-    pub fn new(id: GroupId, name: impl Into<SharedString>) -> Self {
+    pub fn new(id: GroupId, draft: GroupDraft) -> Self {
         Self {
             id,
-            name: name.into(),
+            name: draft.name,
+            parent: draft.parent,
+        }
+    }
+
+    /// The editable fields, for pre-filling the group form.
+    pub fn draft(&self) -> GroupDraft {
+        GroupDraft {
+            name: self.name.clone(),
+            parent: self.parent,
         }
     }
 }
@@ -124,7 +155,7 @@ pub struct SessionDraft {
     pub port: u16,
     pub user: SharedString,
     pub auth: AuthKind,
-    pub group: GroupId,
+    pub group: Option<GroupId>,
 }
 
 impl SessionDraft {
@@ -134,7 +165,7 @@ impl SessionDraft {
         port: u16,
         user: impl Into<SharedString>,
         auth: AuthKind,
-        group: GroupId,
+        group: Option<GroupId>,
     ) -> Self {
         Self {
             name: name.into(),
@@ -143,6 +174,23 @@ impl SessionDraft {
             user: user.into(),
             auth,
             group,
+        }
+    }
+}
+
+/// The values the group form commits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GroupDraft {
+    pub name: SharedString,
+    pub parent: Option<GroupId>,
+}
+
+impl GroupDraft {
+    pub fn new(name: impl Into<SharedString>, parent: Option<GroupId>) -> Self {
+        Self {
+            name: name.into(),
+            parent,
         }
     }
 }

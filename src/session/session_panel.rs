@@ -15,8 +15,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, ConnectSelected, ConnectSession, DeleteSession, DisconnectSession,
-    DuplicateSession, EditSession, NewSession, OpenExplorer, SESSION_PANEL_CONTEXT,
+    CatalogIcon, ConnectSelected, ConnectSession, DeleteGroup, DeleteSession, DisconnectSession,
+    DuplicateSession, EditSession, NewChildGroup, NewGroup, NewSession, NewSessionInGroup,
+    OpenExplorer, RenameGroup, SESSION_PANEL_CONTEXT,
 };
 
 use super::{GroupId, SessionId, SessionNode, SessionStore, matches_query, session_tree_items};
@@ -31,16 +32,27 @@ pub struct SessionPanel {
     search: Entity<InputState>,
     query: String,
     expanded: HashSet<GroupId>,
+    /// What the store held the last time the tree was rebuilt. Comparing
+    /// against these is how a group or session created in a dialog gets
+    /// revealed without the dialog having to report back to the panel.
+    known_groups: HashSet<GroupId>,
+    known_sessions: HashSet<SessionId>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
 impl SessionPanel {
     pub fn new(store: Entity<SessionStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let expanded: HashSet<GroupId> = store.read(cx).groups().iter().map(|g| g.id).collect();
-        let items = {
-            let store = store.read(cx);
-            session_tree_items(store.groups(), store.sessions(), "", &expanded)
+        let (expanded, known_groups, known_sessions, items) = {
+            let read = store.read(cx);
+            let expanded: HashSet<GroupId> = read.groups().iter().map(|g| g.id).collect();
+            let items = session_tree_items(read.groups(), read.sessions(), "", &expanded);
+            (
+                expanded.clone(),
+                expanded,
+                read.sessions().iter().map(|s| s.id).collect(),
+                items,
+            )
         };
         let tree_state = cx.new(|cx| TreeState::new(cx).items(items));
         let search = cx.new(|cx| {
@@ -50,7 +62,7 @@ impl SessionPanel {
         });
 
         let subscriptions = vec![
-            cx.observe(&store, |this, _, cx| this.rebuild_tree(cx)),
+            cx.observe(&store, |this, _, cx| this.on_store_changed(cx)),
             cx.subscribe_in(
                 &search,
                 window,
@@ -83,9 +95,68 @@ impl SessionPanel {
             search,
             query: String::new(),
             expanded,
+            known_groups,
+            known_sessions,
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Rebuild the tree, then put the cursor on whatever the store just
+    /// gained so a freshly created group or session is visible and selected.
+    fn on_store_changed(&mut self, cx: &mut Context<Self>) {
+        let created = self.take_created_node(cx);
+        self.rebuild_tree(cx);
+        match created {
+            Some(SessionNode::Group(id)) => self.select_group(id, cx),
+            Some(SessionNode::Session(id)) => self.select_session(id, cx),
+            None => {}
+        }
+    }
+
+    /// The node the store gained since the last rebuild, if any, with the
+    /// folders above it opened so it can be scrolled to.
+    fn take_created_node(&mut self, cx: &mut Context<Self>) -> Option<SessionNode> {
+        let (created, ancestors, groups, sessions) = {
+            let store = self.store.read(cx);
+            let created = store
+                .groups()
+                .iter()
+                .rev()
+                .find(|group| !self.known_groups.contains(&group.id))
+                .map(|group| SessionNode::Group(group.id))
+                .or_else(|| {
+                    store
+                        .sessions()
+                        .iter()
+                        .rev()
+                        .find(|session| !self.known_sessions.contains(&session.id))
+                        .map(|session| SessionNode::Session(session.id))
+                });
+            let ancestors = match created {
+                Some(SessionNode::Group(id)) => store.ancestor_groups(id),
+                Some(SessionNode::Session(id)) => store
+                    .session(id)
+                    .and_then(|session| session.group)
+                    .map(|group| {
+                        let mut chain = store.ancestor_groups(group);
+                        chain.push(group);
+                        chain
+                    })
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            };
+            (
+                created,
+                ancestors,
+                store.groups().iter().map(|g| g.id).collect(),
+                store.sessions().iter().map(|s| s.id).collect(),
+            )
+        };
+        self.known_groups = groups;
+        self.known_sessions = sessions;
+        self.expanded.extend(ancestors);
+        created
     }
 
     /// Rebuild the tree from the store, keeping the selection by id.
@@ -116,6 +187,17 @@ impl SessionPanel {
     pub fn select_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
         self.rebuild_tree(cx);
         let row_id = SessionNode::Session(id).id();
+        self.tree_state.update(cx, |state, cx| {
+            state.reveal_item(&row_id, ScrollStrategy::Center, cx);
+            let ix = state.index_of(&row_id);
+            state.set_selected_index(ix, cx);
+        });
+    }
+
+    /// Select (and reveal) a group row, for example one just created.
+    pub fn select_group(&mut self, id: GroupId, cx: &mut Context<Self>) {
+        self.rebuild_tree(cx);
+        let row_id = SessionNode::Group(id).id();
         self.tree_state.update(cx, |state, cx| {
             state.reveal_item(&row_id, ScrollStrategy::Center, cx);
             let ix = state.index_of(&row_id);
@@ -201,6 +283,10 @@ impl Panel for SessionPanel {
 
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
         Some(vec![
+            Button::new("new-group")
+                .icon(Icon::new(CatalogIcon::FolderPlus))
+                .tooltip("新建分组…")
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(NewGroup), cx)),
             Button::new("new-session-panel")
                 .icon(IconName::Plus)
                 .tooltip("新建会话…")
@@ -267,13 +353,13 @@ fn render_row(entry: &TreeEntry, connected: &HashSet<SessionId>, cx: &mut App) -
     let item = entry.item();
     let node = SessionNode::parse(&item.id);
     let (icon, row_id): (Icon, ElementId) = match node {
-        Some(SessionNode::Group(_)) => (
+        Some(SessionNode::Group(id)) => (
             Icon::new(if entry.is_expanded() {
                 IconName::FolderOpen
             } else {
                 IconName::Folder
             }),
-            item.id.clone().into(),
+            ("group-row", id.0).into(),
         ),
         Some(SessionNode::Session(id)) => {
             (Icon::new(CatalogIcon::Server), ("session-row", id.0).into())
@@ -356,6 +442,35 @@ fn build_context_menu(
                 Icon::new(CatalogIcon::Trash),
                 Box::new(DeleteSession(id)),
             ),
-        _ => menu.menu_with_icon("新建会话…", Icon::new(IconName::Plus), Box::new(NewSession)),
+        Some(SessionNode::Group(id)) => menu
+            .menu_with_icon(
+                "新建会话…",
+                Icon::new(IconName::Plus),
+                Box::new(NewSessionInGroup(id)),
+            )
+            .menu_with_icon(
+                "新建子分组…",
+                Icon::new(CatalogIcon::FolderPlus),
+                Box::new(NewChildGroup(id)),
+            )
+            .separator()
+            .menu_with_icon(
+                "重命名分组…",
+                Icon::new(CatalogIcon::Pencil),
+                Box::new(RenameGroup(id)),
+            )
+            .separator()
+            .menu_with_icon(
+                "删除分组",
+                Icon::new(CatalogIcon::Trash),
+                Box::new(DeleteGroup(id)),
+            ),
+        None => menu
+            .menu_with_icon("新建会话…", Icon::new(IconName::Plus), Box::new(NewSession))
+            .menu_with_icon(
+                "新建分组…",
+                Icon::new(CatalogIcon::FolderPlus),
+                Box::new(NewGroup),
+            ),
     }
 }

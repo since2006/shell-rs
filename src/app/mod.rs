@@ -2,9 +2,11 @@
 
 mod actions;
 mod assets;
+mod paths;
 
 pub use actions::*;
 pub use assets::{AppAssets, CatalogIcon};
+pub use paths::{data_dir, database_path};
 
 use gpui_kit::component::dock::ToggleZoom;
 use gpui_kit::*;
@@ -31,6 +33,7 @@ fn key_bindings() -> Vec<KeyBinding> {
     let primary = |key: &str| format!("{PRIMARY}-{key}");
     let mut bindings = vec![
         KeyBinding::new(&primary("n"), NewSession, None),
+        KeyBinding::new(&primary("shift-n"), NewGroup, None),
         KeyBinding::new(&primary("b"), ToggleSessionPanel, None),
         KeyBinding::new(&primary("k"), FocusSearch, None),
         KeyBinding::new(&primary("t"), NewLocalTerminal, None),

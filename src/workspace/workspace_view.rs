@@ -1,21 +1,23 @@
 use std::{collections::HashMap, rc::Rc, sync::Arc, time::Duration};
 
 use gpui_kit::component::{
-    ActiveTheme as _, Root, Theme, ThemeMode, TitleBar,
+    ActiveTheme as _, Root, Theme, ThemeMode, TitleBar, WindowExt as _,
     dock::{DockArea, DockEvent, DockLayout, DockPlacement, PanelId, TabGroup, panel_handle},
+    notification::Notification,
 };
 use gpui_kit::*;
 
 use crate::app::{
     CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseTerminal, ConnectSession, CopyTerminal,
-    DeleteSession, DisconnectSession, DuplicateSession, EditSession, FocusSearch, NewLocalTerminal,
-    NewSession, OpenExplorer, PasteTerminal, ReconnectSession, RestartLocalTerminal,
-    ToggleSessionPanel, ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
+    DeleteGroup, DeleteSession, DisconnectSession, DuplicateSession, EditSession, FocusSearch,
+    NewChildGroup, NewGroup, NewLocalTerminal, NewSession, NewSessionInGroup, OpenExplorer,
+    PasteTerminal, ReconnectSession, RenameGroup, RestartLocalTerminal, ToggleSessionPanel,
+    ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::explorer::{ExplorerPanel, ExplorerPanelEvent};
 use crate::session::{
-    ConnectionState, SessionId, SessionPanel, SessionStore, confirm_delete_session,
-    open_session_dialog,
+    ConnectionState, GroupId, SessionId, SessionPanel, SessionStore, SessionStoreEvent,
+    confirm_delete_group, confirm_delete_session, open_group_dialog, open_session_dialog,
 };
 use crate::terminal::{
     LocalPtyTransportFactory, LocalTerminalId, LocalTerminalPanel, LocalTerminalPanelEvent,
@@ -81,19 +83,21 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::new_with_local_terminal_factory(Arc::new(LocalPtyTransportFactory), window, cx)
+    /// `store` is built by `main` from the database on disk, and by the UI
+    /// tests from `SessionStore::seed`.
+    pub fn new(store: Entity<SessionStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new_with_local_terminal_factory(store, Arc::new(LocalPtyTransportFactory), window, cx)
     }
 
     /// Alternate constructor used by UI tests to avoid launching a real
     /// login shell while exercising workspace behavior.
     pub fn new_with_local_terminal_factory(
+        store: Entity<SessionStore>,
         local_terminal_factory: SharedTerminalTransportFactory,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
-        let store = cx.new(|_| SessionStore::seed());
         let recent = cx.new(|cx| RecentSessions::new(store.clone(), focus_handle.clone(), cx));
         let (dock_area, skin) = WorkspaceDockSkin::dock_area(
             DOCK_ID,
@@ -112,6 +116,14 @@ impl Workspace {
 
         let mut subscriptions = vec![
             cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.subscribe_in(
+                &store,
+                window,
+                |_, _, event: &SessionStoreEvent, window, cx| {
+                    let SessionStoreEvent::PersistFailed(message) = event;
+                    window.push_notification(Notification::error(message.clone()), cx);
+                },
+            ),
             cx.subscribe_in(
                 &dock_area,
                 window,
@@ -449,7 +461,7 @@ impl Workspace {
     }
 
     fn on_new_session(&mut self, _: &NewSession, window: &mut Window, cx: &mut Context<Self>) {
-        open_session_dialog(None, self.store.clone(), window, cx);
+        open_session_dialog(None, None, self.store.clone(), window, cx);
     }
 
     fn on_edit_session(
@@ -459,7 +471,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.store.read(cx).session(action.0).is_some() {
-            open_session_dialog(Some(action.0), self.store.clone(), window, cx);
+            open_session_dialog(Some(action.0), None, self.store.clone(), window, cx);
         }
     }
 
@@ -504,6 +516,16 @@ impl Workspace {
     }
 
     fn remove_session(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_session_tabs(id, window, cx);
+        self.store.update(cx, |store, cx| {
+            store.remove(id, cx);
+        });
+    }
+
+    /// Close whatever a session has open in the center, leaving the store
+    /// alone. Deleting a session and deleting the group around it both need
+    /// this, the latter for every session in the subtree.
+    fn close_session_tabs(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(terminal) = self.terminals.remove(&id) {
             self.dock_area
                 .update(cx, |area, cx| area.remove_panel(terminal, window, cx));
@@ -512,9 +534,85 @@ impl Workspace {
             self.dock_area
                 .update(cx, |area, cx| area.remove_panel(explorer, window, cx));
         }
-        self.store.update(cx, |store, cx| {
-            store.remove(id, cx);
-        });
+    }
+
+    fn on_new_session_in_group(
+        &mut self,
+        action: &NewSessionInGroup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        open_session_dialog(None, Some(action.0), self.store.clone(), window, cx);
+    }
+
+    fn on_new_group(&mut self, _: &NewGroup, window: &mut Window, cx: &mut Context<Self>) {
+        open_group_dialog(None, None, self.store.clone(), window, cx);
+    }
+
+    fn on_new_child_group(
+        &mut self,
+        action: &NewChildGroup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.store.read(cx).group(action.0).is_some() {
+            open_group_dialog(None, Some(action.0), self.store.clone(), window, cx);
+        }
+    }
+
+    fn on_rename_group(
+        &mut self,
+        action: &RenameGroup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.store.read(cx).group(action.0).is_some() {
+            open_group_dialog(Some(action.0), None, self.store.clone(), window, cx);
+        }
+    }
+
+    fn on_delete_group(
+        &mut self,
+        action: &DeleteGroup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = action.0;
+        let store = self.store.read(cx);
+        let Some(group) = store.group(id) else {
+            return;
+        };
+        let name = group.name.to_string();
+        let subgroups = store.descendant_groups(id).len();
+        let doomed = store.sessions_under(id);
+        let closes_tabs = doomed
+            .iter()
+            .any(|id| self.terminals.contains_key(id) || self.explorers.contains_key(id));
+        let workspace = cx.entity().downgrade();
+        confirm_delete_group(
+            &name,
+            doomed.len(),
+            subgroups,
+            closes_tabs,
+            Rc::new(move |window, cx| {
+                workspace
+                    .update(cx, |this, cx| this.remove_group(id, window, cx))
+                    .ok();
+            }),
+            window,
+            cx,
+        );
+    }
+
+    /// The store cascades the delete; the workspace only has to close the
+    /// tabs of the sessions that went with the group.
+    fn remove_group(&mut self, id: GroupId, window: &mut Window, cx: &mut Context<Self>) {
+        let removed = self
+            .store
+            .update(cx, |store, cx| store.remove_group(id, cx));
+        for session in removed {
+            self.close_session_tabs(session, window, cx);
+        }
     }
 
     fn on_toggle_session_panel(
@@ -667,6 +765,11 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_edit_session))
             .on_action(cx.listener(Self::on_duplicate_session))
             .on_action(cx.listener(Self::on_delete_session))
+            .on_action(cx.listener(Self::on_new_session_in_group))
+            .on_action(cx.listener(Self::on_new_group))
+            .on_action(cx.listener(Self::on_new_child_group))
+            .on_action(cx.listener(Self::on_rename_group))
+            .on_action(cx.listener(Self::on_delete_group))
             .on_action(cx.listener(Self::on_connect_session))
             .on_action(cx.listener(Self::on_disconnect_session))
             .on_action(cx.listener(Self::on_reconnect_session))

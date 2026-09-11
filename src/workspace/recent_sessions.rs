@@ -52,7 +52,11 @@ impl RecentSessions {
                 id: session.id,
                 name: session.name.clone(),
                 address: session.address(),
-                group: store.group(session.group).map(|group| group.name.clone()),
+                // The full path, so two 数据库 groups under different
+                // parents do not read the same here.
+                group: session
+                    .group
+                    .map(|id| SharedString::from(store.group_path(id))),
                 connected: session.state.is_connected(),
             })
             .collect()
