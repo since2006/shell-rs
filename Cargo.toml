@@ -1,0 +1,37 @@
+[package]
+name = "shellr"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "SSH session manager with local terminal support"
+
+[dependencies]
+gpui-kit = "0.6.1"
+alacritty_terminal = "0.26"
+anyhow = "1"
+async-channel = "2"
+portable-pty = "0.9"
+serde = { version = "1", features = ["derive"] }
+unicode-width = "0.2"
+
+[dev-dependencies]
+gpui-kit = { version = "0.6.1", features = ["test-support"] }
+
+# Optimize the rendering stack in debug builds (per gpui-kit's installation
+# guide); shellr itself stays unoptimized and debuggable.
+[profile.dev.package]
+gpui-pre = { opt-level = 3 }
+gpui-pre-platform = { opt-level = 3 }
+gpui-pre-macos = { opt-level = 3 }
+gpui-base = { opt-level = 3 }
+gpui-component = { opt-level = 3 }
+gpui-kit = { opt-level = 3 }
+gpui-kit-assets = { opt-level = 3 }
+cosmic-text = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+swash = { opt-level = 3 }
+taffy = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
+resvg = { opt-level = 3 }
+usvg = { opt-level = 3 }
+zed-font-kit = { opt-level = 3 }

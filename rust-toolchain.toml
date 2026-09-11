@@ -1,0 +1,6 @@
+# GPUI (gpui-pre 0.3.x) uses std APIs stabilized after Rust 1.94, so the
+# project pins the current stable. rustup installs it on first use without
+# changing the machine's default toolchain.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]

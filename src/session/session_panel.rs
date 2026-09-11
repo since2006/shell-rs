@@ -1,0 +1,361 @@
+use std::{collections::HashSet, rc::Rc};
+
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, IconName, Sizable as _,
+    button::Button,
+    dock::{BasePanel, Panel, PanelControl, PanelEvent},
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    list::ListItem,
+    menu::PopupMenu,
+    tree::{TreeEntry, TreeEvent, TreeState, tree},
+    v_flex,
+};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+
+use crate::app::{
+    CatalogIcon, ConnectSelected, ConnectSession, DeleteSession, DisconnectSession,
+    DuplicateSession, EditSession, NewSession, OpenExplorer, SESSION_PANEL_CONTEXT,
+};
+
+use super::{GroupId, SessionId, SessionNode, SessionStore, matches_query, session_tree_items};
+
+/// The left dock panel: a searchable, grouped tree of sessions.
+///
+/// Owns the tree and search state; the session data lives in the shared
+/// `SessionStore`, which this panel observes.
+pub struct SessionPanel {
+    store: Entity<SessionStore>,
+    tree_state: Entity<TreeState>,
+    search: Entity<InputState>,
+    query: String,
+    expanded: HashSet<GroupId>,
+    focus_handle: FocusHandle,
+    _subscriptions: Vec<Subscription>,
+}
+
+impl SessionPanel {
+    pub fn new(store: Entity<SessionStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let expanded: HashSet<GroupId> = store.read(cx).groups().iter().map(|g| g.id).collect();
+        let items = {
+            let store = store.read(cx);
+            session_tree_items(store.groups(), store.sessions(), "", &expanded)
+        };
+        let tree_state = cx.new(|cx| TreeState::new(cx).items(items));
+        let search = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("搜索会话")
+                .clean_on_escape()
+        });
+
+        let subscriptions = vec![
+            cx.observe(&store, |this, _, cx| this.rebuild_tree(cx)),
+            cx.subscribe_in(
+                &search,
+                window,
+                |this, state, event: &InputEvent, window, cx| match event {
+                    InputEvent::Change => {
+                        this.query = state.read(cx).value().to_string();
+                        this.rebuild_tree(cx);
+                    }
+                    InputEvent::PressEnter { .. } => this.connect_first_match(window, cx),
+                    _ => {}
+                },
+            ),
+            cx.subscribe(&tree_state, |this, _, event: &TreeEvent, _| match event {
+                TreeEvent::Expanded(id) => {
+                    if let Some(SessionNode::Group(group)) = SessionNode::parse(id) {
+                        this.expanded.insert(group);
+                    }
+                }
+                TreeEvent::Collapsed(id) => {
+                    if let Some(SessionNode::Group(group)) = SessionNode::parse(id) {
+                        this.expanded.remove(&group);
+                    }
+                }
+            }),
+        ];
+
+        Self {
+            store,
+            tree_state,
+            search,
+            query: String::new(),
+            expanded,
+            focus_handle: cx.focus_handle(),
+            _subscriptions: subscriptions,
+        }
+    }
+
+    /// Rebuild the tree from the store, keeping the selection by id.
+    fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
+        let items = {
+            let store = self.store.read(cx);
+            session_tree_items(
+                store.groups(),
+                store.sessions(),
+                &self.query,
+                &self.expanded,
+            )
+        };
+        let selected_id = self
+            .tree_state
+            .read(cx)
+            .selected_item()
+            .map(|item| item.id.clone());
+        self.tree_state.update(cx, |state, cx| {
+            state.set_items(items, cx);
+            let ix = selected_id.and_then(|id| state.index_of(&id));
+            state.set_selected_index(ix, cx);
+        });
+        cx.notify();
+    }
+
+    /// Select (and reveal) a session row, for example a fresh duplicate.
+    pub fn select_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        self.rebuild_tree(cx);
+        let row_id = SessionNode::Session(id).id();
+        self.tree_state.update(cx, |state, cx| {
+            state.reveal_item(&row_id, ScrollStrategy::Center, cx);
+            let ix = state.index_of(&row_id);
+            state.set_selected_index(ix, cx);
+        });
+    }
+
+    pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.update(cx, |input, cx| input.focus(window, cx));
+    }
+
+    /// The node currently selected in the tree.
+    pub fn selected_node(&self, cx: &App) -> Option<SessionNode> {
+        self.tree_state
+            .read(cx)
+            .selected_item()
+            .and_then(|item| SessionNode::parse(&item.id))
+    }
+
+    fn connect_first_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let first = self
+            .store
+            .read(cx)
+            .sessions()
+            .iter()
+            .find(|session| matches_query(session, &self.query))
+            .map(|session| session.id);
+        if let Some(id) = first {
+            window.dispatch_action(Box::new(ConnectSession(id)), cx);
+        }
+    }
+
+    fn on_connect_selected(
+        &mut self,
+        _: &ConnectSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.selected_node(cx) {
+            Some(SessionNode::Session(id)) => {
+                window.dispatch_action(Box::new(ConnectSession(id)), cx);
+            }
+            Some(SessionNode::Group(group)) => {
+                if !self.expanded.remove(&group) {
+                    self.expanded.insert(group);
+                }
+                self.rebuild_tree(cx);
+            }
+            None => {}
+        }
+    }
+}
+
+impl EventEmitter<PanelEvent> for SessionPanel {}
+
+impl Focusable for SessionPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl BasePanel for SessionPanel {
+    fn panel_name(&self) -> &'static str {
+        "SessionPanel"
+    }
+
+    fn closable(&self, _: &App) -> bool {
+        false
+    }
+
+    fn zoomable(&self, _: &App) -> bool {
+        false
+    }
+}
+
+impl Panel for SessionPanel {
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .gap_1()
+            .child(Icon::new(CatalogIcon::Server).small())
+            .child("会话")
+    }
+
+    fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
+        Some(vec![
+            Button::new("new-session-panel")
+                .icon(IconName::Plus)
+                .tooltip("新建会话…")
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(NewSession), cx)),
+        ])
+    }
+
+    fn zoom_control(&self, _: &App) -> Option<PanelControl> {
+        None
+    }
+
+    fn inner_padding(&self, _: &App) -> bool {
+        false
+    }
+}
+
+impl Render for SessionPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A plain snapshot for the row renderer: render callbacks must not
+        // read entities.
+        let connected: Rc<HashSet<SessionId>> = Rc::new(
+            self.store
+                .read(cx)
+                .sessions()
+                .iter()
+                .filter(|session| session.state.is_connected())
+                .map(|session| session.id)
+                .collect(),
+        );
+        let connected_for_menu = connected.clone();
+
+        v_flex()
+            .id("session-panel")
+            .key_context(SESSION_PANEL_CONTEXT)
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::on_connect_selected))
+            .size_full()
+            .bg(cx.theme().sidebar)
+            .text_color(cx.theme().sidebar_foreground)
+            .child(
+                div().p_2().child(
+                    Input::new(&self.search)
+                        .id("session-search")
+                        .small()
+                        .cleanable(true)
+                        .prefix(Icon::new(IconName::Search).small()),
+                ),
+            )
+            .child(
+                div().id("session-tree").flex_1().min_h_0().child(
+                    tree(&self.tree_state, move |_, entry, _, _, cx| {
+                        render_row(entry, &connected, cx)
+                    })
+                    .context_menu(move |_, entry, menu, _, _| {
+                        build_context_menu(entry, &connected_for_menu, menu)
+                    })
+                    .px_1(),
+                ),
+            )
+    }
+}
+
+fn render_row(entry: &TreeEntry, connected: &HashSet<SessionId>, cx: &mut App) -> ListItem {
+    let item = entry.item();
+    let node = SessionNode::parse(&item.id);
+    let (icon, row_id): (Icon, ElementId) = match node {
+        Some(SessionNode::Group(_)) => (
+            Icon::new(if entry.is_expanded() {
+                IconName::FolderOpen
+            } else {
+                IconName::Folder
+            }),
+            item.id.clone().into(),
+        ),
+        Some(SessionNode::Session(id)) => {
+            (Icon::new(CatalogIcon::Server), ("session-row", id.0).into())
+        }
+        None => (Icon::new(IconName::File), item.id.clone().into()),
+    };
+    let session_id = node.and_then(SessionNode::session_id);
+    let is_connected = session_id.is_some_and(|id| connected.contains(&id));
+
+    ListItem::new(row_id)
+        .w_full()
+        .px_2()
+        .rounded(cx.theme().radius)
+        .pl(rems(0.75 + entry.depth() as f32))
+        .child(
+            h_flex()
+                .gap_2()
+                .child(icon.small())
+                .child(item.label.clone()),
+        )
+        .when(is_connected, |row| {
+            row.suffix(|_, cx| {
+                h_flex()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        Icon::new(IconName::CircleCheck)
+                            .xsmall()
+                            .text_color(cx.theme().success),
+                    )
+                    .child("已连接")
+            })
+        })
+        .when_some(session_id, |row, id| {
+            row.on_click(move |event: &ClickEvent, window, cx| {
+                if event.click_count() == 2 {
+                    window.dispatch_action(Box::new(ConnectSession(id)), cx);
+                }
+            })
+        })
+}
+
+fn build_context_menu(
+    entry: &TreeEntry,
+    connected: &HashSet<SessionId>,
+    menu: PopupMenu,
+) -> PopupMenu {
+    match SessionNode::parse(&entry.item().id) {
+        Some(SessionNode::Session(id)) => menu
+            .menu_with_icon(
+                "连接",
+                Icon::new(CatalogIcon::Plug),
+                Box::new(ConnectSession(id)),
+            )
+            .menu_with_disabled(
+                "断开",
+                Box::new(DisconnectSession(id)),
+                !connected.contains(&id),
+            )
+            .menu_with_icon(
+                "打开 SFTP",
+                Icon::new(CatalogIcon::FolderTree),
+                Box::new(OpenExplorer(id)),
+            )
+            .separator()
+            .menu_with_icon(
+                "编辑会话…",
+                Icon::new(CatalogIcon::Pencil),
+                Box::new(EditSession(id)),
+            )
+            .menu_with_icon(
+                "复制",
+                Icon::new(IconName::Copy),
+                Box::new(DuplicateSession(id)),
+            )
+            .separator()
+            .menu_with_icon(
+                "删除",
+                Icon::new(CatalogIcon::Trash),
+                Box::new(DeleteSession(id)),
+            ),
+        _ => menu.menu_with_icon("新建会话…", Icon::new(IconName::Plus), Box::new(NewSession)),
+    }
+}
