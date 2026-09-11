@@ -106,11 +106,16 @@ impl BasePanel for ExplorerPanel {
         "ExplorerPanel"
     }
 
-    fn set_active(&mut self, active: bool, _: &mut Window, cx: &mut Context<Self>) {
+    fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         if active {
             let id = self.session_id;
             self.store
                 .update(cx, |store, cx| store.set_active(Some(id), cx));
+            // The tab that just went inactive stops rendering, so the focus
+            // it still holds leaves the dispatch tree and every
+            // `window.dispatch_action` (the tab's 「×」, ⌘W, the shortcuts)
+            // lands nowhere. Whoever becomes active has to take focus.
+            window.focus(&self.focus_handle, cx);
             cx.emit(ExplorerPanelEvent::Activated(id));
         }
     }

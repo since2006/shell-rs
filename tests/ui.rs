@@ -1170,3 +1170,60 @@ async fn groups_and_sessions_are_read_back_from_the_database(cx: &mut TestAppCon
         [session]
     );
 }
+
+/// A session's terminal and SFTP tabs sit side by side in the center, and
+/// only the active one renders. The tab going inactive used to keep the
+/// window focus, which took its focus handle out of the dispatch tree and
+/// left every 「×」 dead.
+#[gpui_kit::test]
+fn both_tabs_of_one_session_stay_closable(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("session-tree")
+            .double_click(("session-row", DB_01), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // The terminal tab is active and focused; opening SFTP puts a second tab
+    // for the same session beside it and activates that one.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("sftp", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(("explorer", DB_01)).visible());
+        window.click(("close-explorer", DB_01), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // The SFTP tab is gone and the terminal tab, now active again, still closes.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("close-explorer", DB_01)).is_none());
+        assert!(window.find(("terminal", DB_01)).visible());
+        window.click(("close-terminal", DB_01), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("close-terminal", DB_01)).is_none());
+    })
+    .unwrap();
+
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert!(workspace.explorer(SessionId(DB_01)).is_none());
+        assert!(workspace.terminal(SessionId(DB_01)).is_none());
+    });
+}
