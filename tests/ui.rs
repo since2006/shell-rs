@@ -12,11 +12,12 @@ use gpui_kit::{
     MouseMoveEvent, TestAppContext, WindowHandle, point, px, size,
 };
 
-use shellr::app::{DeleteGroup, NewSessionInGroup, RenameGroup};
-use shellr::session::{GroupId, SessionDatabase, SessionId, SessionStore};
+use shellr::app::{ConnectSession, DeleteGroup, NewSessionInGroup, OpenExplorer, RenameGroup};
+use shellr::session::{AuthKind, GroupId, SessionDatabase, SessionDraft, SessionId, SessionStore};
 use shellr::terminal::{
-    LocalTerminalId, TerminalLifecycle, TerminalSize, TerminalTransport, TerminalTransportCommand,
-    TerminalTransportEvent, TerminalTransportFactory,
+    FixedRemoteTerminalTransportProvider, LocalTerminalId, RemoteTerminalId, TerminalLifecycle,
+    TerminalPrompt, TerminalPromptField, TerminalPromptKind, TerminalPromptReply, TerminalSize,
+    TerminalTransport, TerminalTransportCommand, TerminalTransportEvent, TerminalTransportFactory,
 };
 use shellr::workspace::Workspace;
 
@@ -24,6 +25,9 @@ use shellr::workspace::Workspace;
 const WEB_01: u64 = 1;
 const DB_01: u64 = 3;
 const STAGING_API: u64 = 4;
+const INITIAL_WEB_TERMINAL: u64 = 1;
+const INITIAL_STAGING_TERMINAL: u64 = 2;
+const FIRST_NEW_TERMINAL: u64 = 3;
 /// Seeded group ids, in insertion order: 生产, 测试, 开发.
 const PRODUCTION: u64 = 1;
 const DEVELOPMENT: u64 = 3;
@@ -42,7 +46,18 @@ fn open_workspace_with_store(
     let mut workspace = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
         let store = cx.new(|_| store);
-        let view = cx.new(|cx| Workspace::new(store, window, cx));
+        let remote = Arc::new(FixedRemoteTerminalTransportProvider::new(Arc::new(
+            FakeTerminalFactory::default(),
+        )));
+        let view = cx.new(|cx| {
+            Workspace::new_with_transport_providers(
+                store,
+                remote,
+                Arc::new(FakeTerminalFactory::default()),
+                window,
+                cx,
+            )
+        });
         workspace = Some(view.clone());
         Root::new(view, window, cx)
     });
@@ -90,6 +105,10 @@ impl FakeTerminalFactory {
             .copied()
             .collect();
         String::from_utf8(bytes).expect("fake transport receives UTF-8 test input")
+    }
+
+    fn starts(&self) -> usize {
+        self.starts.load(Ordering::SeqCst)
     }
 }
 
@@ -152,6 +171,7 @@ impl TerminalTransport for FakeTerminalTransport {
                         .unwrap_or_else(|error| error.into_inner())
                         .push(size);
                 }
+                TerminalTransportCommand::PromptReply { .. } => {}
                 TerminalTransportCommand::Shutdown => break,
             }
         }
@@ -167,8 +187,11 @@ fn open_workspace_with_factory(
     let mut workspace = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
         let store = cx.new(|_| SessionStore::seed());
+        let remote = Arc::new(FixedRemoteTerminalTransportProvider::new(Arc::new(
+            FakeTerminalFactory::default(),
+        )));
         let view = cx.new(|cx| {
-            Workspace::new_with_local_terminal_factory(store, factory.clone(), window, cx)
+            Workspace::new_with_transport_providers(store, remote, factory.clone(), window, cx)
         });
         workspace = Some(view.clone());
         Root::new(view, window, cx)
@@ -176,15 +199,437 @@ fn open_workspace_with_factory(
     (handle, workspace.expect("workspace created"))
 }
 
+fn open_workspace_with_remote_factory(
+    cx: &mut TestAppContext,
+    store: SessionStore,
+    factory: Arc<dyn TerminalTransportFactory>,
+) -> (WindowHandle<Root>, Entity<Workspace>) {
+    cx.update(shellr::init);
+    let mut workspace = None;
+    let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
+        let store = cx.new(|_| store);
+        let remote = Arc::new(FixedRemoteTerminalTransportProvider::new(factory.clone()));
+        let view = cx.new(|cx| {
+            Workspace::new_with_transport_providers(
+                store,
+                remote,
+                Arc::new(FakeTerminalFactory::default()),
+                window,
+                cx,
+            )
+        });
+        workspace = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    (handle, workspace.expect("workspace created"))
+}
+
+#[derive(Clone, Copy)]
+enum PromptBehavior {
+    Authentication,
+    UnknownHost,
+}
+
+struct PromptTerminalFactory {
+    behavior: PromptBehavior,
+    accepted: Arc<AtomicUsize>,
+    canceled: Arc<AtomicUsize>,
+}
+
+impl PromptTerminalFactory {
+    fn new(behavior: PromptBehavior) -> Self {
+        Self {
+            behavior,
+            accepted: Arc::new(AtomicUsize::new(0)),
+            canceled: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl TerminalTransportFactory for PromptTerminalFactory {
+    fn create(&self) -> Box<dyn TerminalTransport> {
+        Box::new(PromptTerminalTransport {
+            behavior: self.behavior,
+            accepted: self.accepted.clone(),
+            canceled: self.canceled.clone(),
+        })
+    }
+}
+
+struct PromptTerminalTransport {
+    behavior: PromptBehavior,
+    accepted: Arc<AtomicUsize>,
+    canceled: Arc<AtomicUsize>,
+}
+
+impl TerminalTransport for PromptTerminalTransport {
+    fn run(
+        self: Box<Self>,
+        _: TerminalSize,
+        commands: mpsc::Receiver<TerminalTransportCommand>,
+        events: async_channel::Sender<TerminalTransportEvent>,
+    ) -> anyhow::Result<()> {
+        let request_id = 9001;
+        let kind = match self.behavior {
+            PromptBehavior::Authentication => TerminalPromptKind::authentication(
+                "SSH 登录",
+                "请输入密码",
+                vec![TerminalPromptField::new("密码", false)],
+            ),
+            PromptBehavior::UnknownHost => TerminalPromptKind::unknown_host(
+                "example.test",
+                22,
+                "ssh-ed25519",
+                "SHA256:test-fingerprint",
+            ),
+        };
+        events.send_blocking(TerminalTransportEvent::Prompt(TerminalPrompt::new(
+            request_id, kind,
+        )))?;
+        loop {
+            match commands.recv()? {
+                TerminalTransportCommand::PromptReply {
+                    request_id: reply_id,
+                    reply,
+                } if reply_id == request_id => match reply {
+                    TerminalPromptReply::TrustAndSave
+                        if matches!(self.behavior, PromptBehavior::UnknownHost) =>
+                    {
+                        self.accepted.fetch_add(1, Ordering::SeqCst);
+                        break;
+                    }
+                    TerminalPromptReply::Answers(answers)
+                        if matches!(self.behavior, PromptBehavior::Authentication)
+                            && answers.len() == 1 =>
+                    {
+                        self.accepted.fetch_add(1, Ordering::SeqCst);
+                        break;
+                    }
+                    TerminalPromptReply::Cancel => {
+                        self.canceled.fetch_add(1, Ordering::SeqCst);
+                        events
+                            .send_blocking(TerminalTransportEvent::Failed("认证已取消".into()))?;
+                        return Ok(());
+                    }
+                    _ => {}
+                },
+                TerminalTransportCommand::Shutdown => return Ok(()),
+                _ => {}
+            }
+        }
+        events.send_blocking(TerminalTransportEvent::Started)?;
+        while let Ok(command) = commands.recv() {
+            if matches!(command, TerminalTransportCommand::Shutdown) {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn one_session_store(auth: AuthKind) -> (SessionStore, SessionId) {
+    let mut store = SessionStore::empty();
+    let id = store.insert_unnotified(SessionDraft::new(
+        "prompt-host",
+        "example.test",
+        22,
+        "tester",
+        auth,
+        None,
+    ));
+    (store, id)
+}
+
 #[gpui_kit::test]
-fn double_click_on_session_opens_terminal_and_updates_status(cx: &mut TestAppContext) {
+async fn session_form_switches_to_key_and_uses_native_path_picker(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace_with_store(cx, SessionStore::empty());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("new-session", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("session-key-path").is_none());
+        window.within("session-auth").click("input", cx);
+        window.within("session-auth").press("down", cx);
+        window.within("session-auth").press("down", cx);
+        window.within("session-auth").press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("session-key-path").visible());
+        window.click("choose-key", cx);
+    })
+    .unwrap();
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files);
+        assert!(!options.directories);
+        assert!(!options.multiple);
+        Some(vec!["/tmp/id_ed25519".into()])
+    });
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("session-key-path").value(),
+            Some("/tmp/id_ed25519")
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn authentication_prompt_is_masked_and_drives_connected_state(cx: &mut TestAppContext) {
+    let (store, id) = one_session_store(AuthKind::Password);
+    let factory = Arc::new(PromptTerminalFactory::new(PromptBehavior::Authentication));
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("session-tree")
+            .double_click(("session-row", id.0), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("ssh-auth-submit").is_some()
+    })
+    .await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("status-connection", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("ssh-auth-submit").is_some(),
+            "点击对话框外部不应取消认证"
+        );
+    })
+    .unwrap();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let password = window.find(("ssh-auth-answer", 0usize));
+        assert_eq!(
+            password.value(),
+            None,
+            "masked input must not expose its value"
+        );
+        window.click(("ssh-auth-answer", 0usize), cx);
+        window.input("test-password", cx);
+        window.click("ssh-auth-submit", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("status-connection").label() == Some("已连接 prompt-host")
+    })
+    .await;
+
+    assert_eq!(factory.accepted.load(Ordering::SeqCst), 1);
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .store()
+            .read(cx)
+            .session(id)
+            .unwrap()
+            .state
+            .is_connected()
+    }));
+}
+
+#[gpui_kit::test]
+async fn canceling_unknown_host_prompt_keeps_session_disconnected(cx: &mut TestAppContext) {
+    let (store, id) = one_session_store(AuthKind::Auto);
+    let factory = Arc::new(PromptTerminalFactory::new(PromptBehavior::UnknownHost));
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("session-tree")
+            .double_click(("session-row", id.0), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("cancel").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("status-connection", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("cancel").is_some(),
+            "点击对话框外部不应取消主机指纹确认"
+        );
+    })
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("cancel", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("status-connection").label() == Some("未连接 prompt-host")
+    })
+    .await;
+
+    assert_eq!(factory.accepted.load(Ordering::SeqCst), 0);
+    assert_eq!(factory.canceled.load(Ordering::SeqCst), 1);
+    assert!(!workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .store()
+            .read(cx)
+            .session(id)
+            .unwrap()
+            .state
+            .is_connected()
+    }));
+
+    // The failed terminal tab remains visible, but connecting the session
+    // again must start a fresh transport instead of only activating that tab.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("session-tree")
+            .double_click(("session-row", id.0), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("cancel").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("cancel", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        factory.canceled.load(Ordering::SeqCst) == 2
+    })
+    .await;
+
+    // The context-menu item dispatches this same command, so it must also
+    // restart the exited transport instead of merely activating the tab.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(ConnectSession(id)), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("cancel").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("cancel", cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn connection_edits_reconnect_once_but_display_edits_do_not(cx: &mut TestAppContext) {
+    let (store, id) = one_session_store(AuthKind::Auto);
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("session-tree")
+            .double_click(("session-row", id.0), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        factory.starts() == 1
+            && window.find("status-connection").label() == Some("已连接 prompt-host")
+    })
+    .await;
+
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().clone();
+        store.update(cx, |store, cx| {
+            let mut draft = store.session(id).unwrap().draft();
+            draft.host = "new.example.test".into();
+            assert!(store.update(id, draft, cx));
+        });
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        factory.starts() == 2
+            && window.find("status-connection").label() == Some("已连接 prompt-host")
+    })
+    .await;
+    assert_eq!(factory.starts(), 2);
+
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().clone();
+        store.update(cx, |store, cx| {
+            let mut draft = store.session(id).unwrap().draft();
+            draft.name = "renamed".into();
+            assert!(store.update(id, draft, cx));
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(factory.starts(), 2);
+}
+
+#[gpui_kit::test]
+fn opening_mock_sftp_does_not_change_connection_state(cx: &mut TestAppContext) {
+    let (store, id) = one_session_store(AuthKind::Auto);
+    let (handle, workspace) = open_workspace_with_store(cx, store);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(OpenExplorer(id)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert!(workspace.explorer(id).is_some());
+        assert_eq!(
+            workspace.store().read(cx).session(id).unwrap().state,
+            shellr::session::ConnectionState::Disconnected
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn double_click_on_session_opens_terminal_and_updates_status(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         // Sessions seeded as connected already have terminal tabs.
-        assert!(window.find(("terminal", WEB_01)).visible());
-        assert!(window.try_find(("terminal", DB_01)).is_none());
+        assert!(window.find(("terminal", INITIAL_WEB_TERMINAL)).visible());
+        assert!(window.try_find(("terminal", FIRST_NEW_TERMINAL)).is_none());
 
         window
             .within("session-tree")
@@ -193,9 +638,15 @@ fn double_click_on_session_opens_terminal_and_updates_status(cx: &mut TestAppCon
     .unwrap();
     cx.run_until_parked();
 
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("status-connection").label() == Some("已连接 db-01")
+    })
+    .await;
+
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find(("terminal", DB_01)).visible());
+        assert!(window.find(("terminal", FIRST_NEW_TERMINAL)).visible());
         assert_eq!(
             window.find("status-connection").label(),
             Some("已连接 db-01")
@@ -205,11 +656,104 @@ fn double_click_on_session_opens_terminal_and_updates_status(cx: &mut TestAppCon
 
     cx.update(|cx| {
         let workspace = workspace.read(cx);
-        assert!(workspace.terminal(SessionId(DB_01)).is_some());
+        assert!(workspace.terminal(SessionId(DB_01), cx).is_some());
         let store = workspace.store().read(cx);
         assert!(
             store
                 .session(SessionId(DB_01))
+                .unwrap()
+                .state
+                .is_connected()
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn connected_session_opens_an_independent_terminal_each_time(cx: &mut TestAppContext) {
+    let (store, id) = one_session_store(AuthKind::Auto);
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("session-tree")
+            .double_click(("session-row", id.0), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        factory.starts() == 1
+    })
+    .await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("session-tree")
+            .double_click(("session-row", id.0), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        factory.starts() == 2
+    })
+    .await;
+
+    // The right-click menu's “连接” item dispatches this same action.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(ConnectSession(id)), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        factory.starts() == 3
+            && workspace
+                .read(cx)
+                .store()
+                .read(cx)
+                .session(id)
+                .unwrap()
+                .state
+                .is_connected()
+    })
+    .await;
+
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.terminal_count(id, cx), 3);
+        assert!(workspace.remote_terminal(RemoteTerminalId(1)).is_some());
+        assert!(workspace.remote_terminal(RemoteTerminalId(2)).is_some());
+        assert!(workspace.remote_terminal(RemoteTerminalId(3)).is_some());
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("close-terminal", 3_u64), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        let workspace = workspace.read(cx);
+        workspace.terminal_count(id, cx) == 2
+            && workspace
+                .store()
+                .read(cx)
+                .session(id)
+                .unwrap()
+                .state
+                .is_connected()
+    })
+    .await;
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.terminal_count(id, cx), 2);
+        assert!(
+            workspace
+                .store()
+                .read(cx)
+                .session(id)
                 .unwrap()
                 .state
                 .is_connected()
@@ -316,7 +860,7 @@ fn sftp_button_opens_explorer_and_navigates(cx: &mut TestAppContext) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         // The active terminal tab's toolbar shows the SFTP button.
-        window.click("sftp", cx);
+        window.click(("sftp", FIRST_NEW_TERMINAL), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -377,24 +921,32 @@ fn tab_close_button_closes_the_terminal_and_disconnects(cx: &mut TestAppContext)
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find(("terminal", DB_01)).visible());
-        window.click(("close-terminal", DB_01), cx);
+        assert!(window.find(("terminal", FIRST_NEW_TERMINAL)).visible());
+        window.click(("close-terminal", FIRST_NEW_TERMINAL), cx);
     })
     .unwrap();
     cx.run_until_parked();
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find(("terminal", DB_01)).is_none());
-        assert!(window.try_find(("close-terminal", DB_01)).is_none());
+        assert!(window.try_find(("terminal", FIRST_NEW_TERMINAL)).is_none());
+        assert!(
+            window
+                .try_find(("close-terminal", FIRST_NEW_TERMINAL))
+                .is_none()
+        );
         // The other seeded tabs are untouched.
-        assert!(window.find(("close-terminal", WEB_01)).visible());
+        assert!(
+            window
+                .find(("close-terminal", INITIAL_WEB_TERMINAL))
+                .visible()
+        );
     })
     .unwrap();
 
     cx.update(|cx| {
         let workspace = workspace.read(cx);
-        assert!(workspace.terminal(SessionId(DB_01)).is_none());
+        assert!(workspace.terminal(SessionId(DB_01), cx).is_none());
         let store = workspace.store().read(cx);
         assert!(
             !store
@@ -407,31 +959,39 @@ fn tab_close_button_closes_the_terminal_and_disconnects(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
-fn closing_every_tab_shows_the_recent_sessions(cx: &mut TestAppContext) {
+async fn closing_every_tab_shows_the_recent_sessions(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         // While tabs are open the start page stays out of the way.
         assert!(window.try_find("recent-sessions").is_none());
-        window.click(("close-terminal", WEB_01), cx);
+        window.click(("close-terminal", INITIAL_WEB_TERMINAL), cx);
     })
     .unwrap();
     cx.run_until_parked();
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find(("terminal", WEB_01)).is_none());
+        assert!(
+            window
+                .try_find(("terminal", INITIAL_WEB_TERMINAL))
+                .is_none()
+        );
         assert!(window.try_find("recent-sessions").is_none());
         // The last tab closes too (the tab group alone would refuse).
-        window.click(("close-terminal", STAGING_API), cx);
+        window.click(("close-terminal", INITIAL_STAGING_TERMINAL), cx);
     })
     .unwrap();
     cx.run_until_parked();
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find(("terminal", STAGING_API)).is_none());
+        assert!(
+            window
+                .try_find(("terminal", INITIAL_STAGING_TERMINAL))
+                .is_none()
+        );
         assert!(window.find("recent-sessions").visible());
         // The page takes the focus the closed tab held.
         assert_eq!(window.find("recent-sessions").focused(), Some(true));
@@ -445,9 +1005,15 @@ fn closing_every_tab_shows_the_recent_sessions(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
 
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("status-connection").label() == Some("已连接 web-01")
+    })
+    .await;
+
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find(("terminal", WEB_01)).visible());
+        assert!(window.find(("terminal", FIRST_NEW_TERMINAL)).visible());
         assert!(window.try_find("recent-sessions").is_none());
         assert_eq!(
             window.find("status-connection").label(),
@@ -483,7 +1049,7 @@ fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext)
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         // The new tab is displayed, with its input focused.
-        assert!(window.find(("terminal", DB_01)).visible());
+        assert!(window.find(("terminal", FIRST_NEW_TERMINAL)).visible());
         window.press("cmd-w", cx);
     })
     .unwrap();
@@ -491,7 +1057,7 @@ fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext)
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find(("terminal", DB_01)).is_none());
+        assert!(window.try_find(("terminal", FIRST_NEW_TERMINAL)).is_none());
         assert!(window.try_find("recent-sessions").is_none());
         // Keep closing whichever tab the dock displays next.
         window.press("cmd-w", cx);
@@ -508,8 +1074,16 @@ fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext)
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find(("terminal", WEB_01)).is_none());
-        assert!(window.try_find(("terminal", STAGING_API)).is_none());
+        assert!(
+            window
+                .try_find(("terminal", INITIAL_WEB_TERMINAL))
+                .is_none()
+        );
+        assert!(
+            window
+                .try_find(("terminal", INITIAL_STAGING_TERMINAL))
+                .is_none()
+        );
         assert!(window.find("recent-sessions").visible());
         // With nothing open the shortcut does nothing.
         window.press("cmd-w", cx);
@@ -1046,8 +1620,8 @@ async fn deleting_a_group_removes_its_sessions_and_closes_their_tabs(cx: &mut Te
 
     cx.update(|cx| {
         let workspace = workspace.read(cx);
-        assert!(workspace.terminal(SessionId(WEB_01)).is_some());
-        assert!(workspace.terminal(SessionId(DB_01)).is_some());
+        assert!(workspace.terminal(SessionId(WEB_01), cx).is_some());
+        assert!(workspace.terminal(SessionId(DB_01), cx).is_some());
     });
 
     cx.update_window(handle.into(), |_, window, cx| {
@@ -1066,10 +1640,10 @@ async fn deleting_a_group_removes_its_sessions_and_closes_their_tabs(cx: &mut Te
 
     cx.update(|cx| {
         let workspace = workspace.read(cx);
-        assert!(workspace.terminal(SessionId(WEB_01)).is_none());
-        assert!(workspace.terminal(SessionId(DB_01)).is_none());
+        assert!(workspace.terminal(SessionId(WEB_01), cx).is_none());
+        assert!(workspace.terminal(SessionId(DB_01), cx).is_none());
         // staging-api is in another group and keeps its tab.
-        assert!(workspace.terminal(SessionId(STAGING_API)).is_some());
+        assert!(workspace.terminal(SessionId(STAGING_API), cx).is_some());
 
         let store = workspace.store().read(cx);
         assert!(store.group(GroupId(PRODUCTION)).is_none());
@@ -1151,6 +1725,12 @@ async fn groups_and_sessions_are_read_back_from_the_database(cx: &mut TestAppCon
     .unwrap();
     cx.run_until_parked();
 
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("status-connection").label() == Some("已连接 web-01")
+    })
+    .await;
+
     // Everything above went through the real write path; read it back with a
     // second connection to the same file.
     let reloaded = SessionStore::load(SessionDatabase::open(&path).expect("database reopened"))
@@ -1192,7 +1772,7 @@ fn both_tabs_of_one_session_stay_closable(cx: &mut TestAppContext) {
     // for the same session beside it and activates that one.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("sftp", cx);
+        window.click(("sftp", FIRST_NEW_TERMINAL), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -1209,21 +1789,25 @@ fn both_tabs_of_one_session_stay_closable(cx: &mut TestAppContext) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.try_find(("close-explorer", DB_01)).is_none());
-        assert!(window.find(("terminal", DB_01)).visible());
-        window.click(("close-terminal", DB_01), cx);
+        assert!(window.find(("terminal", FIRST_NEW_TERMINAL)).visible());
+        window.click(("close-terminal", FIRST_NEW_TERMINAL), cx);
     })
     .unwrap();
     cx.run_until_parked();
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find(("close-terminal", DB_01)).is_none());
+        assert!(
+            window
+                .try_find(("close-terminal", FIRST_NEW_TERMINAL))
+                .is_none()
+        );
     })
     .unwrap();
 
     cx.update(|cx| {
         let workspace = workspace.read(cx);
         assert!(workspace.explorer(SessionId(DB_01)).is_none());
-        assert!(workspace.terminal(SessionId(DB_01)).is_none());
+        assert!(workspace.terminal(SessionId(DB_01), cx).is_none());
     });
 }

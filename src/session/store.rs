@@ -37,6 +37,9 @@ const MAX_RECENT: usize = 10;
 pub enum SessionStoreEvent {
     /// A change was applied in memory but could not be written to disk.
     PersistFailed(SharedString),
+    /// A live terminal must reconnect because its SSH endpoint or
+    /// authentication configuration changed.
+    ConnectionSettingsChanged(SessionId),
 }
 
 impl EventEmitter<SessionStoreEvent> for SessionStore {}
@@ -89,7 +92,7 @@ impl SessionStore {
                 "10.0.1.12",
                 22,
                 "root",
-                AuthKind::Key,
+                AuthKind::Auto,
                 Some(production),
             ),
             SessionDraft::new(
@@ -97,7 +100,7 @@ impl SessionStore {
                 "10.0.1.13",
                 22,
                 "root",
-                AuthKind::Key,
+                AuthKind::Auto,
                 Some(production),
             ),
             SessionDraft::new(
@@ -113,7 +116,7 @@ impl SessionStore {
                 "10.0.9.20",
                 2222,
                 "deploy",
-                AuthKind::Key,
+                AuthKind::Auto,
                 Some(staging),
             ),
             SessionDraft::new(
@@ -129,7 +132,7 @@ impl SessionStore {
                 "192.168.1.20",
                 22,
                 "xuz",
-                AuthKind::Key,
+                AuthKind::Auto,
                 Some(development),
             ),
         ];
@@ -254,11 +257,21 @@ impl SessionStore {
 
     /// Replace the editable fields of a session; connection state is kept.
     pub fn update(&mut self, id: SessionId, draft: SessionDraft, cx: &mut Context<Self>) -> bool {
+        let connection_changed = self.session(id).is_some_and(|session| {
+            session.host != draft.host
+                || session.port != draft.port
+                || session.user != draft.user
+                || session.auth != draft.auth
+                || session.key_path != draft.key_path
+        });
         let updated = self.update_unnotified(id, draft);
         if updated {
             if let (Some(database), Some(session)) = (self.database.as_ref(), self.session(id)) {
                 let result = database.update_session(session);
                 self.report(result, "保存会话", cx);
+            }
+            if connection_changed {
+                cx.emit(SessionStoreEvent::ConnectionSettingsChanged(id));
             }
             cx.notify();
         }
@@ -451,7 +464,7 @@ mod tests {
     use super::*;
 
     fn draft(name: &str, group: Option<GroupId>) -> SessionDraft {
-        SessionDraft::new(name, "10.0.0.1", 22, "root", AuthKind::Key, group)
+        SessionDraft::new(name, "10.0.0.1", 22, "root", AuthKind::Auto, group)
     }
 
     #[test]
@@ -495,9 +508,17 @@ mod tests {
     fn duplicate_places_a_copy_after_the_original() {
         let mut store = SessionStore::seed();
         let web01 = store.sessions()[0].id;
+        let mut draft = store.session(web01).unwrap().draft();
+        draft.auth = AuthKind::Key;
+        draft.key_path = Some("/tmp/id_ed25519".into());
+        assert!(store.update_unnotified(web01, draft));
         let copy = store.duplicate_unnotified(web01).unwrap();
         assert_eq!(store.sessions()[1].id, copy);
         assert_eq!(store.sessions()[1].name.as_ref(), "web-01 副本");
+        assert_eq!(
+            store.sessions()[1].key_path.as_deref(),
+            Some("/tmp/id_ed25519")
+        );
         assert_eq!(store.sessions()[1].state, ConnectionState::Disconnected);
     }
 

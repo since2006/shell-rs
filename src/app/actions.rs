@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::{
     session::{GroupId, SessionId},
-    terminal::LocalTerminalId,
+    terminal::{LocalTerminalId, RemoteTerminalId},
 };
 
 gpui_kit::actions!(
@@ -70,8 +70,17 @@ macro_rules! local_terminal_action {
     };
 }
 
+macro_rules! remote_terminal_action {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+        #[action(namespace = shellr, no_json)]
+        pub struct $name(pub RemoteTerminalId);
+    };
+}
+
 session_action!(
-    /// Open (or activate) the terminal tab of a session.
+    /// Open a new terminal connection for a session.
     ConnectSession
 );
 session_action!(
@@ -79,16 +88,8 @@ session_action!(
     DisconnectSession
 );
 session_action!(
-    /// Reconnect a session (mock: a short "connecting" state).
-    ReconnectSession
-);
-session_action!(
     /// Open (or activate) the SFTP explorer tab of a session.
     OpenExplorer
-);
-session_action!(
-    /// Close the terminal tab of a session.
-    CloseTerminal
 );
 session_action!(
     /// Close the SFTP explorer tab of a session.
@@ -127,6 +128,15 @@ group_action!(
 local_terminal_action!(
     /// Close a local terminal tab and terminate its child process.
     CloseLocalTerminal
+);
+
+remote_terminal_action!(
+    /// Close one remote terminal connection and its tab.
+    CloseTerminal
+);
+remote_terminal_action!(
+    /// Reconnect one remote terminal using the session's latest settings.
+    ReconnectTerminal
 );
 local_terminal_action!(
     /// Restart a local terminal with a fresh emulator and PTY.

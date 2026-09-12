@@ -1,17 +1,28 @@
-use std::{collections::HashMap, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 use gpui_kit::component::{
-    ActiveTheme as _, Root, Theme, ThemeMode, TitleBar, WindowExt as _,
+    ActiveTheme as _, Root, Sizable as _, Theme, ThemeMode, TitleBar, WindowExt as _,
+    button::{Button, ButtonVariant, ButtonVariants as _},
+    dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter},
     dock::{DockArea, DockEvent, DockLayout, DockPlacement, PanelId, TabGroup, panel_handle},
+    form::{Field, Form},
+    input::{Input, InputContentType, InputState},
     notification::Notification,
+    v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
     CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseTerminal, ConnectSession, CopyTerminal,
     DeleteGroup, DeleteSession, DisconnectSession, DuplicateSession, EditSession, FocusSearch,
     NewChildGroup, NewGroup, NewLocalTerminal, NewSession, NewSessionInGroup, OpenExplorer,
-    PasteTerminal, ReconnectSession, RenameGroup, RestartLocalTerminal, ToggleSessionPanel,
+    PasteTerminal, ReconnectTerminal, RenameGroup, RestartLocalTerminal, ToggleSessionPanel,
     ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::explorer::{ExplorerPanel, ExplorerPanelEvent};
@@ -21,7 +32,9 @@ use crate::session::{
 };
 use crate::terminal::{
     LocalPtyTransportFactory, LocalTerminalId, LocalTerminalPanel, LocalTerminalPanelEvent,
-    SharedTerminalTransportFactory, TerminalPanel, TerminalPanelEvent,
+    RemoteTerminalId, SharedRemoteTerminalTransportProvider, SharedTerminalTransportFactory,
+    TerminalLifecycle, TerminalPanel, TerminalPanelEvent, TerminalPrompt, TerminalPromptField,
+    TerminalPromptKind, TerminalPromptReply, TerminalSecret,
 };
 
 use super::{
@@ -53,7 +66,7 @@ pub fn window_options(cx: &mut App) -> WindowOptions {
 /// A center tab, by the session it belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CenterTab {
-    Terminal(SessionId),
+    Terminal(RemoteTerminalId),
     Explorer(SessionId),
     LocalTerminal(LocalTerminalId),
 }
@@ -69,13 +82,17 @@ pub struct Workspace {
     session_panel: Entity<SessionPanel>,
     /// The start page the dock skin shows while the center has no tab.
     recent: Entity<RecentSessions>,
-    terminals: HashMap<SessionId, Entity<TerminalPanel>>,
+    terminals: HashMap<RemoteTerminalId, Entity<TerminalPanel>>,
     explorers: HashMap<SessionId, Entity<ExplorerPanel>>,
     local_terminals: HashMap<LocalTerminalId, Entity<LocalTerminalPanel>>,
     local_terminal_factory: SharedTerminalTransportFactory,
+    remote_terminal_provider: SharedRemoteTerminalTransportProvider,
+    next_remote_terminal_id: u64,
     next_local_terminal_id: u64,
     /// The center tab displayed most recently; `CloseActiveTab` closes it.
     active_tab: Option<CenterTab>,
+    prompt_queue: VecDeque<(RemoteTerminalId, SessionId, TerminalPrompt)>,
+    active_prompt: Option<(RemoteTerminalId, SessionId, u64)>,
     /// Dispatch target for the title bar and start page: actions sent to it
     /// reach the workspace handlers whatever is focused.
     focus_handle: FocusHandle,
@@ -86,13 +103,37 @@ impl Workspace {
     /// `store` is built by `main` from the database on disk, and by the UI
     /// tests from `SessionStore::seed`.
     pub fn new(store: Entity<SessionStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::new_with_local_terminal_factory(store, Arc::new(LocalPtyTransportFactory), window, cx)
+        let known_hosts = crate::app::known_hosts_path()
+            .unwrap_or_else(|_| crate::app::data_dir().join("known_hosts"));
+        let remote = Arc::new(crate::ssh::SshTerminalTransportProvider::new(known_hosts));
+        Self::new_with_transport_providers(
+            store,
+            remote,
+            Arc::new(LocalPtyTransportFactory),
+            window,
+            cx,
+        )
     }
 
     /// Alternate constructor used by UI tests to avoid launching a real
     /// login shell while exercising workspace behavior.
     pub fn new_with_local_terminal_factory(
         store: Entity<SessionStore>,
+        local_terminal_factory: SharedTerminalTransportFactory,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let known_hosts = crate::app::known_hosts_path()
+            .unwrap_or_else(|_| crate::app::data_dir().join("known_hosts"));
+        let remote = Arc::new(crate::ssh::SshTerminalTransportProvider::new(known_hosts));
+        Self::new_with_transport_providers(store, remote, local_terminal_factory, window, cx)
+    }
+
+    /// Fully injectable constructor used by UI tests: remote sessions never
+    /// touch the network, while production uses the SSH provider above.
+    pub fn new_with_transport_providers(
+        store: Entity<SessionStore>,
+        remote_terminal_provider: SharedRemoteTerminalTransportProvider,
         local_terminal_factory: SharedTerminalTransportFactory,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -119,9 +160,27 @@ impl Workspace {
             cx.subscribe_in(
                 &store,
                 window,
-                |_, _, event: &SessionStoreEvent, window, cx| {
-                    let SessionStoreEvent::PersistFailed(message) = event;
-                    window.push_notification(Notification::error(message.clone()), cx);
+                |this, _, event: &SessionStoreEvent, window, cx| match event {
+                    SessionStoreEvent::PersistFailed(message) => {
+                        window.push_notification(Notification::error(message.clone()), cx);
+                    }
+                    SessionStoreEvent::ConnectionSettingsChanged(id) => {
+                        let panels: Vec<_> = this
+                            .terminals
+                            .values()
+                            .filter(|panel| panel.read(cx).session_id() == *id)
+                            .cloned()
+                            .collect();
+                        if !panels.is_empty() {
+                            this.cancel_prompts_for_session(*id, window, cx);
+                            this.store.update(cx, |store, cx| {
+                                store.set_state(*id, ConnectionState::Connecting, cx)
+                            });
+                            for panel in panels {
+                                panel.update(cx, |panel, cx| panel.reconnect(window, cx));
+                            }
+                        }
+                    }
                 },
             ),
             cx.subscribe_in(
@@ -145,11 +204,21 @@ impl Workspace {
             .collect();
         let mut terminals = HashMap::new();
         let mut center = DockLayout::tabs();
+        let mut next_remote_terminal_id = 1;
         for id in connected {
-            let (panel, subscription) = new_terminal_panel(&store, id, window, cx);
+            let terminal_id = RemoteTerminalId(next_remote_terminal_id);
+            next_remote_terminal_id += 1;
+            let (panel, subscription) = new_terminal_panel(
+                &store,
+                remote_terminal_provider.clone(),
+                terminal_id,
+                id,
+                window,
+                cx,
+            );
             center = center.panel_view(panel_handle(panel.clone()), cx);
             subscriptions.push(subscription);
-            terminals.insert(id, panel);
+            terminals.insert(terminal_id, panel);
         }
 
         dock_area.update(cx, |area, cx| {
@@ -182,8 +251,12 @@ impl Workspace {
             explorers: HashMap::new(),
             local_terminals: HashMap::new(),
             local_terminal_factory,
+            remote_terminal_provider,
+            next_remote_terminal_id,
             next_local_terminal_id: 1,
             active_tab: None,
+            prompt_queue: VecDeque::new(),
+            active_prompt: None,
             focus_handle,
             _subscriptions: subscriptions,
         }
@@ -194,8 +267,22 @@ impl Workspace {
         &self.store
     }
 
-    pub fn terminal(&self, id: SessionId) -> Option<&Entity<TerminalPanel>> {
+    pub fn terminal(&self, id: SessionId, cx: &App) -> Option<&Entity<TerminalPanel>> {
+        self.terminals
+            .values()
+            .filter(|panel| panel.read(cx).session_id() == id)
+            .max_by_key(|panel| panel.read(cx).id().0)
+    }
+
+    pub fn remote_terminal(&self, id: RemoteTerminalId) -> Option<&Entity<TerminalPanel>> {
         self.terminals.get(&id)
+    }
+
+    pub fn terminal_count(&self, id: SessionId, cx: &App) -> usize {
+        self.terminals
+            .values()
+            .filter(|panel| panel.read(cx).session_id() == id)
+            .count()
     }
 
     pub fn explorer(&self, id: SessionId) -> Option<&Entity<ExplorerPanel>> {
@@ -216,6 +303,308 @@ impl Workspace {
         if empty && !was_empty {
             let page = self.recent.read(cx).focus_handle(cx);
             window.focus(&page, cx);
+        }
+    }
+
+    fn enqueue_prompt(
+        &mut self,
+        terminal_id: RemoteTerminalId,
+        session_id: SessionId,
+        prompt: TerminalPrompt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.prompt_queue
+            .push_back((terminal_id, session_id, prompt));
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(40))
+                    .await;
+                let done = this
+                    .update_in(cx, |this, window, cx| {
+                        if this.prompt_queue.is_empty() {
+                            return true;
+                        }
+                        if this.active_prompt.is_some() || window.has_active_dialog(cx) {
+                            return false;
+                        }
+                        this.open_next_prompt(window, cx);
+                        true
+                    })
+                    .unwrap_or(true);
+                if done {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn open_next_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (terminal_id, session_id, prompt) = loop {
+            let Some(next) = self.prompt_queue.pop_front() else {
+                return;
+            };
+            if self.terminals.contains_key(&next.0) {
+                break next;
+            }
+        };
+        let request_id = prompt.request_id();
+        self.active_prompt = Some((terminal_id, session_id, request_id));
+        let workspace = cx.entity().downgrade();
+        match prompt.kind().clone() {
+            TerminalPromptKind::UnknownHost(prompt) => {
+                let description = format!(
+                    "主机：{}:{}\n算法：{}\nSHA-256 指纹：{}\n\n请先确认该指纹来自可信渠道。",
+                    prompt.host(),
+                    prompt.port(),
+                    prompt.algorithm(),
+                    prompt.fingerprint(),
+                );
+                window.open_alert_dialog(cx, move |alert, _, _| {
+                    alert
+                        .title("首次连接此主机")
+                        .description(description.clone())
+                        .button_props(
+                            DialogButtonProps::default()
+                                .ok_text("信任并连接")
+                                .cancel_text("取消"),
+                        )
+                        .show_cancel(true)
+                        .on_ok({
+                            let workspace = workspace.clone();
+                            move |_, _, cx| {
+                                resolve_prompt(
+                                    &workspace,
+                                    terminal_id,
+                                    request_id,
+                                    TerminalPromptReply::TrustAndSave,
+                                    cx,
+                                );
+                                true
+                            }
+                        })
+                        .on_cancel({
+                            let workspace = workspace.clone();
+                            move |_, _, cx| {
+                                resolve_prompt(
+                                    &workspace,
+                                    terminal_id,
+                                    request_id,
+                                    TerminalPromptReply::Cancel,
+                                    cx,
+                                );
+                                true
+                            }
+                        })
+                        .on_close({
+                            let workspace = workspace.clone();
+                            move |_, _, cx| {
+                                resolve_prompt(
+                                    &workspace,
+                                    terminal_id,
+                                    request_id,
+                                    TerminalPromptReply::Cancel,
+                                    cx,
+                                );
+                            }
+                        })
+                });
+            }
+            TerminalPromptKind::HostKeyChanged(prompt) => {
+                let old = prompt.old_fingerprints().join("、");
+                let description = format!(
+                    "主机：{}:{}\n算法：{}\n已保存指纹：{old}\n服务器当前指纹：{}\n\n连接已阻断。请核验服务器身份后手动处理：{}",
+                    prompt.host(),
+                    prompt.port(),
+                    prompt.algorithm(),
+                    prompt.fingerprint(),
+                    prompt.known_hosts_path().display(),
+                );
+                window.open_alert_dialog(cx, move |alert, _, _| {
+                    alert
+                        .title("服务器主机密钥已变更")
+                        .description(description.clone())
+                        .button_props(
+                            DialogButtonProps::default()
+                                .ok_text("关闭")
+                                .ok_variant(ButtonVariant::Danger),
+                        )
+                        .on_ok({
+                            let workspace = workspace.clone();
+                            move |_, _, cx| {
+                                resolve_prompt(
+                                    &workspace,
+                                    terminal_id,
+                                    request_id,
+                                    TerminalPromptReply::Cancel,
+                                    cx,
+                                );
+                                true
+                            }
+                        })
+                        .on_close({
+                            let workspace = workspace.clone();
+                            move |_, _, cx| {
+                                resolve_prompt(
+                                    &workspace,
+                                    terminal_id,
+                                    request_id,
+                                    TerminalPromptReply::Cancel,
+                                    cx,
+                                );
+                            }
+                        })
+                });
+            }
+            TerminalPromptKind::Authentication(prompt) => {
+                let title = prompt.title().to_string();
+                let instructions = prompt.instructions().to_string();
+                let fields = prompt.fields().to_vec();
+                let dialog_title: SharedString = if title.trim().is_empty() {
+                    "SSH 认证".into()
+                } else {
+                    title.clone().into()
+                };
+                let form = cx.new(|cx| AuthenticationPromptForm::new(fields, window, cx));
+                window.open_dialog(cx, {
+                    let workspace_for_ok = workspace.clone();
+                    let workspace_for_cancel = workspace.clone();
+                    let form_for_ok = form.clone();
+                    move |dialog, _, _| {
+                        dialog
+                            .title(dialog_title.clone())
+                            .child(
+                                v_flex()
+                                    .gap_3()
+                                    .when(!instructions.trim().is_empty(), |view| {
+                                        view.child(div().text_sm().child(instructions.clone()))
+                                    })
+                                    .child(form.clone()),
+                            )
+                            .footer(
+                                DialogFooter::new()
+                                    .child(
+                                        DialogClose::new().trigger(|button| button.label("取消")),
+                                    )
+                                    .child(DialogAction::new().child(
+                                        Button::new("ssh-auth-submit").primary().label("继续"),
+                                    )),
+                            )
+                            .on_ok({
+                                let workspace = workspace_for_ok.clone();
+                                let form = form_for_ok.clone();
+                                move |_, window, cx| {
+                                    let answers =
+                                        form.update(cx, |form, cx| form.take_answers(window, cx));
+                                    resolve_prompt(
+                                        &workspace,
+                                        terminal_id,
+                                        request_id,
+                                        TerminalPromptReply::Answers(answers),
+                                        cx,
+                                    );
+                                    true
+                                }
+                            })
+                            .on_cancel({
+                                let workspace = workspace_for_cancel.clone();
+                                move |_, _, cx| {
+                                    resolve_prompt(
+                                        &workspace,
+                                        terminal_id,
+                                        request_id,
+                                        TerminalPromptReply::Cancel,
+                                        cx,
+                                    );
+                                    true
+                                }
+                            })
+                            .on_close({
+                                let workspace = workspace.clone();
+                                move |_, _, cx| {
+                                    resolve_prompt(
+                                        &workspace,
+                                        terminal_id,
+                                        request_id,
+                                        TerminalPromptReply::Cancel,
+                                        cx,
+                                    );
+                                }
+                            })
+                            .overlay_closable(false)
+                    }
+                });
+            }
+        }
+    }
+
+    fn finish_prompt(
+        &mut self,
+        terminal_id: RemoteTerminalId,
+        request_id: u64,
+        reply: TerminalPromptReply,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((active_terminal, session_id, active_request)) = self.active_prompt else {
+            return;
+        };
+        if (active_terminal, active_request) != (terminal_id, request_id) {
+            return;
+        }
+        self.active_prompt = None;
+        let canceled = matches!(&reply, TerminalPromptReply::Cancel);
+        if let Some(panel) = self.terminals.get(&terminal_id).cloned() {
+            panel.read(cx).reply_to_prompt(request_id, reply, cx);
+            if canceled {
+                panel.update(cx, |panel, cx| panel.cancel_connection(cx));
+                self.refresh_session_connection_state(session_id, cx);
+            }
+        }
+    }
+
+    fn cancel_prompts_for_terminal(
+        &mut self,
+        terminal_id: RemoteTerminalId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.prompt_queue.retain(|(id, _, _)| *id != terminal_id);
+        if let Some((id, _, request_id)) = self.active_prompt
+            && id == terminal_id
+        {
+            self.active_prompt = None;
+            if let Some(panel) = self.terminals.get(&terminal_id) {
+                panel
+                    .read(cx)
+                    .reply_to_prompt(request_id, TerminalPromptReply::Cancel, cx);
+            }
+            if window.has_active_dialog(cx) {
+                window.close_dialog(cx);
+            }
+        }
+    }
+
+    fn cancel_prompts_for_session(
+        &mut self,
+        session_id: SessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.prompt_queue.retain(|(_, id, _)| *id != session_id);
+        if let Some((terminal_id, id, request_id)) = self.active_prompt
+            && id == session_id
+        {
+            self.active_prompt = None;
+            if let Some(panel) = self.terminals.get(&terminal_id) {
+                panel
+                    .read(cx)
+                    .reply_to_prompt(request_id, TerminalPromptReply::Cancel, cx);
+            }
+            if window.has_active_dialog(cx) {
+                window.close_dialog(cx);
+            }
         }
     }
 
@@ -242,10 +631,31 @@ impl Workspace {
         });
     }
 
-    fn mark_connected(&mut self, id: SessionId, cx: &mut Context<Self>) {
-        self.store.update(cx, |store, cx| {
-            store.set_state(id, ConnectionState::Connected, cx);
-        });
+    fn refresh_session_connection_state(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
+        let mut has_starting = false;
+        let mut has_running = false;
+        for panel in self
+            .terminals
+            .values()
+            .filter(|panel| panel.read(cx).session_id() == session_id)
+        {
+            match panel.read(cx).lifecycle(cx) {
+                TerminalLifecycle::Running => has_running = true,
+                TerminalLifecycle::Starting => has_starting = true,
+                TerminalLifecycle::Exited { .. }
+                | TerminalLifecycle::Failed(_)
+                | TerminalLifecycle::Closing => {}
+            }
+        }
+        let state = if has_running {
+            ConnectionState::Connected
+        } else if has_starting {
+            ConnectionState::Connecting
+        } else {
+            ConnectionState::Disconnected
+        };
+        self.store
+            .update(cx, |store, cx| store.set_state(session_id, state, cx));
     }
 
     fn on_connect_session(
@@ -254,19 +664,23 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let id = action.0;
-        if let Some(panel) = self.terminals.get(&id).cloned() {
-            let group = panel.read(cx).tab_group();
-            self.activate_tab(group, panel.entity_id(), window, cx);
+        let session_id = action.0;
+        if self.store.read(cx).session(session_id).is_none() {
             return;
         }
-        if self.store.read(cx).session(id).is_none() {
-            return;
-        }
-        self.mark_connected(id, cx);
-        let (panel, subscription) = new_terminal_panel(&self.store, id, window, cx);
+        let terminal_id = RemoteTerminalId(self.next_remote_terminal_id);
+        self.next_remote_terminal_id += 1;
+        let (panel, subscription) = new_terminal_panel(
+            &self.store,
+            self.remote_terminal_provider.clone(),
+            terminal_id,
+            session_id,
+            window,
+            cx,
+        );
         self._subscriptions.push(subscription);
-        self.terminals.insert(id, panel.clone());
+        self.terminals.insert(terminal_id, panel.clone());
+        self.refresh_session_connection_state(session_id, cx);
         self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
         });
@@ -287,7 +701,6 @@ impl Workspace {
         if self.store.read(cx).session(id).is_none() {
             return;
         }
-        self.mark_connected(id, cx);
         let (panel, subscription) = new_explorer_panel(&self.store, id, window, cx);
         self._subscriptions.push(subscription);
         self.explorers.insert(id, panel.clone());
@@ -416,48 +829,38 @@ impl Workspace {
     fn on_disconnect_session(
         &mut self,
         action: &DisconnectSession,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let id = action.0;
-        self.store.update(cx, |store, cx| {
-            store.set_state(id, ConnectionState::Disconnected, cx);
-        });
-        if let Some(terminal) = self.terminals.get(&id) {
-            terminal.update(cx, |terminal, cx| terminal.disconnect(cx));
-        }
-    }
-
-    fn on_reconnect_session(
-        &mut self,
-        action: &ReconnectSession,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let id = action.0;
-        if self.store.read(cx).session(id).is_none() {
-            return;
-        }
+        self.cancel_prompts_for_session(id, window, cx);
         self.store.update(cx, |store, cx| {
-            store.set_state(id, ConnectionState::Connecting, cx);
+            store.set_state(id, ConnectionState::Disconnected, cx);
         });
-        if let Some(terminal) = self.terminals.get(&id) {
-            terminal.update(cx, |terminal, cx| terminal.reconnect(window, cx));
+        let terminals: Vec<_> = self
+            .terminals
+            .values()
+            .filter(|panel| panel.read(cx).session_id() == id)
+            .cloned()
+            .collect();
+        for terminal in terminals {
+            terminal.update(cx, |terminal, cx| terminal.disconnect(cx));
         }
-        // The only asynchronous work in the mock: a short "connecting" state.
-        cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(600))
-                .await;
-            this.update_in(cx, |this, _, cx| {
-                this.mark_connected(id, cx);
-                if let Some(terminal) = this.terminals.get(&id) {
-                    terminal.update(cx, |terminal, cx| terminal.append_line("已重新连接", cx));
-                }
-            })
-            .ok();
-        })
-        .detach();
+    }
+
+    fn on_reconnect_terminal(
+        &mut self,
+        action: &ReconnectTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = action.0;
+        self.cancel_prompts_for_terminal(id, window, cx);
+        if let Some(terminal) = self.terminals.get(&id).cloned() {
+            let session_id = terminal.read(cx).session_id();
+            terminal.update(cx, |terminal, cx| terminal.reconnect(window, cx));
+            self.refresh_session_connection_state(session_id, cx);
+        }
     }
 
     fn on_new_session(&mut self, _: &NewSession, window: &mut Window, cx: &mut Context<Self>) {
@@ -500,7 +903,11 @@ impl Workspace {
         let Some(session) = self.store.read(cx).session(id).cloned() else {
             return;
         };
-        let closes_tabs = self.terminals.contains_key(&id) || self.explorers.contains_key(&id);
+        let closes_tabs = self
+            .terminals
+            .values()
+            .any(|panel| panel.read(cx).session_id() == id)
+            || self.explorers.contains_key(&id);
         let workspace = cx.entity().downgrade();
         confirm_delete_session(
             &session,
@@ -526,7 +933,14 @@ impl Workspace {
     /// alone. Deleting a session and deleting the group around it both need
     /// this, the latter for every session in the subtree.
     fn close_session_tabs(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(terminal) = self.terminals.remove(&id) {
+        self.cancel_prompts_for_session(id, window, cx);
+        let terminals: Vec<_> = self
+            .terminals
+            .values()
+            .filter(|panel| panel.read(cx).session_id() == id)
+            .cloned()
+            .collect();
+        for terminal in terminals {
             self.dock_area
                 .update(cx, |area, cx| area.remove_panel(terminal, window, cx));
         }
@@ -585,9 +999,12 @@ impl Workspace {
         let name = group.name.to_string();
         let subgroups = store.descendant_groups(id).len();
         let doomed = store.sessions_under(id);
-        let closes_tabs = doomed
-            .iter()
-            .any(|id| self.terminals.contains_key(id) || self.explorers.contains_key(id));
+        let closes_tabs = doomed.iter().any(|id| {
+            self.terminals
+                .values()
+                .any(|panel| panel.read(cx).session_id() == *id)
+                || self.explorers.contains_key(id)
+        });
         let workspace = cx.entity().downgrade();
         confirm_delete_group(
             &name,
@@ -670,25 +1087,117 @@ impl Workspace {
 
 fn new_terminal_panel(
     store: &Entity<SessionStore>,
-    id: SessionId,
+    remote_provider: SharedRemoteTerminalTransportProvider,
+    terminal_id: RemoteTerminalId,
+    session_id: SessionId,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> (Entity<TerminalPanel>, Subscription) {
-    let panel = cx.new(|cx| TerminalPanel::new(id, store.clone(), window, cx));
-    let subscription = cx.subscribe(
+    let panel = cx.new(|cx| {
+        TerminalPanel::new(
+            terminal_id,
+            session_id,
+            store.clone(),
+            remote_provider,
+            window,
+            cx,
+        )
+    });
+    let subscription = cx.subscribe_in(
         &panel,
-        |this, _, event: &TerminalPanelEvent, cx| match event {
-            TerminalPanelEvent::Activated(id) => this.active_tab = Some(CenterTab::Terminal(*id)),
-            TerminalPanelEvent::Closed(id) => {
-                this.terminals.remove(id);
-                if this.active_tab == Some(CenterTab::Terminal(*id)) {
+        window,
+        |this, _, event: &TerminalPanelEvent, window, cx| match event {
+            TerminalPanelEvent::Activated(terminal_id, _) => {
+                this.active_tab = Some(CenterTab::Terminal(*terminal_id))
+            }
+            TerminalPanelEvent::Closed(terminal_id, session_id) => {
+                this.cancel_prompts_for_terminal(*terminal_id, window, cx);
+                this.terminals.remove(terminal_id);
+                if this.active_tab == Some(CenterTab::Terminal(*terminal_id)) {
                     this.active_tab = None;
                 }
+                this.refresh_session_connection_state(*session_id, cx);
+                if !this
+                    .terminals
+                    .values()
+                    .any(|panel| panel.read(cx).session_id() == *session_id)
+                    && !this.explorers.contains_key(session_id)
+                    && this.store.read(cx).active().map(|session| session.id) == Some(*session_id)
+                {
+                    this.store
+                        .update(cx, |store, cx| store.set_active(None, cx));
+                }
             }
-            TerminalPanelEvent::StatusChanged(_) => cx.notify(),
+            TerminalPanelEvent::StatusChanged(_, session_id) => {
+                this.refresh_session_connection_state(*session_id, cx);
+                cx.notify();
+            }
+            TerminalPanelEvent::PromptRequested(terminal_id, session_id, prompt) => {
+                this.enqueue_prompt(*terminal_id, *session_id, prompt.clone(), window, cx)
+            }
         },
     );
     (panel, subscription)
+}
+
+fn resolve_prompt(
+    workspace: &WeakEntity<Workspace>,
+    terminal_id: RemoteTerminalId,
+    request_id: u64,
+    reply: TerminalPromptReply,
+    cx: &mut App,
+) {
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace.finish_prompt(terminal_id, request_id, reply, cx)
+        })
+        .ok();
+}
+
+struct AuthenticationPromptForm {
+    fields: Vec<(TerminalPromptField, Entity<InputState>)>,
+}
+
+impl AuthenticationPromptForm {
+    fn new(fields: Vec<TerminalPromptField>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let fields = fields
+            .into_iter()
+            .map(|field| {
+                let echo = field.echo();
+                let input = cx.new(|cx| InputState::new(window, cx).masked(!echo));
+                (field, input)
+            })
+            .collect();
+        Self { fields }
+    }
+
+    fn take_answers(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<TerminalSecret> {
+        self.fields
+            .iter()
+            .map(|(_, input)| {
+                let answer = TerminalSecret::new(input.read(cx).value().to_string());
+                input.update(cx, |input, cx| input.set_value("", window, cx));
+                answer
+            })
+            .collect()
+    }
+}
+
+impl Render for AuthenticationPromptForm {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Form::new().children(
+            self.fields
+                .iter()
+                .enumerate()
+                .map(|(index, (field, input))| {
+                    let mut input = Input::new(input).id(("ssh-auth-answer", index)).small();
+                    if !field.echo() {
+                        input = input.content_type(InputContentType::Password).mask_toggle();
+                    }
+                    Field::new().label(field.label().to_string()).child(input)
+                }),
+        )
+    }
 }
 
 fn new_explorer_panel(
@@ -772,7 +1281,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_delete_group))
             .on_action(cx.listener(Self::on_connect_session))
             .on_action(cx.listener(Self::on_disconnect_session))
-            .on_action(cx.listener(Self::on_reconnect_session))
+            .on_action(cx.listener(Self::on_reconnect_terminal))
             .on_action(cx.listener(Self::on_open_explorer))
             .on_action(cx.listener(Self::on_close_terminal))
             .on_action(cx.listener(Self::on_close_explorer))

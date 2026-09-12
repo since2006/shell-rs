@@ -23,7 +23,7 @@ fn from_sql(id: i64) -> u64 {
 }
 
 /// Bumped whenever `migrate` gains a step. Stored in `PRAGMA user_version`.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA_V1: &str = "\
 BEGIN;
@@ -44,6 +44,13 @@ CREATE TABLE sessions (
 );
 CREATE INDEX sessions_group_id ON sessions(group_id);
 PRAGMA user_version = 1;
+COMMIT;";
+
+const SCHEMA_V2: &str = "\
+BEGIN;
+ALTER TABLE sessions ADD COLUMN key_path TEXT;
+UPDATE sessions SET auth = 'auto' WHERE auth = 'key';
+PRAGMA user_version = 2;
 COMMIT;";
 
 /// Everything one launch reads back from disk.
@@ -99,7 +106,7 @@ impl SessionDatabase {
         let sessions = self
             .connection
             .prepare(
-                "SELECT id, name, host, port, username, auth, group_id \
+                "SELECT id, name, host, port, username, auth, group_id, key_path \
                  FROM sessions ORDER BY id",
             )?
             .query_map([], |row| {
@@ -110,6 +117,7 @@ impl SessionDatabase {
                 let user: String = row.get(4)?;
                 let auth: String = row.get(5)?;
                 let group: Option<i64> = row.get(6)?;
+                let key_path: Option<String> = row.get(7)?;
                 Ok(Session::new(
                     SessionId(from_sql(id)),
                     SessionDraft::new(
@@ -119,7 +127,8 @@ impl SessionDatabase {
                         user,
                         AuthKind::from_stored(&auth),
                         group.map(|id| GroupId(from_sql(id))),
-                    ),
+                    )
+                    .with_optional_key_path(key_path),
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -176,8 +185,8 @@ impl SessionDatabase {
 
     pub fn insert_session(&self, session: &Session) -> rusqlite::Result<()> {
         self.connection.execute(
-            "INSERT INTO sessions (id, name, host, port, username, auth, group_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO sessions (id, name, host, port, username, auth, group_id, key_path) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 to_sql(session.id.0),
                 session.name.as_ref(),
@@ -186,6 +195,7 @@ impl SessionDatabase {
                 session.user.as_ref(),
                 session.auth.as_str(),
                 session.group.map(|group| to_sql(group.0)),
+                session.key_path.as_deref(),
             ],
         )?;
         Ok(())
@@ -196,7 +206,7 @@ impl SessionDatabase {
     pub fn update_session(&self, session: &Session) -> rusqlite::Result<()> {
         self.connection.execute(
             "UPDATE sessions SET name = ?2, host = ?3, port = ?4, username = ?5, \
-             auth = ?6, group_id = ?7 WHERE id = ?1",
+             auth = ?6, group_id = ?7, key_path = ?8 WHERE id = ?1",
             params![
                 to_sql(session.id.0),
                 session.name.as_ref(),
@@ -205,6 +215,7 @@ impl SessionDatabase {
                 session.user.as_ref(),
                 session.auth.as_str(),
                 session.group.map(|group| to_sql(group.0)),
+                session.key_path.as_deref(),
             ],
         )?;
         Ok(())
@@ -234,6 +245,9 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     }
     if version < 1 {
         connection.execute_batch(SCHEMA_V1)?;
+    }
+    if version < 2 {
+        connection.execute_batch(SCHEMA_V2)?;
     }
     Ok(())
 }
@@ -313,12 +327,14 @@ mod tests {
         let mut moved = session(1, "web-01", Some(2));
         moved.port = 2222;
         moved.auth = AuthKind::Key;
+        moved.key_path = Some("/tmp/test-key".into());
         db.update_session(&moved).unwrap();
         db.update_group(&group(2, "预发", None)).unwrap();
 
         let data = db.load().unwrap();
         assert_eq!(data.sessions[0].port, 2222);
         assert_eq!(data.sessions[0].auth, AuthKind::Key);
+        assert_eq!(data.sessions[0].key_path.as_deref(), Some("/tmp/test-key"));
         assert_eq!(data.sessions[0].group, Some(GroupId(2)));
         assert_eq!(data.groups[1].name.as_ref(), "预发");
     }
@@ -378,5 +394,46 @@ mod tests {
         assert_eq!(data.groups.len(), 1);
         assert_eq!(data.sessions[0].name.as_ref(), "web-01");
         assert_eq!(data.recent, [SessionId(1)]);
+    }
+
+    #[test]
+    fn migrates_v1_key_auth_to_auto_and_adds_key_path() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA_V1).unwrap();
+        connection
+            .execute(
+                "INSERT INTO sessions (id, name, host, port, username, auth) \
+             VALUES (1, '旧会话', 'example.test', 22, 'root', 'key')",
+                [],
+            )
+            .unwrap();
+
+        let db = SessionDatabase::prepare(connection).unwrap();
+        let version: i64 = db
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        let data = db.load().unwrap();
+        assert_eq!(data.sessions[0].auth, AuthKind::Auto);
+        assert_eq!(data.sessions[0].key_path, None);
+    }
+
+    #[test]
+    fn schema_never_contains_secret_columns() {
+        let db = SessionDatabase::in_memory().unwrap();
+        let mut statement = db
+            .connection
+            .prepare("PRAGMA table_info(sessions)")
+            .unwrap();
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(columns.contains(&"key_path".to_string()));
+        assert!(!columns.iter().any(|column| {
+            column.contains("password") || column.contains("passphrase") || column.contains("otp")
+        }));
     }
 }
