@@ -167,7 +167,11 @@ mod tests {
                     code = Some(exit_code);
                     break;
                 }
-                Ok(TerminalTransportEvent::Started | TerminalTransportEvent::Failed(_)) => {}
+                Ok(
+                    TerminalTransportEvent::Started
+                    | TerminalTransportEvent::Failed(_)
+                    | TerminalTransportEvent::Prompt(_),
+                ) => {}
                 Err(async_channel::TryRecvError::Empty) => thread::sleep(Duration::from_millis(5)),
                 Err(async_channel::TryRecvError::Closed) => break,
             }

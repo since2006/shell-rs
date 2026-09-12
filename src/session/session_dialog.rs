@@ -5,6 +5,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter},
     form::{Field, Form},
+    h_flex,
     input::{Input, InputState},
     select::{Select, SelectState},
     v_flex,
@@ -30,10 +31,13 @@ pub struct SessionForm {
     port: Entity<InputState>,
     user: Entity<InputState>,
     auth: Entity<SelectState<Vec<&'static str>>>,
+    key_path: Entity<InputState>,
     group: Entity<SelectState<Vec<SharedString>>>,
     /// Parallel to the group select's rows; `None` is the root of the tree.
     group_ids: Vec<Option<GroupId>>,
     error: Option<SharedString>,
+    editing_connected: bool,
+    _auth_subscription: Subscription,
 }
 
 impl SessionForm {
@@ -44,11 +48,14 @@ impl SessionForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (draft, options) = {
+        let (draft, options, editing_connected) = {
             let read = store.read(cx);
             (
                 editing.and_then(|id| read.session(id)).map(Session::draft),
                 group_options(read.groups(), &[]),
+                editing
+                    .and_then(|id| read.session(id))
+                    .is_some_and(|session| session.state != super::ConnectionState::Disconnected),
             )
         };
         // A session with no group sits at the root of the tree, which is where
@@ -60,7 +67,7 @@ impl SessionForm {
             group_names.push(path);
         }
         let draft = draft.unwrap_or_else(|| {
-            SessionDraft::new("", "", 22, "root", AuthKind::Key, preselect_group)
+            SessionDraft::new("", "", 22, "root", AuthKind::Auto, preselect_group)
         });
 
         let name = cx.new(|cx| {
@@ -98,6 +105,12 @@ impl SessionForm {
                 cx,
             )
         });
+        let key_path = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("选择 OpenSSH 私钥文件")
+                .default_value(draft.key_path.clone().unwrap_or_default())
+        });
+        let auth_subscription = cx.observe(&auth, |_, _, cx| cx.notify());
         let group_ix = group_ids
             .iter()
             .position(|group| *group == draft.group)
@@ -113,10 +126,38 @@ impl SessionForm {
             port,
             user,
             auth,
+            key_path,
             group,
             group_ids,
             error: None,
+            editing_connected,
+            _auth_subscription: auth_subscription,
         }
+    }
+
+    fn choose_key(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("选择 SSH 私钥".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = receiver.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                this.key_path.update(cx, |input, cx| {
+                    input.set_value(path.to_string_lossy().into_owned(), window, cx)
+                });
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Validate and write to the store. Returns whether the dialog may close.
@@ -125,6 +166,13 @@ impl SessionForm {
         let host = self.host.read(cx).value().trim().to_string();
         let user = self.user.read(cx).value().trim().to_string();
         let port = self.port.read(cx).value().trim().parse::<u16>();
+        let auth = self
+            .auth
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|ix| AuthKind::ALL.get(ix.row).copied())
+            .unwrap_or_default();
+        let key_path = self.key_path.read(cx).value().trim().to_string();
 
         let error = if name.is_empty() {
             Some("请输入名称")
@@ -132,6 +180,8 @@ impl SessionForm {
             Some("请输入主机")
         } else if !matches!(port, Ok(1..=u16::MAX)) {
             Some("端口必须是 1 到 65535 之间的数字")
+        } else if auth == AuthKind::Key && key_path.is_empty() {
+            Some("私钥认证需要选择私钥文件")
         } else {
             None
         };
@@ -141,19 +191,13 @@ impl SessionForm {
             return false;
         }
 
-        let auth = self
-            .auth
-            .read(cx)
-            .selected_index(cx)
-            .and_then(|ix| AuthKind::ALL.get(ix.row).copied())
-            .unwrap_or_default();
         let group = self
             .group
             .read(cx)
             .selected_index(cx)
             .and_then(|ix| self.group_ids.get(ix.row).copied())
             .unwrap_or(None);
-        let draft = SessionDraft::new(
+        let mut draft = SessionDraft::new(
             name,
             host,
             port.unwrap_or(22),
@@ -165,6 +209,9 @@ impl SessionForm {
             auth,
             group,
         );
+        if auth == AuthKind::Key {
+            draft = draft.with_key_path(key_path);
+        }
 
         let editing = self.editing;
         self.store.update(cx, |store, cx| match editing {
@@ -182,6 +229,12 @@ impl SessionForm {
 
 impl Render for SessionForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let auth = self
+            .auth
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|ix| AuthKind::ALL.get(ix.row).copied())
+            .unwrap_or_default();
         v_flex()
             .gap_3()
             .w_full()
@@ -212,14 +265,43 @@ impl Render for SessionForm {
                     .child(
                         Field::new()
                             .label("认证方式")
-                            .child(Select::new(&self.auth).small()),
+                            .child(Select::new(&self.auth).id("session-auth").small()),
                     )
+                    .when(auth == AuthKind::Key, |form| {
+                        form.child(
+                            Field::new().label("私钥文件").required(true).child(
+                                h_flex()
+                                    .gap_2()
+                                    .w_full()
+                                    .child(
+                                        Input::new(&self.key_path)
+                                            .id("session-key-path")
+                                            .small()
+                                            .flex_1(),
+                                    )
+                                    .child(
+                                        Button::new("choose-key")
+                                            .label("选择…")
+                                            .small()
+                                            .on_click(cx.listener(Self::choose_key)),
+                                    ),
+                            ),
+                        )
+                    })
                     .child(
                         Field::new()
                             .label("分组")
                             .child(Select::new(&self.group).small()),
                     ),
             )
+            .when(self.editing_connected, |form| {
+                form.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("保存后连接设置将立即生效并重连。"),
+                )
+            })
             .when_some(self.error.clone(), |form, error| {
                 form.child(
                     div()

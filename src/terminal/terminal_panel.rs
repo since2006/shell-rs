@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use gpui_kit::component::{
     Icon,
     button::Button,
@@ -10,34 +8,42 @@ use gpui_kit::*;
 
 use crate::app::{
     CatalogIcon, CloseTerminal, CopyTerminal, DuplicateSession, EditSession, OpenExplorer,
-    PasteTerminal, ReconnectSession,
+    PasteTerminal, ReconnectTerminal,
 };
-use crate::session::{ConnectionState, SessionId, SessionStore};
+use crate::session::{SessionId, SessionStore};
 use crate::shared::ClosableTabTitle;
 
-use super::{MockSshTransportFactory, TerminalLifecycle, TerminalView};
+use super::{
+    RemoteTerminalId, SharedRemoteTerminalTransportProvider, TerminalLifecycle, TerminalPrompt,
+    TerminalPromptReply, TerminalView, TerminalViewEvent,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalPanelEvent {
-    Activated(SessionId),
-    Closed(SessionId),
-    StatusChanged(SessionId),
+    Activated(RemoteTerminalId, SessionId),
+    Closed(RemoteTerminalId, SessionId),
+    StatusChanged(RemoteTerminalId, SessionId),
+    PromptRequested(RemoteTerminalId, SessionId, TerminalPrompt),
 }
 
 /// A remote-session Dock panel backed by the shared terminal engine. The
-/// transport remains a canned SSH mock until the network feature arrives.
+/// transport is created from the latest saved session on every connection.
 pub struct TerminalPanel {
+    id: RemoteTerminalId,
     session_id: SessionId,
     store: Entity<SessionStore>,
     terminal: Entity<TerminalView>,
+    remote_provider: SharedRemoteTerminalTransportProvider,
     tab_group: Option<WeakEntity<TabGroup>>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl TerminalPanel {
     pub fn new(
+        id: RemoteTerminalId,
         session_id: SessionId,
         store: Entity<SessionStore>,
+        remote_provider: SharedRemoteTerminalTransportProvider,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -48,38 +54,43 @@ impl TerminalPanel {
             .expect("terminal sessions must exist in the store");
         let terminal = cx.new(|cx| {
             TerminalView::new(
-                ("terminal", session_id.0),
+                ("terminal", id.0),
                 format!("{} 的终端", session.name),
-                Arc::new(MockSshTransportFactory::new(&session)),
+                remote_provider.factory_for(&session),
                 window,
                 cx,
             )
         });
         let subscriptions = vec![
             cx.observe(&store, |_, _, cx| cx.notify()),
-            cx.observe(&terminal, |this, terminal, cx| {
-                let lifecycle = terminal.read(cx).lifecycle(cx);
-                if matches!(
-                    lifecycle,
-                    TerminalLifecycle::Exited { .. } | TerminalLifecycle::Failed(_)
-                ) {
-                    let id = this.session_id;
-                    this.store.update(cx, |store, cx| {
-                        store.set_state(id, ConnectionState::Disconnected, cx)
-                    });
-                }
-                cx.emit(TerminalPanelEvent::StatusChanged(this.session_id));
+            cx.observe(&terminal, |this, _, cx| {
+                cx.emit(TerminalPanelEvent::StatusChanged(this.id, this.session_id));
                 cx.notify();
+            }),
+            cx.subscribe(&terminal, |this, _, event: &TerminalViewEvent, cx| {
+                if let TerminalViewEvent::PromptRequested(prompt) = event {
+                    cx.emit(TerminalPanelEvent::PromptRequested(
+                        this.id,
+                        this.session_id,
+                        prompt.clone(),
+                    ));
+                }
             }),
         ];
 
         Self {
+            id,
             session_id,
             store,
             terminal,
+            remote_provider,
             tab_group: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    pub fn id(&self) -> RemoteTerminalId {
+        self.id
     }
 
     pub fn session_id(&self) -> SessionId {
@@ -94,6 +105,10 @@ impl TerminalPanel {
         &self.terminal
     }
 
+    pub fn lifecycle(&self, cx: &App) -> TerminalLifecycle {
+        self.terminal.read(cx).lifecycle(cx)
+    }
+
     pub fn append_line(&mut self, line: impl AsRef<str>, cx: &mut Context<Self>) {
         self.terminal.update(cx, |terminal, cx| {
             terminal.append_system_message(line.as_ref(), cx)
@@ -101,8 +116,13 @@ impl TerminalPanel {
     }
 
     pub fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.terminal
-            .update(cx, |terminal, cx| terminal.restart(cx));
+        let Some(session) = self.store.read(cx).session(self.session_id).cloned() else {
+            return;
+        };
+        let factory = self.remote_provider.factory_for(&session);
+        self.terminal.update(cx, |terminal, cx| {
+            terminal.restart_with_factory(factory, cx)
+        });
         let focus = self.terminal.read(cx).focus_handle();
         window.focus(&focus, cx);
     }
@@ -110,6 +130,17 @@ impl TerminalPanel {
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
         self.terminal
             .update(cx, |terminal, cx| terminal.stop("已断开连接", cx));
+    }
+
+    pub fn cancel_connection(&mut self, cx: &mut Context<Self>) {
+        self.terminal
+            .update(cx, |terminal, cx| terminal.stop("连接已取消", cx));
+    }
+
+    pub fn reply_to_prompt(&self, request_id: u64, reply: TerminalPromptReply, cx: &App) {
+        self.terminal
+            .read(cx)
+            .reply_to_prompt(request_id, reply, cx);
     }
 }
 
@@ -136,7 +167,7 @@ impl BasePanel for TerminalPanel {
             .update(cx, |store, cx| store.set_active(Some(id), cx));
         let focus = self.terminal.read(cx).focus_handle();
         window.focus(&focus, cx);
-        cx.emit(TerminalPanelEvent::Activated(id));
+        cx.emit(TerminalPanelEvent::Activated(self.id, id));
     }
 
     fn on_added_to(&mut self, group: WeakEntity<TabGroup>, _: &mut Window, _: &mut Context<Self>) {
@@ -148,13 +179,7 @@ impl BasePanel for TerminalPanel {
         self.terminal
             .update(cx, |terminal, cx| terminal.shutdown(cx));
         let id = self.session_id;
-        self.store.update(cx, |store, cx| {
-            store.set_state(id, ConnectionState::Disconnected, cx);
-            if store.active().map(|session| session.id) == Some(id) {
-                store.set_active(None, cx);
-            }
-        });
-        cx.emit(TerminalPanelEvent::Closed(id));
+        cx.emit(TerminalPanelEvent::Closed(self.id, id));
     }
 }
 
@@ -167,26 +192,27 @@ impl Panel for TerminalPanel {
             .map(|session| session.name.clone())
             .unwrap_or_else(|| "终端".into());
         ClosableTabTitle::new(CatalogIcon::Terminal, name).closable(
-            ("close-terminal", self.session_id.0),
-            Box::new(CloseTerminal(self.session_id)),
+            ("close-terminal", self.id.0),
+            Box::new(CloseTerminal(self.id)),
         )
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
-        let id = self.session_id;
+        let session_id = self.session_id;
+        let terminal_id = self.id;
         Some(vec![
-            Button::new("sftp")
+            Button::new(("sftp", terminal_id.0))
                 .icon(Icon::new(CatalogIcon::FolderTree))
                 .label("SFTP")
                 .tooltip("打开 SFTP 文件浏览")
                 .on_click(move |_, window, cx| {
-                    window.dispatch_action(Box::new(OpenExplorer(id)), cx)
+                    window.dispatch_action(Box::new(OpenExplorer(session_id)), cx)
                 }),
-            Button::new("reconnect")
+            Button::new(("reconnect", terminal_id.0))
                 .icon(Icon::new(CatalogIcon::RefreshCw))
                 .tooltip("重连")
                 .on_click(move |_, window, cx| {
-                    window.dispatch_action(Box::new(ReconnectSession(id)), cx)
+                    window.dispatch_action(Box::new(ReconnectTerminal(terminal_id)), cx)
                 }),
         ])
     }

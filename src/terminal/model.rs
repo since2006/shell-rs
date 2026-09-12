@@ -7,6 +7,10 @@ use serde::Deserialize;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub struct LocalTerminalId(pub u64);
 
+/// Stable identity for one remote-terminal connection and its Dock tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+pub struct RemoteTerminalId(pub u64);
+
 /// The dimensions shared by the emulator and a terminal transport.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerminalSize {

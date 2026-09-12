@@ -15,8 +15,8 @@ use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, CursorStyle, Processor, Rgb};
 
 use super::{
-    SharedTerminalTransportFactory, TerminalLifecycle, TerminalSize, TerminalStatus,
-    TerminalTransportCommand, TerminalTransportEvent,
+    SharedTerminalTransportFactory, TerminalLifecycle, TerminalPrompt, TerminalPromptReply,
+    TerminalSize, TerminalStatus, TerminalTransportCommand, TerminalTransportEvent,
 };
 
 pub type AlacrittyTerm = Term<TerminalEventProxy>;
@@ -110,7 +110,9 @@ impl TerminalEngine {
                     && this
                         .update(cx, |this, cx| {
                             for event in batch {
-                                this.handle_event(event);
+                                if let Some(prompt) = this.handle_event(event) {
+                                    cx.emit(TerminalEngineEvent::PromptRequested(prompt));
+                                }
                             }
                             cx.emit(TerminalEngineEvent::Changed);
                             cx.notify();
@@ -123,9 +125,9 @@ impl TerminalEngine {
         })
     }
 
-    fn handle_event(&mut self, event: TerminalUiEvent) {
+    fn handle_event(&mut self, event: TerminalUiEvent) -> Option<TerminalPrompt> {
         if event.generation != self.generation {
-            return;
+            return None;
         }
 
         match event.kind {
@@ -141,12 +143,14 @@ impl TerminalEngine {
             TerminalUiEventKind::Failed(error) => {
                 self.lifecycle = TerminalLifecycle::Failed(error);
             }
+            TerminalUiEventKind::Prompt(prompt) => return Some(prompt),
             TerminalUiEventKind::ColorRequest(index, formatter) => {
                 let color = self.runtime.term.lock().colors()[index]
                     .unwrap_or_else(|| default_query_color(index));
                 self.runtime.write(formatter(color).into_bytes());
             }
         }
+        None
     }
 
     pub fn restart(&mut self, cx: &mut gpui_kit::Context<Self>) {
@@ -162,6 +166,19 @@ impl TerminalEngine {
         );
         cx.emit(TerminalEngineEvent::Changed);
         cx.notify();
+    }
+
+    pub fn restart_with_factory(
+        &mut self,
+        factory: SharedTerminalTransportFactory,
+        cx: &mut gpui_kit::Context<Self>,
+    ) {
+        self.factory = factory;
+        self.restart(cx);
+    }
+
+    pub fn reply_to_prompt(&self, request_id: u64, reply: TerminalPromptReply) {
+        self.runtime.reply_to_prompt(request_id, reply);
     }
 
     pub fn shutdown(&mut self, cx: &mut gpui_kit::Context<Self>) {
@@ -392,9 +409,10 @@ impl Drop for TerminalEngine {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum TerminalEngineEvent {
     Changed,
+    PromptRequested(TerminalPrompt),
 }
 
 struct TerminalRuntime {
@@ -440,6 +458,13 @@ impl TerminalRuntime {
                         TerminalTransportEvent::Output(bytes) => {
                             processor.advance(&mut *parser_term.lock(), &bytes);
                             parser_proxy.wakeup();
+                        }
+                        TerminalTransportEvent::Prompt(prompt) => {
+                            send_ui(
+                                &parser_ui_events,
+                                generation,
+                                TerminalUiEventKind::Prompt(prompt),
+                            );
                         }
                         TerminalTransportEvent::Exited { code, signal } => {
                             let description = signal
@@ -506,6 +531,12 @@ impl TerminalRuntime {
 
     fn shutdown(&self) {
         let _ = self.commands.send(TerminalTransportCommand::Shutdown);
+    }
+
+    fn reply_to_prompt(&self, request_id: u64, reply: TerminalPromptReply) {
+        let _ = self
+            .commands
+            .send(TerminalTransportCommand::PromptReply { request_id, reply });
     }
 }
 
@@ -611,6 +642,7 @@ enum TerminalUiEventKind {
     ResetTitle,
     Exited { code: u32, signal: Option<String> },
     Failed(String),
+    Prompt(TerminalPrompt),
     ColorRequest(usize, Arc<dyn Fn(Rgb) -> String + Send + Sync>),
 }
 

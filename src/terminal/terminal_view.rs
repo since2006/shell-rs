@@ -15,8 +15,8 @@ use unicode_width::UnicodeWidthChar as _;
 use crate::app::{CopyTerminal, PasteTerminal};
 
 use super::{
-    SharedTerminalTransportFactory, TerminalEngine, TerminalLifecycle, TerminalSize,
-    TerminalSnapshot, TerminalStatus,
+    SharedTerminalTransportFactory, TerminalEngine, TerminalEngineEvent, TerminalLifecycle,
+    TerminalPrompt, TerminalPromptReply, TerminalSize, TerminalSnapshot, TerminalStatus,
 };
 
 pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";
@@ -30,9 +30,10 @@ pub(crate) fn terminal_key_bindings() -> [KeyBinding; 2] {
     ]
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum TerminalViewEvent {
     Changed,
+    PromptRequested(TerminalPrompt),
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -159,6 +160,11 @@ impl TerminalView {
                 cx.emit(TerminalViewEvent::Changed);
                 cx.notify();
             }),
+            cx.subscribe(&engine, |_, _, event: &TerminalEngineEvent, cx| {
+                if let TerminalEngineEvent::PromptRequested(prompt) = event {
+                    cx.emit(TerminalViewEvent::PromptRequested(prompt.clone()));
+                }
+            }),
             cx.on_focus(&focus_handle, window, |this, _, cx| {
                 this.focused = true;
                 this.cursor_visible = true;
@@ -234,6 +240,31 @@ impl TerminalView {
         self.context_menu_subscription = None;
         self.cursor_visible = true;
         self.engine.update(cx, |engine, cx| engine.restart(cx));
+    }
+
+    pub fn restart_with_factory(
+        &mut self,
+        factory: SharedTerminalTransportFactory,
+        cx: &mut Context<Self>,
+    ) {
+        self.reset_interaction();
+        self.engine
+            .update(cx, |engine, cx| engine.restart_with_factory(factory, cx));
+    }
+
+    pub fn reply_to_prompt(&self, request_id: u64, reply: TerminalPromptReply, cx: &App) {
+        self.engine.read(cx).reply_to_prompt(request_id, reply);
+    }
+
+    fn reset_interaction(&mut self) {
+        self.marked_text.clear();
+        self.marked_selection = 0..0;
+        self.ime_cursor_bounds = None;
+        self.selection_gesture.finish();
+        self.scroll_accumulator.reset();
+        self.context_menu = None;
+        self.context_menu_subscription = None;
+        self.cursor_visible = true;
     }
 
     pub fn shutdown(&mut self, cx: &mut Context<Self>) {

@@ -12,9 +12,12 @@ anyhow = "1"
 async-channel = "2"
 dirs = "6"
 portable-pty = "0.9"
+russh = "0.63"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["io-util", "net", "rt", "sync", "time"] }
 unicode-width = "0.2"
+zeroize = "1"
 
 [dev-dependencies]
 gpui-kit = { version = "0.6.1", features = ["test-support"] }

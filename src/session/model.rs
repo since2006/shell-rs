@@ -12,19 +12,21 @@ pub struct GroupId(pub u64);
 /// How a session authenticates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum AuthKind {
-    Password,
     #[default]
+    Auto,
+    Password,
     Key,
 }
 
 impl AuthKind {
     /// Every kind, in the order the session form lists them.
-    pub const ALL: [AuthKind; 2] = [AuthKind::Password, AuthKind::Key];
+    pub const ALL: [AuthKind; 3] = [AuthKind::Auto, AuthKind::Password, AuthKind::Key];
 
     pub fn label(self) -> &'static str {
         match self {
+            AuthKind::Auto => "自动",
             AuthKind::Password => "密码",
-            AuthKind::Key => "密钥",
+            AuthKind::Key => "私钥文件",
         }
     }
 
@@ -32,6 +34,7 @@ impl AuthKind {
     /// cannot rewrite what is already in the database.
     pub fn as_str(self) -> &'static str {
         match self {
+            AuthKind::Auto => "auto",
             AuthKind::Password => "password",
             AuthKind::Key => "key",
         }
@@ -41,8 +44,10 @@ impl AuthKind {
     /// newer version might have written.
     pub fn from_stored(value: &str) -> Self {
         match value {
+            "auto" => AuthKind::Auto,
             "password" => AuthKind::Password,
-            _ => AuthKind::Key,
+            "key" => AuthKind::Key,
+            _ => AuthKind::Auto,
         }
     }
 }
@@ -82,6 +87,7 @@ pub struct Session {
     pub port: u16,
     pub user: SharedString,
     pub auth: AuthKind,
+    pub key_path: Option<SharedString>,
     pub group: Option<GroupId>,
     pub state: ConnectionState,
 }
@@ -95,6 +101,7 @@ impl Session {
             port: draft.port,
             user: draft.user,
             auth: draft.auth,
+            key_path: draft.key_path,
             group: draft.group,
             state: ConnectionState::Disconnected,
         }
@@ -113,6 +120,7 @@ impl Session {
             port: self.port,
             user: self.user.clone(),
             auth: self.auth,
+            key_path: self.key_path.clone(),
             group: self.group,
         }
     }
@@ -155,6 +163,7 @@ pub struct SessionDraft {
     pub port: u16,
     pub user: SharedString,
     pub auth: AuthKind,
+    pub key_path: Option<SharedString>,
     pub group: Option<GroupId>,
 }
 
@@ -173,8 +182,37 @@ impl SessionDraft {
             port,
             user: user.into(),
             auth,
+            key_path: None,
             group,
         }
+    }
+
+    /// Set the private key used by [`AuthKind::Key`]. Keeping this as a
+    /// builder preserves the existing six-argument constructor for callers.
+    pub fn with_key_path(mut self, path: impl Into<SharedString>) -> Self {
+        let path = path.into();
+        self.key_path = (!path.trim().is_empty()).then_some(path);
+        self
+    }
+
+    pub(crate) fn with_optional_key_path(mut self, path: Option<String>) -> Self {
+        self.key_path = path
+            .filter(|path| !path.trim().is_empty())
+            .map(SharedString::from);
+        self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_is_the_default_and_key_path_is_opt_in() {
+        assert_eq!(AuthKind::default(), AuthKind::Auto);
+        let draft = SessionDraft::new("server", "host", 22, "me", AuthKind::Key, None)
+            .with_key_path("/tmp/id_ed25519");
+        assert_eq!(draft.key_path.as_deref(), Some("/tmp/id_ed25519"));
     }
 }
 
