@@ -1,4 +1,4 @@
-use gpui_kit::SharedString;
+use gpui_kit::{Rgba, SharedString, rgb};
 use serde::Deserialize;
 
 use crate::secrets::SecretRef;
@@ -57,12 +57,17 @@ impl AuthKind {
 /// The operating system running on a host, as reported by the session's own
 /// shell after it connects.
 ///
-/// Each variant owns three strings that must stay in step: the spelling kept
-/// in the database, the name shown to a person, and the icon embedded in
-/// `app/assets.rs`. Adding a distribution means one line here, one icon file,
-/// and one arm in `ssh/probe.rs`.
+/// Each variant owns four things that must stay in step: the spelling kept in
+/// the database, the name shown to a person, the icon embedded in
+/// `app/assets.rs`, and the brand's own colour. Adding a distribution means
+/// one line here, one icon file, and one arm in `ssh/probe.rs`.
+///
+/// The colours are the published brand values, which is why they are literals
+/// rather than theme tokens: here the colour *is* the data, the one case the
+/// design guides allow. Keeping them in this table is what stops them from
+/// leaking into render code.
 macro_rules! host_os {
-    ($($variant:ident => $stored:literal, $label:literal, $icon:literal;)*) => {
+    ($($variant:ident => $stored:literal, $label:literal, $icon:literal, $brand:expr;)*) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum HostOs {
             $($variant,)*
@@ -88,6 +93,30 @@ macro_rules! host_os {
                 match self { $(Self::$variant => concat!("icons/os/", $icon, ".svg"),)* }
             }
 
+            /// The brand's published colour, for the badge behind the mark.
+            ///
+            /// `None` means the mark is monochrome and should follow the
+            /// theme instead. That is how Apple's is meant to be drawn, and
+            /// the honest answer where a project publishes no single colour.
+            pub fn brand_color(self) -> Option<Rgba> {
+                let hex: Option<u32> = match self { $(Self::$variant => $brand,)* };
+                hex.map(rgb)
+            }
+
+            /// What to draw the mark itself in, on top of [`Self::brand_color`].
+            ///
+            /// White, the way nearly every brand draws its own mark, except on
+            /// the light ones where the brand uses a dark mark instead.
+            pub fn brand_foreground(self) -> Option<Rgba> {
+                self.brand_color().map(|color| {
+                    if is_light(color) {
+                        rgb(BRAND_DARK_MARK)
+                    } else {
+                        rgb(BRAND_LIGHT_MARK)
+                    }
+                })
+            }
+
             /// Read back a stored spelling. An unknown one means the row was
             /// written by a newer build, so it is treated as undetected.
             pub fn from_stored(value: &str) -> Option<Self> {
@@ -101,26 +130,48 @@ macro_rules! host_os {
 }
 
 host_os! {
-    Ubuntu   => "ubuntu",    "Ubuntu",           "ubuntu";
-    Debian   => "debian",    "Debian",           "debian";
-    Fedora   => "fedora",    "Fedora",           "fedora";
-    RedHat   => "rhel",      "Red Hat",          "redhat";
-    CentOs   => "centos",    "CentOS",           "centos";
-    Rocky    => "rocky",     "Rocky Linux",      "rockylinux";
-    Alma     => "almalinux", "AlmaLinux",        "almalinux";
-    Arch     => "arch",      "Arch Linux",       "archlinux";
-    Alpine   => "alpine",    "Alpine Linux",     "alpinelinux";
-    Suse     => "suse",      "openSUSE",         "opensuse";
-    Gentoo   => "gentoo",    "Gentoo",           "gentoo";
-    Kali     => "kali",      "Kali Linux",       "kalilinux";
-    Manjaro  => "manjaro",   "Manjaro",          "manjaro";
-    Raspbian => "raspbian",  "Raspberry Pi OS",  "raspberrypi";
-    Linux    => "linux",     "Linux",            "linux";
-    MacOs    => "macos",     "macOS",            "apple";
-    Windows  => "windows",   "Windows",          "windows";
-    FreeBsd  => "freebsd",   "FreeBSD",          "freebsd";
-    OpenBsd  => "openbsd",   "OpenBSD",          "openbsd";
-    NetBsd   => "netbsd",    "NetBSD",           "netbsd";
+    Ubuntu   => "ubuntu",    "Ubuntu",           "ubuntu",      Some(0xE9_5420);
+    Debian   => "debian",    "Debian",           "debian",      Some(0xA8_1D33);
+    Fedora   => "fedora",    "Fedora",           "fedora",      Some(0x51_A2DA);
+    RedHat   => "rhel",      "Red Hat",          "redhat",      Some(0xEE_0000);
+    CentOs   => "centos",    "CentOS",           "centos",      Some(0x26_2577);
+    Rocky    => "rocky",     "Rocky Linux",      "rockylinux",  Some(0x10_B981);
+    // AlmaLinux publishes no single flat colour, so its mark follows the theme.
+    Alma     => "almalinux", "AlmaLinux",        "almalinux",   None;
+    Arch     => "arch",      "Arch Linux",       "archlinux",   Some(0x17_93D1);
+    Alpine   => "alpine",    "Alpine Linux",     "alpinelinux", Some(0x0D_597F);
+    Suse     => "suse",      "openSUSE",         "opensuse",    Some(0x73_BA25);
+    Gentoo   => "gentoo",    "Gentoo",           "gentoo",      Some(0x54_487A);
+    Kali     => "kali",      "Kali Linux",       "kalilinux",   Some(0x55_7C94);
+    Manjaro  => "manjaro",   "Manjaro",          "manjaro",     Some(0x35_BFA4);
+    Raspbian => "raspbian",  "Raspberry Pi OS",  "raspberrypi", Some(0xA2_2846);
+    Linux    => "linux",     "Linux",            "linux",       Some(0xFC_C624);
+    MacOs    => "macos",     "macOS",            "apple",       None;
+    Windows  => "windows",   "Windows",          "windows",     Some(0x00_78D4);
+    FreeBsd  => "freebsd",   "FreeBSD",          "freebsd",     Some(0xAB_2B28);
+    OpenBsd  => "openbsd",   "OpenBSD",          "openbsd",     Some(0xF2_CA30);
+    NetBsd   => "netbsd",    "NetBSD",           "netbsd",      Some(0xFF_6600);
+}
+
+/// Drawn on top of a light brand colour.
+const BRAND_DARK_MARK: u32 = 0x00_0000;
+/// Drawn on top of every other brand colour.
+const BRAND_LIGHT_MARK: u32 = 0xFF_FFFF;
+
+/// Whether a brand colour is light enough that the brand puts a dark mark on
+/// it. The threshold sits well above the point where white text would fail,
+/// because a logo silhouette is not body text and nearly every brand draws its
+/// own mark in white; only the yellows go the other way.
+fn is_light(color: Rgba) -> bool {
+    fn linear(channel: f32) -> f32 {
+        if channel <= 0.03928 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    let luminance = 0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b);
+    luminance > 0.5
 }
 
 /// Connection state of a session. Runtime only: it is never persisted, so a
@@ -303,6 +354,23 @@ mod tests {
             assert!(!os.label().is_empty());
             assert!(os.icon_path().starts_with("icons/os/"));
         }
+    }
+
+    #[test]
+    fn the_light_brands_get_a_dark_mark_and_the_rest_get_white() {
+        // Tux is black on yellow, and OpenBSD's Puffy likewise.
+        assert_eq!(HostOs::Linux.brand_foreground(), Some(rgb(0x00_0000)));
+        assert_eq!(HostOs::OpenBsd.brand_foreground(), Some(rgb(0x00_0000)));
+        // Everything else follows the usual white-on-brand treatment.
+        assert_eq!(HostOs::Ubuntu.brand_foreground(), Some(rgb(0xFF_FFFF)));
+        assert_eq!(HostOs::Debian.brand_foreground(), Some(rgb(0xFF_FFFF)));
+        assert_eq!(HostOs::Windows.brand_foreground(), Some(rgb(0xFF_FFFF)));
+    }
+
+    #[test]
+    fn a_monochrome_mark_leaves_the_colour_to_the_theme() {
+        assert_eq!(HostOs::MacOs.brand_color(), None);
+        assert_eq!(HostOs::MacOs.brand_foreground(), None);
     }
 
     #[test]

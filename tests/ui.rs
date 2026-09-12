@@ -2048,9 +2048,20 @@ async fn the_tree_falls_back_to_the_first_letter_until_a_host_is_probed(cx: &mut
         );
         assert_eq!(
             window.find(("session-os", fresh.0)).label(),
-            Some("数"),
-            "没探测过就用名称第一个字"
+            Some("未探测到系统"),
+            "没探测过就退回名称首字的中性徽章"
         );
+        // The badges carry brand colours of their own, so they have to hold up
+        // in both themes.
+        window.click("theme-toggle", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(("session-os", probed.0)).visible());
+        assert!(window.find(("session-os", fresh.0)).visible());
     })
     .unwrap();
 }
@@ -2063,7 +2074,10 @@ async fn connecting_marks_the_session_with_the_host_operating_system(cx: &mut Te
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find(("session-os", id.0)).label(), Some("P"));
+        assert_eq!(
+            window.find(("session-os", id.0)).label(),
+            Some("未探测到系统")
+        );
         window
             .within("session-tree")
             .double_click(("session-row", id.0), cx);
