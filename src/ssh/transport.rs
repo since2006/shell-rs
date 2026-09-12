@@ -17,7 +17,9 @@ use russh::keys::{
 };
 use russh::{MethodKind, MethodSet};
 use tokio::sync::{mpsc as tokio_mpsc, oneshot, watch};
+use zeroize::Zeroizing;
 
+use crate::secrets::{SecretRef, SharedSecretStore};
 use crate::session::{AuthKind, Session};
 use crate::terminal::{
     RemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalPrompt,
@@ -36,13 +38,15 @@ static NEXT_PROMPT_ID: AtomicU64 = AtomicU64::new(1);
 pub struct SshTerminalTransportProvider {
     known_hosts_path: PathBuf,
     known_hosts_lock: Arc<Mutex<()>>,
+    secrets: SharedSecretStore,
 }
 
 impl SshTerminalTransportProvider {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
+    pub fn new(path: impl Into<PathBuf>, secrets: SharedSecretStore) -> Self {
         Self {
             known_hosts_path: path.into(),
             known_hosts_lock: Arc::new(Mutex::new(())),
+            secrets,
         }
     }
 }
@@ -53,6 +57,7 @@ impl RemoteTerminalTransportProvider for SshTerminalTransportProvider {
             config: SshConnectionConfig::from(session),
             known_hosts_path: self.known_hosts_path.clone(),
             known_hosts_lock: self.known_hosts_lock.clone(),
+            secrets: self.secrets.clone(),
         })
     }
 }
@@ -85,6 +90,7 @@ struct SshTerminalTransportFactory {
     config: SshConnectionConfig,
     known_hosts_path: PathBuf,
     known_hosts_lock: Arc<Mutex<()>>,
+    secrets: SharedSecretStore,
 }
 
 impl TerminalTransportFactory for SshTerminalTransportFactory {
@@ -93,6 +99,7 @@ impl TerminalTransportFactory for SshTerminalTransportFactory {
             config: self.config.clone(),
             known_hosts_path: self.known_hosts_path.clone(),
             known_hosts_lock: self.known_hosts_lock.clone(),
+            secrets: self.secrets.clone(),
         })
     }
 }
@@ -101,6 +108,7 @@ struct SshTerminalTransport {
     config: SshConnectionConfig,
     known_hosts_path: PathBuf,
     known_hosts_lock: Arc<Mutex<()>>,
+    secrets: SharedSecretStore,
 }
 
 impl TerminalTransport for SshTerminalTransport {
@@ -205,7 +213,7 @@ impl SshTerminalTransport {
         };
 
         tokio::select! {
-            result = authenticate(&mut handle, &self.config, &broker) => result?,
+            result = authenticate(&mut handle, &self.config, &self.secrets, &broker) => result?,
             _ = shutdown.changed() => bail!("连接已取消"),
         }
         let mut channel = tokio::select! {
@@ -531,6 +539,7 @@ fn read_known_keys(host: &str, port: u16, path: &Path) -> Result<Vec<(usize, Pub
 async fn authenticate<H: client::Handler>(
     handle: &mut client::Handle<H>,
     config: &SshConnectionConfig,
+    secrets: &SharedSecretStore,
     broker: &PromptBroker,
 ) -> Result<()>
 where
@@ -562,7 +571,7 @@ where
     {
         let paths = key_paths(config)?;
         for path in paths {
-            let Some(key) = load_private_key(&path, broker).await? else {
+            let Some(key) = load_private_key(&path, secrets, broker).await? else {
                 continue;
             };
             let hash = handle
@@ -593,19 +602,43 @@ where
 
     if matches!(config.auth, AuthKind::Auto | AuthKind::Password) || partial {
         if methods.contains(&MethodKind::Password) {
-            for _ in 0..AUTH_RETRIES {
-                let answer = ask_one_secret(broker, "SSH 登录", "请输入登录密码", "密码").await?;
+            // Try what the session has saved before bothering anyone.
+            let mut saved_rejected = false;
+            if let Some(saved) = saved_secret(secrets, &password_secret(config)) {
                 let result = handle
-                    .authenticate_password(&config.user, answer.into_inner())
+                    .authenticate_password(&config.user, saved.to_string())
                     .await
                     .map_err(|_| anyhow!("密码认证失败"))?;
                 if result.success() {
                     return Ok(());
                 }
+                // The entry stays: the user typed it into the session dialog,
+                // and deleting it behind their back would be baffling. This
+                // connection just falls back to asking, and says why.
+                saved_rejected = true;
                 partial = is_partial(&result);
                 methods = remaining_methods(result);
-                if partial || !methods.contains(&MethodKind::Password) {
-                    break;
+            }
+            let instructions = if saved_rejected {
+                "已保存的密码被服务器拒绝，请重新输入"
+            } else {
+                "请输入登录密码"
+            };
+            if !partial && methods.contains(&MethodKind::Password) {
+                for _ in 0..AUTH_RETRIES {
+                    let answer = ask_one_secret(broker, "SSH 登录", instructions, "密码").await?;
+                    let result = handle
+                        .authenticate_password(&config.user, answer.into_inner())
+                        .await
+                        .map_err(|_| anyhow!("密码认证失败"))?;
+                    if result.success() {
+                        return Ok(());
+                    }
+                    partial = is_partial(&result);
+                    methods = remaining_methods(result);
+                    if partial || !methods.contains(&MethodKind::Password) {
+                        break;
+                    }
                 }
             }
         }
@@ -680,6 +713,7 @@ fn key_paths(config: &SshConnectionConfig) -> Result<Vec<PathBuf>> {
 
 async fn load_private_key(
     path: &Path,
+    secrets: &SharedSecretStore,
     broker: &PromptBroker,
 ) -> Result<Option<russh::keys::PrivateKey>> {
     if !path.exists() {
@@ -690,19 +724,47 @@ async fn load_private_key(
         Err(russh::keys::Error::KeyIsEncrypted) => {}
         Err(_) => bail!("无法读取私钥文件：{}", path.display()),
     }
+    // Passphrases are saved per key file, so one saved answer unlocks the same
+    // key for every session that uses it.
+    let mut saved_rejected = false;
+    if let Some(saved) = saved_secret(secrets, &SecretRef::passphrase(path)) {
+        if let Ok(key) = load_secret_key(path, Some(saved.as_str())) {
+            return Ok(Some(key));
+        }
+        saved_rejected = true;
+    }
+    let instructions = if saved_rejected {
+        format!("已保存的口令无法解开 {}，请重新输入", path.display())
+    } else {
+        format!("请输入 {} 的口令", path.display())
+    };
     for _ in 0..AUTH_RETRIES {
-        let answer = ask_one_secret(
-            broker,
-            "私钥口令",
-            &format!("请输入 {} 的口令", path.display()),
-            "口令",
-        )
-        .await?;
+        let answer = ask_one_secret(broker, "私钥口令", &instructions, "口令").await?;
         if let Ok(key) = load_secret_key(path, Some(answer.expose())) {
             return Ok(Some(key));
         }
     }
     bail!("私钥口令错误次数过多")
+}
+
+/// Where this connection's password lives in the system keychain.
+fn password_secret(config: &SshConnectionConfig) -> SecretRef {
+    SecretRef::password(&config.user, &config.host, config.port)
+}
+
+/// Read a saved secret. A keychain that errors, is locked, or holds an empty
+/// value counts as nothing saved: the connection then falls back to asking,
+/// which is always better than refusing to connect.
+///
+/// This blocks. It only ever runs on the SSH worker thread, whose runtime
+/// serves this one connection, and only while authentication is already
+/// waiting on a person.
+fn saved_secret(secrets: &SharedSecretStore, secret: &SecretRef) -> Option<Zeroizing<String>> {
+    secrets
+        .get(secret)
+        .ok()
+        .flatten()
+        .filter(|value| !value.is_empty())
 }
 
 async fn ask_one_secret(
@@ -800,9 +862,12 @@ fn safe_connect_error(_: &anyhow::Error) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secrets::{InMemorySecretStore, NoSecretStore, SecretStore as _};
     use crate::terminal::TerminalSecret;
     use russh::server::{self, Server as _};
     use std::borrow::Cow;
+
+    const TEST_PASSWORD: &str = "test-password";
 
     #[derive(Default)]
     struct ServerState {
@@ -851,13 +916,20 @@ mod tests {
             _: &str,
             password: &str,
         ) -> Result<server::Auth, Self::Error> {
-            Ok(
-                if matches!(self.auth, TestAuth::Password) && password == "test-password" {
-                    server::Auth::Accept
-                } else {
-                    server::Auth::UnsupportedMethod
-                },
-            )
+            if !matches!(self.auth, TestAuth::Password) {
+                return Ok(server::Auth::UnsupportedMethod);
+            }
+            Ok(if password == TEST_PASSWORD {
+                server::Auth::Accept
+            } else {
+                // Like OpenSSH: a wrong password is refused but password auth
+                // stays on the table, so the client can ask again. russh's
+                // default rejection would drop the method instead.
+                server::Auth::Reject {
+                    proceed_with_methods: Some(MethodSet::from(&[MethodKind::Password][..])),
+                    partial_success: false,
+                }
+            })
         }
 
         async fn auth_publickey(
@@ -1055,9 +1127,21 @@ mod tests {
     fn connect_then_shutdown(
         session: Session,
         known_hosts: &Path,
-        mut answer: impl FnMut(&TerminalPromptKind) -> TerminalPromptReply,
+        answer: impl FnMut(&TerminalPromptKind) -> TerminalPromptReply,
     ) {
-        let provider = SshTerminalTransportProvider::new(known_hosts);
+        connect_with_secrets(session, known_hosts, Arc::new(NoSecretStore), answer);
+    }
+
+    /// Connect, answer whatever is asked, then shut down. Returns the prompts
+    /// that were raised, so a test can assert that none of them appeared.
+    fn connect_with_secrets(
+        session: Session,
+        known_hosts: &Path,
+        secrets: SharedSecretStore,
+        mut answer: impl FnMut(&TerminalPromptKind) -> TerminalPromptReply,
+    ) -> Vec<TerminalPromptKind> {
+        let mut asked = Vec::new();
+        let provider = SshTerminalTransportProvider::new(known_hosts, secrets);
         let factory = provider.factory_for(&session);
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::unbounded();
@@ -1073,12 +1157,15 @@ mod tests {
         });
         loop {
             match event_rx.recv_blocking().unwrap() {
-                TerminalTransportEvent::Prompt(prompt) => command_tx
-                    .send(TerminalTransportCommand::PromptReply {
-                        request_id: prompt.request_id(),
-                        reply: answer(prompt.kind()),
-                    })
-                    .unwrap(),
+                TerminalTransportEvent::Prompt(prompt) => {
+                    asked.push(prompt.kind().clone());
+                    command_tx
+                        .send(TerminalTransportCommand::PromptReply {
+                            request_id: prompt.request_id(),
+                            reply: answer(prompt.kind()),
+                        })
+                        .unwrap()
+                }
                 TerminalTransportEvent::Started => break,
                 TerminalTransportEvent::Failed(error) => panic!("SSH failed: {error}"),
                 TerminalTransportEvent::Exited { .. } => panic!("unexpected early exit"),
@@ -1091,6 +1178,7 @@ mod tests {
             .expect("SSH worker did not stop in time")
             .unwrap();
         worker.join().unwrap();
+        asked
     }
 
     #[test]
@@ -1114,7 +1202,7 @@ mod tests {
                 None,
             ),
         );
-        let provider = SshTerminalTransportProvider::new(&known_hosts);
+        let provider = SshTerminalTransportProvider::new(&known_hosts, Arc::new(NoSecretStore));
         let factory = provider.factory_for(&session);
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::unbounded();
@@ -1141,7 +1229,7 @@ mod tests {
                         .send(TerminalTransportCommand::PromptReply {
                             request_id: prompt.request_id(),
                             reply: TerminalPromptReply::Answers(vec![TerminalSecret::new(
-                                "test-password",
+                                TEST_PASSWORD,
                             )]),
                         })
                         .unwrap(),
@@ -1233,6 +1321,95 @@ mod tests {
         assert_eq!(state.pty, Some(("xterm-256color".into(), 90, 30, 810, 540)));
         assert_eq!(state.resize, Some((120, 40, 1200, 800)));
         assert_eq!(state.input, b"hello\nexit\n");
+    }
+
+    fn password_session(port: u16) -> Session {
+        Session::new(
+            crate::session::SessionId(1),
+            crate::session::SessionDraft::new(
+                "test",
+                "127.0.0.1",
+                port,
+                "tester",
+                AuthKind::Password,
+                None,
+            ),
+        )
+    }
+
+    #[test]
+    fn a_saved_password_connects_without_asking() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            eprintln!(
+                "loopback sockets are unavailable in this sandbox; skipping integration body"
+            );
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        let session = password_session(server.port);
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets
+            .set(&session.password_secret(), TEST_PASSWORD)
+            .unwrap();
+
+        let asked = connect_with_secrets(session, &known_hosts, secrets, |kind| match kind {
+            TerminalPromptKind::UnknownHost(_) => TerminalPromptReply::TrustAndSave,
+            other => panic!("unexpected prompt: {other:?}"),
+        });
+
+        assert!(
+            !asked
+                .iter()
+                .any(|kind| matches!(kind, TerminalPromptKind::Authentication(_))),
+            "已保存的密码不该再弹认证框"
+        );
+    }
+
+    #[test]
+    fn a_rejected_saved_password_asks_again_and_is_kept() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            eprintln!(
+                "loopback sockets are unavailable in this sandbox; skipping integration body"
+            );
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        let session = password_session(server.port);
+        let endpoint = session.password_secret();
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets.set(&endpoint, "stale-password").unwrap();
+
+        let asked =
+            connect_with_secrets(session, &known_hosts, secrets.clone(), |kind| match kind {
+                TerminalPromptKind::UnknownHost(_) => TerminalPromptReply::TrustAndSave,
+                TerminalPromptKind::Authentication(_) => {
+                    TerminalPromptReply::Answers(vec![TerminalSecret::new(TEST_PASSWORD)])
+                }
+                other => panic!("unexpected prompt: {other:?}"),
+            });
+
+        let instructions = asked
+            .iter()
+            .find_map(|kind| match kind {
+                TerminalPromptKind::Authentication(prompt) => Some(prompt.instructions()),
+                _ => None,
+            })
+            .expect("被拒绝的密码应当退回认证弹框");
+        assert!(
+            instructions.contains("已保存的密码被服务器拒绝"),
+            "弹框要说明为什么又问了一次：{instructions}"
+        );
+        assert_eq!(
+            secrets
+                .get(&endpoint)
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
+            Some("stale-password"),
+            "会话对话框里填的条目不该被静默删除"
+        );
     }
 
     #[test]
@@ -1359,7 +1536,7 @@ mod tests {
                 None,
             ),
         );
-        let provider = SshTerminalTransportProvider::new(&known_hosts);
+        let provider = SshTerminalTransportProvider::new(&known_hosts, Arc::new(NoSecretStore));
         let factory = provider.factory_for(&session);
         let (_command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::unbounded();

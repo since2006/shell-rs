@@ -1,4 +1,8 @@
+use std::sync::Arc;
+
 use gpui_kit::{Context, EventEmitter, SharedString};
+
+use crate::secrets::{NoSecretStore, SecretRef, SharedSecretStore};
 
 use super::database::now_seconds;
 use super::{
@@ -17,6 +21,10 @@ use super::{
 /// Memory is authoritative. A failed write costs persistence, never the edit:
 /// the change stands and a `SessionStoreEvent::PersistFailed` goes out so the
 /// workspace can tell the user.
+///
+/// Passwords and private-key passphrases never reach the database. They go to
+/// the system keychain through `secrets`, on a background thread, and report
+/// failures through the same event.
 pub struct SessionStore {
     groups: Vec<SessionGroup>,
     sessions: Vec<Session>,
@@ -27,6 +35,9 @@ pub struct SessionStore {
     recent: Vec<SessionId>,
     /// `None` for a memory-only store, as used by tests.
     database: Option<SessionDatabase>,
+    /// Where passwords go. Defaults to a store that keeps nothing, so unit
+    /// tests never touch the machine's keychain.
+    secrets: SharedSecretStore,
 }
 
 /// How many sessions the start page lists as recently connected.
@@ -55,7 +66,15 @@ impl SessionStore {
             active: None,
             recent: Vec::new(),
             database: None,
+            secrets: Arc::new(NoSecretStore),
         }
+    }
+
+    /// Attach the system keychain. `main` does this once at startup; the UI
+    /// tests attach an in-memory store instead.
+    pub fn with_secrets(mut self, secrets: SharedSecretStore) -> Self {
+        self.secrets = secrets;
+        self
     }
 
     /// Read everything back from `database` and keep writing to it. Ids carry
@@ -75,6 +94,7 @@ impl SessionStore {
             active: None,
             recent,
             database: Some(database),
+            secrets: Arc::new(NoSecretStore),
         })
     }
 
@@ -257,6 +277,7 @@ impl SessionStore {
 
     /// Replace the editable fields of a session; connection state is kept.
     pub fn update(&mut self, id: SessionId, draft: SessionDraft, cx: &mut Context<Self>) -> bool {
+        let previous_endpoint = self.session(id).map(Session::password_secret);
         let connection_changed = self.session(id).is_some_and(|session| {
             session.host != draft.host
                 || session.port != draft.port
@@ -269,6 +290,13 @@ impl SessionStore {
             if let (Some(database), Some(session)) = (self.database.as_ref(), self.session(id)) {
                 let result = database.update_session(session);
                 self.report(result, "保存会话", cx);
+            }
+            // The session moved to another endpoint, so its old keychain
+            // entry is an orphan unless another session still logs in there.
+            if let Some(previous) = previous_endpoint
+                && !password_in_use(&self.sessions, &previous)
+            {
+                self.save_secret(previous, None, cx);
             }
             if connection_changed {
                 cx.emit(SessionStoreEvent::ConnectionSettingsChanged(id));
@@ -289,11 +317,17 @@ impl SessionStore {
     }
 
     pub fn remove(&mut self, id: SessionId, cx: &mut Context<Self>) -> bool {
+        let endpoint = self.session(id).map(Session::password_secret);
         let removed = self.remove_unnotified(id);
         if removed {
             if let Some(database) = self.database.as_ref() {
                 let result = database.remove_session(id);
                 self.report(result, "删除会话", cx);
+            }
+            if let Some(endpoint) = endpoint
+                && !password_in_use(&self.sessions, &endpoint)
+            {
+                self.save_secret(endpoint, None, cx);
             }
             cx.notify();
         }
@@ -387,11 +421,17 @@ impl SessionStore {
         if self.group(id).is_none() {
             return Vec::new();
         }
+        let endpoints = self.endpoints_of(&self.sessions_under(id));
         let removed = self.remove_group_unnotified(id);
         // One delete mirrors the whole subtree: both foreign keys cascade.
         if let Some(database) = self.database.as_ref() {
             let result = database.remove_group(id);
             self.report(result, "删除分组", cx);
+        }
+        for endpoint in endpoints {
+            if !password_in_use(&self.sessions, &endpoint) {
+                self.save_secret(endpoint, None, cx);
+            }
         }
         cx.notify();
         removed
@@ -449,6 +489,69 @@ impl SessionStore {
         }
     }
 
+    /// Where passwords are read from. The session form uses this to pre-fill
+    /// its field; the workspace hands it to the SSH provider.
+    pub fn secrets(&self) -> SharedSecretStore {
+        self.secrets.clone()
+    }
+
+    /// Write a secret to the system keychain, or delete it when `value` is
+    /// `None`.
+    ///
+    /// The keychain call blocks and on macOS may raise a system authorization
+    /// dialog, so it runs on a background thread. A failure costs persistence,
+    /// never the edit: it comes back as `PersistFailed`, exactly like a failed
+    /// database write.
+    pub fn save_secret(
+        &mut self,
+        secret: SecretRef,
+        value: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let secrets = self.secrets.clone();
+        let failure = match (&secret, value.is_some()) {
+            (SecretRef::Password { .. }, true) => "密码未能写入系统钥匙串",
+            (SecretRef::Password { .. }, false) => "密码未能从系统钥匙串删除",
+            (SecretRef::Passphrase { .. }, true) => "私钥口令未能写入系统钥匙串",
+            (SecretRef::Passphrase { .. }, false) => "私钥口令未能从系统钥匙串删除",
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    match value {
+                        Some(value) => secrets.set(&secret, &value),
+                        None => secrets.delete(&secret),
+                    }
+                })
+                .await;
+            if let Err(error) = result {
+                this.update(cx, |_, cx| {
+                    cx.emit(SessionStoreEvent::PersistFailed(
+                        format!("{failure}：{error}").into(),
+                    ));
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// The distinct keychain endpoints these sessions log into.
+    fn endpoints_of(&self, ids: &[SessionId]) -> Vec<SecretRef> {
+        let mut endpoints: Vec<SecretRef> = Vec::new();
+        for secret in ids
+            .iter()
+            .filter_map(|id| self.session(*id))
+            .map(Session::password_secret)
+        {
+            if !endpoints.contains(&secret) {
+                endpoints.push(secret);
+            }
+        }
+        endpoints
+    }
+
     /// Turn a failed write into an event. The in-memory change stands.
     fn report(&self, result: rusqlite::Result<()>, action: &str, cx: &mut Context<Self>) {
         if let Err(error) = result {
@@ -459,12 +562,67 @@ impl SessionStore {
     }
 }
 
+/// Whether any session still logs into the endpoint this secret belongs to.
+/// Keychain entries are shared by endpoint, so one may only be cleaned up once
+/// the last session using it is gone.
+fn password_in_use(sessions: &[Session], secret: &SecretRef) -> bool {
+    sessions
+        .iter()
+        .any(|session| session.password_secret() == *secret)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn draft(name: &str, group: Option<GroupId>) -> SessionDraft {
         SessionDraft::new(name, "10.0.0.1", 22, "root", AuthKind::Auto, group)
+    }
+
+    #[test]
+    fn an_endpoint_is_in_use_while_a_session_still_logs_into_it() {
+        let mut store = SessionStore::empty();
+        let id = store.insert_unnotified(draft("web", None));
+        let endpoint = store.session(id).unwrap().password_secret();
+        assert!(password_in_use(store.sessions(), &endpoint));
+
+        store.remove_unnotified(id);
+        assert!(!password_in_use(store.sessions(), &endpoint));
+    }
+
+    #[test]
+    fn two_sessions_on_one_account_share_an_endpoint() {
+        let mut store = SessionStore::empty();
+        let first = store.insert_unnotified(draft("web-01", None));
+        let second = store.insert_unnotified(draft("web-02", None));
+        let endpoint = store.session(first).unwrap().password_secret();
+        assert_eq!(endpoint, store.session(second).unwrap().password_secret());
+
+        store.remove_unnotified(first);
+        assert!(password_in_use(store.sessions(), &endpoint));
+    }
+
+    #[test]
+    fn a_different_port_is_a_different_endpoint() {
+        let mut store = SessionStore::empty();
+        let id = store.insert_unnotified(draft("web", None));
+        let endpoint = store.session(id).unwrap().password_secret();
+        let moved = SessionDraft::new("web", "10.0.0.1", 2222, "root", AuthKind::Auto, None);
+        store.update_unnotified(id, moved);
+        assert!(!password_in_use(store.sessions(), &endpoint));
+    }
+
+    #[test]
+    fn endpoints_of_a_group_are_deduplicated() {
+        let mut store = SessionStore::empty();
+        let group = store.insert_group_unnotified(GroupDraft::new("生产", None));
+        store.insert_unnotified(draft("web-01", Some(group)));
+        store.insert_unnotified(draft("web-02", Some(group)));
+        let other = SessionDraft::new("db", "10.0.0.2", 22, "root", AuthKind::Auto, Some(group));
+        store.insert_unnotified(other);
+
+        let endpoints = store.endpoints_of(&store.sessions_under(group));
+        assert_eq!(endpoints.len(), 2);
     }
 
     #[test]

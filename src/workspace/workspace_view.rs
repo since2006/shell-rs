@@ -105,7 +105,11 @@ impl Workspace {
     pub fn new(store: Entity<SessionStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let known_hosts = crate::app::known_hosts_path()
             .unwrap_or_else(|_| crate::app::data_dir().join("known_hosts"));
-        let remote = Arc::new(crate::ssh::SshTerminalTransportProvider::new(known_hosts));
+        let secrets = store.read(cx).secrets();
+        let remote = Arc::new(crate::ssh::SshTerminalTransportProvider::new(
+            known_hosts,
+            secrets,
+        ));
         Self::new_with_transport_providers(
             store,
             remote,
@@ -125,7 +129,11 @@ impl Workspace {
     ) -> Self {
         let known_hosts = crate::app::known_hosts_path()
             .unwrap_or_else(|_| crate::app::data_dir().join("known_hosts"));
-        let remote = Arc::new(crate::ssh::SshTerminalTransportProvider::new(known_hosts));
+        let secrets = store.read(cx).secrets();
+        let remote = Arc::new(crate::ssh::SshTerminalTransportProvider::new(
+            known_hosts,
+            secrets,
+        ));
         Self::new_with_transport_providers(store, remote, local_terminal_factory, window, cx)
     }
 

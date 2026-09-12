@@ -1,6 +1,8 @@
 use gpui_kit::SharedString;
 use serde::Deserialize;
 
+use crate::secrets::SecretRef;
+
 /// Stable identity of a session. Never reused within a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
 pub struct SessionId(pub u64);
@@ -112,6 +114,13 @@ impl Session {
         format!("{}@{}:{}", self.user, self.host, self.port)
     }
 
+    /// Where this session's login password lives in the system keychain.
+    /// Keyed by the endpoint, so renaming or copying a session keeps the
+    /// password and two sessions on the same account share one entry.
+    pub fn password_secret(&self) -> SecretRef {
+        SecretRef::password(self.user.as_ref(), self.host.as_ref(), self.port)
+    }
+
     /// The editable fields, for pre-filling the session form.
     pub fn draft(&self) -> SessionDraft {
         SessionDraft {
@@ -185,6 +194,12 @@ impl SessionDraft {
             key_path: None,
             group,
         }
+    }
+
+    /// The keychain entry this draft would log in with. Matches
+    /// [`Session::password_secret`] once the draft is applied.
+    pub fn password_secret(&self) -> SecretRef {
+        SecretRef::password(self.user.as_ref(), self.host.as_ref(), self.port)
     }
 
     /// Set the private key used by [`AuthKind::Key`]. Keeping this as a

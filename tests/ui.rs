@@ -12,7 +12,11 @@ use gpui_kit::{
     MouseMoveEvent, TestAppContext, WindowHandle, point, px, size,
 };
 
-use shellr::app::{ConnectSession, DeleteGroup, NewSessionInGroup, OpenExplorer, RenameGroup};
+use shellr::app::{
+    ConnectSession, DeleteGroup, DeleteSession, EditSession, NewSessionInGroup, OpenExplorer,
+    RenameGroup,
+};
+use shellr::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
 use shellr::session::{AuthKind, GroupId, SessionDatabase, SessionDraft, SessionId, SessionStore};
 use shellr::terminal::{
     FixedRemoteTerminalTransportProvider, LocalTerminalId, RemoteTerminalId, TerminalLifecycle,
@@ -1810,4 +1814,193 @@ fn both_tabs_of_one_session_stay_closable(cx: &mut TestAppContext) {
         assert!(workspace.explorer(SessionId(DB_01)).is_none());
         assert!(workspace.terminal(SessionId(DB_01), cx).is_none());
     });
+}
+
+/// A store holding one session, wired to a keychain the test can inspect.
+fn store_with_secrets(secrets: Arc<InMemorySecretStore>) -> (SessionStore, SessionId, SecretRef) {
+    let mut store = SessionStore::empty();
+    let id = store.insert_unnotified(SessionDraft::new(
+        "db-01",
+        "10.0.2.5",
+        22,
+        "postgres",
+        AuthKind::Password,
+        None,
+    ));
+    let endpoint = store.session(id).unwrap().password_secret();
+    (store.with_secrets(secrets), id, endpoint)
+}
+
+#[gpui_kit::test]
+async fn a_new_session_saves_its_password_to_the_keychain(cx: &mut TestAppContext) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (handle, workspace) =
+        open_workspace_with_store(cx, SessionStore::empty().with_secrets(secrets.clone()));
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("new-session", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("session-name", cx);
+        window.input("db-02", cx);
+        window.click("session-host", cx);
+        window.input("10.0.3.7", cx);
+        window.click("session-password", cx);
+        window.input("hunter2", cx);
+        window.click("commit", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("commit").is_none()
+    })
+    .await;
+    cx.run_until_parked();
+
+    assert_eq!(
+        secrets
+            .get(&SecretRef::password("root", "10.0.3.7", 22))
+            .unwrap()
+            .as_deref()
+            .map(String::as_str),
+        Some("hunter2")
+    );
+
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let created = store
+            .sessions()
+            .iter()
+            .find(|session| session.name == "db-02")
+            .expect("db-02 inserted");
+        assert!(
+            !format!("{created:?}").contains("hunter2"),
+            "会话本身不该带着密码"
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn editing_the_host_moves_the_saved_password_with_it(cx: &mut TestAppContext) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (store, id, endpoint) = store_with_secrets(secrets.clone());
+    secrets.set(&endpoint, "hunter2").unwrap();
+    let (handle, _) = open_workspace_with_store(cx, store);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(EditSession(id)), cx);
+    })
+    .unwrap();
+    // The saved password is read on a background thread, then fills the field.
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("session-password").visible());
+        window.click("session-host", cx);
+        window.press("cmd-a", cx);
+        window.input("10.9.9.9", cx);
+        window.click("commit", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("commit").is_none()
+    })
+    .await;
+    cx.run_until_parked();
+
+    assert_eq!(
+        secrets
+            .get(&SecretRef::password("postgres", "10.9.9.9", 22))
+            .unwrap()
+            .as_deref()
+            .map(String::as_str),
+        Some("hunter2"),
+        "预填的密码应当跟着会话搬到新端点"
+    );
+    assert_eq!(
+        secrets
+            .get(&endpoint)
+            .unwrap()
+            .as_deref()
+            .map(String::as_str),
+        None,
+        "没有会话再用旧端点了，旧条目应当被清掉"
+    );
+}
+
+#[gpui_kit::test]
+async fn clearing_the_password_field_forgets_the_saved_password(cx: &mut TestAppContext) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (store, id, endpoint) = store_with_secrets(secrets.clone());
+    secrets.set(&endpoint, "hunter2").unwrap();
+    let (handle, _) = open_workspace_with_store(cx, store);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(EditSession(id)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("session-password", cx);
+        window.press("cmd-a", cx);
+        window.press("backspace", cx);
+        window.click("commit", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("commit").is_none()
+    })
+    .await;
+    cx.run_until_parked();
+
+    assert_eq!(
+        secrets
+            .get(&endpoint)
+            .unwrap()
+            .as_deref()
+            .map(String::as_str),
+        None,
+        "清空字段就是要删掉已保存的密码"
+    );
+}
+
+#[gpui_kit::test]
+async fn deleting_the_last_session_on_an_endpoint_forgets_its_password(cx: &mut TestAppContext) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (store, id, endpoint) = store_with_secrets(secrets.clone());
+    secrets.set(&endpoint, "hunter2").unwrap();
+    let (handle, _) = open_workspace_with_store(cx, store);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(DeleteSession(id)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("ok", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        secrets
+            .get(&endpoint)
+            .unwrap()
+            .as_deref()
+            .map(String::as_str),
+        None,
+        "最后一个用这个端点的会话没了，密码也该没了"
+    );
 }

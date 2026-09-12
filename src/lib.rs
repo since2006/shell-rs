@@ -2,10 +2,11 @@
 //!
 //! Modules are organized by capability so they can become crates later:
 //! `session` (会话管理), `terminal` (终端), `explorer` (SFTP 文件浏览),
-//! `workspace` (窗口壳), `app` (动作、快捷键、资源).
+//! `secrets` (系统钥匙串), `workspace` (窗口壳), `app` (动作、快捷键、资源).
 
 pub mod app;
 pub mod explorer;
+pub mod secrets;
 pub mod session;
 pub mod shared;
 pub mod ssh;
