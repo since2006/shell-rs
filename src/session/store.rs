@@ -6,7 +6,7 @@ use crate::secrets::{NoSecretStore, SecretRef, SharedSecretStore};
 
 use super::database::now_seconds;
 use super::{
-    AuthKind, ConnectionState, GroupDraft, GroupId, Session, SessionDatabase, SessionDraft,
+    AuthKind, ConnectionState, GroupDraft, GroupId, HostOs, Session, SessionDatabase, SessionDraft,
     SessionGroup, SessionId, StoredData,
 };
 
@@ -310,9 +310,13 @@ impl SessionStore {
         let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) else {
             return false;
         };
+        // The form owns none of these, so rebuilding from the draft must not
+        // drop them.
         let state = session.state;
+        let os = session.os;
         *session = Session::new(id, draft);
         session.state = state;
+        session.os = os;
         true
     }
 
@@ -359,9 +363,13 @@ impl SessionStore {
         let ix = self.sessions.iter().position(|s| s.id == id)?;
         let mut draft = self.sessions[ix].draft();
         draft.name = format!("{} 副本", draft.name).into();
+        // Same host, so the copy already knows what it will find there.
+        let os = self.sessions[ix].os;
         let copy_id = SessionId(self.next_session_id);
         self.next_session_id += 1;
-        self.sessions.insert(ix + 1, Session::new(copy_id, draft));
+        let mut copy = Session::new(copy_id, draft);
+        copy.os = os;
+        self.sessions.insert(ix + 1, copy);
         Some(copy_id)
     }
 
@@ -482,6 +490,31 @@ impl SessionStore {
         true
     }
 
+    /// Record what a connection found on the host. Called after every
+    /// successful connection, so a rebuilt machine corrects itself.
+    pub fn set_host_os(&mut self, id: SessionId, os: Option<HostOs>, cx: &mut Context<Self>) {
+        if !self.set_host_os_unnotified(id, os) {
+            return;
+        }
+        if let Some(database) = self.database.as_ref() {
+            let result = database.set_host_os(id, os);
+            self.report(result, "记录主机系统", cx);
+        }
+        cx.notify();
+    }
+
+    /// Returns whether the recorded system changed.
+    pub fn set_host_os_unnotified(&mut self, id: SessionId, os: Option<HostOs>) -> bool {
+        let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) else {
+            return false;
+        };
+        if session.os == os {
+            return false;
+        }
+        session.os = os;
+        true
+    }
+
     pub fn set_active(&mut self, id: Option<SessionId>, cx: &mut Context<Self>) {
         if self.active != id {
             self.active = id;
@@ -577,6 +610,33 @@ mod tests {
 
     fn draft(name: &str, group: Option<GroupId>) -> SessionDraft {
         SessionDraft::new(name, "10.0.0.1", 22, "root", AuthKind::Auto, group)
+    }
+
+    #[test]
+    fn the_detected_system_survives_an_edit() {
+        let mut store = SessionStore::empty();
+        let id = store.insert_unnotified(draft("web", None));
+        assert!(store.set_host_os_unnotified(id, Some(HostOs::Debian)));
+        assert!(!store.set_host_os_unnotified(id, Some(HostOs::Debian)));
+
+        store.update_unnotified(id, draft("web-renamed", None));
+        assert_eq!(store.session(id).unwrap().os, Some(HostOs::Debian));
+    }
+
+    #[test]
+    fn a_copy_inherits_the_detected_system() {
+        let mut store = SessionStore::empty();
+        let id = store.insert_unnotified(draft("web", None));
+        store.set_host_os_unnotified(id, Some(HostOs::Alpine));
+
+        let copy = store.duplicate_unnotified(id).unwrap();
+        assert_eq!(store.session(copy).unwrap().os, Some(HostOs::Alpine));
+    }
+
+    #[test]
+    fn probing_an_unknown_session_changes_nothing() {
+        let mut store = SessionStore::empty();
+        assert!(!store.set_host_os_unnotified(SessionId(99), Some(HostOs::Linux)));
     }
 
     #[test]

@@ -54,6 +54,75 @@ impl AuthKind {
     }
 }
 
+/// The operating system running on a host, as reported by the session's own
+/// shell after it connects.
+///
+/// Each variant owns three strings that must stay in step: the spelling kept
+/// in the database, the name shown to a person, and the icon embedded in
+/// `app/assets.rs`. Adding a distribution means one line here, one icon file,
+/// and one arm in `ssh/probe.rs`.
+macro_rules! host_os {
+    ($($variant:ident => $stored:literal, $label:literal, $icon:literal;)*) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum HostOs {
+            $($variant,)*
+        }
+
+        impl HostOs {
+            /// Every variant, for tests that must cover the whole table.
+            pub const ALL: &'static [HostOs] = &[$(HostOs::$variant,)*];
+
+            /// How the database spells it. Kept separate from `label` so
+            /// translating the UI cannot rewrite what is already stored.
+            pub fn as_str(self) -> &'static str {
+                match self { $(Self::$variant => $stored,)* }
+            }
+
+            /// What a person sees, in a tooltip or the status bar.
+            pub fn label(self) -> &'static str {
+                match self { $(Self::$variant => $label,)* }
+            }
+
+            /// Path into the application asset bundle.
+            pub fn icon_path(self) -> &'static str {
+                match self { $(Self::$variant => concat!("icons/os/", $icon, ".svg"),)* }
+            }
+
+            /// Read back a stored spelling. An unknown one means the row was
+            /// written by a newer build, so it is treated as undetected.
+            pub fn from_stored(value: &str) -> Option<Self> {
+                match value {
+                    $($stored => Some(Self::$variant),)*
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+host_os! {
+    Ubuntu   => "ubuntu",    "Ubuntu",           "ubuntu";
+    Debian   => "debian",    "Debian",           "debian";
+    Fedora   => "fedora",    "Fedora",           "fedora";
+    RedHat   => "rhel",      "Red Hat",          "redhat";
+    CentOs   => "centos",    "CentOS",           "centos";
+    Rocky    => "rocky",     "Rocky Linux",      "rockylinux";
+    Alma     => "almalinux", "AlmaLinux",        "almalinux";
+    Arch     => "arch",      "Arch Linux",       "archlinux";
+    Alpine   => "alpine",    "Alpine Linux",     "alpinelinux";
+    Suse     => "suse",      "openSUSE",         "opensuse";
+    Gentoo   => "gentoo",    "Gentoo",           "gentoo";
+    Kali     => "kali",      "Kali Linux",       "kalilinux";
+    Manjaro  => "manjaro",   "Manjaro",          "manjaro";
+    Raspbian => "raspbian",  "Raspberry Pi OS",  "raspberrypi";
+    Linux    => "linux",     "Linux",            "linux";
+    MacOs    => "macos",     "macOS",            "apple";
+    Windows  => "windows",   "Windows",          "windows";
+    FreeBsd  => "freebsd",   "FreeBSD",          "freebsd";
+    OpenBsd  => "openbsd",   "OpenBSD",          "openbsd";
+    NetBsd   => "netbsd",    "NetBSD",           "netbsd";
+}
+
 /// Connection state of a session. Runtime only: it is never persisted, so a
 /// freshly loaded session always starts disconnected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -92,6 +161,10 @@ pub struct Session {
     pub key_path: Option<SharedString>,
     pub group: Option<GroupId>,
     pub state: ConnectionState,
+    /// Detected on every successful connection and persisted, so the tree can
+    /// show the right mark before anyone connects. `None` until a probe
+    /// succeeds, and the session tree falls back to the name's first letter.
+    pub os: Option<HostOs>,
 }
 
 impl Session {
@@ -106,6 +179,7 @@ impl Session {
             key_path: draft.key_path,
             group: draft.group,
             state: ConnectionState::Disconnected,
+            os: None,
         }
     }
 
@@ -221,6 +295,39 @@ impl SessionDraft {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_operating_system_round_trips_through_the_database_spelling() {
+        for os in HostOs::ALL {
+            assert_eq!(HostOs::from_stored(os.as_str()), Some(*os));
+            assert!(!os.label().is_empty());
+            assert!(os.icon_path().starts_with("icons/os/"));
+        }
+    }
+
+    #[test]
+    fn stored_spellings_and_icons_are_unique() {
+        let mut spellings: Vec<_> = HostOs::ALL.iter().map(|os| os.as_str()).collect();
+        spellings.sort_unstable();
+        let count = spellings.len();
+        spellings.dedup();
+        assert_eq!(spellings.len(), count, "两个变体用了同一个存储拼写");
+    }
+
+    #[test]
+    fn an_unknown_spelling_reads_as_undetected() {
+        assert_eq!(HostOs::from_stored("plan9"), None);
+        assert_eq!(HostOs::from_stored(""), None);
+    }
+
+    #[test]
+    fn a_new_session_has_not_been_probed_yet() {
+        let session = Session::new(
+            SessionId(1),
+            SessionDraft::new("s", "h", 22, "root", AuthKind::Auto, None),
+        );
+        assert_eq!(session.os, None);
+    }
 
     #[test]
     fn auto_is_the_default_and_key_path_is_opt_in() {

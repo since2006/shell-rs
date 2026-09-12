@@ -5,7 +5,7 @@ use async_channel::Sender;
 use zeroize::Zeroizing;
 
 use super::TerminalSize;
-use crate::session::Session;
+use crate::session::{HostOs, Session};
 
 /// One field requested by an SSH keyboard-interactive challenge.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -251,7 +251,13 @@ pub enum TerminalTransportEvent {
     Started,
     Output(Vec<u8>),
     Prompt(TerminalPrompt),
-    Exited { code: u32, signal: Option<String> },
+    /// What the transport found running on the host. Sent once per successful
+    /// connection, after the shell is up.
+    HostOsDetected(HostOs),
+    Exited {
+        code: u32,
+        signal: Option<String>,
+    },
     Failed(String),
 }
 

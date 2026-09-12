@@ -1143,6 +1143,11 @@ fn new_terminal_panel(
             TerminalPanelEvent::PromptRequested(terminal_id, session_id, prompt) => {
                 this.enqueue_prompt(*terminal_id, *session_id, prompt.clone(), window, cx)
             }
+            TerminalPanelEvent::HostOsDetected(session_id, os) => {
+                let (session_id, os) = (*session_id, *os);
+                this.store
+                    .update(cx, |store, cx| store.set_host_os(session_id, Some(os), cx));
+            }
         },
     );
     (panel, subscription)

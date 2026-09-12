@@ -9,7 +9,9 @@ use std::path::Path;
 
 use rusqlite::{Connection, params};
 
-use super::{AuthKind, GroupDraft, GroupId, Session, SessionDraft, SessionGroup, SessionId};
+use super::{
+    AuthKind, GroupDraft, GroupId, HostOs, Session, SessionDraft, SessionGroup, SessionId,
+};
 
 /// SQLite's only integer type is `i64`, so the `u64` ids cross the boundary
 /// as `i64`. They are counters that start at 1 and never come near the range
@@ -23,7 +25,7 @@ fn from_sql(id: i64) -> u64 {
 }
 
 /// Bumped whenever `migrate` gains a step. Stored in `PRAGMA user_version`.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA_V1: &str = "\
 BEGIN;
@@ -51,6 +53,12 @@ BEGIN;
 ALTER TABLE sessions ADD COLUMN key_path TEXT;
 UPDATE sessions SET auth = 'auto' WHERE auth = 'key';
 PRAGMA user_version = 2;
+COMMIT;";
+
+const SCHEMA_V3: &str = "\
+BEGIN;
+ALTER TABLE sessions ADD COLUMN os TEXT;
+PRAGMA user_version = 3;
 COMMIT;";
 
 /// Everything one launch reads back from disk.
@@ -106,7 +114,7 @@ impl SessionDatabase {
         let sessions = self
             .connection
             .prepare(
-                "SELECT id, name, host, port, username, auth, group_id, key_path \
+                "SELECT id, name, host, port, username, auth, group_id, key_path, os \
                  FROM sessions ORDER BY id",
             )?
             .query_map([], |row| {
@@ -118,7 +126,8 @@ impl SessionDatabase {
                 let auth: String = row.get(5)?;
                 let group: Option<i64> = row.get(6)?;
                 let key_path: Option<String> = row.get(7)?;
-                Ok(Session::new(
+                let os: Option<String> = row.get(8)?;
+                let mut session = Session::new(
                     SessionId(from_sql(id)),
                     SessionDraft::new(
                         name,
@@ -129,7 +138,9 @@ impl SessionDatabase {
                         group.map(|id| GroupId(from_sql(id))),
                     )
                     .with_optional_key_path(key_path),
-                ))
+                );
+                session.os = os.as_deref().and_then(HostOs::from_stored);
+                Ok(session)
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
@@ -185,8 +196,8 @@ impl SessionDatabase {
 
     pub fn insert_session(&self, session: &Session) -> rusqlite::Result<()> {
         self.connection.execute(
-            "INSERT INTO sessions (id, name, host, port, username, auth, group_id, key_path) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO sessions (id, name, host, port, username, auth, group_id, key_path, os) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 to_sql(session.id.0),
                 session.name.as_ref(),
@@ -196,13 +207,15 @@ impl SessionDatabase {
                 session.auth.as_str(),
                 session.group.map(|group| to_sql(group.0)),
                 session.key_path.as_deref(),
+                session.os.map(HostOs::as_str),
             ],
         )?;
         Ok(())
     }
 
-    /// Rewrites the editable fields. `last_connected_at` is left alone: it is
-    /// written by `touch_connected` and is not part of the session form.
+    /// Rewrites the editable fields. `last_connected_at` and `os` are left
+    /// alone: they are written by `touch_connected` and `set_host_os`, and
+    /// neither is part of the session form.
     pub fn update_session(&self, session: &Session) -> rusqlite::Result<()> {
         self.connection.execute(
             "UPDATE sessions SET name = ?2, host = ?3, port = ?4, username = ?5, \
@@ -227,6 +240,16 @@ impl SessionDatabase {
         Ok(())
     }
 
+    /// Record the operating system a probe found on the host. `None` clears
+    /// it, which is what a failed probe on a rebuilt host leaves behind.
+    pub fn set_host_os(&self, id: SessionId, os: Option<HostOs>) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE sessions SET os = ?2 WHERE id = ?1",
+            params![to_sql(id.0), os.map(HostOs::as_str)],
+        )?;
+        Ok(())
+    }
+
     /// Record that a session just connected, which is what orders the start
     /// page's recent list across launches.
     pub fn touch_connected(&self, id: SessionId, at: u64) -> rusqlite::Result<()> {
@@ -248,6 +271,9 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     }
     if version < 2 {
         connection.execute_batch(SCHEMA_V2)?;
+    }
+    if version < 3 {
+        connection.execute_batch(SCHEMA_V3)?;
     }
     Ok(())
 }
@@ -397,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_v1_key_auth_to_auto_and_adds_key_path() {
+    fn migrates_v1_key_auth_to_auto_and_adds_key_path_and_os() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(SCHEMA_V1).unwrap();
         connection
@@ -413,10 +439,34 @@ mod tests {
             .connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, SCHEMA_VERSION);
         let data = db.load().unwrap();
         assert_eq!(data.sessions[0].auth, AuthKind::Auto);
         assert_eq!(data.sessions[0].key_path, None);
+        assert_eq!(data.sessions[0].os, None, "老库里的会话还没探测过");
+    }
+
+    #[test]
+    fn the_detected_operating_system_is_read_back() {
+        let db = SessionDatabase::in_memory().unwrap();
+        let session = Session::new(
+            SessionId(1),
+            SessionDraft::new("web", "10.0.0.1", 22, "root", AuthKind::Auto, None),
+        );
+        db.insert_session(&session).unwrap();
+        assert_eq!(db.load().unwrap().sessions[0].os, None);
+
+        db.set_host_os(session.id, Some(HostOs::Ubuntu)).unwrap();
+        assert_eq!(db.load().unwrap().sessions[0].os, Some(HostOs::Ubuntu));
+
+        // Renaming must not disturb it: the form does not own this column.
+        let mut renamed = session.clone();
+        renamed.name = "web-01".into();
+        db.update_session(&renamed).unwrap();
+        assert_eq!(db.load().unwrap().sessions[0].os, Some(HostOs::Ubuntu));
+
+        db.set_host_os(session.id, None).unwrap();
+        assert_eq!(db.load().unwrap().sessions[0].os, None);
     }
 
     #[test]

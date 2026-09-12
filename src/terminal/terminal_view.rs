@@ -13,6 +13,7 @@ use gpui_kit::*;
 use unicode_width::UnicodeWidthChar as _;
 
 use crate::app::{CopyTerminal, PasteTerminal};
+use crate::session::HostOs;
 
 use super::{
     SharedTerminalTransportFactory, TerminalEngine, TerminalEngineEvent, TerminalLifecycle,
@@ -34,6 +35,7 @@ pub(crate) fn terminal_key_bindings() -> [KeyBinding; 2] {
 pub enum TerminalViewEvent {
     Changed,
     PromptRequested(TerminalPrompt),
+    HostOsDetected(HostOs),
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -160,11 +162,18 @@ impl TerminalView {
                 cx.emit(TerminalViewEvent::Changed);
                 cx.notify();
             }),
-            cx.subscribe(&engine, |_, _, event: &TerminalEngineEvent, cx| {
-                if let TerminalEngineEvent::PromptRequested(prompt) = event {
-                    cx.emit(TerminalViewEvent::PromptRequested(prompt.clone()));
-                }
-            }),
+            cx.subscribe(
+                &engine,
+                |_, _, event: &TerminalEngineEvent, cx| match event {
+                    TerminalEngineEvent::PromptRequested(prompt) => {
+                        cx.emit(TerminalViewEvent::PromptRequested(prompt.clone()));
+                    }
+                    TerminalEngineEvent::HostOsDetected(os) => {
+                        cx.emit(TerminalViewEvent::HostOsDetected(*os));
+                    }
+                    TerminalEngineEvent::Changed => {}
+                },
+            ),
             cx.on_focus(&focus_handle, window, |this, _, cx| {
                 this.focused = true;
                 this.cursor_visible = true;

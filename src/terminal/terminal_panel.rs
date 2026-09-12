@@ -10,7 +10,7 @@ use crate::app::{
     CatalogIcon, CloseTerminal, CopyTerminal, DuplicateSession, EditSession, OpenExplorer,
     PasteTerminal, ReconnectTerminal,
 };
-use crate::session::{SessionId, SessionStore};
+use crate::session::{HostOs, SessionId, SessionStore};
 use crate::shared::ClosableTabTitle;
 
 use super::{
@@ -24,6 +24,7 @@ pub enum TerminalPanelEvent {
     Closed(RemoteTerminalId, SessionId),
     StatusChanged(RemoteTerminalId, SessionId),
     PromptRequested(RemoteTerminalId, SessionId, TerminalPrompt),
+    HostOsDetected(SessionId, HostOs),
 }
 
 /// A remote-session Dock panel backed by the shared terminal engine. The
@@ -67,15 +68,22 @@ impl TerminalPanel {
                 cx.emit(TerminalPanelEvent::StatusChanged(this.id, this.session_id));
                 cx.notify();
             }),
-            cx.subscribe(&terminal, |this, _, event: &TerminalViewEvent, cx| {
-                if let TerminalViewEvent::PromptRequested(prompt) = event {
-                    cx.emit(TerminalPanelEvent::PromptRequested(
-                        this.id,
-                        this.session_id,
-                        prompt.clone(),
-                    ));
-                }
-            }),
+            cx.subscribe(
+                &terminal,
+                |this, _, event: &TerminalViewEvent, cx| match event {
+                    TerminalViewEvent::PromptRequested(prompt) => {
+                        cx.emit(TerminalPanelEvent::PromptRequested(
+                            this.id,
+                            this.session_id,
+                            prompt.clone(),
+                        ));
+                    }
+                    TerminalViewEvent::HostOsDetected(os) => {
+                        cx.emit(TerminalPanelEvent::HostOsDetected(this.session_id, *os));
+                    }
+                    TerminalViewEvent::Changed => {}
+                },
+            ),
         ];
 
         Self {

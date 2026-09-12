@@ -14,6 +14,8 @@ use alacritty_terminal::term::color::COUNT;
 use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, CursorStyle, Processor, Rgb};
 
+use crate::session::HostOs;
+
 use super::{
     SharedTerminalTransportFactory, TerminalLifecycle, TerminalPrompt, TerminalPromptReply,
     TerminalSize, TerminalStatus, TerminalTransportCommand, TerminalTransportEvent,
@@ -110,8 +112,8 @@ impl TerminalEngine {
                     && this
                         .update(cx, |this, cx| {
                             for event in batch {
-                                if let Some(prompt) = this.handle_event(event) {
-                                    cx.emit(TerminalEngineEvent::PromptRequested(prompt));
+                                if let Some(event) = this.handle_event(event) {
+                                    cx.emit(event);
                                 }
                             }
                             cx.emit(TerminalEngineEvent::Changed);
@@ -125,7 +127,9 @@ impl TerminalEngine {
         })
     }
 
-    fn handle_event(&mut self, event: TerminalUiEvent) -> Option<TerminalPrompt> {
+    /// Fold one transport event into the engine's state. Anything the view
+    /// must hear about comes back as an event to emit.
+    fn handle_event(&mut self, event: TerminalUiEvent) -> Option<TerminalEngineEvent> {
         if event.generation != self.generation {
             return None;
         }
@@ -143,7 +147,12 @@ impl TerminalEngine {
             TerminalUiEventKind::Failed(error) => {
                 self.lifecycle = TerminalLifecycle::Failed(error);
             }
-            TerminalUiEventKind::Prompt(prompt) => return Some(prompt),
+            TerminalUiEventKind::Prompt(prompt) => {
+                return Some(TerminalEngineEvent::PromptRequested(prompt));
+            }
+            TerminalUiEventKind::HostOs(os) => {
+                return Some(TerminalEngineEvent::HostOsDetected(os));
+            }
             TerminalUiEventKind::ColorRequest(index, formatter) => {
                 let color = self.runtime.term.lock().colors()[index]
                     .unwrap_or_else(|| default_query_color(index));
@@ -413,6 +422,7 @@ impl Drop for TerminalEngine {
 pub enum TerminalEngineEvent {
     Changed,
     PromptRequested(TerminalPrompt),
+    HostOsDetected(HostOs),
 }
 
 struct TerminalRuntime {
@@ -458,6 +468,13 @@ impl TerminalRuntime {
                         TerminalTransportEvent::Output(bytes) => {
                             processor.advance(&mut *parser_term.lock(), &bytes);
                             parser_proxy.wakeup();
+                        }
+                        TerminalTransportEvent::HostOsDetected(os) => {
+                            send_ui(
+                                &parser_ui_events,
+                                generation,
+                                TerminalUiEventKind::HostOs(os),
+                            );
                         }
                         TerminalTransportEvent::Prompt(prompt) => {
                             send_ui(
@@ -643,6 +660,7 @@ enum TerminalUiEventKind {
     Exited { code: u32, signal: Option<String> },
     Failed(String),
     Prompt(TerminalPrompt),
+    HostOs(HostOs),
     ColorRequest(usize, Arc<dyn Fn(Rgb) -> String + Send + Sync>),
 }
 

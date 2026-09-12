@@ -19,6 +19,7 @@ use russh::{MethodKind, MethodSet};
 use tokio::sync::{mpsc as tokio_mpsc, oneshot, watch};
 use zeroize::Zeroizing;
 
+use super::probe::{HostOsProbe, ProbeOutcome};
 use crate::secrets::{SecretRef, SharedSecretStore};
 use crate::session::{AuthKind, Session};
 use crate::terminal::{
@@ -245,6 +246,14 @@ impl SshTerminalTransport {
             .await
             .map_err(|_| anyhow!("终端标签页已关闭"))?;
 
+        // Ask what the host is running on a channel of its own, then let the
+        // loop below collect the answer alongside the shell's output. Opening
+        // it after `Started` keeps the terminal from waiting on a round trip,
+        // and a host that refuses or ignores the probe simply keeps whatever
+        // mark the session already had.
+        let mut probe = HostOsProbe::new();
+        let mut probe_channel = open_probe(&handle, probe.command()).await;
+
         let mut exit_code = 0;
         let mut exit_signal = None;
         loop {
@@ -274,6 +283,32 @@ impl SshTerminalTransport {
                         return Ok(());
                     }
                     Some(TerminalTransportCommand::PromptReply { .. }) => {}
+                },
+                // Only armed while a probe channel is open, so a host that
+                // never answers costs one idle channel and nothing else.
+                message = async { probe_channel.as_mut().expect("guarded").wait().await },
+                    if probe_channel.is_some() =>
+                {
+                    match message {
+                        // stderr is skipped: on Windows it only holds the
+                        // shell complaining that `uname` does not exist.
+                        Some(ChannelMsg::Data { data }) => probe.push(&data),
+                        Some(ChannelMsg::Eof | ChannelMsg::Close) | None => {
+                            probe_channel = None;
+                            match probe.finish() {
+                                ProbeOutcome::Detected(os) => {
+                                    let _ = events
+                                        .send(TerminalTransportEvent::HostOsDetected(os))
+                                        .await;
+                                }
+                                ProbeOutcome::AskWindows => {
+                                    probe_channel = open_probe(&handle, probe.command()).await;
+                                }
+                                ProbeOutcome::GaveUp => {}
+                            }
+                        }
+                        _ => {}
+                    }
                 },
                 message = channel.wait() => match message {
                     Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
@@ -747,6 +782,21 @@ async fn load_private_key(
     bail!("私钥口令错误次数过多")
 }
 
+/// Open a channel and run one probe command on it. Best effort throughout: a
+/// server that refuses the channel or the command just leaves the session's
+/// recorded operating system as it was.
+async fn open_probe<H: client::Handler>(
+    handle: &client::Handle<H>,
+    command: Option<&'static str>,
+) -> Option<russh::Channel<client::Msg>> {
+    let command = command?;
+    let channel = handle.channel_open_session().await.ok()?;
+    // No reply wanted: the answer is the output, and waiting for the
+    // acknowledgement would cost another round trip for nothing.
+    channel.exec(false, command).await.ok()?;
+    Some(channel)
+}
+
 /// Where this connection's password lives in the system keychain.
 fn password_secret(config: &SshConnectionConfig) -> SecretRef {
     SecretRef::password(&config.user, &config.host, config.port)
@@ -863,6 +913,8 @@ fn safe_connect_error(_: &anyhow::Error) -> &'static str {
 mod tests {
     use super::*;
     use crate::secrets::{InMemorySecretStore, NoSecretStore, SecretStore as _};
+    use crate::session::HostOs;
+    use crate::ssh::probe::{PROBE_COMMAND, WINDOWS_PROBE_COMMAND};
     use crate::terminal::TerminalSecret;
     use russh::server::{self, Server as _};
     use std::borrow::Cow;
@@ -874,12 +926,16 @@ mod tests {
         pty: Option<(String, u32, u32, u32, u32)>,
         resize: Option<(u32, u32, u32, u32)>,
         input: Vec<u8>,
+        /// Every command run through an exec channel, in order.
+        execs: Vec<String>,
     }
 
     #[derive(Clone)]
     struct TestServer {
         state: Arc<Mutex<ServerState>>,
         auth: TestAuth,
+        /// What an exec channel writes back for a given command.
+        probe_reply: fn(&str) -> Option<&'static str>,
     }
 
     #[derive(Clone)]
@@ -1015,6 +1071,29 @@ mod tests {
             Ok(())
         }
 
+        /// Answers the host-operating-system probe. `probe_reply` of `None`
+        /// stands for a host where the command produces nothing, which is
+        /// what a Windows shell does with `uname`.
+        async fn exec_request(
+            &mut self,
+            channel: russh::ChannelId,
+            command: &[u8],
+            session: &mut server::Session,
+        ) -> Result<(), Self::Error> {
+            self.state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .execs
+                .push(String::from_utf8_lossy(command).into_owned());
+            session.channel_success(channel)?;
+            if let Some(reply) = (self.probe_reply)(&String::from_utf8_lossy(command)) {
+                session.data(channel, reply.as_bytes().to_vec())?;
+            }
+            session.eof(channel)?;
+            session.close(channel)?;
+            Ok(())
+        }
+
         async fn window_change_request(
             &mut self,
             _: russh::ChannelId,
@@ -1069,7 +1148,29 @@ mod tests {
         }
     }
 
+    fn no_probe_reply(_: &str) -> Option<&'static str> {
+        None
+    }
+
+    /// A host that answers the POSIX probe like an Alpine box.
+    fn alpine_probe_reply(command: &str) -> Option<&'static str> {
+        (command == PROBE_COMMAND).then_some("Linux\nID=alpine\nID_LIKE=\n")
+    }
+
+    /// A host whose shell knows nothing about `uname`, then answers `ver`.
+    fn windows_probe_reply(command: &str) -> Option<&'static str> {
+        (command == WINDOWS_PROBE_COMMAND)
+            .then_some("\r\nMicrosoft Windows [Version 10.0.19045.4291]\r\n")
+    }
+
     fn start_server(auth: TestAuth) -> Option<RunningTestServer> {
+        start_server_replying(auth, no_probe_reply)
+    }
+
+    fn start_server_replying(
+        auth: TestAuth,
+        probe_reply: fn(&str) -> Option<&'static str>,
+    ) -> Option<RunningTestServer> {
         let state = Arc::new(Mutex::new(ServerState::default()));
         let server_state = state.clone();
         let methods = auth.methods();
@@ -1102,6 +1203,7 @@ mod tests {
                 let mut server = TestServer {
                     state: server_state,
                     auth,
+                    probe_reply,
                 };
                 let running = server.run_on_socket(config, &listener);
                 ready_tx.send(Ok((port, running.handle()))).unwrap();
@@ -1129,18 +1231,45 @@ mod tests {
         known_hosts: &Path,
         answer: impl FnMut(&TerminalPromptKind) -> TerminalPromptReply,
     ) {
-        connect_with_secrets(session, known_hosts, Arc::new(NoSecretStore), answer);
+        connect(session, known_hosts, Arc::new(NoSecretStore), false, answer);
     }
 
-    /// Connect, answer whatever is asked, then shut down. Returns the prompts
-    /// that were raised, so a test can assert that none of them appeared.
     fn connect_with_secrets(
         session: Session,
         known_hosts: &Path,
         secrets: SharedSecretStore,
+        answer: impl FnMut(&TerminalPromptKind) -> TerminalPromptReply,
+    ) -> ConnectionReport {
+        connect(session, known_hosts, secrets, false, answer)
+    }
+
+    /// Same, but waits for the host-operating-system probe to report before
+    /// shutting the connection down.
+    fn connect_and_probe(
+        session: Session,
+        known_hosts: &Path,
+        answer: impl FnMut(&TerminalPromptKind) -> TerminalPromptReply,
+    ) -> ConnectionReport {
+        connect(session, known_hosts, Arc::new(NoSecretStore), true, answer)
+    }
+
+    /// What one connection told the UI about itself.
+    #[derive(Default)]
+    struct ConnectionReport {
+        prompts: Vec<TerminalPromptKind>,
+        host_os: Option<HostOs>,
+    }
+
+    /// Connect, answer whatever is asked, then shut down. The report says what
+    /// was raised along the way, so a test can assert that nothing was.
+    fn connect(
+        session: Session,
+        known_hosts: &Path,
+        secrets: SharedSecretStore,
+        wait_for_host_os: bool,
         mut answer: impl FnMut(&TerminalPromptKind) -> TerminalPromptReply,
-    ) -> Vec<TerminalPromptKind> {
-        let mut asked = Vec::new();
+    ) -> ConnectionReport {
+        let mut report = ConnectionReport::default();
         let provider = SshTerminalTransportProvider::new(known_hosts, secrets);
         let factory = provider.factory_for(&session);
         let (command_tx, command_rx) = mpsc::channel();
@@ -1158,7 +1287,7 @@ mod tests {
         loop {
             match event_rx.recv_blocking().unwrap() {
                 TerminalTransportEvent::Prompt(prompt) => {
-                    asked.push(prompt.kind().clone());
+                    report.prompts.push(prompt.kind().clone());
                     command_tx
                         .send(TerminalTransportCommand::PromptReply {
                             request_id: prompt.request_id(),
@@ -1169,7 +1298,24 @@ mod tests {
                 TerminalTransportEvent::Started => break,
                 TerminalTransportEvent::Failed(error) => panic!("SSH failed: {error}"),
                 TerminalTransportEvent::Exited { .. } => panic!("unexpected early exit"),
-                TerminalTransportEvent::Output(_) => {}
+                TerminalTransportEvent::HostOsDetected(_) | TerminalTransportEvent::Output(_) => {}
+            }
+        }
+        // The probe opens its channel after the shell is up, so its answer
+        // lands after `Started`. Only the tests that care pay the wait.
+        if wait_for_host_os {
+            // Loopback answers in single-digit milliseconds; this only runs
+            // out for a host that never answers at all.
+            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+            while report.host_os.is_none() && std::time::Instant::now() < deadline {
+                match event_rx.try_recv() {
+                    Ok(TerminalTransportEvent::HostOsDetected(os)) => report.host_os = Some(os),
+                    Ok(_) => {}
+                    Err(async_channel::TryRecvError::Empty) => {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(async_channel::TryRecvError::Closed) => break,
+                }
             }
         }
         command_tx.send(TerminalTransportCommand::Shutdown).unwrap();
@@ -1178,7 +1324,7 @@ mod tests {
             .expect("SSH worker did not stop in time")
             .unwrap();
         worker.join().unwrap();
-        asked
+        report
     }
 
     #[test]
@@ -1236,6 +1382,7 @@ mod tests {
                     TerminalPromptKind::HostKeyChanged(_) => panic!("unexpected changed key"),
                 },
                 TerminalTransportEvent::Started => started = true,
+                TerminalTransportEvent::HostOsDetected(_) => {}
                 TerminalTransportEvent::Output(bytes) => {
                     ready |= String::from_utf8_lossy(&bytes).contains("ready")
                 }
@@ -1353,13 +1500,14 @@ mod tests {
             .set(&session.password_secret(), TEST_PASSWORD)
             .unwrap();
 
-        let asked = connect_with_secrets(session, &known_hosts, secrets, |kind| match kind {
+        let report = connect_with_secrets(session, &known_hosts, secrets, |kind| match kind {
             TerminalPromptKind::UnknownHost(_) => TerminalPromptReply::TrustAndSave,
             other => panic!("unexpected prompt: {other:?}"),
         });
 
         assert!(
-            !asked
+            !report
+                .prompts
                 .iter()
                 .any(|kind| matches!(kind, TerminalPromptKind::Authentication(_))),
             "已保存的密码不该再弹认证框"
@@ -1381,7 +1529,7 @@ mod tests {
         let secrets = Arc::new(InMemorySecretStore::default());
         secrets.set(&endpoint, "stale-password").unwrap();
 
-        let asked =
+        let report =
             connect_with_secrets(session, &known_hosts, secrets.clone(), |kind| match kind {
                 TerminalPromptKind::UnknownHost(_) => TerminalPromptReply::TrustAndSave,
                 TerminalPromptKind::Authentication(_) => {
@@ -1390,7 +1538,8 @@ mod tests {
                 other => panic!("unexpected prompt: {other:?}"),
             });
 
-        let instructions = asked
+        let instructions = report
+            .prompts
             .iter()
             .find_map(|kind| match kind {
                 TerminalPromptKind::Authentication(prompt) => Some(prompt.instructions()),
@@ -1410,6 +1559,108 @@ mod tests {
             Some("stale-password"),
             "会话对话框里填的条目不该被静默删除"
         );
+    }
+
+    #[test]
+    fn the_host_operating_system_is_detected_after_connecting() {
+        let Some(server) = start_server_replying(TestAuth::Password, alpine_probe_reply) else {
+            eprintln!(
+                "loopback sockets are unavailable in this sandbox; skipping integration body"
+            );
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+
+        let report =
+            connect_and_probe(
+                password_session(server.port),
+                &known_hosts,
+                |kind| match kind {
+                    TerminalPromptKind::UnknownHost(_) => TerminalPromptReply::TrustAndSave,
+                    TerminalPromptKind::Authentication(_) => {
+                        TerminalPromptReply::Answers(vec![TerminalSecret::new(TEST_PASSWORD)])
+                    }
+                    other => panic!("unexpected prompt: {other:?}"),
+                },
+            );
+
+        assert_eq!(report.host_os, Some(HostOs::Alpine));
+        let execs = server
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .execs
+            .clone();
+        assert_eq!(
+            execs,
+            vec![PROBE_COMMAND.to_string()],
+            "认出来了就不该再问第二遍"
+        );
+    }
+
+    #[test]
+    fn a_host_that_has_no_uname_is_asked_again_the_windows_way() {
+        let Some(server) = start_server_replying(TestAuth::Password, windows_probe_reply) else {
+            eprintln!(
+                "loopback sockets are unavailable in this sandbox; skipping integration body"
+            );
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+
+        let report =
+            connect_and_probe(
+                password_session(server.port),
+                &known_hosts,
+                |kind| match kind {
+                    TerminalPromptKind::UnknownHost(_) => TerminalPromptReply::TrustAndSave,
+                    TerminalPromptKind::Authentication(_) => {
+                        TerminalPromptReply::Answers(vec![TerminalSecret::new(TEST_PASSWORD)])
+                    }
+                    other => panic!("unexpected prompt: {other:?}"),
+                },
+            );
+
+        assert_eq!(report.host_os, Some(HostOs::Windows));
+        let execs = server
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .execs
+            .clone();
+        assert_eq!(
+            execs,
+            vec![PROBE_COMMAND.to_string(), WINDOWS_PROBE_COMMAND.to_string()]
+        );
+    }
+
+    #[test]
+    fn a_host_that_answers_nothing_leaves_the_session_unmarked() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            eprintln!(
+                "loopback sockets are unavailable in this sandbox; skipping integration body"
+            );
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+
+        let report =
+            connect_and_probe(
+                password_session(server.port),
+                &known_hosts,
+                |kind| match kind {
+                    TerminalPromptKind::UnknownHost(_) => TerminalPromptReply::TrustAndSave,
+                    TerminalPromptKind::Authentication(_) => {
+                        TerminalPromptReply::Answers(vec![TerminalSecret::new(TEST_PASSWORD)])
+                    }
+                    other => panic!("unexpected prompt: {other:?}"),
+                },
+            );
+
+        assert_eq!(report.host_os, None);
     }
 
     #[test]

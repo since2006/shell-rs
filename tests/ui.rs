@@ -17,7 +17,9 @@ use shellr::app::{
     RenameGroup,
 };
 use shellr::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
-use shellr::session::{AuthKind, GroupId, SessionDatabase, SessionDraft, SessionId, SessionStore};
+use shellr::session::{
+    AuthKind, GroupId, HostOs, SessionDatabase, SessionDraft, SessionId, SessionStore,
+};
 use shellr::terminal::{
     FixedRemoteTerminalTransportProvider, LocalTerminalId, RemoteTerminalId, TerminalLifecycle,
     TerminalPrompt, TerminalPromptField, TerminalPromptKind, TerminalPromptReply, TerminalSize,
@@ -74,6 +76,7 @@ enum FakeBehavior {
     Running,
     ExitFirst,
     FailFirst,
+    ReportsOs(HostOs),
 }
 
 #[derive(Default)]
@@ -95,6 +98,13 @@ impl FakeTerminalFactory {
     fn fail_first() -> Self {
         Self {
             behavior: FakeBehavior::FailFirst,
+            ..Self::default()
+        }
+    }
+
+    fn reports_os(os: HostOs) -> Self {
+        Self {
+            behavior: FakeBehavior::ReportsOs(os),
             ..Self::default()
         }
     }
@@ -146,6 +156,9 @@ impl TerminalTransport for FakeTerminalTransport {
             anyhow::bail!("测试启动失败");
         }
         events.send_blocking(TerminalTransportEvent::Started)?;
+        if let FakeBehavior::ReportsOs(os) = self.behavior {
+            events.send_blocking(TerminalTransportEvent::HostOsDetected(os))?;
+        }
         events.send_blocking(TerminalTransportEvent::Output(
             format!(
                 "\x1b]0;测试终端 {}\x07run:{}$ alpha.txt 会议纪要.md\r\n",
@@ -2003,4 +2016,69 @@ async fn deleting_the_last_session_on_an_endpoint_forgets_its_password(cx: &mut 
         None,
         "最后一个用这个端点的会话没了，密码也该没了"
     );
+}
+
+#[gpui_kit::test]
+async fn the_tree_falls_back_to_the_first_letter_until_a_host_is_probed(cx: &mut TestAppContext) {
+    let mut store = SessionStore::empty();
+    let probed = store.insert_unnotified(SessionDraft::new(
+        "web-01",
+        "10.0.1.12",
+        22,
+        "root",
+        AuthKind::Auto,
+        None,
+    ));
+    let fresh = store.insert_unnotified(SessionDraft::new(
+        "数据库",
+        "10.0.2.5",
+        22,
+        "root",
+        AuthKind::Auto,
+        None,
+    ));
+    store.set_host_os_unnotified(probed, Some(HostOs::Debian));
+    let (handle, _) = open_workspace_with_store(cx, store);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("session-os", probed.0)).label(),
+            Some("Debian")
+        );
+        assert_eq!(
+            window.find(("session-os", fresh.0)).label(),
+            Some("数"),
+            "没探测过就用名称第一个字"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn connecting_marks_the_session_with_the_host_operating_system(cx: &mut TestAppContext) {
+    let (store, id) = one_session_store(AuthKind::Auto);
+    let factory = Arc::new(FakeTerminalFactory::reports_os(HostOs::Fedora));
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("session-os", id.0)).label(), Some("P"));
+        window
+            .within("session-tree")
+            .double_click(("session-row", id.0), cx);
+    })
+    .unwrap();
+    // The engine batches transport events on a 16ms timer, so the mark
+    // changes a frame or two after the tab opens.
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find(("session-os", id.0)).label() == Some("Fedora")
+    })
+    .await;
+
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(store.session(id).unwrap().os, Some(HostOs::Fedora));
+    });
 }

@@ -1,4 +1,8 @@
-use std::{cell::Cell, collections::HashSet, rc::Rc};
+use std::{
+    cell::Cell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
@@ -20,7 +24,9 @@ use crate::app::{
     OpenExplorer, RenameGroup, SESSION_PANEL_CONTEXT,
 };
 
-use super::{GroupId, SessionId, SessionNode, SessionStore, matches_query, session_tree_items};
+use super::{
+    GroupId, HostOs, SessionId, SessionNode, SessionStore, matches_query, session_tree_items,
+};
 
 /// The left dock panel: a searchable, grouped tree of sessions.
 ///
@@ -322,6 +328,15 @@ impl Render for SessionPanel {
                 .collect(),
         );
         let connected_for_menu = connected.clone();
+        // Same reason: the marks in front of the rows are a snapshot too.
+        let host_os: Rc<HashMap<SessionId, HostOs>> = Rc::new(
+            self.store
+                .read(cx)
+                .sessions()
+                .iter()
+                .filter_map(|session| session.os.map(|os| (session.id, os)))
+                .collect(),
+        );
         let clicked_row = self.right_clicked.clone();
         let clicked_blank = self.right_clicked.clone();
         let clicked_menu = self.right_clicked.clone();
@@ -350,7 +365,7 @@ impl Render for SessionPanel {
                     .min_h_0()
                     .child(
                         tree(&self.tree_state, move |_, entry, _, _, cx| {
-                            render_row(entry, &connected, &clicked_row, cx)
+                            render_row(entry, &connected, &host_os, &clicked_row, cx)
                         })
                         .px_1(),
                     )
@@ -374,27 +389,75 @@ impl Render for SessionPanel {
     }
 }
 
+/// The mark in front of a session: the operating system a probe found on the
+/// host, or the first character of the session name until one succeeds.
+fn session_mark(id: SessionId, label: &SharedString, os: Option<HostOs>, cx: &App) -> AnyElement {
+    let (mark, description): (AnyElement, SharedString) = match os {
+        Some(os) => (
+            Icon::default()
+                .path(os.icon_path())
+                .small()
+                .into_any_element(),
+            os.label().into(),
+        ),
+        None => {
+            let initial: SharedString = label
+                .chars()
+                .next()
+                .map(|character| character.to_uppercase().to_string())
+                .unwrap_or_default()
+                .into();
+            (
+                h_flex()
+                    // Matches `Icon::small`, so a row keeps its alignment
+                    // whichever mark it ends up with.
+                    .size_3p5()
+                    .justify_center()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(initial.clone())
+                    .into_any_element(),
+                initial,
+            )
+        }
+    };
+    div()
+        .id(("session-os", id.0))
+        .test_support()
+        .aria_label(description)
+        .flex_shrink_0()
+        .child(mark)
+        .into_any_element()
+}
+
 fn render_row(
     entry: &TreeEntry,
     connected: &HashSet<SessionId>,
+    host_os: &HashMap<SessionId, HostOs>,
     right_clicked: &Rc<Cell<Option<SessionNode>>>,
     cx: &mut App,
 ) -> ListItem {
     let item = entry.item();
     let node = SessionNode::parse(&item.id);
-    let (icon, row_id): (Icon, ElementId) = match node {
+    let (mark, row_id): (AnyElement, ElementId) = match node {
         Some(SessionNode::Group(id)) => (
             Icon::new(if entry.is_expanded() {
                 IconName::FolderOpen
             } else {
                 IconName::Folder
-            }),
+            })
+            .small()
+            .into_any_element(),
             ("group-row", id.0).into(),
         ),
-        Some(SessionNode::Session(id)) => {
-            (Icon::new(CatalogIcon::Server), ("session-row", id.0).into())
-        }
-        None => (Icon::new(IconName::File), item.id.clone().into()),
+        Some(SessionNode::Session(id)) => (
+            session_mark(id, &item.label, host_os.get(&id).copied(), cx),
+            ("session-row", id.0).into(),
+        ),
+        None => (
+            Icon::new(IconName::File).small().into_any_element(),
+            item.id.clone().into(),
+        ),
     };
     let session_id = node.and_then(SessionNode::session_id);
     let is_connected = session_id.is_some_and(|id| connected.contains(&id));
@@ -404,12 +467,7 @@ fn render_row(
         .px_2()
         .rounded(cx.theme().radius)
         .pl(rems(0.75 + entry.depth() as f32))
-        .child(
-            h_flex()
-                .gap_2()
-                .child(icon.small())
-                .child(item.label.clone()),
-        )
+        .child(h_flex().gap_2().child(mark).child(item.label.clone()))
         .when(is_connected, |row| {
             row.suffix(|_, cx| {
                 h_flex()
