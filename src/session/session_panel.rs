@@ -5,14 +5,13 @@ use std::{
 };
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, ThemeStyled as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _,
     button::Button,
     dock::{BasePanel, Panel, PanelControl, PanelEvent},
     h_flex,
     input::{Input, InputEvent, InputState},
     list::ListItem,
     menu::{ContextMenuExt as _, PopupMenu},
-    tooltip::Tooltip,
     tree::{TreeEntry, TreeEvent, TreeState, tree},
     v_flex,
 };
@@ -24,6 +23,8 @@ use crate::app::{
     DuplicateSession, EditSession, NewChildGroup, NewGroup, NewSession, NewSessionInGroup,
     OpenExplorer, RenameGroup, SESSION_PANEL_CONTEXT,
 };
+
+use crate::shared::HostMark;
 
 use super::{
     GroupId, HostOs, SessionId, SessionNode, SessionStore, matches_query, session_tree_items,
@@ -390,67 +391,6 @@ impl Render for SessionPanel {
     }
 }
 
-/// The mark in front of a session: the host's operating system on a badge in
-/// that project's own colour, or the first character of the session name until
-/// a probe succeeds.
-///
-/// The badge borrows `Avatar`'s treatment — a bordered circle at the theme's
-/// radius — so identity marks look the same wherever the product shows one.
-/// The border is what keeps a black or white brand readable against either
-/// theme.
-fn session_mark(id: SessionId, label: &SharedString, os: Option<HostOs>, cx: &App) -> AnyElement {
-    let (background, ink, glyph, description) = match os {
-        Some(os) => {
-            let (background, ink) = match (os.brand_color(), os.brand_foreground()) {
-                (Some(background), Some(ink)) => (background.into(), ink.into()),
-                // A monochrome mark follows the theme, which is also how
-                // Apple's own guidance draws it.
-                _ => (cx.theme().foreground, cx.theme().background),
-            };
-            (
-                background,
-                ink,
-                Icon::default()
-                    .path(os.icon_path())
-                    .xsmall()
-                    .into_any_element(),
-                SharedString::from(os.label()),
-            )
-        }
-        None => (
-            cx.theme().muted,
-            cx.theme().muted_foreground,
-            div()
-                .text_xs()
-                .child(
-                    label
-                        .chars()
-                        .next()
-                        .map(|character| character.to_uppercase().to_string())
-                        .unwrap_or_default(),
-                )
-                .into_any_element(),
-            SharedString::from("未探测到系统"),
-        ),
-    };
-    let tooltip = description.clone();
-    h_flex()
-        .id(("session-os", id.0))
-        .test_support()
-        .aria_label(description)
-        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-        .flex_shrink_0()
-        .size_5()
-        .justify_center()
-        .rounded_full_style(cx)
-        .border_1()
-        .border_color(cx.theme().border)
-        .bg(background)
-        .text_color(ink)
-        .child(glyph)
-        .into_any_element()
-}
-
 /// A row that is not a session still has to reserve the badge's width, or the
 /// labels of groups and sessions would not line up.
 fn plain_mark(icon: Icon, cx: &App) -> AnyElement {
@@ -485,7 +425,13 @@ fn render_row(
             ("group-row", id.0).into(),
         ),
         Some(SessionNode::Session(id)) => (
-            session_mark(id, &item.label, host_os.get(&id).copied(), cx),
+            HostMark::new(
+                ("session-os", id.0),
+                item.label.clone(),
+                host_os.get(&id).copied(),
+            )
+            .small()
+            .into_any_element(),
             ("session-row", id.0).into(),
         ),
         None => (

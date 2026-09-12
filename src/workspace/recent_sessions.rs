@@ -6,7 +6,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{CatalogIcon, ConnectSession, NewSession};
-use crate::session::{SessionId, SessionStore};
+use crate::session::{HostOs, SessionId, SessionStore};
+use crate::shared::HostMark;
 
 /// The center's empty state: shown in place of the tabs while none is open.
 ///
@@ -30,6 +31,7 @@ struct RecentRow {
     address: String,
     group: Option<SharedString>,
     connected: bool,
+    os: Option<HostOs>,
 }
 
 impl RecentSessions {
@@ -58,6 +60,7 @@ impl RecentSessions {
                     .group
                     .map(|id| SharedString::from(store.group_path(id))),
                 connected: session.state.is_connected(),
+                os: session.os,
             })
             .collect()
     }
@@ -116,7 +119,11 @@ impl RecentSessions {
             .child(
                 h_flex()
                     .gap_3()
-                    .child(Icon::new(CatalogIcon::Server).text_color(muted))
+                    .child(HostMark::new(
+                        ("recent-session-os", id.0),
+                        row.name.clone(),
+                        row.os,
+                    ))
                     .child(
                         v_flex()
                             .min_w_0()

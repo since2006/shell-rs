@@ -18,7 +18,8 @@ use shellr::app::{
 };
 use shellr::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
 use shellr::session::{
-    AuthKind, GroupId, HostOs, SessionDatabase, SessionDraft, SessionId, SessionStore,
+    AuthKind, ConnectionState, GroupId, HostOs, SessionDatabase, SessionDraft, SessionId,
+    SessionStore,
 };
 use shellr::terminal::{
     FixedRemoteTerminalTransportProvider, LocalTerminalId, RemoteTerminalId, TerminalLifecycle,
@@ -2095,4 +2096,34 @@ async fn connecting_marks_the_session_with_the_host_operating_system(cx: &mut Te
         let store = workspace.read(cx).store().read(cx);
         assert_eq!(store.session(id).unwrap().os, Some(HostOs::Fedora));
     });
+}
+
+#[gpui_kit::test]
+async fn the_start_page_marks_recent_hosts_with_their_operating_system(cx: &mut TestAppContext) {
+    let mut store = SessionStore::empty();
+    let id = store.insert_unnotified(SessionDraft::new(
+        "web-01",
+        "10.0.1.12",
+        22,
+        "root",
+        AuthKind::Auto,
+        None,
+    ));
+    // Connecting once puts it on the start page; disconnecting keeps it there
+    // and leaves the centre empty, which is when that page shows.
+    store.set_state_unnotified(id, ConnectionState::Connected);
+    store.set_state_unnotified(id, ConnectionState::Disconnected);
+    store.set_host_os_unnotified(id, Some(HostOs::Ubuntu));
+    let (handle, _) = open_workspace_with_store(cx, store);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("recent-sessions").visible());
+        assert_eq!(
+            window.find(("recent-session-os", id.0)).label(),
+            Some("Ubuntu"),
+            "开始页和会话树用同一个标记"
+        );
+    })
+    .unwrap();
 }
