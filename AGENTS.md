@@ -4,7 +4,7 @@
 
 shellr 是一个类似 Xshell / WinSCP 的 SSH 会话管理工具，基于 `gpui-kit` 0.6.1（GPUI + gpui-base + gpui-component）。界面文案用中文，标识符用英文。
 
-会话和分组是**真实持久化**的，存在一个 SQLite 文件里（`~/Library/Application Support/shellr/shellr.db`，`SHELLR_DATA_DIR` 可覆盖目录）。本地终端（`portable-pty` + `alacritty_terminal`）和 SSH 远程连接（`russh`）也都是真的。密码与私钥口令存在系统钥匙串里（`keyring`），**数据库里永远不出现秘密**。**仍然是 mock 的**：只剩 SFTP 文件浏览器（内存里的种子目录树）。
+会话和分组是**真实持久化**的，存在一个 SQLite 文件里（`~/Library/Application Support/shellr/shellr.db`，`SHELLR_DATA_DIR` 可覆盖目录）。本地终端（`portable-pty` + `alacritty_terminal`）和 SSH 远程连接（`russh`）也都是真的。密码与私钥口令存在系统钥匙串里（`keyring`），**数据库里永远不出现秘密**。SFTP 双栏浏览与上传也已接入真实文件系统，支持断点续传；下载、目录同步和传输队列尚未实现。详见 `README.md`。
 
 已确认的产品决定：WinSCP 式双栏文件浏览器是每个会话独立的「SFTP」Dock 标签页；暂不做传输队列和 Dock 布局持久化；首次启动是空库，不预置任何分组或会话；分组支持任意层级嵌套，会话也可以不属于任何分组（渲染在树的根层级）；删除分组会连同其子分组和里面的会话一起删，删除前确认并写明数量。
 
@@ -37,14 +37,18 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 
 - `app/` — `actions.rs` 定义全部用户命令（`gpui_kit::actions!` 单元动作 + 携带 `SessionId` / `GroupId` 的 `session_action!` / `group_action!` 动作）；`paths.rs` 解析数据目录（`SHELLR_DATA_DIR` → `dirs::data_dir()/shellr`）与数据库路径；`mod.rs` 绑定快捷键、初始化 gpui-kit 并 `set_locale("zh-CN")`；`assets.rs` 用 `icon_assets!` 把额外的 Lucide 图标并入默认图标包——额外图标用 `CatalogIcon::*`，默认包用 `IconName::*`；`OS_ICONS` 另外嵌入 `assets/icons/os/*.svg`（各操作系统的真实 logo，取自 Simple Icons，CC0；Windows 那个是自己画的四格，Simple Icons 已下架），用 `Icon::default().path(os.icon_path())` 渲染。
 - `session/` — `model.rs`（Session / SessionGroup / SessionDraft / GroupDraft / `HostOs`；`Session.group` 与 `SessionGroup.parent` 都是 `Option<GroupId>`，`Session.os` 是 `Option<HostOs>`）、`database.rs`（`SessionDatabase`：rusqlite 连接、`PRAGMA user_version` 迁移、行与模型的映射）、`store.rs`（`SessionStore` 实体，**内存是唯一事实来源**，写穿到数据库）、`outline.rs`（纯函数：store → `TreeItem`，递归铺开嵌套分组；节点 id 形如 `g:<id>` / `s:<id>`；`group_options` 给表单提供按全路径标注的分组列表）、`session_panel.rs`（左侧 Dock 面板：搜索 + 树 + 右键菜单）、`session_dialog.rs`、`group_dialog.rs`（`GroupForm`、`open_group_dialog`、`confirm_delete_group`）。
-- `terminal/` — 本地终端是真的：`transport.rs`（字节流传输的 trait）、`local_pty.rs`（`portable-pty` 实现，跑在专用线程上）、`engine.rs`（驱动 `alacritty_terminal`，解析线程 + 16ms UI 轮询批量刷新）、`terminal_view.rs`（网格渲染、选区、输入编码）、`local_terminal_panel.rs`（⌘T 开的本地标签页）、`model.rs`。远程会话的传输在 `ssh/`，中间区的标签页是 `terminal_panel.rs`。`transport.rs` 还定义了整套 prompt 协议（`TerminalPrompt` / `TerminalPromptKind` / `TerminalSecret`），传输层靠它向界面要主机信任和认证答案。
+- `terminal/` — 本地终端是真的：`transport.rs`（字节流传输的 trait）、`local_pty.rs`（`portable-pty` 实现，跑在专用线程上）、`engine.rs`（驱动 `alacritty_terminal`，解析线程 + 16ms UI 轮询批量刷新）、`terminal_view.rs`（网格渲染、选区、输入编码）、`local_terminal_panel.rs`（⌘T 开的本地标签页）、`model.rs`。远程会话的传输在 `ssh/`，中间区的标签页是 `terminal_panel.rs`。共享 prompt 协议位于 `connection.rs`，`transport.rs` 通过 `TerminalPrompt` / `TerminalPromptKind` / `TerminalSecret` 重导出保持兼容。
 - `ssh/` — `probe.rs`（探测远端系统的命令与纯解析函数，外加驱动两步探测的 `HostOsProbe` 状态机）、`transport.rs`：真实的 russh 客户端。known_hosts 校验写 `<data_dir>/known_hosts`（**不碰** `~/.ssh/known_hosts`），认证链是 agent → publickey → password → keyboard-interactive。密码和私钥口令先查 `secrets`，查不到或被服务器拒绝才走 prompt 弹框；被拒绝时**不删**钥匙串条目，只在弹框说明里讲清原因。
 - `secrets/` — 系统钥匙串（`keyring` 4：macOS Keychain / Windows 凭据管理器 / Secret Service）。`SecretRef` 决定归属：密码按 `user@host:port`（改名、复制会话都不丢，同一台机器的多个会话共用一条），私钥口令按文件路径（同一把钥匙只问一次）。`SecretStore` 的三个方法全是阻塞的，**只能**在后台执行器或传输层工作线程上调用。`InMemorySecretStore` 给测试，`NoSecretStore` 给没有钥匙串的机器（界面据此禁用密码字段）。
-- `explorer/` — `model.rs`（纯内存 `DirTree` / `Location` 导航）、`mock_fs.rs`（种子目录树）、`file_listing.rs`（`TableDelegate`）、`file_pane.rs`（单栏：地址行 + `DataTable` + 底部汇总）、`explorer_panel.rs`（`h_resizable` 里的两个栏）。
+- `explorer/` — 目录与选择快照、`DataTable` 双栏、上传确认 / 冲突对话框、进度和取消 / 恢复展示。`ExplorerAction` 统一路由到工作区；文件扫描与网络操作在后台，目录响应按请求编号丢弃过期结果。
+- `sftp/` — 可注入传输与本地目录接口、`RemotePath`、russh-sftp 3.0.0 协议适配、有界并发分块上传、UUID 临时文件、安全替换、原子 JSON 续传记录和三次自动重连。`ssh/connection.rs` 的 `SshConnector` 与终端共享认证、钥匙串服务及 known_hosts 写锁。
 - `workspace/` — `workspace_view.rs` 持有 `SessionStore`、`DockArea`、按会话登记的面板注册表，以及**全部动作处理器**；`title_bar.rs`、`status_bar.rs`、`recent_sessions.rs`（中间区没有标签页时显示的「最近连接」开始页，**不是** Dock 面板）、`dock_skin.rs`（`WorkspaceDockSkin`：包一层 `DockSkin`，中间区为空时用 `deferred` 把开始页画在空的中间区之上；工作区在 `DockEvent::LayoutChanged` 时同步「中间区是否为空」并在刚变空时把焦点移到开始页）。
 - `shared/` — 多个功能共用的展示片段（`ClosableTabTitle`、`HostMark`）。
 
 关键流程与不变量：
+
+- **SFTP 独立于终端。** 会话状态综合所有终端与 SFTP 状态计算；关闭终端不停止上传，断开 / 删除会话会停止上传并保留续传数据。每会话一个运行批次，来源、端点和目标在确认时固定。认证问答按终端 / SFTP 来源与 SFTP 连接代次隔离。
+- **SFTP UI 测试完全注入。** 使用 `Workspace::new_with_services` 注入目录与传输，不访问用户服务器和钥匙串。工作线程事件由 UI 定时轮询，禁止后台线程直接唤醒 GPUI 前台任务；实体回调中的 SFTP 动作通过 `ExplorerDispatch` 延后派发，避免重入实体。
 
 - **一个命令一个处理器。** 按钮、菜单、右键菜单、快捷键都只派发 `app/actions.rs` 里的动作，由 `Workspace` 处理。新增命令加在那里，不要写临时闭包直接改状态。
 - **持久化写穿，内存说了算。** `SessionStore` 带 `Context` 的 mutator 负责「改内存 → 写库 → `notify`」，`*_unnotified` 那一半是纯内存的（给单元测试和加载用）。写库同步发生在 UI 线程：要落盘的都是用户在对话框里确认的单行写入，不是流。写失败时内存里的改动照样生效，store 发 `SessionStoreEvent::PersistFailed`，工作区订阅后弹一个错误通知——**绝不静默吞掉**。`ConnectionState` 是运行时状态，不入库；`last_connected_at` 入库，开始页的「最近连接」因此能跨启动。删除分组靠数据库两个外键的 `ON DELETE CASCADE`，内存里的 `remove_group_unnotified` 必须给出一样的结果，并把被删会话的 id 返回给工作区去关标签页。

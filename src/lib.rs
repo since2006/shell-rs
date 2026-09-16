@@ -5,9 +5,11 @@
 //! `secrets` (系统钥匙串), `workspace` (窗口壳), `app` (动作、快捷键、资源).
 
 pub mod app;
+pub mod connection;
 pub mod explorer;
 pub mod secrets;
 pub mod session;
+pub mod sftp;
 pub mod shared;
 pub mod ssh;
 pub mod terminal;

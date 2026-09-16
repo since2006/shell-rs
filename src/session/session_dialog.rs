@@ -579,17 +579,25 @@ pub fn open_session_dialog(
 /// Ask before deleting a session. `on_delete` runs when the user confirms.
 pub fn confirm_delete_session(
     session: &Session,
-    closes_tabs: bool,
+    affected: (bool, usize),
     on_delete: DeleteHandler,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let (closes_tabs, uploads) = affected;
     let title: SharedString = format!("删除“{}”？", session.name).into();
     window.open_alert_dialog(cx, move |alert, _, _| {
         alert
             .title(title.clone())
             .when(closes_tabs, |alert| {
-                alert.description("会一并关闭该会话已打开的终端和 SFTP 标签。")
+                alert.description(format!(
+                    "会一并关闭该会话已打开的终端和 SFTP 标签。{}",
+                    if uploads > 0 {
+                        format!("将停止 {uploads} 个上传批次并保留续传进度。")
+                    } else {
+                        String::new()
+                    }
+                ))
             })
             .button_props(
                 DialogButtonProps::default()

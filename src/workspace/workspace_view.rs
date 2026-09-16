@@ -20,15 +20,20 @@ use gpui_kit::*;
 
 use crate::app::{
     CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseTerminal, ConnectSession, CopyTerminal,
-    DeleteGroup, DeleteSession, DisconnectSession, DuplicateSession, EditSession, FocusSearch,
-    NewChildGroup, NewGroup, NewLocalTerminal, NewSession, NewSessionInGroup, OpenExplorer,
-    PasteTerminal, ReconnectTerminal, RenameGroup, RestartLocalTerminal, ToggleSessionPanel,
-    ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
+    DeleteGroup, DeleteSession, DisconnectSession, DuplicateSession, EditSession, ExplorerAction,
+    ExplorerCommand, FocusSearch, NewChildGroup, NewGroup, NewLocalTerminal, NewSession,
+    NewSessionInGroup, OpenExplorer, PasteTerminal, ReconnectTerminal, RenameGroup,
+    RestartLocalTerminal, SelectAllUploadFiles, ToggleSessionPanel, ToggleTheme,
+    ToggleUploadSelection, UploadSelectedFiles, ZoomIn, ZoomOut, ZoomReset,
 };
-use crate::explorer::{ExplorerPanel, ExplorerPanelEvent};
+use crate::explorer::{ExplorerPanel, ExplorerPanelEvent, confirm_close_upload};
 use crate::session::{
     ConnectionState, GroupId, SessionId, SessionPanel, SessionStore, SessionStoreEvent,
     confirm_delete_group, confirm_delete_session, open_group_dialog, open_session_dialog,
+};
+use crate::sftp::{
+    SharedLocalDirectoryProvider, SharedSftpTransportProvider, SshSftpTransportProvider,
+    SystemLocalDirectoryProvider,
 };
 use crate::terminal::{
     LocalPtyTransportFactory, LocalTerminalId, LocalTerminalPanel, LocalTerminalPanelEvent,
@@ -71,6 +76,12 @@ enum CenterTab {
     LocalTerminal(LocalTerminalId),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PromptOwner {
+    Terminal(RemoteTerminalId),
+    Sftp(SessionId, u64),
+}
+
 /// The main window content: title bar above the dock, status bar below.
 ///
 /// Owns the session store, the dock and the registry of open per-session
@@ -87,12 +98,14 @@ pub struct Workspace {
     local_terminals: HashMap<LocalTerminalId, Entity<LocalTerminalPanel>>,
     local_terminal_factory: SharedTerminalTransportFactory,
     remote_terminal_provider: SharedRemoteTerminalTransportProvider,
+    sftp_provider: SharedSftpTransportProvider,
+    local_directory_provider: SharedLocalDirectoryProvider,
     next_remote_terminal_id: u64,
     next_local_terminal_id: u64,
     /// The center tab displayed most recently; `CloseActiveTab` closes it.
     active_tab: Option<CenterTab>,
-    prompt_queue: VecDeque<(RemoteTerminalId, SessionId, TerminalPrompt)>,
-    active_prompt: Option<(RemoteTerminalId, SessionId, u64)>,
+    prompt_queue: VecDeque<(PromptOwner, SessionId, TerminalPrompt)>,
+    active_prompt: Option<(PromptOwner, SessionId, u64)>,
     /// Dispatch target for the title bar and start page: actions sent to it
     /// reach the workspace handlers whatever is focused.
     focus_handle: FocusHandle,
@@ -103,38 +116,35 @@ impl Workspace {
     /// `store` is built by `main` from the database on disk, and by the UI
     /// tests from `SessionStore::seed`.
     pub fn new(store: Entity<SessionStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let known_hosts = crate::app::known_hosts_path()
-            .unwrap_or_else(|_| crate::app::data_dir().join("known_hosts"));
-        let secrets = store.read(cx).secrets();
-        let remote = Arc::new(crate::ssh::SshTerminalTransportProvider::new(
-            known_hosts,
-            secrets,
-        ));
-        Self::new_with_transport_providers(
-            store,
-            remote,
-            Arc::new(LocalPtyTransportFactory),
-            window,
-            cx,
-        )
+        Self::new_with_local_terminal_factory(store, Arc::new(LocalPtyTransportFactory), window, cx)
     }
 
-    /// Alternate constructor used by UI tests to avoid launching a real
-    /// login shell while exercising workspace behavior.
     pub fn new_with_local_terminal_factory(
         store: Entity<SessionStore>,
         local_terminal_factory: SharedTerminalTransportFactory,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let known_hosts = crate::app::known_hosts_path()
-            .unwrap_or_else(|_| crate::app::data_dir().join("known_hosts"));
-        let secrets = store.read(cx).secrets();
-        let remote = Arc::new(crate::ssh::SshTerminalTransportProvider::new(
-            known_hosts,
-            secrets,
+        let connector = crate::ssh::SshConnector::new(
+            crate::app::data_dir().join("known_hosts"),
+            store.read(cx).secrets(),
+        );
+        let remote = Arc::new(crate::ssh::SshTerminalTransportProvider::with_connector(
+            connector.clone(),
         ));
-        Self::new_with_transport_providers(store, remote, local_terminal_factory, window, cx)
+        let sftp = Arc::new(SshSftpTransportProvider::new(
+            connector,
+            crate::app::data_dir().join("upload-resume"),
+        ));
+        Self::new_with_services(
+            store,
+            remote,
+            local_terminal_factory,
+            sftp,
+            Arc::new(SystemLocalDirectoryProvider),
+            window,
+            cx,
+        )
     }
 
     /// Fully injectable constructor used by UI tests: remote sessions never
@@ -143,6 +153,35 @@ impl Workspace {
         store: Entity<SessionStore>,
         remote_terminal_provider: SharedRemoteTerminalTransportProvider,
         local_terminal_factory: SharedTerminalTransportFactory,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let connector = crate::ssh::SshConnector::new(
+            crate::app::data_dir().join("known_hosts"),
+            store.read(cx).secrets(),
+        );
+        let sftp = Arc::new(SshSftpTransportProvider::new(
+            connector,
+            crate::app::data_dir().join("upload-resume"),
+        ));
+        Self::new_with_services(
+            store,
+            remote_terminal_provider,
+            local_terminal_factory,
+            sftp,
+            Arc::new(SystemLocalDirectoryProvider),
+            window,
+            cx,
+        )
+    }
+
+    /// Inject every filesystem and transport service; tests require neither a server nor a keychain.
+    pub fn new_with_services(
+        store: Entity<SessionStore>,
+        remote_terminal_provider: SharedRemoteTerminalTransportProvider,
+        local_terminal_factory: SharedTerminalTransportFactory,
+        sftp_provider: SharedSftpTransportProvider,
+        local_directory_provider: SharedLocalDirectoryProvider,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -180,7 +219,9 @@ impl Workspace {
                             .cloned()
                             .collect();
                         if !panels.is_empty() {
-                            this.cancel_prompts_for_session(*id, window, cx);
+                            for panel in &panels {
+                                this.cancel_prompts_for_terminal(panel.read(cx).id(), window, cx);
+                            }
                             this.store.update(cx, |store, cx| {
                                 store.set_state(*id, ConnectionState::Connecting, cx)
                             });
@@ -260,6 +301,8 @@ impl Workspace {
             local_terminals: HashMap::new(),
             local_terminal_factory,
             remote_terminal_provider,
+            sftp_provider,
+            local_directory_provider,
             next_remote_terminal_id,
             next_local_terminal_id: 1,
             active_tab: None,
@@ -316,7 +359,7 @@ impl Workspace {
 
     fn enqueue_prompt(
         &mut self,
-        terminal_id: RemoteTerminalId,
+        terminal_id: PromptOwner,
         session_id: SessionId,
         prompt: TerminalPrompt,
         window: &mut Window,
@@ -354,7 +397,7 @@ impl Workspace {
             let Some(next) = self.prompt_queue.pop_front() else {
                 return;
             };
-            if self.terminals.contains_key(&next.0) {
+            if self.prompt_owner_is_live(next.0, cx) {
                 break next;
             }
         };
@@ -550,7 +593,7 @@ impl Workspace {
 
     fn finish_prompt(
         &mut self,
-        terminal_id: RemoteTerminalId,
+        terminal_id: PromptOwner,
         request_id: u64,
         reply: TerminalPromptReply,
         cx: &mut Context<Self>,
@@ -563,37 +606,74 @@ impl Workspace {
         }
         self.active_prompt = None;
         let canceled = matches!(&reply, TerminalPromptReply::Cancel);
-        if let Some(panel) = self.terminals.get(&terminal_id).cloned() {
-            panel.read(cx).reply_to_prompt(request_id, reply, cx);
-            if canceled {
-                panel.update(cx, |panel, cx| panel.cancel_connection(cx));
-                self.refresh_session_connection_state(session_id, cx);
+        self.reply_to_owner(terminal_id, request_id, reply, cx);
+        if canceled
+            && let PromptOwner::Terminal(id) = terminal_id
+            && let Some(panel) = self.terminals.get(&id).cloned()
+        {
+            panel.update(cx, |panel, cx| panel.cancel_connection(cx));
+        }
+        self.refresh_session_connection_state(session_id, cx);
+    }
+
+    fn prompt_owner_is_live(&self, owner: PromptOwner, cx: &App) -> bool {
+        match owner {
+            PromptOwner::Terminal(id) => self.terminals.contains_key(&id),
+            PromptOwner::Sftp(id, generation) => self
+                .explorers
+                .get(&id)
+                .is_some_and(|p| p.read(cx).generation() == generation),
+        }
+    }
+
+    fn reply_to_owner(
+        &self,
+        owner: PromptOwner,
+        request_id: u64,
+        reply: TerminalPromptReply,
+        cx: &App,
+    ) {
+        match owner {
+            PromptOwner::Terminal(id) => {
+                if let Some(panel) = self.terminals.get(&id) {
+                    panel.read(cx).reply_to_prompt(request_id, reply, cx);
+                }
+            }
+            PromptOwner::Sftp(id, generation) => {
+                if let Some(panel) = self.explorers.get(&id)
+                    && panel.read(cx).generation() == generation
+                {
+                    panel.read(cx).reply_to_prompt(request_id, reply);
+                }
             }
         }
     }
 
+    fn cancel_prompts_for_owner(
+        &mut self,
+        owner: PromptOwner,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.prompt_queue.retain(|(id, _, _)| *id != owner);
+        if let Some((id, _, request_id)) = self.active_prompt
+            && id == owner
+        {
+            self.active_prompt = None;
+            self.reply_to_owner(id, request_id, TerminalPromptReply::Cancel, cx);
+            if window.has_active_dialog(cx) {
+                window.close_dialog(cx);
+            }
+        }
+    }
     fn cancel_prompts_for_terminal(
         &mut self,
         terminal_id: RemoteTerminalId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.prompt_queue.retain(|(id, _, _)| *id != terminal_id);
-        if let Some((id, _, request_id)) = self.active_prompt
-            && id == terminal_id
-        {
-            self.active_prompt = None;
-            if let Some(panel) = self.terminals.get(&terminal_id) {
-                panel
-                    .read(cx)
-                    .reply_to_prompt(request_id, TerminalPromptReply::Cancel, cx);
-            }
-            if window.has_active_dialog(cx) {
-                window.close_dialog(cx);
-            }
-        }
+        self.cancel_prompts_for_owner(PromptOwner::Terminal(terminal_id), window, cx);
     }
-
     fn cancel_prompts_for_session(
         &mut self,
         session_id: SessionId,
@@ -601,18 +681,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.prompt_queue.retain(|(_, id, _)| *id != session_id);
-        if let Some((terminal_id, id, request_id)) = self.active_prompt
+        if let Some((owner, id, _)) = self.active_prompt
             && id == session_id
         {
-            self.active_prompt = None;
-            if let Some(panel) = self.terminals.get(&terminal_id) {
-                panel
-                    .read(cx)
-                    .reply_to_prompt(request_id, TerminalPromptReply::Cancel, cx);
-            }
-            if window.has_active_dialog(cx) {
-                window.close_dialog(cx);
-            }
+            self.cancel_prompts_for_owner(owner, window, cx);
         }
     }
 
@@ -653,6 +725,13 @@ impl Workspace {
                 TerminalLifecycle::Exited { .. }
                 | TerminalLifecycle::Failed(_)
                 | TerminalLifecycle::Closing => {}
+            }
+        }
+        if let Some(panel) = self.explorers.get(&session_id) {
+            match panel.read(cx).connection_state() {
+                ConnectionState::Connected => has_running = true,
+                ConnectionState::Connecting => has_starting = true,
+                ConnectionState::Disconnected => {}
             }
         }
         let state = if has_running {
@@ -709,7 +788,7 @@ impl Workspace {
         if self.store.read(cx).session(id).is_none() {
             return;
         }
-        let (panel, subscription) = new_explorer_panel(&self.store, id, window, cx);
+        let (panel, subscription) = new_explorer_panel(self, id, window, cx);
         self._subscriptions.push(subscription);
         self.explorers.insert(id, panel.clone());
         self.dock_area.update(cx, |area, cx| {
@@ -756,9 +835,87 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(panel) = self.explorers.get(&action.0).cloned() {
+            let generation = panel.read(cx).generation();
+            if panel.read(cx).is_uploading() {
+                confirm_close_upload(action.0, generation, self.focus_handle.clone(), window, cx);
+            } else {
+                self.remove_explorer(action.0, window, cx);
+            }
+        }
+    }
+
+    fn remove_explorer(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.explorers.get(&id).cloned() {
+            self.cancel_prompts_for_owner(
+                PromptOwner::Sftp(id, panel.read(cx).generation()),
+                window,
+                cx,
+            );
             self.dock_area
                 .update(cx, |area, cx| area.remove_panel(panel, window, cx));
         }
+    }
+    fn on_explorer_action(
+        &mut self,
+        action: &ExplorerAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = self.explorers.get(&action.session()).cloned() else {
+            return;
+        };
+        if action
+            .generation()
+            .is_some_and(|g| g != panel.read(cx).generation())
+        {
+            return;
+        }
+        if matches!(action.command(), ExplorerCommand::CancelUpload) {
+            self.cancel_prompts_for_owner(
+                PromptOwner::Sftp(action.session(), panel.read(cx).generation()),
+                window,
+                cx,
+            );
+        }
+        if matches!(action.command(), ExplorerCommand::CloseConfirmed) {
+            self.remove_explorer(action.session(), window, cx);
+        } else {
+            panel.update(cx, |panel, cx| panel.execute(action.command(), window, cx));
+        }
+    }
+    fn explorer_shortcut(
+        &mut self,
+        command: ExplorerCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(CenterTab::Explorer(id)) = self.active_tab {
+            self.on_explorer_action(&ExplorerAction::new(id, command), window, cx);
+        }
+    }
+    fn on_upload_selected(
+        &mut self,
+        _: &UploadSelectedFiles,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.explorer_shortcut(ExplorerCommand::UploadSelected, window, cx);
+    }
+    fn on_toggle_upload_selection(
+        &mut self,
+        _: &ToggleUploadSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.explorer_shortcut(ExplorerCommand::ToggleSelection, window, cx);
+    }
+    fn on_select_all_upload_files(
+        &mut self,
+        _: &SelectAllUploadFiles,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.explorer_shortcut(ExplorerCommand::SelectAll, window, cx);
     }
 
     fn on_close_local_terminal(
@@ -854,6 +1011,9 @@ impl Workspace {
         for terminal in terminals {
             terminal.update(cx, |terminal, cx| terminal.disconnect(cx));
         }
+        if let Some(panel) = self.explorers.get(&id).cloned() {
+            panel.update(cx, |panel, cx| panel.disconnect(window, cx));
+        }
     }
 
     fn on_reconnect_terminal(
@@ -919,7 +1079,14 @@ impl Workspace {
         let workspace = cx.entity().downgrade();
         confirm_delete_session(
             &session,
-            closes_tabs,
+            (
+                closes_tabs,
+                usize::from(
+                    self.explorers
+                        .get(&id)
+                        .is_some_and(|p| p.read(cx).is_uploading()),
+                ),
+            ),
             Rc::new(move |window, cx| {
                 workspace
                     .update(cx, |this, cx| this.remove_session(id, window, cx))
@@ -1018,7 +1185,17 @@ impl Workspace {
             &name,
             doomed.len(),
             subgroups,
-            closes_tabs,
+            (
+                closes_tabs,
+                doomed
+                    .iter()
+                    .filter(|id| {
+                        self.explorers
+                            .get(id)
+                            .is_some_and(|p| p.read(cx).is_uploading())
+                    })
+                    .count(),
+            ),
             Rc::new(move |window, cx| {
                 workspace
                     .update(cx, |this, cx| this.remove_group(id, window, cx))
@@ -1140,9 +1317,14 @@ fn new_terminal_panel(
                 this.refresh_session_connection_state(*session_id, cx);
                 cx.notify();
             }
-            TerminalPanelEvent::PromptRequested(terminal_id, session_id, prompt) => {
-                this.enqueue_prompt(*terminal_id, *session_id, prompt.clone(), window, cx)
-            }
+            TerminalPanelEvent::PromptRequested(terminal_id, session_id, prompt) => this
+                .enqueue_prompt(
+                    PromptOwner::Terminal(*terminal_id),
+                    *session_id,
+                    prompt.clone(),
+                    window,
+                    cx,
+                ),
             TerminalPanelEvent::HostOsDetected(session_id, os) => {
                 let (session_id, os) = (*session_id, *os);
                 this.store
@@ -1155,7 +1337,7 @@ fn new_terminal_panel(
 
 fn resolve_prompt(
     workspace: &WeakEntity<Workspace>,
-    terminal_id: RemoteTerminalId,
+    terminal_id: PromptOwner,
     request_id: u64,
     reply: TerminalPromptReply,
     cx: &mut App,
@@ -1214,22 +1396,51 @@ impl Render for AuthenticationPromptForm {
 }
 
 fn new_explorer_panel(
-    store: &Entity<SessionStore>,
+    workspace: &Workspace,
     id: SessionId,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> (Entity<ExplorerPanel>, Subscription) {
-    let panel = cx.new(|cx| ExplorerPanel::new(id, store.clone(), window, cx));
-    let subscription = cx.subscribe(
+    let panel = cx.new(|cx| {
+        ExplorerPanel::new(
+            id,
+            workspace.store.clone(),
+            workspace.sftp_provider.clone(),
+            workspace.local_directory_provider.clone(),
+            workspace.focus_handle.clone(),
+            window,
+            cx,
+        )
+    });
+    let subscription = cx.subscribe_in(
         &panel,
-        |this, _, event: &ExplorerPanelEvent, _| match event {
+        window,
+        |this, _, event: &ExplorerPanelEvent, window, cx| match event {
             ExplorerPanelEvent::Activated(id) => this.active_tab = Some(CenterTab::Explorer(*id)),
             ExplorerPanelEvent::Closed(id) => {
                 this.explorers.remove(id);
                 if this.active_tab == Some(CenterTab::Explorer(*id)) {
                     this.active_tab = None;
                 }
+                this.refresh_session_connection_state(*id, cx);
             }
+            ExplorerPanelEvent::StateChanged(id) => {
+                if let Some(panel) = this.explorers.get(id) {
+                    let generation = panel.read(cx).generation();
+                    this.prompt_queue.retain(|(owner,_,_)| !matches!(owner,PromptOwner::Sftp(s,g) if s == id && *g != generation));
+                    if let Some((owner @ PromptOwner::Sftp(s,g),_,_)) = this.active_prompt && s == *id && g != generation {
+                        this.cancel_prompts_for_owner(owner,window,cx);
+                    }
+                }
+                this.refresh_session_connection_state(*id,cx);
+            },
+            ExplorerPanelEvent::PromptRequested(id, generation, prompt) => this.enqueue_prompt(
+                PromptOwner::Sftp(*id, *generation),
+                *id,
+                prompt.clone(),
+                window,
+                cx,
+            ),
         },
     );
     (panel, subscription)
@@ -1296,6 +1507,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_disconnect_session))
             .on_action(cx.listener(Self::on_reconnect_terminal))
             .on_action(cx.listener(Self::on_open_explorer))
+            .on_action(cx.listener(Self::on_explorer_action))
+            .on_action(cx.listener(Self::on_upload_selected))
+            .on_action(cx.listener(Self::on_toggle_upload_selection))
+            .on_action(cx.listener(Self::on_select_all_upload_files))
             .on_action(cx.listener(Self::on_close_terminal))
             .on_action(cx.listener(Self::on_close_explorer))
             .on_action(cx.listener(Self::on_close_local_terminal))

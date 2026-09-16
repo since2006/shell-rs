@@ -142,3 +142,106 @@ local_terminal_action!(
     /// Restart a local terminal with a fresh emulator and PTY.
     RestartLocalTerminal
 );
+
+/// Commands shared by explorer controls, drops, dialogs and keyboard bindings.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub enum ExplorerCommand {
+    Navigate {
+        remote: bool,
+        path: String,
+    },
+    Up {
+        remote: bool,
+    },
+    Refresh {
+        remote: bool,
+    },
+    Check {
+        name: String,
+        checked: bool,
+        extend: bool,
+    },
+    ToggleSelection,
+    SelectAll,
+    UploadSelected,
+    ChooseFiles,
+    UploadPaths {
+        paths: Vec<std::path::PathBuf>,
+        target: String,
+    },
+    BeginUpload {
+        paths: Vec<std::path::PathBuf>,
+        target: String,
+    },
+    Answer {
+        request_id: u64,
+        answer: crate::sftp::UploadAnswer,
+    },
+    CancelUpload,
+    ResumeUpload,
+    DiscardUpload,
+    ToggleDetails,
+    CloseConfirmed,
+}
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = shellr, no_json)]
+pub struct ExplorerAction {
+    session: SessionId,
+    command: ExplorerCommand,
+    generation: Option<u64>,
+}
+impl ExplorerAction {
+    pub fn new(session: SessionId, command: ExplorerCommand) -> Self {
+        Self {
+            session,
+            command,
+            generation: None,
+        }
+    }
+    pub fn with_generation(mut self, generation: u64) -> Self {
+        self.generation = Some(generation);
+        self
+    }
+    pub fn generation(&self) -> Option<u64> {
+        self.generation
+    }
+    pub fn session(&self) -> SessionId {
+        self.session
+    }
+    pub fn command(&self) -> &ExplorerCommand {
+        &self.command
+    }
+}
+gpui_kit::actions!(
+    shellr,
+    [
+        UploadSelectedFiles,
+        ToggleUploadSelection,
+        SelectAllUploadFiles
+    ]
+);
+
+/// UI entities dispatch after their update has finished so Workspace can read
+/// their latest snapshot without re-entering a leased entity.
+pub(crate) trait ExplorerDispatch {
+    fn dispatch_explorer_action(
+        &self,
+        action: &ExplorerAction,
+        window: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::App,
+    );
+}
+impl ExplorerDispatch for gpui_kit::FocusHandle {
+    fn dispatch_explorer_action(
+        &self,
+        action: &ExplorerAction,
+        window: &mut gpui_kit::Window,
+        cx: &mut gpui_kit::App,
+    ) {
+        let focus = self.clone();
+        let action = action.clone();
+        window.defer(cx, move |window, cx| {
+            focus.dispatch_action(&action, window, cx)
+        });
+    }
+}

@@ -206,13 +206,23 @@ pub fn confirm_delete_group(
     name: &str,
     sessions: usize,
     subgroups: usize,
-    closes_tabs: bool,
+    affected: (bool, usize),
     on_delete: DeleteHandler,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let (closes_tabs, uploads) = affected;
     let title: SharedString = format!("删除“{name}”？").into();
-    let description = describe_contents(sessions, subgroups, closes_tabs);
+    let mut description = describe_contents(sessions, subgroups, closes_tabs);
+    if uploads > 0 {
+        description = Some(
+            format!(
+                "{}将停止 {uploads} 个上传批次并保留续传进度。",
+                description.unwrap_or_default()
+            )
+            .into(),
+        );
+    }
     window.open_alert_dialog(cx, move |alert, _, _| {
         alert
             .title(title.clone())

@@ -43,6 +43,9 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(&primary("0"), ZoomReset, None),
         KeyBinding::new(&primary("q"), Quit, None),
         KeyBinding::new("shift-escape", ToggleZoom, None),
+        KeyBinding::new("f5", UploadSelectedFiles, Some("LocalFileList")),
+        KeyBinding::new("space", ToggleUploadSelection, Some("LocalFileList")),
+        KeyBinding::new(&primary("a"), SelectAllUploadFiles, Some("LocalFileList")),
         KeyBinding::new("enter", ConnectSelected, Some(SESSION_PANEL_CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-c", CopyTerminal, Some(TERMINAL_KEY_CONTEXT)),

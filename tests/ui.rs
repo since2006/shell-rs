@@ -21,6 +21,10 @@ use shellr::session::{
     AuthKind, ConnectionState, GroupId, HostOs, SessionDatabase, SessionDraft, SessionId,
     SessionStore,
 };
+use shellr::sftp::{
+    DirectoryEntry, DirectoryListing, EntryKind, FileMetadata, LocalDirectoryProvider, RemotePath,
+    SftpCommand, SftpEvent, SftpTransport, SftpTransportProvider, UploadRequest,
+};
 use shellr::terminal::{
     FixedRemoteTerminalTransportProvider, LocalTerminalId, RemoteTerminalId, TerminalLifecycle,
     TerminalPrompt, TerminalPromptField, TerminalPromptKind, TerminalPromptReply, TerminalSize,
@@ -57,10 +61,12 @@ fn open_workspace_with_store(
             FakeTerminalFactory::default(),
         )));
         let view = cx.new(|cx| {
-            Workspace::new_with_transport_providers(
+            Workspace::new_with_services(
                 store,
                 remote,
                 Arc::new(FakeTerminalFactory::default()),
+                Arc::new(FakeSftpProvider::default()),
+                Arc::new(FakeLocalDirectory),
                 window,
                 cx,
             )
@@ -209,7 +215,15 @@ fn open_workspace_with_factory(
             FakeTerminalFactory::default(),
         )));
         let view = cx.new(|cx| {
-            Workspace::new_with_transport_providers(store, remote, factory.clone(), window, cx)
+            Workspace::new_with_services(
+                store,
+                remote,
+                factory.clone(),
+                Arc::new(FakeSftpProvider::default()),
+                Arc::new(FakeLocalDirectory),
+                window,
+                cx,
+            )
         });
         workspace = Some(view.clone());
         Root::new(view, window, cx)
@@ -228,10 +242,12 @@ fn open_workspace_with_remote_factory(
         let store = cx.new(|_| store);
         let remote = Arc::new(FixedRemoteTerminalTransportProvider::new(factory.clone()));
         let view = cx.new(|cx| {
-            Workspace::new_with_transport_providers(
+            Workspace::new_with_services(
                 store,
                 remote,
                 Arc::new(FakeTerminalFactory::default()),
+                Arc::new(FakeSftpProvider::default()),
+                Arc::new(FakeLocalDirectory),
                 window,
                 cx,
             )
@@ -618,7 +634,7 @@ async fn connection_edits_reconnect_once_but_display_edits_do_not(cx: &mut TestA
 }
 
 #[gpui_kit::test]
-fn opening_mock_sftp_does_not_change_connection_state(cx: &mut TestAppContext) {
+async fn opening_sftp_updates_connection_state_without_terminal(cx: &mut TestAppContext) {
     let (store, id) = one_session_store(AuthKind::Auto);
     let (handle, workspace) = open_workspace_with_store(cx, store);
 
@@ -627,14 +643,24 @@ fn opening_mock_sftp_does_not_change_connection_state(cx: &mut TestAppContext) {
         window.dispatch_action(Box::new(OpenExplorer(id)), cx);
     })
     .unwrap();
-    cx.run_until_parked();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        workspace
+            .read(cx)
+            .store()
+            .read(cx)
+            .session(id)
+            .unwrap()
+            .state
+            == ConnectionState::Connected
+    })
+    .await;
 
     cx.update(|cx| {
         let workspace = workspace.read(cx);
         assert!(workspace.explorer(id).is_some());
         assert_eq!(
             workspace.store().read(cx).session(id).unwrap().state,
-            shellr::session::ConnectionState::Disconnected
+            shellr::session::ConnectionState::Connected
         );
     });
 }
@@ -863,7 +889,7 @@ fn search_filters_the_tree(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn sftp_button_opens_explorer_and_navigates(cx: &mut TestAppContext) {
+async fn sftp_button_opens_explorer_and_navigates(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
@@ -883,6 +909,14 @@ fn sftp_button_opens_explorer_and_navigates(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
 
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("remote-path")
+            .is_some_and(|p| p.value() == Some("~"))
+    })
+    .await;
+
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find(("explorer", DB_01)).visible());
@@ -895,6 +929,11 @@ fn sftp_button_opens_explorer_and_navigates(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
 
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("remote-path").value() == Some("/home")
+    })
+    .await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find("remote-path").value(), Some("/home"));
@@ -2126,4 +2165,618 @@ async fn the_start_page_marks_recent_hosts_with_their_operating_system(cx: &mut 
         );
     })
     .unwrap();
+}
+
+#[derive(Default)]
+struct FakeSftpProvider {
+    requests: Arc<Mutex<Vec<UploadRequest>>>,
+    events: Arc<Mutex<Vec<async_channel::Sender<SftpEvent>>>>,
+}
+impl SftpTransportProvider for FakeSftpProvider {
+    fn create(&self, _: &shellr::session::Session) -> Box<dyn SftpTransport> {
+        Box::new(FakeSftpTransport {
+            requests: self.requests.clone(),
+            events: self.events.clone(),
+        })
+    }
+}
+struct FakeSftpTransport {
+    requests: Arc<Mutex<Vec<UploadRequest>>>,
+    events: Arc<Mutex<Vec<async_channel::Sender<SftpEvent>>>>,
+}
+impl SftpTransport for FakeSftpTransport {
+    fn run(
+        self: Box<Self>,
+        commands: async_channel::Receiver<SftpCommand>,
+        events: async_channel::Sender<SftpEvent>,
+    ) -> anyhow::Result<()> {
+        use shellr::sftp::{UploadChoice, UploadPhase, UploadProgress};
+        self.events.lock().unwrap().push(events.clone());
+        events.send_blocking(SftpEvent::Connected {
+            home: RemotePath::new("/home/tester")?,
+        })?;
+        while let Ok(command) = commands.recv_blocking() {
+            match command {
+                SftpCommand::List { request_id, path } => {
+                    if path.as_str() == "/slow" {
+                        continue;
+                    }
+                    let result = match path.as_str() {
+                        "/denied" => Err("权限不足".into()),
+                        "/empty" => Ok(DirectoryListing::new("/empty", vec![])),
+                        _ => Ok(fake_listing(path.as_str())),
+                    };
+                    events.send_blocking(SftpEvent::Listed { request_id, result })?;
+                }
+                SftpCommand::Upload(request) => {
+                    self.requests.lock().unwrap().push(request);
+                    events.send_blocking(SftpEvent::Progress(Default::default()))?;
+                }
+                SftpCommand::Cancel => {
+                    events.send_blocking(SftpEvent::Progress(UploadProgress::new(
+                        UploadPhase::Stopped,
+                    )))?;
+                }
+                SftpCommand::Resume => {
+                    events.send_blocking(SftpEvent::Progress(UploadProgress::new(
+                        UploadPhase::Uploading,
+                    )))?;
+                }
+                SftpCommand::Answer { answer, .. } => {
+                    events.send_blocking(SftpEvent::Progress(UploadProgress::new(
+                        if answer.choice() == UploadChoice::Cancel {
+                            UploadPhase::Stopped
+                        } else {
+                            UploadPhase::Completed
+                        },
+                    )))?;
+                }
+                SftpCommand::Shutdown => break,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+struct FakeLocalDirectory;
+impl LocalDirectoryProvider for FakeLocalDirectory {
+    fn home(&self) -> std::path::PathBuf {
+        "/local/tester".into()
+    }
+    fn list(&self, path: &std::path::Path) -> anyhow::Result<DirectoryListing> {
+        Ok(fake_listing(path.to_str().unwrap()))
+    }
+}
+fn fake_listing(path: &str) -> DirectoryListing {
+    DirectoryListing::new(
+        path,
+        vec![
+            DirectoryEntry::new(
+                "文件 甲.txt",
+                FileMetadata::new(EntryKind::File, 12, Some(100), Some(0o644)),
+            ),
+            DirectoryEntry::new(
+                "文件 乙.txt",
+                FileMetadata::new(EntryKind::File, 34, Some(200), Some(0o644)),
+            ),
+            DirectoryEntry::new(
+                "目录",
+                FileMetadata::new(EntryKind::Directory, 0, None, Some(0o755)),
+            ),
+        ],
+    )
+}
+
+fn open_workspace_with_sftp(
+    cx: &mut TestAppContext,
+    provider: Arc<FakeSftpProvider>,
+) -> (WindowHandle<Root>, Entity<Workspace>) {
+    cx.update(shellr::init);
+    let mut workspace = None;
+    let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
+        let store = cx.new(|_| SessionStore::seed());
+        let remote = Arc::new(FixedRemoteTerminalTransportProvider::new(Arc::new(
+            FakeTerminalFactory::default(),
+        )));
+        let view = cx.new(|cx| {
+            Workspace::new_with_services(
+                store,
+                remote,
+                Arc::new(FakeTerminalFactory::default()),
+                provider,
+                Arc::new(FakeLocalDirectory),
+                window,
+                cx,
+            )
+        });
+        workspace = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    (handle, workspace.unwrap())
+}
+async fn open_test_explorer(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(OpenExplorer(SessionId(DB_01))), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("remote-path")
+            .is_some_and(|p| p.value() == Some("~"))
+            && window
+                .within(("local-pane", DB_01))
+                .try_find("file:文件 甲.txt")
+                .is_some()
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn sftp_multi_selection_keyboard_upload_freezes_paths_and_cancel_resumes(
+    cx: &mut TestAppContext,
+) {
+    use shellr::app::{ExplorerAction, ExplorerCommand};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider.clone());
+    open_test_explorer(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window
+            .within(("local-pane", DB_01))
+            .click("file:文件 甲.txt", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("space", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            workspace
+                .read(cx)
+                .explorer(SessionId(DB_01))
+                .unwrap()
+                .read(cx)
+                .local()
+                .read(cx)
+                .upload_sources(),
+            vec![std::path::PathBuf::from("/local/tester/文件 甲.txt")]
+        );
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("cmd-a", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            workspace
+                .read(cx)
+                .explorer(SessionId(DB_01))
+                .unwrap()
+                .read(cx)
+                .local()
+                .read(cx)
+                .upload_sources()
+                .len(),
+            3
+        );
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("f5", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("upload-confirm").visible());
+        window.click("upload-target", cx);
+        window.press("cmd-a", cx);
+        window.input("/固定目标", cx);
+        window.click("upload-confirm", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("cancel-upload").is_some()
+    })
+    .await;
+    assert_eq!(
+        provider.requests.lock().unwrap()[0].destination().as_str(),
+        "/固定目标"
+    );
+    assert_eq!(provider.requests.lock().unwrap()[0].sources().len(), 3);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                SessionId(DB_01),
+                ExplorerCommand::Navigate {
+                    remote: true,
+                    path: "/other".into(),
+                },
+            )),
+            cx,
+        );
+        window.click("cancel-upload", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("resume-upload").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("resume-upload", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("cancel-upload").is_some()
+    })
+    .await;
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    assert_eq!(
+        provider.requests.lock().unwrap()[0].destination().as_str(),
+        "/固定目标"
+    );
+}
+
+#[gpui_kit::test]
+async fn sftp_native_picker_and_external_drop_share_confirmation(cx: &mut TestAppContext) {
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, _) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("choose-upload", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.files && options.directories && options.multiple);
+        Some(vec!["/tmp/甲".into(), "/tmp/目录".into()])
+    });
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("upload-confirm").visible());
+        assert_eq!(window.find("upload-target").value(), Some("/home/tester"));
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within(("remote-pane", DB_01)).hover("file:目录", cx);
+        window.render_frame(cx);
+        let position = window
+            .within(("remote-pane", DB_01))
+            .find("file:目录")
+            .bounds()
+            .center();
+        let paths =
+            gpui_kit::ExternalPaths(vec![std::path::PathBuf::from("/tmp/Finder 文件")].into());
+        window.dispatch_event(
+            gpui_kit::FileDropEvent::Entered { position, paths }.to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            gpui_kit::FileDropEvent::Submit { position }.to_platform_input(),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("upload-confirm").visible());
+        assert_eq!(
+            window.find("upload-target").value(),
+            Some("/home/tester/目录")
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn sftp_internal_drag_conflict_and_close_confirmation(cx: &mut TestAppContext) {
+    use shellr::sftp::{UploadQuestion, UploadQuestionKind};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider.clone());
+    open_test_explorer(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let from = window
+            .within(("local-pane", DB_01))
+            .find("file:文件 甲.txt")
+            .bounds()
+            .center();
+        let to = window
+            .within(("remote-pane", DB_01))
+            .find("file:目录")
+            .bounds()
+            .center();
+        window.drag(from, to, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("upload-target").value(),
+            Some("/home/tester/目录")
+        );
+        window.click("upload-confirm", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("cancel-upload").is_some()
+    })
+    .await;
+    provider.events.lock().unwrap()[0]
+        .send_blocking(SftpEvent::Question(UploadQuestion::new(
+            900,
+            UploadQuestionKind::Conflict,
+            "/home/tester/目录/文件 甲.txt",
+            "目标已存在",
+        )))
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("upload-question-confirm").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("upload-apply-all", cx);
+        window.click("upload-question-cancel", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("resume-upload").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("resume-upload", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("cancel-upload").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("close-explorer", DB_01), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("ok").visible());
+        assert!(workspace.read(cx).explorer(SessionId(DB_01)).is_some());
+        window.click("ok", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| assert!(workspace.read(cx).explorer(SessionId(DB_01)).is_none()));
+}
+
+#[gpui_kit::test]
+async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
+    cx: &mut TestAppContext,
+) {
+    use shellr::app::{ExplorerAction, ExplorerCommand};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("local-pane", DB_01))
+            .click("check:文件 乙.txt", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("local-pane", DB_01))
+            .click(("col-header", 1usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("local-pane", DB_01))
+            .click(("col-header", 1usize), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            workspace
+                .read(cx)
+                .explorer(SessionId(DB_01))
+                .unwrap()
+                .read(cx)
+                .local()
+                .read(cx)
+                .upload_sources(),
+            vec![std::path::PathBuf::from("/local/tester/文件 乙.txt")]
+        )
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                SessionId(DB_01),
+                ExplorerCommand::Check {
+                    name: "文件 甲.txt".into(),
+                    checked: true,
+                    extend: true,
+                },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            workspace
+                .read(cx)
+                .explorer(SessionId(DB_01))
+                .unwrap()
+                .read(cx)
+                .local()
+                .read(cx)
+                .upload_sources()
+                .len(),
+            2
+        )
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("local-pane", DB_01))
+            .click("file:文件 甲.txt", cx);
+        window.press("f5", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("upload-confirm").visible());
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    // F5 works again without clicking a pane after dismissing the dialog.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("f5", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("upload-confirm").visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn sftp_discards_stale_directory_replies(cx: &mut TestAppContext) {
+    use shellr::app::{ExplorerAction, ExplorerCommand};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider.clone());
+    open_test_explorer(cx, handle).await;
+    for path in ["/slow", "/fresh"] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.dispatch_action(
+                Box::new(ExplorerAction::new(
+                    SessionId(DB_01),
+                    ExplorerCommand::Navigate {
+                        remote: true,
+                        path: path.into(),
+                    },
+                )),
+                cx,
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        workspace
+            .read(cx)
+            .explorer(SessionId(DB_01))
+            .unwrap()
+            .read(cx)
+            .remote()
+            .read(cx)
+            .path()
+            == "/fresh"
+    })
+    .await;
+    provider.events.lock().unwrap()[0]
+        .send_blocking(SftpEvent::Listed {
+            request_id: 2,
+            result: Ok(fake_listing("/slow")),
+        })
+        .unwrap();
+    // Follow with an ordinary command and wait for its reply to ensure both events were consumed.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                SessionId(DB_01),
+                ExplorerCommand::Refresh { remote: true },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("remote-path").value() == Some("/fresh")
+    })
+    .await;
+    cx.update(|cx| {
+        assert_eq!(
+            workspace
+                .read(cx)
+                .explorer(SessionId(DB_01))
+                .unwrap()
+                .read(cx)
+                .remote()
+                .read(cx)
+                .path(),
+            "/fresh"
+        )
+    });
+}
+
+#[gpui_kit::test]
+async fn sftp_controls_fit_small_window_in_light_dark_and_zoom(cx: &mut TestAppContext) {
+    use gpui_kit::component::{Theme, ThemeMode};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, _) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    for mode in [ThemeMode::Light, ThemeMode::Dark] {
+        for zoom in [12., 20.] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                Theme::change(mode, Some(window), cx);
+                Theme::global_mut(cx).font_size = px(zoom);
+                window.resize(size(px(960.), px(600.)));
+                window.render_frame(cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let local = window.find(("local-pane", DB_01)).bounds();
+                let upload = window.find("upload").bounds();
+                let choose = window.find("choose-upload").bounds();
+                assert!(upload.left() >= local.left() && choose.right() <= local.right());
+                assert_eq!(upload.top(), choose.top());
+                assert!(window.find("remote-path").visible());
+            })
+            .unwrap();
+        }
+    }
 }
