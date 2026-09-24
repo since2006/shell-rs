@@ -218,6 +218,13 @@ impl SessionDatabase {
         Ok(())
     }
 
+    /// Save an expand-all or collapse-all command in one database write.
+    pub fn set_all_groups_expanded(&self, expanded: bool) -> rusqlite::Result<()> {
+        self.connection
+            .execute("UPDATE groups SET expanded = ?1", params![expanded])?;
+        Ok(())
+    }
+
     /// Deleting a group takes its subgroups and their sessions with it, via
     /// the `ON DELETE CASCADE` on both foreign keys.
     pub fn remove_group(&self, id: GroupId) -> rusqlite::Result<()> {

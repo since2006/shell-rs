@@ -50,6 +50,13 @@ impl RecentSessions {
         }
     }
 
+    /// A newly shown start page begins without a selected host.
+    pub(super) fn clear_selection(&mut self, cx: &mut Context<Self>) {
+        if self.selected.take().is_some() {
+            cx.notify();
+        }
+    }
+
     fn rows(&self, cx: &App) -> Vec<RecentRow> {
         let store = self.store.read(cx);
         store

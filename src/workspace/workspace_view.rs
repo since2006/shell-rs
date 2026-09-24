@@ -19,12 +19,13 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseTerminal, ConnectSession, CopyTerminal,
-    DeleteGroup, DeleteSession, DisconnectSession, DuplicateSession, EditSession, ExplorerAction,
-    ExplorerCommand, FocusSearch, MoveSessionNode, NewChildGroup, NewGroup, NewLocalTerminal,
-    NewSession, NewSessionInGroup, OpenExplorer, PasteTerminal, ReconnectTerminal, RenameGroup,
-    RestartLocalTerminal, SelectAllUploadFiles, ToggleSessionPanel, ToggleTheme,
-    ToggleUploadSelection, UploadSelectedFiles, ZoomIn, ZoomOut, ZoomReset,
+    CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseTerminal, CollapseAllGroups,
+    ConnectGroup, ConnectSession, CopyTerminal, DeleteGroup, DeleteSession, DisconnectSession,
+    DuplicateSession, EditSession, ExpandAllGroups, ExplorerAction, ExplorerCommand, FocusSearch,
+    MoveSessionNode, NewChildGroup, NewGroup, NewLocalTerminal, NewSession, NewSessionInGroup,
+    OpenExplorer, PasteTerminal, ReconnectTerminal, RenameGroup, RestartLocalTerminal,
+    SelectAllUploadFiles, ToggleSessionPanel, ToggleTheme, ToggleUploadSelection,
+    UploadSelectedFiles, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::explorer::{ExplorerPanel, ExplorerPanelEvent, confirm_close_upload};
 use crate::session::{
@@ -352,6 +353,8 @@ impl Workspace {
         let was_empty = self.skin.is_center_empty();
         self.skin.set_center_empty(empty, cx);
         if empty && !was_empty {
+            self.recent
+                .update(cx, |recent, cx| recent.clear_selection(cx));
             let page = self.recent.read(cx).focus_handle(cx);
             window.focus(&page, cx);
         }
@@ -751,7 +754,27 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let session_id = action.0;
+        self.connect_session(action.0, window, cx);
+    }
+
+    fn on_connect_group(
+        &mut self,
+        action: &ConnectGroup,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let session_ids = self.store.read(cx).sessions_under(action.0);
+        for session_id in session_ids {
+            self.connect_session(session_id, window, cx);
+        }
+    }
+
+    fn connect_session(
+        &mut self,
+        session_id: SessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.store.read(cx).session(session_id).is_none() {
             return;
         }
@@ -1153,6 +1176,31 @@ impl Workspace {
         open_group_dialog(None, None, self.store.clone(), window, cx);
     }
 
+    fn on_expand_all_groups(
+        &mut self,
+        _: &ExpandAllGroups,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_all_groups_expanded(true, cx);
+    }
+
+    fn on_collapse_all_groups(
+        &mut self,
+        _: &CollapseAllGroups,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_all_groups_expanded(false, cx);
+    }
+
+    fn set_all_groups_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
+        self.store
+            .update(cx, |store, cx| store.set_all_groups_expanded(expanded, cx));
+        self.session_panel
+            .update(cx, |panel, cx| panel.set_all_groups_expanded(expanded, cx));
+    }
+
     fn on_new_child_group(
         &mut self,
         action: &NewChildGroup,
@@ -1517,10 +1565,13 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_delete_session))
             .on_action(cx.listener(Self::on_new_session_in_group))
             .on_action(cx.listener(Self::on_new_group))
+            .on_action(cx.listener(Self::on_expand_all_groups))
+            .on_action(cx.listener(Self::on_collapse_all_groups))
             .on_action(cx.listener(Self::on_new_child_group))
             .on_action(cx.listener(Self::on_rename_group))
             .on_action(cx.listener(Self::on_delete_group))
             .on_action(cx.listener(Self::on_connect_session))
+            .on_action(cx.listener(Self::on_connect_group))
             .on_action(cx.listener(Self::on_disconnect_session))
             .on_action(cx.listener(Self::on_reconnect_terminal))
             .on_action(cx.listener(Self::on_open_explorer))

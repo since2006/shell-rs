@@ -1,6 +1,8 @@
 //! UI integration tests: the production `Workspace` rendered in a headless
 //! window, driven through real pointer and keyboard events.
 
+use std::io::Write as _;
+use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
@@ -13,13 +15,13 @@ use gpui_kit::{
 };
 
 use shellr::app::{
-    ConnectSession, DeleteGroup, DeleteSession, EditSession, NewSessionInGroup, OpenExplorer,
-    RenameGroup,
+    CollapseAllGroups, ConnectGroup, ConnectSession, DeleteGroup, DeleteSession, EditSession,
+    ExpandAllGroups, NewSessionInGroup, OpenExplorer, RenameGroup,
 };
 use shellr::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
 use shellr::session::{
-    AuthKind, ConnectionState, GroupId, HostOs, SessionDatabase, SessionDraft, SessionId,
-    SessionStore,
+    AuthKind, ConnectionState, GroupDraft, GroupId, HostOs, SessionDatabase, SessionDraft,
+    SessionId, SessionStore,
 };
 use shellr::sftp::{
     DirectoryEntry, DirectoryListing, EntryKind, FileMetadata, LocalDirectoryProvider, RemotePath,
@@ -34,8 +36,10 @@ use shellr::workspace::Workspace;
 
 /// Seeded session ids, in insertion order (see `SessionStore::seed`).
 const WEB_01: u64 = 1;
+const WEB_02: u64 = 2;
 const DB_01: u64 = 3;
 const STAGING_API: u64 = 4;
+const DEV_BOX: u64 = 6;
 const INITIAL_WEB_TERMINAL: u64 = 1;
 const INITIAL_STAGING_TERMINAL: u64 = 2;
 const FIRST_NEW_TERMINAL: u64 = 3;
@@ -862,6 +866,72 @@ async fn new_session_dialog_validates_then_inserts(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+async fn session_dialog_tests_ssh_service_without_saving(cx: &mut TestAppContext) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (reply, resume) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        resume.recv_timeout(Duration::from_secs(3)).unwrap();
+        stream.write_all(b"SSH-2.0-test-server\r\n").unwrap();
+    });
+    let (handle, workspace) = open_workspace_with_store(cx, SessionStore::empty());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("new-session", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let test = window.find("test-connection").bounds();
+        let cancel = window.find("cancel").bounds();
+        let commit = window.find("commit").bounds();
+        assert!(test.right() < cancel.left());
+        assert!(cancel.right() < commit.left());
+        assert!(commit.size.width < window.find("session-host").bounds().size.width);
+
+        window.click("test-connection", cx);
+    })
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("connection-test-result").label(),
+            Some("请输入主机")
+        );
+        window.click("session-host", cx);
+        window.input("127.0.0.1", cx);
+        window.click("session-port", cx);
+        #[cfg(target_os = "macos")]
+        window.press("cmd-a", cx);
+        #[cfg(not(target_os = "macos"))]
+        window.press("ctrl-a", cx);
+        window.input(&port.to_string(), cx);
+        window.click("test-connection", cx);
+    })
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("test-connection").visible());
+        assert!(window.try_find("connection-test-result").is_none());
+    })
+    .unwrap();
+    reply.send(()).unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("connection-test-result")
+            .and_then(|result| result.label().map(str::to_string))
+            .is_some_and(|message| message.contains("SSH 服务可达"))
+    })
+    .await;
+    server.join().unwrap();
+    cx.update(|cx| assert!(workspace.read(cx).store().read(cx).sessions().is_empty()));
+}
+
+#[gpui_kit::test]
 fn search_filters_the_tree(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
 
@@ -952,6 +1022,123 @@ fn group_expansion_survives_reopening_the_database(cx: &mut TestAppContext) {
             .unwrap()
             .expanded
     );
+}
+
+#[gpui_kit::test]
+fn expand_and_collapse_all_groups_include_nested_groups_and_persist(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shellr.db");
+    let database = SessionDatabase::open(&path).unwrap();
+    let mut seed = SessionStore::seed();
+    let nested =
+        seed.insert_group_unnotified(GroupDraft::new("内部服务", Some(GroupId(PRODUCTION))));
+    for group in seed.groups() {
+        database.insert_group(group).unwrap();
+    }
+    for session in seed.sessions() {
+        database.insert_session(session).unwrap();
+    }
+    let (handle, _) = open_workspace_with_store(cx, SessionStore::load(database).unwrap());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(("group-row", nested.0)).visible());
+        assert!(window.find(("session-row", WEB_01)).visible());
+        window.dispatch_action(Box::new(CollapseAllGroups), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(("group-row", PRODUCTION)).visible());
+        assert!(window.try_find(("group-row", nested.0)).is_none());
+        assert!(window.try_find(("session-row", WEB_01)).is_none());
+    })
+    .unwrap();
+    assert!(
+        SessionDatabase::open(&path)
+            .unwrap()
+            .load()
+            .unwrap()
+            .groups
+            .iter()
+            .all(|group| !group.expanded)
+    );
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(ExpandAllGroups), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(("group-row", nested.0)).visible());
+        assert!(window.find(("session-row", WEB_01)).visible());
+    })
+    .unwrap();
+    let database = SessionDatabase::open(&path).unwrap();
+    assert!(
+        database
+            .load()
+            .unwrap()
+            .groups
+            .iter()
+            .all(|group| group.expanded)
+    );
+    let (reopened, _) = open_workspace_with_store(cx, SessionStore::load(database).unwrap());
+    cx.update_window(reopened.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(("group-row", nested.0)).visible());
+        assert!(window.find(("session-row", WEB_01)).visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn connect_group_opens_each_host_in_its_subtree(cx: &mut TestAppContext) {
+    let mut store = SessionStore::seed();
+    let child =
+        store.insert_group_unnotified(GroupDraft::new("内部服务", Some(GroupId(PRODUCTION))));
+    let grandchild = store.insert_group_unnotified(GroupDraft::new("后端", Some(child)));
+    let nested_host = store.insert_unnotified(SessionDraft::new(
+        "backend-01",
+        "10.0.3.8",
+        22,
+        "deploy",
+        AuthKind::Auto,
+        Some(grandchild),
+    ));
+    let (handle, workspace) = open_workspace_with_store(cx, store);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(ConnectGroup(child)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.terminal_count(nested_host, cx), 1);
+        assert_eq!(workspace.terminal_count(SessionId(WEB_01), cx), 1);
+        assert_eq!(workspace.terminal_count(SessionId(DB_01), cx), 0);
+        assert_eq!(workspace.terminal_count(SessionId(STAGING_API), cx), 1);
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(ConnectGroup(GroupId(PRODUCTION))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.terminal_count(nested_host, cx), 2);
+        assert_eq!(workspace.terminal_count(SessionId(WEB_01), cx), 2);
+        assert_eq!(workspace.terminal_count(SessionId(WEB_02), cx), 1);
+        assert_eq!(workspace.terminal_count(SessionId(DB_01), cx), 1);
+        assert_eq!(workspace.terminal_count(SessionId(STAGING_API), cx), 1);
+        assert_eq!(workspace.terminal_count(SessionId(DEV_BOX), cx), 0);
+    });
 }
 
 #[gpui_kit::test]
@@ -1312,6 +1499,32 @@ async fn closing_every_tab_shows_the_recent_sessions(cx: &mut TestAppContext) {
         // Reconnecting moved web-01 to the front.
         assert_eq!(recent, ["web-01", "staging-api"]);
     });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("close-terminal", FIRST_NEW_TERMINAL), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("recent-sessions").visible());
+        // Reopening the page must not reconnect the old selection on Enter.
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("recent-sessions").visible());
+        assert!(
+            window
+                .try_find(("terminal", FIRST_NEW_TERMINAL + 1))
+                .is_none()
+        );
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]

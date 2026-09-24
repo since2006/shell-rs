@@ -30,6 +30,10 @@ gpui_kit::actions!(
         FocusSearch,
         /// Connect the session selected in the focused session list.
         ConnectSelected,
+        /// Expand every group in the session tree.
+        ExpandAllGroups,
+        /// Collapse every group in the session tree.
+        CollapseAllGroups,
         /// Close the center tab displayed most recently (the one ⌘W acts on).
         CloseActiveTab,
         /// Increase the application base font (interface zoom).
@@ -108,6 +112,10 @@ session_action!(
     DeleteSession
 );
 
+group_action!(
+    /// Open a terminal connection for every session in this group's subtree.
+    ConnectGroup
+);
 group_action!(
     /// Open the new-session dialog with this group pre-selected.
     NewSessionInGroup

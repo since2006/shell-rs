@@ -1,9 +1,9 @@
-use std::rc::Rc;
+use std::{rc::Rc, time::Duration};
 
 use gpui_kit::component::{
     ActiveTheme as _, IndexPath, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
-    dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter},
+    dialog::{Cancel, Confirm, DialogButtonProps, DialogFooter},
     form::{Field, Form},
     h_flex,
     input::{Input, InputContentType, InputEvent, InputState},
@@ -12,6 +12,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use zeroize::Zeroizing;
 
 use crate::secrets::{SecretRef, SharedSecretStore};
@@ -51,6 +52,8 @@ pub struct SessionForm {
     /// Parallel to the group select's rows; `None` is the root of the tree.
     group_ids: Vec<Option<GroupId>>,
     error: Option<SharedString>,
+    testing_connection: bool,
+    connection_test_result: Option<(bool, SharedString)>,
     editing_connected: bool,
     /// Where saved secrets are read from. Writes go through the store, which
     /// owns the one error channel.
@@ -179,6 +182,8 @@ impl SessionForm {
             group,
             group_ids,
             error: None,
+            testing_connection: false,
+            connection_test_result: None,
             editing_connected,
             secrets,
             password_loaded: false,
@@ -270,6 +275,51 @@ impl SessionForm {
             this.update_in(cx, |this, window, cx| {
                 this.key_path.update(cx, |input, cx| {
                     input.set_value(path.to_string_lossy().into_owned(), window, cx)
+                });
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Probe the endpoint currently shown in the form without saving it.
+    fn test_connection(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.testing_connection {
+            return;
+        }
+        let host = self.host.read(cx).value().trim().to_string();
+        let port = self.port.read(cx).value().trim().parse::<u16>();
+        let error = if host.is_empty() {
+            Some("请输入主机")
+        } else if !matches!(port, Ok(1..=u16::MAX)) {
+            Some("端口必须是 1 到 65535 之间的数字")
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            self.connection_test_result = Some((false, error.into()));
+            cx.notify();
+            return;
+        }
+        let port = port.expect("validated port");
+        let endpoint = format!("{host}:{port}");
+        self.testing_connection = true;
+        self.connection_test_result = None;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { probe_ssh_service(&host, port) })
+                .await;
+            this.update_in(cx, |this, _, cx| {
+                this.testing_connection = false;
+                this.connection_test_result = Some(match result {
+                    Ok(()) => (
+                        true,
+                        format!("{endpoint}：SSH 服务可达，尚未验证登录认证").into(),
+                    ),
+                    Err(error) => (false, format!("{endpoint}：{error}").into()),
                 });
                 cx.notify();
             })
@@ -505,7 +555,65 @@ impl Render for SessionForm {
                         .child(error),
                 )
             })
+            .when_some(
+                self.connection_test_result.clone(),
+                |form, (success, message)| {
+                    form.child(
+                        div()
+                            .id("connection-test-result")
+                            .test_support()
+                            .aria_label(message.clone())
+                            .text_sm()
+                            .text_color(if success {
+                                cx.theme().success
+                            } else {
+                                cx.theme().danger
+                            })
+                            .child(message),
+                    )
+                },
+            )
     }
+}
+
+/// Check that a TCP endpoint speaks SSH. Authentication is intentionally not
+/// attempted, so the form can test unsaved hosts without storing credentials
+/// or changing the application's trusted-host list.
+fn probe_ssh_service(host: &str, port: u16) -> Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("无法启动连接测试：{error}"))?;
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(8), async {
+            let mut stream = tokio::net::TcpStream::connect((host, port))
+                .await
+                .map_err(|error| format!("无法连接：{error}"))?;
+            stream
+                .write_all(b"SSH-2.0-shellr-probe\r\n")
+                .await
+                .map_err(|error| format!("无法发送 SSH 标识：{error}"))?;
+            for _ in 0..10 {
+                let mut line = Vec::new();
+                for _ in 0..255 {
+                    let byte = stream
+                        .read_u8()
+                        .await
+                        .map_err(|error| format!("无法读取 SSH 标识：{error}"))?;
+                    if byte == b'\n' {
+                        break;
+                    }
+                    line.push(byte);
+                }
+                if line.starts_with(b"SSH-2.0-") || line.starts_with(b"SSH-1.99-") {
+                    return Ok(());
+                }
+            }
+            Err("目标端口没有返回 SSH 服务标识".to_string())
+        })
+        .await
+        .map_err(|_| "连接超时".to_string())?
+    })
 }
 
 /// Open the new-session (`editing == None`) or edit-session dialog.
@@ -556,16 +664,49 @@ pub fn open_session_dialog(
 
     window.open_dialog(cx, {
         let form = form.clone();
-        move |dialog, _, _| {
+        move |dialog, _, cx| {
             dialog
                 .title(title.clone())
                 .child(form.clone())
                 .footer(
                     DialogFooter::new()
-                        .child(DialogClose::new().trigger(|button| button.label("取消")))
+                        .w_full()
+                        .justify_between()
                         .child(
-                            DialogAction::new()
-                                .child(Button::new("commit").primary().label(commit_label.clone())),
+                            Button::new("test-connection")
+                                .label("测试连接")
+                                .icon(crate::app::CatalogIcon::Plug)
+                                .small()
+                                .loading(form.read(cx).testing_connection)
+                                .on_click({
+                                    let form = form.clone();
+                                    move |event, window, cx| {
+                                        form.update(cx, |form, cx| {
+                                            form.test_connection(event, window, cx)
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(Button::new("cancel").label("取消").small().on_click(
+                                    |_, window, cx| {
+                                        window.dispatch_action(Box::new(Cancel), cx);
+                                    },
+                                ))
+                                .child(
+                                    Button::new("commit")
+                                        .primary()
+                                        .label(commit_label.clone())
+                                        .small()
+                                        .on_click(|_, window, cx| {
+                                            window.dispatch_action(
+                                                Box::new(Confirm { secondary: false }),
+                                                cx,
+                                            );
+                                        }),
+                                ),
                         ),
                 )
                 .on_ok({

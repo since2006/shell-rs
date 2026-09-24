@@ -509,6 +509,25 @@ impl SessionStore {
         true
     }
 
+    /// Apply one expansion choice to the whole tree and persist it together.
+    pub fn set_all_groups_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) -> bool {
+        if self.groups.iter().all(|group| group.expanded == expanded) {
+            return false;
+        }
+        for group in &mut self.groups {
+            group.expanded = expanded;
+        }
+        if let Some(database) = self.database.as_ref() {
+            self.report(
+                database.set_all_groups_expanded(expanded),
+                "保存所有分组展开状态",
+                cx,
+            );
+        }
+        cx.notify();
+        true
+    }
+
     /// Move a group or host in the tree and persist its new location and
     /// sibling order in one transaction.
     pub fn move_node(

@@ -21,9 +21,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, ConnectSelected, ConnectSession, DeleteGroup, DeleteSession, DuplicateSession,
-    EditSession, MoveSessionNode, NewChildGroup, NewGroup, NewSession, NewSessionInGroup,
-    OpenExplorer, RenameGroup, SESSION_PANEL_CONTEXT,
+    CatalogIcon, CollapseAllGroups, ConnectGroup, ConnectSelected, ConnectSession, DeleteGroup,
+    DeleteSession, DuplicateSession, EditSession, ExpandAllGroups, MoveSessionNode, NewChildGroup,
+    NewGroup, NewSession, NewSessionInGroup, OpenExplorer, RenameGroup, SESSION_PANEL_CONTEXT,
 };
 
 use crate::shared::HostMark;
@@ -269,6 +269,22 @@ impl SessionPanel {
 
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search.update(cx, |input, cx| input.focus(window, cx));
+    }
+
+    /// Refresh the visible tree after a bulk expansion change in the store.
+    pub fn set_all_groups_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
+        self.expanded = if expanded {
+            self.store
+                .read(cx)
+                .groups()
+                .iter()
+                .map(|group| group.id)
+                .collect()
+        } else {
+            HashSet::new()
+        };
+        self.right_clicked.set(None);
+        self.rebuild_tree(cx);
     }
 
     /// The node currently selected in the tree.
@@ -790,6 +806,12 @@ fn build_context_menu(node: Option<SessionNode>, menu: PopupMenu) -> PopupMenu {
             ),
         Some(SessionNode::Group(id)) => menu
             .menu_with_icon(
+                "连接组内主机",
+                Icon::new(CatalogIcon::Plug),
+                Box::new(ConnectGroup(id)),
+            )
+            .separator()
+            .menu_with_icon(
                 "新建会话…",
                 Icon::new(IconName::Plus),
                 Box::new(NewSessionInGroup(id)),
@@ -798,6 +820,17 @@ fn build_context_menu(node: Option<SessionNode>, menu: PopupMenu) -> PopupMenu {
                 "新建子分组…",
                 Icon::new(CatalogIcon::FolderPlus),
                 Box::new(NewChildGroup(id)),
+            )
+            .separator()
+            .menu_with_icon(
+                "展开全部分组",
+                Icon::new(IconName::FolderOpen),
+                Box::new(ExpandAllGroups),
+            )
+            .menu_with_icon(
+                "折叠全部分组",
+                Icon::new(IconName::Folder),
+                Box::new(CollapseAllGroups),
             )
             .separator()
             .menu_with_icon(
