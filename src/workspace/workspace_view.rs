@@ -56,6 +56,12 @@ const FONT_SIZE_MIN: f32 = 12.;
 const FONT_SIZE_MAX: f32 = 20.;
 const FONT_SIZE_DEFAULT: f32 = 16.;
 const FONT_SIZE_STEP: f32 = 2.;
+/// Paint order of the notification layer. gpui-base draws a dialog deferred
+/// at priority 0, and so does the dock skin's start page; a plain child would
+/// land under the dialog's backdrop and show through it only faintly. One step
+/// above them, and below popups (`POPUP_PRIORITY`), keeps a notification on
+/// top of dialogs without covering an open menu.
+const NOTIFICATION_PRIORITY: usize = 1;
 
 /// Window options for the main workspace window.
 pub fn window_options(cx: &mut App) -> WindowOptions {
@@ -1699,6 +1705,9 @@ impl Render for Workspace {
             .child(status)
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_dialog_layer(window, cx))
-            .children(Root::render_notification_layer(window, cx))
+            .children(
+                Root::render_notification_layer(window, cx)
+                    .map(|layer| deferred(layer).with_priority(NOTIFICATION_PRIORITY)),
+            )
     }
 }
