@@ -807,7 +807,7 @@ pub fn confirm_delete_session(
                 alert.description(format!(
                     "会一并关闭该会话已打开的终端和 SFTP 标签。{}",
                     if uploads > 0 {
-                        format!("将停止 {uploads} 个上传批次并保留续传进度。")
+                        format!("将停止 {uploads} 个传输批次并保留续传进度。")
                     } else {
                         String::new()
                     }

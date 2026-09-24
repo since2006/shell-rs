@@ -54,6 +54,35 @@ impl AuthKind {
     }
 }
 
+/// Which pane of a session's SFTP tab a bookmark belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BookmarkSide {
+    Local,
+    Remote,
+}
+
+impl BookmarkSide {
+    pub fn from_remote(remote: bool) -> Self {
+        if remote { Self::Remote } else { Self::Local }
+    }
+
+    /// The stored spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BookmarkSide::Local => "local",
+            BookmarkSide::Remote => "remote",
+        }
+    }
+
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "local" => Some(BookmarkSide::Local),
+            "remote" => Some(BookmarkSide::Remote),
+            _ => None,
+        }
+    }
+}
+
 /// The operating system running on a host, as reported by the session's own
 /// shell after it connects.
 ///

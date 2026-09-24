@@ -1,8 +1,11 @@
 use super::{
-    RemotePath, SftpCommand, SftpEvent, SftpTransport, SftpTransportProvider, UploadPhase,
+    RemotePath, SftpCommand, SftpEvent, SftpTransport, SftpTransportProvider, TransferDirection,
+    TransferPhase, TransferProgress,
     client::{SftpClient, is_network_error},
-    control::{Cancelled, UploadControl},
-    journal::Journal,
+    control::{Cancelled, TransferControl},
+    download::DownloadBatch,
+    journal::{DownloadJournal, Journal},
+    operations,
     upload::UploadBatch,
 };
 use crate::{
@@ -24,12 +27,15 @@ use tokio::sync::{RwLock, watch};
 pub struct SshSftpTransportProvider {
     connector: SshConnector,
     resume_dir: PathBuf,
+    download_resume_dir: PathBuf,
 }
 impl SshSftpTransportProvider {
-    pub fn new(connector: SshConnector, resume_dir: PathBuf) -> Self {
+    /// Upload and download resume records live in separate directories.
+    pub fn new(connector: SshConnector, resume_dir: PathBuf, download_resume_dir: PathBuf) -> Self {
         Self {
             connector,
             resume_dir,
+            download_resume_dir,
         }
     }
 }
@@ -39,6 +45,7 @@ impl SftpTransportProvider for SshSftpTransportProvider {
             connector: self.connector.clone(),
             config: SshConnectionConfig::from(session),
             journal: Journal::new(self.resume_dir.clone()),
+            download_journal: DownloadJournal::new(self.download_resume_dir.clone()),
         })
     }
 }
@@ -46,6 +53,51 @@ struct SshSftpTransport {
     connector: SshConnector,
     config: SshConnectionConfig,
     journal: Journal,
+    download_journal: DownloadJournal,
+}
+
+/// The session's one transfer batch, whichever way it goes.
+enum TransferBatch {
+    Upload(UploadBatch),
+    Download(DownloadBatch),
+}
+impl TransferBatch {
+    fn verify_host(&self, fingerprint: &str) -> Result<()> {
+        match self {
+            Self::Upload(batch) => batch.verify_host(fingerprint),
+            Self::Download(batch) => batch.verify_host(fingerprint),
+        }
+    }
+    fn is_complete(&self) -> bool {
+        match self {
+            Self::Upload(batch) => batch.is_complete(),
+            Self::Download(batch) => batch.is_complete(),
+        }
+    }
+    fn phase(&mut self, phase: TransferPhase, control: &TransferControl) {
+        match self {
+            Self::Upload(batch) => batch.phase(phase, control),
+            Self::Download(batch) => batch.phase(phase, control),
+        }
+    }
+    fn set_current(&mut self, current: String) {
+        match self {
+            Self::Upload(batch) => batch.progress.current = current,
+            Self::Download(batch) => batch.progress.current = current,
+        }
+    }
+    async fn run(&mut self, client: &SftpClient, control: &TransferControl) -> Result<()> {
+        match self {
+            Self::Upload(batch) => batch.run(client, control).await,
+            Self::Download(batch) => batch.run(client, control).await,
+        }
+    }
+    async fn discard(&self, client: &SftpClient) -> Result<()> {
+        match self {
+            Self::Upload(batch) => batch.discard(client).await,
+            Self::Download(batch) => batch.discard().await,
+        }
+    }
 }
 impl SftpTransport for SshSftpTransport {
     fn run(
@@ -131,20 +183,7 @@ impl SshSftpTransport {
                                     Some(connected) => match connected.list(&path).await {
                                         Ok(listing) => Ok(listing),
                                         Err(error) => {
-                                            if is_network_error(&error) {
-                                                let mut current = shared.write().await;
-                                                if current
-                                                    .as_ref()
-                                                    .is_some_and(|c| Arc::ptr_eq(c, &connected))
-                                                {
-                                                    *current = None;
-                                                    let _ = events
-                                                        .send(SftpEvent::Disconnected(
-                                                            "SFTP 连接中断，请重新连接".into(),
-                                                        ))
-                                                        .await;
-                                                }
-                                            }
+                                            drop_broken(&shared, &connected, &events, &error).await;
                                             Err(format!("无法读取目录：{error:#}"))
                                         }
                                     },
@@ -153,10 +192,37 @@ impl SshSftpTransport {
                                 let _ = events.send(SftpEvent::Listed { request_id, result }).await;
                             });
                         }
+                        SftpCommand::Operate {
+                            request_id,
+                            operation,
+                        } => {
+                            let shared = client.clone();
+                            let connected = client.read().await.clone();
+                            let events = events.clone();
+                            tokio::spawn(async move {
+                                let result = match connected {
+                                    Some(connected) => {
+                                        match operations::run(connected.as_ref(), &operation).await
+                                        {
+                                            Ok(()) => Ok(()),
+                                            Err(error) => {
+                                                drop_broken(&shared, &connected, &events, &error)
+                                                    .await;
+                                                Err(format!("{error:#}"))
+                                            }
+                                        }
+                                    }
+                                    None => Err("SFTP 未连接，请重新连接".into()),
+                                };
+                                let _ = events
+                                    .send(SftpEvent::Operated { request_id, result })
+                                    .await;
+                            });
+                        }
                         command => {
                             if busy.swap(true, Ordering::AcqRel) {
                                 let _ = events
-                                    .send(SftpEvent::Notice("已有上传批次正在处理".into()))
+                                    .send(SftpEvent::Notice("已有传输批次正在处理".into()))
                                     .await;
                             } else {
                                 cancel_tx.send_replace(false);
@@ -172,12 +238,12 @@ impl SshSftpTransport {
                 prompts.cancel_all();
             })
         };
-        let control = UploadControl {
+        let control = TransferControl {
             events: events.clone(),
             cancel,
             answers,
         };
-        let mut batch: Option<UploadBatch> = None;
+        let mut batch: Option<TransferBatch> = None;
         match control
             .run(self.connect(prompts.clone(), &events, &shutdown, &client))
             .await
@@ -209,17 +275,28 @@ impl SshSftpTransport {
                 }
             }
             let connected = client.read().await.clone().expect("connected above");
+            let direction = match &operation {
+                SftpCommand::Download(_) => TransferDirection::Download,
+                SftpCommand::Upload(_) => TransferDirection::Upload,
+                _ => batch
+                    .as_ref()
+                    .map(|batch| match batch {
+                        TransferBatch::Upload(_) => TransferDirection::Upload,
+                        TransferBatch::Download(_) => TransferDirection::Download,
+                    })
+                    .unwrap_or_default(),
+            };
             let prepared: Result<()> = async {
                 if let SftpCommand::Upload(request) = &operation {
                     batch = None;
                     events
-                        .send(SftpEvent::Progress(super::UploadProgress::default()))
+                        .send(SftpEvent::Progress(TransferProgress::default()))
                         .await?;
                     let target = control
                         .run(connected.canonicalize(request.destination()))
                         .await?;
                     let request = super::UploadRequest::new(request.sources().to_vec(), target)?;
-                    batch = Some(
+                    batch = Some(TransferBatch::Upload(
                         control
                             .run(UploadBatch::scan(
                                 &request,
@@ -229,7 +306,27 @@ impl SshSftpTransport {
                                 &control,
                             ))
                             .await?,
-                    );
+                    ));
+                }
+                if let SftpCommand::Download(request) = &operation {
+                    batch = None;
+                    events
+                        .send(SftpEvent::Progress(TransferProgress {
+                            direction: TransferDirection::Download,
+                            ..TransferProgress::default()
+                        }))
+                        .await?;
+                    batch = Some(TransferBatch::Download(
+                        DownloadBatch::scan(
+                            request,
+                            &self.config.endpoint(),
+                            connected.fingerprint(),
+                            self.download_journal.clone(),
+                            connected.as_ref(),
+                            &control,
+                        )
+                        .await?,
+                    ));
                 }
                 if let Some(batch) = &batch {
                     batch.verify_host(connected.fingerprint())?;
@@ -240,8 +337,9 @@ impl SshSftpTransport {
                     }
                     batch = None;
                     events
-                        .send(SftpEvent::Progress(super::UploadProgress {
-                            phase: UploadPhase::Completed,
+                        .send(SftpEvent::Progress(TransferProgress {
+                            direction,
+                            phase: TransferPhase::Completed,
                             ..Default::default()
                         }))
                         .await?;
@@ -252,11 +350,12 @@ impl SshSftpTransport {
             if let Err(error) = prepared {
                 events.send(SftpEvent::Notice(error.to_string())).await?;
                 if let Some(batch) = &mut batch {
-                    batch.phase(UploadPhase::Stopped, &control);
+                    batch.phase(TransferPhase::Stopped, &control);
                 } else {
                     events
-                        .send(SftpEvent::Progress(super::UploadProgress {
-                            phase: UploadPhase::Stopped,
+                        .send(SftpEvent::Progress(TransferProgress {
+                            direction,
+                            phase: TransferPhase::Stopped,
                             details: vec![error.to_string()],
                             ..Default::default()
                         }))
@@ -290,16 +389,16 @@ impl SshSftpTransport {
                         Err(error) if is_network_error(&error) => {
                             *client.write().await = None;
                             events
-                                .send(SftpEvent::Disconnected("连接中断，上传进度已保留".into()))
+                                .send(SftpEvent::Disconnected("连接中断，传输进度已保留".into()))
                                 .await?;
                             let mut recovered = false;
                             while reconnects < 3 {
-                                batch.progress.current = format!(
+                                batch.set_current(format!(
                                     "将在 {} 秒后重连（{}/3）",
                                     [1, 3, 10][reconnects],
                                     reconnects + 1
-                                );
-                                batch.phase(UploadPhase::Reconnecting, &control);
+                                ));
+                                batch.phase(TransferPhase::Reconnecting, &control);
                                 let delay = Duration::from_secs([1, 3, 10][reconnects]);
                                 reconnects += 1;
                                 if control
@@ -343,20 +442,20 @@ impl SshSftpTransport {
                             if recovered {
                                 continue;
                             }
-                            batch.phase(UploadPhase::Stopped, &control);
+                            batch.phase(TransferPhase::Stopped, &control);
                             break;
                         }
                         Err(error) => {
                             if !error.is::<Cancelled>() {
                                 events.send(SftpEvent::Notice(error.to_string())).await?;
                             }
-                            batch.phase(UploadPhase::Stopped, &control);
+                            batch.phase(TransferPhase::Stopped, &control);
                             break;
                         }
                     }
                 }
                 if batch.is_complete() {
-                    batch.phase(UploadPhase::Completed, &control);
+                    batch.phase(TransferPhase::Completed, &control);
                 }
             }
             busy.store(false, Ordering::Release);
@@ -365,5 +464,25 @@ impl SshSftpTransport {
         router.abort();
         *client.write().await = None;
         Ok(())
+    }
+}
+
+/// A request failed because the connection broke: forget that client (unless
+/// a newer one already replaced it) and tell the panel once.
+async fn drop_broken(
+    shared: &RwLock<Option<Arc<SftpClient>>>,
+    connected: &Arc<SftpClient>,
+    events: &Sender<SftpEvent>,
+    error: &anyhow::Error,
+) {
+    if !is_network_error(error) {
+        return;
+    }
+    let mut current = shared.write().await;
+    if current.as_ref().is_some_and(|c| Arc::ptr_eq(c, connected)) {
+        *current = None;
+        let _ = events
+            .send(SftpEvent::Disconnected("SFTP 连接中断，请重新连接".into()))
+            .await;
     }
 }

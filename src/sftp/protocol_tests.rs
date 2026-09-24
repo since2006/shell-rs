@@ -121,7 +121,8 @@ impl server::Handler for Handler {
                     }
                     let mut bytes = vec![0; size as usize];
                     reader.read_exact(&mut bytes).await?;
-                    if bytes.first() == Some(&6) {
+                    // SSH_FXP_WRITE (6) for uploads, SSH_FXP_READ (5) for downloads.
+                    if matches!(bytes.first(), Some(&5) | Some(&6)) {
                         writes += 1;
                         if writes == 2
                             && interrupts
@@ -220,6 +221,7 @@ fn worker(port: u16, data: &std::path::Path) -> Worker {
             Arc::new(InMemorySecretStore::default()),
         ),
         data.join("upload-resume"),
+        data.join("download-resume"),
     );
     let session = Session::new(
         SessionId(1),
@@ -306,14 +308,14 @@ fn worker_uses_sftp_without_shell_and_reconnects_after_interrupted_write() {
         let mut reconnecting = false;
         loop {
             match next(&worker).await {
-                SftpEvent::Progress(p) if p.phase() == UploadPhase::Completed => {
+                SftpEvent::Progress(p) if p.phase() == TransferPhase::Completed => {
                     assert_eq!(p.succeeded(), 1);
                     break;
                 }
-                SftpEvent::Progress(p) if p.phase() == UploadPhase::Stopped => {
+                SftpEvent::Progress(p) if p.phase() == TransferPhase::Stopped => {
                     panic!("stopped unexpectedly: {p:?}")
                 }
-                SftpEvent::Progress(p) if p.phase() == UploadPhase::Reconnecting => {
+                SftpEvent::Progress(p) if p.phase() == TransferPhase::Reconnecting => {
                     reconnecting = true
                 }
                 SftpEvent::Question(q) => panic!("unexpected question: {q:?}"),
@@ -373,8 +375,8 @@ fn reconnect_exhaustion_waits_for_manual_resume_and_resets_budget() {
             .unwrap();
         loop {
             match next(&worker).await {
-                SftpEvent::Progress(p) if p.phase() == UploadPhase::Stopped => break,
-                SftpEvent::Progress(p) if p.phase() == UploadPhase::Completed => {
+                SftpEvent::Progress(p) if p.phase() == TransferPhase::Stopped => break,
+                SftpEvent::Progress(p) if p.phase() == TransferPhase::Completed => {
                     panic!("exhaustion should stop")
                 }
                 SftpEvent::Question(q) => panic!("unexpected question {q:?}"),
@@ -387,8 +389,8 @@ fn reconnect_exhaustion_waits_for_manual_resume_and_resets_budget() {
         worker.commands.send(SftpCommand::Resume).await.unwrap();
         loop {
             match next(&worker).await {
-                SftpEvent::Progress(p) if p.phase() == UploadPhase::Completed => break,
-                SftpEvent::Progress(p) if p.phase() == UploadPhase::Stopped => {
+                SftpEvent::Progress(p) if p.phase() == TransferPhase::Completed => break,
+                SftpEvent::Progress(p) if p.phase() == TransferPhase::Stopped => {
                     panic!("manual retry failed")
                 }
                 SftpEvent::Question(q) => panic!("unexpected question {q:?}"),
@@ -400,5 +402,58 @@ fn reconnect_exhaustion_waits_for_manual_resume_and_resets_budget() {
             std::fs::read(remote.join("file")).unwrap(),
             vec![1; 200_000]
         );
+    });
+}
+
+#[test]
+fn worker_downloads_and_resumes_after_an_interrupted_read() {
+    runtime().block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote");
+        std::fs::create_dir(&remote).unwrap();
+        let data: Vec<u8> = (0..300_007).map(|i| (i % 241) as u8).collect();
+        std::fs::write(remote.join("文件.bin"), &data).unwrap();
+        let out = temp.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        let Some(server) = server(remote.clone(), 1, false).await else {
+            return;
+        };
+        let worker = worker(server.port, temp.path());
+        let home = loop {
+            match next(&worker).await {
+                SftpEvent::Connected { home } => break home,
+                SftpEvent::Disconnected(e) => panic!("connect failed: {e}"),
+                _ => {}
+            }
+        };
+        worker
+            .commands
+            .send(SftpCommand::Download(
+                DownloadRequest::new(vec![home.join("文件.bin").unwrap()], out.clone()).unwrap(),
+            ))
+            .await
+            .unwrap();
+        let mut reconnecting = false;
+        loop {
+            match next(&worker).await {
+                SftpEvent::Progress(p) if p.phase() == TransferPhase::Completed => {
+                    assert_eq!(p.succeeded(), 1);
+                    assert_eq!(p.direction(), TransferDirection::Download);
+                    break;
+                }
+                SftpEvent::Progress(p) if p.phase() == TransferPhase::Stopped => {
+                    panic!("stopped unexpectedly: {p:?}")
+                }
+                SftpEvent::Progress(p) if p.phase() == TransferPhase::Reconnecting => {
+                    reconnecting = true
+                }
+                SftpEvent::Question(q) => panic!("unexpected question: {q:?}"),
+                _ => {}
+            }
+        }
+        assert!(reconnecting);
+        assert_eq!(server.connections.load(Ordering::SeqCst), 2);
+        assert_eq!(std::fs::read(out.join("文件.bin")).unwrap(), data);
+        assert!(!out.join("文件.bin.filepart").exists());
     });
 }

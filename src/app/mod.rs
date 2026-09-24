@@ -16,6 +16,9 @@ use crate::terminal::{TERMINAL_FIND_KEY_CONTEXT, TERMINAL_KEY_CONTEXT, terminal_
 /// Key context of the session panel, for bindings that only apply there.
 pub const SESSION_PANEL_CONTEXT: &str = "SessionPanel";
 pub const RECENT_SESSIONS_CONTEXT: &str = "RecentSessions";
+/// Key contexts of the two SFTP file lists.
+pub const LOCAL_FILE_LIST_CONTEXT: &str = "LocalFileList";
+pub const REMOTE_FILE_LIST_CONTEXT: &str = "RemoteFileList";
 
 /// Initialize GPUI Kit and everything global to the application.
 pub fn init(cx: &mut App) {
@@ -66,9 +69,6 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(&primary("0"), ZoomReset, None),
         KeyBinding::new(&primary("q"), Quit, None),
         KeyBinding::new("shift-escape", ToggleZoom, None),
-        KeyBinding::new("f5", UploadSelectedFiles, Some("LocalFileList")),
-        KeyBinding::new("space", ToggleUploadSelection, Some("LocalFileList")),
-        KeyBinding::new(&primary("a"), SelectAllUploadFiles, Some("LocalFileList")),
         KeyBinding::new("enter", ConnectSelected, Some(SESSION_PANEL_CONTEXT)),
         KeyBinding::new("enter", ConnectSelected, Some(RECENT_SESSIONS_CONTEXT)),
         #[cfg(target_os = "macos")]
@@ -106,5 +106,132 @@ fn key_bindings() -> Vec<KeyBinding> {
         ]);
     }
     bindings.extend(terminal_key_bindings());
+    bindings.extend(file_list_key_bindings());
+    bindings
+}
+
+/// WinSCP's file-panel keys, bound once per pane with the side baked into the
+/// command. The movement keys are bound one level deeper, at the table, so
+/// they replace `DataTable`'s own single-row selection keys.
+fn file_list_key_bindings() -> Vec<KeyBinding> {
+    use crate::explorer::CursorMotion;
+    #[cfg(target_os = "macos")]
+    const PRIMARY: &str = "cmd";
+    #[cfg(not(target_os = "macos"))]
+    const PRIMARY: &str = "ctrl";
+
+    let mut bindings = Vec::new();
+    for (context, remote) in [
+        (LOCAL_FILE_LIST_CONTEXT, false),
+        (REMOTE_FILE_LIST_CONTEXT, true),
+    ] {
+        let table = format!("{context} > DataTable");
+        let bind = |keys: &str, command: ExplorerCommand, context: &str| {
+            KeyBinding::new(keys, ExplorerShortcut(command), Some(context))
+        };
+        // Several keys per command: the last one registered is the one
+        // tooltips show, so WinSCP's key goes last.
+        #[cfg(target_os = "macos")]
+        bindings.extend([
+            bind("cmd-up", ExplorerCommand::Up { remote }, context),
+            bind("cmd-[", ExplorerCommand::Back { remote }, context),
+            bind("cmd-]", ExplorerCommand::Forward { remote }, context),
+            bind("cmd-backspace", ExplorerCommand::Delete { remote }, context),
+            bind("cmd-i", ExplorerCommand::Properties { remote }, context),
+            // ⌘H hides the app on macOS; Finder's home is ⌘⇧H.
+            bind("cmd-shift-h", ExplorerCommand::Home { remote }, context),
+        ]);
+        #[cfg(not(target_os = "macos"))]
+        bindings.push(bind("ctrl-h", ExplorerCommand::Home { remote }, context));
+        bindings.extend([
+            bind("backspace", ExplorerCommand::Up { remote }, context),
+            bind(
+                &format!("{PRIMARY}-\\"),
+                ExplorerCommand::Root { remote },
+                context,
+            ),
+            bind(
+                &format!("{PRIMARY}-r"),
+                ExplorerCommand::Refresh { remote },
+                context,
+            ),
+            bind("alt-left", ExplorerCommand::Back { remote }, context),
+            bind("alt-right", ExplorerCommand::Forward { remote }, context),
+            // WinSCP's Ctrl+B already toggles the session panel here.
+            bind(
+                &format!("{PRIMARY}-d"),
+                ExplorerCommand::AddBookmark { remote },
+                context,
+            ),
+            bind("f2", ExplorerCommand::Rename { remote }, context),
+            bind(
+                "f7",
+                ExplorerCommand::New {
+                    remote,
+                    kind: crate::explorer::NewEntryKind::Folder,
+                },
+                context,
+            ),
+            bind("delete", ExplorerCommand::Delete { remote }, context),
+            bind("f8", ExplorerCommand::Delete { remote }, context),
+            bind("f9", ExplorerCommand::Properties { remote }, context),
+            bind("f5", ExplorerCommand::Transfer { remote }, context),
+            bind(
+                "space",
+                ExplorerCommand::ToggleSelection { remote },
+                context,
+            ),
+            bind(
+                "insert",
+                ExplorerCommand::ToggleSelection { remote },
+                context,
+            ),
+            bind(
+                &format!("{PRIMARY}-a"),
+                ExplorerCommand::SelectAll { remote },
+                context,
+            ),
+            bind("enter", ExplorerCommand::Open { remote }, context),
+            #[cfg(target_os = "macos")]
+            bind("cmd-down", ExplorerCommand::Open { remote }, context),
+            bind(
+                "tab",
+                ExplorerCommand::FocusPane { remote: !remote },
+                &table,
+            ),
+            bind(
+                "shift-tab",
+                ExplorerCommand::FocusPane { remote: !remote },
+                &table,
+            ),
+            KeyBinding::new("left", NoAction {}, Some(&table)),
+            KeyBinding::new("right", NoAction {}, Some(&table)),
+        ]);
+        for (key, motion) in [
+            ("up", CursorMotion::Up),
+            ("down", CursorMotion::Down),
+            ("pageup", CursorMotion::PageUp),
+            ("pagedown", CursorMotion::PageDown),
+            ("home", CursorMotion::Home),
+            ("end", CursorMotion::End),
+        ] {
+            for extend in [false, true] {
+                let keys = if extend {
+                    format!("shift-{key}")
+                } else {
+                    key.to_string()
+                };
+                bindings.push(bind(
+                    &keys,
+                    ExplorerCommand::MoveCursor {
+                        remote,
+                        motion,
+                        extend,
+                    },
+                    &table,
+                ));
+            }
+        }
+    }
     bindings
 }

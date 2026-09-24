@@ -1,6 +1,7 @@
 use super::{DirectoryEntry, DirectoryListing, EntryKind, FileMetadata, RemotePath};
 use crate::ssh::{SshConnectionConfig, SshConnector, SshHandle, SshPrompts};
 use anyhow::{Result, anyhow, bail};
+use futures::StreamExt as _;
 use russh_sftp::{
     client::{RawSftpSession, error::Error},
     protocol::{FileAttributes, OpenFlags, Packet, StatusCode},
@@ -9,8 +10,17 @@ use std::sync::Arc;
 
 /// Small protocol seam, also implemented by deterministic fault-injection tests.
 pub(crate) trait RemoteFs {
+    /// `lstat`: a link describes itself. `None` when the path does not exist.
     async fn metadata(&self, path: &RemotePath) -> Result<Option<FileMetadata>>;
+    /// `stat`: follows links. `None` when the path or the link target is missing.
+    async fn stat(&self, path: &RemotePath) -> Result<Option<FileMetadata>>;
+    /// The entries of a directory without `.` and `..`, kinds as `lstat` reports them.
+    async fn read_dir(&self, path: &RemotePath) -> Result<Vec<DirectoryEntry>>;
     async fn open(&self, path: &RemotePath, create: bool) -> Result<String>;
+    /// Open an existing file for reading.
+    async fn open_read(&self, path: &RemotePath) -> Result<String>;
+    /// Up to `len` bytes at `offset`; may return fewer. `None` at end of file.
+    async fn read(&self, handle: &str, offset: u64, len: u32) -> Result<Option<Vec<u8>>>;
     async fn sync(&self, handle: &str) -> Result<()>;
     async fn write(&self, handle: &str, offset: u64, bytes: Vec<u8>) -> Result<()>;
     async fn close(&self, handle: &str) -> Result<()>;
@@ -25,6 +35,10 @@ pub(crate) trait RemoteFs {
     async fn readlink(&self, path: &RemotePath) -> Result<String>;
     async fn rename(&self, from: &RemotePath, to: &RemotePath, replace: bool) -> Result<()>;
     async fn remove(&self, path: &RemotePath) -> Result<()>;
+    /// Remove an empty directory.
+    async fn rmdir(&self, path: &RemotePath) -> Result<()>;
+    /// Set the permission bits of a path (`setstat`, which follows links).
+    async fn set_permissions(&self, path: &RemotePath, permissions: u32) -> Result<()>;
     fn atomic_replace(&self) -> bool;
 }
 
@@ -113,10 +127,57 @@ impl SftpClient {
                 .filename,
         )?)
     }
+    /// A directory for the browser: canonical path, owners, and what each
+    /// link points to (resolved concurrently, one `stat` per link).
     pub async fn list(&self, path: &RemotePath) -> Result<DirectoryListing> {
         let path = self.canonicalize(path).await?;
+        let entries = self.read_dir(&path).await?;
+        let entries = futures::stream::iter(entries)
+            .map(|entry| {
+                let path = &path;
+                async move {
+                    if entry.metadata().kind() != EntryKind::Symlink {
+                        return Ok(entry);
+                    }
+                    let target = self
+                        .stat(&path.join(entry.name())?)
+                        .await
+                        .or_else(|error| {
+                            if is_network_error(&error) {
+                                Err(error)
+                            } else {
+                                Ok(None)
+                            }
+                        })?;
+                    Ok::<_, anyhow::Error>(entry.with_target_kind(target.map(|m| m.kind())))
+                }
+            })
+            .buffered(16)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+        Ok(DirectoryListing::new(path.as_str(), entries))
+    }
+}
+impl RemoteFs for SftpClient {
+    async fn metadata(&self, path: &RemotePath) -> Result<Option<FileMetadata>> {
+        match self.raw.lstat(path.as_str()).await {
+            Ok(attrs) => Ok(Some(metadata(&attrs.attrs))),
+            Err(Error::Status(status)) if status.status_code == StatusCode::NoSuchFile => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+    async fn stat(&self, path: &RemotePath) -> Result<Option<FileMetadata>> {
+        match self.raw.stat(path.as_str()).await {
+            Ok(attrs) => Ok(Some(metadata(&attrs.attrs))),
+            Err(Error::Status(status)) if status.status_code == StatusCode::NoSuchFile => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+    async fn read_dir(&self, path: &RemotePath) -> Result<Vec<DirectoryEntry>> {
         let handle = self.raw.opendir(path.as_str()).await?.handle;
-        let result: Result<DirectoryListing> = async {
+        let result: Result<Vec<DirectoryEntry>> = async {
             let mut entries = Vec::new();
             loop {
                 match self.raw.readdir(&handle).await {
@@ -127,30 +188,31 @@ impl SftpClient {
                             }
                             checked_text(&entry.filename)?;
                             path.join(&entry.filename)?;
-                            entries
-                                .push(DirectoryEntry::new(entry.filename, metadata(&entry.attrs)));
+                            let (owner, group) = parse_longname(&entry.longname)
+                                .map(|(owner, group)| (Some(owner), Some(group)))
+                                .unwrap_or_else(|| {
+                                    (
+                                        entry.attrs.uid.map(|id| id.to_string()),
+                                        entry.attrs.gid.map(|id| id.to_string()),
+                                    )
+                                });
+                            entries.push(
+                                DirectoryEntry::new(entry.filename, metadata(&entry.attrs))
+                                    .with_owner(owner, group),
+                            );
                         }
                     }
                     Err(Error::Status(status)) if status.status_code == StatusCode::Eof => break,
                     Err(error) => return Err(error.into()),
                 }
             }
-            Ok(DirectoryListing::new(path.as_str(), entries))
+            Ok(entries)
         }
         .await;
         let closed = self.raw.close(handle).await;
-        let listing = result?;
+        let entries = result?;
         closed?;
-        Ok(listing)
-    }
-}
-impl RemoteFs for SftpClient {
-    async fn metadata(&self, path: &RemotePath) -> Result<Option<FileMetadata>> {
-        match self.raw.lstat(path.as_str()).await {
-            Ok(attrs) => Ok(Some(metadata(&attrs.attrs))),
-            Err(Error::Status(status)) if status.status_code == StatusCode::NoSuchFile => Ok(None),
-            Err(error) => Err(error.into()),
-        }
+        Ok(entries)
     }
     async fn open(&self, path: &RemotePath, create: bool) -> Result<String> {
         let flags = if create {
@@ -163,6 +225,20 @@ impl RemoteFs for SftpClient {
             .open(path.as_str(), flags, FileAttributes::empty())
             .await?
             .handle)
+    }
+    async fn open_read(&self, path: &RemotePath) -> Result<String> {
+        Ok(self
+            .raw
+            .open(path.as_str(), OpenFlags::READ, FileAttributes::empty())
+            .await?
+            .handle)
+    }
+    async fn read(&self, handle: &str, offset: u64, len: u32) -> Result<Option<Vec<u8>>> {
+        match self.raw.read(handle, offset, len).await {
+            Ok(data) => Ok(Some(data.data)),
+            Err(Error::Status(status)) if status.status_code == StatusCode::Eof => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
     async fn sync(&self, handle: &str) -> Result<()> {
         if self.fsync {
@@ -248,19 +324,34 @@ impl RemoteFs for SftpClient {
             Err(error) => Err(error.into()),
         }
     }
+    async fn rmdir(&self, path: &RemotePath) -> Result<()> {
+        self.raw.rmdir(path.as_str()).await?;
+        Ok(())
+    }
+    async fn set_permissions(&self, path: &RemotePath, permissions: u32) -> Result<()> {
+        self.raw
+            .setstat(
+                path.as_str(),
+                FileAttributes {
+                    permissions: Some(permissions & 0o7777),
+                    ..FileAttributes::empty()
+                },
+            )
+            .await?;
+        Ok(())
+    }
     fn atomic_replace(&self) -> bool {
         self.atomic_replace
     }
 }
 fn metadata(attrs: &FileAttributes) -> FileMetadata {
-    let kind = if attrs.is_dir() {
-        EntryKind::Directory
-    } else if attrs.is_symlink() {
-        EntryKind::Symlink
-    } else if attrs.is_regular() {
-        EntryKind::File
-    } else {
-        EntryKind::Other
+    // Compare the whole type field: russh-sftp's `is_dir()` tests one bit,
+    // which sockets and block devices also carry.
+    let kind = match attrs.permissions.map(|mode| mode & 0o170_000) {
+        Some(0o040_000) => EntryKind::Directory,
+        Some(0o120_000) => EntryKind::Symlink,
+        Some(0o100_000) => EntryKind::File,
+        _ => EntryKind::Other,
     };
     FileMetadata::new(
         kind,
@@ -312,6 +403,30 @@ pub(crate) fn is_network_error(error: &anyhow::Error) -> bool {
     })
 }
 
+/// Owner and group from an SFTP v3 `longname`, the server's `ls -l` line:
+/// `drwxr-xr-x    2 root     root         4096 Jan  1 12:00 name`. `None` when
+/// the line does not have that shape; callers fall back to numeric ids.
+pub(crate) fn parse_longname(line: &str) -> Option<(String, String)> {
+    let mut fields = line.split_whitespace();
+    let mode = fields.next()?;
+    let mut chars = mode.chars();
+    if !chars.next().is_some_and(|c| "-dlcbpsD".contains(c))
+        || chars.by_ref().take(9).count() != 9
+        || !mode
+            .chars()
+            .skip(1)
+            .take(9)
+            .all(|c| "rwxsStTl-".contains(c))
+    {
+        return None;
+    }
+    fields.next()?.parse::<u64>().ok()?;
+    let owner = fields.next()?;
+    let group = fields.next()?;
+    fields.next()?.parse::<u64>().ok()?;
+    Some((owner.to_string(), group.to_string()))
+}
+
 // russh-sftp v3 decodes wire strings lossily. Refuse ambiguous names before
 // they can become a path for navigation or mutation.
 fn checked_text(value: &str) -> Result<String> {
@@ -319,4 +434,32 @@ fn checked_text(value: &str) -> Result<String> {
         bail!("远端名称包含无法可靠表示的字符，已停止操作");
     }
     Ok(value.to_string())
+}
+
+#[cfg(test)]
+mod longname_tests {
+    use super::parse_longname;
+
+    #[test]
+    fn parses_openssh_and_rejects_other_shapes() {
+        assert_eq!(
+            parse_longname("drwxr-xr-x    2 root     wheel        4096 Jan  1 12:00 bin"),
+            Some(("root".into(), "wheel".into()))
+        );
+        assert_eq!(
+            parse_longname("-rw-r--r--+   1 用户 staff 12 Sep 24 10:36 文件 甲.txt"),
+            Some(("用户".into(), "staff".into()))
+        );
+        assert_eq!(
+            parse_longname("lrwxrwxrwx 1 0 0 7 Apr 22  2024 bin -> usr/bin"),
+            Some(("0".into(), "0".into()))
+        );
+        assert_eq!(parse_longname(""), None);
+        assert_eq!(parse_longname("bin"), None);
+        assert_eq!(parse_longname("drwxr-xr-x root root 4096 Jan 1 bin"), None);
+        assert_eq!(
+            parse_longname("xrwxr-xr-x 1 root root 1 Jan 1 12:00 x"),
+            None
+        );
+    }
 }

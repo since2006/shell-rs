@@ -1,12 +1,16 @@
-use super::{FilePane, PaneSide};
+use super::{
+    FilePane, LoadIntent, PaneSide,
+    pane_operations::{PaneOperation, PendingOperation},
+};
 use crate::app::ExplorerDispatch as _;
 use crate::{
     app::{CatalogIcon, CenterTab, CloseExplorer, EditSession, ExplorerAction, ExplorerCommand},
     connection::{ConnectionPrompt, ConnectionPromptReply},
-    session::{ConnectionState, SessionId, SessionStore},
+    session::{BookmarkSide, ConnectionState, SessionId, SessionStore},
     sftp::{
-        RemotePath, SftpCommand, SftpEvent, SharedLocalDirectoryProvider,
-        SharedSftpTransportProvider, UploadPhase, UploadProgress, UploadQuestion, UploadRequest,
+        DownloadRequest, RemotePath, SftpCommand, SftpEvent, SharedLocalDirectoryProvider,
+        SharedSftpTransportProvider, TransferDirection, TransferPhase, TransferProgress,
+        TransferQuestion, UploadRequest,
     },
     shared::{ClosableTabTitle, close_tab_items},
 };
@@ -24,6 +28,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use std::{
+    collections::HashMap,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -41,19 +46,24 @@ pub struct ExplorerPanel {
     endpoint: String,
     store: Entity<SessionStore>,
     local: Entity<FilePane>,
-    remote: Entity<FilePane>,
-    local_provider: SharedLocalDirectoryProvider,
+    pub(super) remote: Entity<FilePane>,
+    pub(super) local_provider: SharedLocalDirectoryProvider,
+    /// File operations waiting for their result, by request id.
+    pub(super) operations: HashMap<u64, PendingOperation>,
+    pub(super) next_operation: u64,
     commands: async_channel::Sender<SftpCommand>,
     state: ConnectionState,
     message: String,
-    progress: Option<UploadProgress>,
+    progress: Option<TransferProgress>,
     details: bool,
-    upload_pending: bool,
-    pub(super) question: Option<UploadQuestion>,
+    transfer_pending: bool,
+    pub(super) question: Option<TransferQuestion>,
     pub(super) dialog_open: bool,
     pub(super) dispatch: FocusHandle,
     focus_handle: FocusHandle,
     tab_group: Option<WeakEntity<TabGroup>>,
+    /// The pane that held focus last, which takes it back on activation.
+    last_remote: bool,
     _subscriptions: Vec<Subscription>,
     _events: Task<()>,
 }
@@ -74,11 +84,18 @@ impl ExplorerPanel {
             .expect("workspace checked session");
         let endpoint = format!("{}@{}:{}", session.user, session.host, session.port);
         let home = local_provider.home().to_string_lossy().into_owned();
+        let places = local_provider
+            .places()
+            .into_iter()
+            .map(|(title, path)| (title.into(), path.to_string_lossy().into_owned()))
+            .collect();
         let local = cx.new(|cx| {
             FilePane::new(
                 PaneSide::Local,
                 session_id,
                 home.clone(),
+                places,
+                store.clone(),
                 dispatch.clone(),
                 window,
                 cx,
@@ -89,13 +106,15 @@ impl ExplorerPanel {
                 PaneSide::Remote,
                 session_id,
                 String::new(),
+                Vec::new(),
+                store.clone(),
                 dispatch.clone(),
                 window,
                 cx,
             )
         });
         local.update(cx, |pane, cx| {
-            pane.load_local(home, local_provider.clone(), window, cx)
+            pane.load_local(home, LoadIntent::Reload, local_provider.clone(), window, cx)
         });
         let (commands, receiver) = async_channel::unbounded();
         let (sender, events) = async_channel::unbounded();
@@ -135,8 +154,12 @@ impl ExplorerPanel {
                 }
             }
         });
+        let local_focus = local.read(cx).focus_handle(cx);
+        let remote_focus = remote.read(cx).focus_handle(cx);
         let subscriptions = vec![
             cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.on_focus_in(&local_focus, window, |this, _, _| this.last_remote = false),
+            cx.on_focus_in(&remote_focus, window, |this, _, _| this.last_remote = true),
             cx.on_app_quit(|this, _| {
                 this.send(SftpCommand::Shutdown);
                 async {}
@@ -150,17 +173,20 @@ impl ExplorerPanel {
             local,
             remote,
             local_provider,
+            operations: HashMap::new(),
+            next_operation: 0,
             commands,
             state: ConnectionState::Connecting,
             message: "正在连接 SFTP…".into(),
             progress: None,
             details: false,
-            upload_pending: false,
+            transfer_pending: false,
             question: None,
             dialog_open: false,
             dispatch,
             focus_handle: cx.focus_handle(),
             tab_group: None,
+            last_remote: true,
             _subscriptions: subscriptions,
             _events: events_task,
         }
@@ -183,18 +209,41 @@ impl ExplorerPanel {
     pub fn remote(&self) -> &Entity<FilePane> {
         &self.remote
     }
+    pub fn pane(&self, remote: bool) -> &Entity<FilePane> {
+        if remote { &self.remote } else { &self.local }
+    }
+    /// The pane whose file list holds keyboard focus.
+    pub fn focused_pane(&self, window: &Window, cx: &App) -> Option<bool> {
+        [false, true].into_iter().find(|remote| {
+            self.pane(*remote)
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+        })
+    }
+    pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus_handle.contains_focused(window, cx)
+    }
     pub fn connection_state(&self) -> ConnectionState {
         self.state
     }
-    pub fn progress(&self) -> Option<&UploadProgress> {
+    pub fn progress(&self) -> Option<&TransferProgress> {
         self.progress.as_ref()
     }
-    pub fn is_uploading(&self) -> bool {
-        self.upload_pending
+    /// The direction of the current or last batch; the next one is upload
+    /// until a download starts.
+    pub fn transfer_direction(&self) -> TransferDirection {
+        self.progress
+            .as_ref()
+            .map(TransferProgress::direction)
+            .unwrap_or_default()
+    }
+    pub fn is_transferring(&self) -> bool {
+        self.transfer_pending
             || self
                 .progress
                 .as_ref()
-                .is_some_and(UploadProgress::is_active)
+                .is_some_and(TransferProgress::is_active)
     }
     pub fn send(&self, command: SftpCommand) {
         let _ = self.commands.try_send(command);
@@ -223,11 +272,12 @@ impl ExplorerPanel {
         }
     }
     fn sync_available(&mut self, cx: &mut Context<Self>) {
-        let enabled = self.state == ConnectionState::Connected && !self.is_uploading();
+        let connected = self.state == ConnectionState::Connected;
+        let transfer = connected && !self.is_transferring();
         self.local
-            .update(cx, |pane, cx| pane.set_available(enabled, cx));
+            .update(cx, |pane, cx| pane.set_available(true, transfer, cx));
         self.remote
-            .update(cx, |pane, cx| pane.set_available(enabled, cx));
+            .update(cx, |pane, cx| pane.set_available(connected, transfer, cx));
     }
     fn on_event(&mut self, event: SftpEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
@@ -243,11 +293,12 @@ impl ExplorerPanel {
                 self.remote
                     .update(cx, |pane, _| pane.set_home(home.to_string()));
                 let path = self.remote.read(cx).path();
-                self.navigate(true, path, window, cx);
+                self.navigate(true, path, LoadIntent::Reload, window, cx);
                 cx.emit(ExplorerPanelEvent::StateChanged(self.session_id));
             }
             SftpEvent::Disconnected(message) => {
                 self.state = ConnectionState::Disconnected;
+                self.abandon_remote_operations(cx);
                 self.remote
                     .update(cx, |pane, cx| pane.disconnected(message.clone(), cx));
                 self.message = message;
@@ -261,16 +312,27 @@ impl ExplorerPanel {
             SftpEvent::Listed { request_id, result } => self.remote.update(cx, |pane, cx| {
                 pane.apply_listing(request_id, result, window, cx)
             }),
+            SftpEvent::Operated { request_id, result } => {
+                self.finish_operation(request_id, result, window, cx)
+            }
             SftpEvent::Progress(progress) => {
-                let complete = progress.phase() == UploadPhase::Completed;
-                self.upload_pending = false;
+                let complete = progress.phase() == TransferPhase::Completed;
+                let direction = progress.direction();
+                self.transfer_pending = false;
                 self.progress = Some(progress);
-                if !self.is_uploading() {
+                if !self.is_transferring() {
                     self.close_upload_dialog(window, cx);
                 }
-                if complete && self.state == ConnectionState::Connected {
-                    let path = self.remote.read(cx).path();
-                    self.navigate(true, path, window, cx);
+                // Show what arrived: the remote pane after an upload, the local
+                // one after a download.
+                if complete {
+                    match direction {
+                        TransferDirection::Download => self.reload(false, window, cx),
+                        TransferDirection::Upload if self.state == ConnectionState::Connected => {
+                            self.reload(true, window, cx)
+                        }
+                        TransferDirection::Upload => {}
+                    }
                 }
             }
             SftpEvent::Question(question) => {
@@ -300,7 +362,7 @@ impl ExplorerPanel {
                 .detach();
             }
             SftpEvent::Idle => {
-                self.upload_pending = false;
+                self.transfer_pending = false;
             }
             SftpEvent::Notice(message) => {
                 window.push_notification(Notification::error(message), cx);
@@ -313,17 +375,14 @@ impl ExplorerPanel {
         &mut self,
         remote: bool,
         path: String,
+        intent: LoadIntent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let pane = if remote {
-            self.remote.clone()
-        } else {
-            self.local.clone()
-        };
+        let pane = self.pane(remote).clone();
         let path = pane.read(cx).expanded_path(&path);
         if remote {
-            let id = pane.update(cx, |pane, cx| pane.begin_load(cx));
+            let id = pane.update(cx, |pane, cx| pane.begin_load(intent, cx));
             match RemotePath::new(path) {
                 Ok(path) => self.send(SftpCommand::List {
                     request_id: id,
@@ -335,9 +394,14 @@ impl ExplorerPanel {
             }
         } else {
             pane.update(cx, |pane, cx| {
-                pane.load_local(path, self.local_provider.clone(), window, cx)
+                pane.load_local(path, intent, self.local_provider.clone(), window, cx)
             });
         }
+    }
+    /// Re-read a pane's current directory, keeping its history.
+    pub fn reload(&mut self, remote: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let path = self.pane(remote).read(cx).path();
+        self.navigate(remote, path, LoadIntent::Reload, window, cx);
     }
     pub fn execute(
         &mut self,
@@ -347,36 +411,159 @@ impl ExplorerPanel {
     ) {
         match command {
             ExplorerCommand::Navigate { remote, path } => {
-                self.navigate(*remote, path.clone(), window, cx)
+                self.navigate(*remote, path.clone(), LoadIntent::Visit, window, cx)
             }
             ExplorerCommand::Up { remote } => {
-                let pane = if *remote { &self.remote } else { &self.local };
-                let path = pane.read(cx).parent_path();
-                self.navigate(*remote, path, window, cx);
+                let path = self.pane(*remote).read(cx).parent_path();
+                self.navigate(*remote, path, LoadIntent::Visit, window, cx);
             }
-            ExplorerCommand::Refresh { remote } => {
-                let pane = if *remote { &self.remote } else { &self.local };
-                let path = pane.read(cx).path();
-                self.navigate(*remote, path, window, cx);
+            ExplorerCommand::Root { remote } => {
+                let path = self.pane(*remote).read(cx).root_path();
+                self.navigate(*remote, path, LoadIntent::Visit, window, cx);
             }
-            ExplorerCommand::Check {
-                name,
-                checked,
+            ExplorerCommand::Home { remote } => {
+                let path = self.pane(*remote).read(cx).home();
+                if !path.is_empty() {
+                    self.navigate(*remote, path, LoadIntent::Visit, window, cx);
+                }
+            }
+            ExplorerCommand::Back { remote } => {
+                if let Some(path) = self.pane(*remote).read(cx).back_target() {
+                    self.navigate(*remote, path, LoadIntent::Back, window, cx);
+                }
+            }
+            ExplorerCommand::Forward { remote } => {
+                if let Some(path) = self.pane(*remote).read(cx).forward_target() {
+                    self.navigate(*remote, path, LoadIntent::Forward, window, cx);
+                }
+            }
+            ExplorerCommand::Refresh { remote } => self.reload(*remote, window, cx),
+            ExplorerCommand::AddBookmark { remote } => {
+                let path = self.pane(*remote).read(cx).path();
+                let (id, side) = (self.session_id, BookmarkSide::from_remote(*remote));
+                self.store
+                    .update(cx, |store, cx| store.add_bookmark(id, side, &path, cx));
+            }
+            ExplorerCommand::RemoveBookmark { remote, path } => {
+                let (id, side) = (self.session_id, BookmarkSide::from_remote(*remote));
+                self.store
+                    .update(cx, |store, cx| store.remove_bookmark(id, side, path, cx));
+            }
+            ExplorerCommand::Open { remote } => {
+                let pane = self.pane(*remote).clone();
+                if let Some(entry) = pane.read(cx).cursor_entry(cx)
+                    && entry.is_dir()
+                {
+                    let path = if entry.is_parent() {
+                        pane.read(cx).parent_path()
+                    } else {
+                        pane.read(cx).child_path_of(&entry.name)
+                    };
+                    self.navigate(*remote, path, LoadIntent::Visit, window, cx);
+                }
+            }
+            ExplorerCommand::FocusPane { remote } => {
+                let focus = self.pane(*remote).read(cx).focus_handle(cx);
+                window.focus(&focus, cx);
+            }
+            ExplorerCommand::MoveCursor {
+                remote,
+                motion,
                 extend,
             } => self
-                .local
-                .update(cx, |pane, cx| pane.check(name, *checked, *extend, cx)),
-            ExplorerCommand::ToggleSelection => {
-                self.local.update(cx, |pane, cx| pane.toggle_selected(cx))
-            }
-            ExplorerCommand::SelectAll => self.local.update(cx, |pane, cx| pane.select_all(cx)),
-            ExplorerCommand::UploadSelected => {
-                let paths = self.local.read(cx).upload_sources();
+                .pane(*remote)
+                .clone()
+                .update(cx, |pane, cx| pane.move_cursor(*motion, *extend, cx)),
+            ExplorerCommand::ToggleSelection { remote } => self
+                .pane(*remote)
+                .clone()
+                .update(cx, |pane, cx| pane.toggle_selection(cx)),
+            ExplorerCommand::SelectAll { remote } => self
+                .pane(*remote)
+                .clone()
+                .update(cx, |pane, cx| pane.select_all(cx)),
+            ExplorerCommand::Transfer { remote: false } => {
+                let paths = self.local.read(cx).upload_sources(cx);
                 let target = self.remote.read(cx).path();
                 self.open_upload(paths, target, window, cx);
             }
+            ExplorerCommand::Transfer { remote: true } => {
+                let remote = self.remote.read(cx);
+                let paths = remote
+                    .selected_names(cx)
+                    .iter()
+                    .map(|name| remote.child_path_of(name))
+                    .collect();
+                let target = self.local.read(cx).path();
+                self.open_download(paths, target, window, cx);
+            }
+            ExplorerCommand::DownloadPaths { paths, target } => {
+                self.open_download(paths.clone(), target.clone(), window, cx)
+            }
+            ExplorerCommand::BeginDownload { paths, target } => {
+                if self.is_transferring() || self.state != ConnectionState::Connected {
+                    return;
+                }
+                let request = paths
+                    .iter()
+                    .map(|path| RemotePath::new(path.clone()))
+                    .collect::<anyhow::Result<Vec<_>>>()
+                    .and_then(|paths| DownloadRequest::new(paths, target.into()));
+                match request {
+                    Ok(request) => {
+                        self.transfer_pending = true;
+                        self.details = false;
+                        self.send(SftpCommand::Download(request));
+                    }
+                    Err(error) => {
+                        window.push_notification(Notification::error(error.to_string()), cx)
+                    }
+                }
+            }
+            ExplorerCommand::Delete { remote } => self.confirm_delete(*remote, window, cx),
+            ExplorerCommand::BeginDelete { remote, names } => {
+                self.start_operation(*remote, PaneOperation::Delete(names.clone()), window, cx)
+            }
+            ExplorerCommand::Rename { remote } => self.open_rename(*remote, window, cx),
+            ExplorerCommand::CommitRename { remote, from, to } => self.start_operation(
+                *remote,
+                PaneOperation::Rename {
+                    from: from.clone(),
+                    to: to.clone(),
+                },
+                window,
+                cx,
+            ),
+            ExplorerCommand::New { remote, kind } => self.open_new(*remote, *kind, window, cx),
+            ExplorerCommand::CommitNew { remote, kind, name } => self.start_operation(
+                *remote,
+                PaneOperation::Create {
+                    kind: *kind,
+                    name: name.clone(),
+                },
+                window,
+                cx,
+            ),
+            ExplorerCommand::Properties { remote } => self.open_properties(*remote, window, cx),
+            ExplorerCommand::ApplyPermissions {
+                remote,
+                names,
+                edit,
+                recursive,
+                add_x_to_dirs,
+            } => self.start_operation(
+                *remote,
+                PaneOperation::Permissions {
+                    names: names.clone(),
+                    edit: *edit,
+                    recursive: *recursive,
+                    add_x_to_dirs: *add_x_to_dirs,
+                },
+                window,
+                cx,
+            ),
             ExplorerCommand::ChooseFiles => {
-                if self.is_uploading() || self.state != ConnectionState::Connected {
+                if self.is_transferring() || self.state != ConnectionState::Connected {
                     return;
                 }
                 let choice = cx.prompt_for_paths(PathPromptOptions {
@@ -406,14 +593,14 @@ impl ExplorerPanel {
                 self.open_upload(paths.clone(), target.clone(), window, cx)
             }
             ExplorerCommand::BeginUpload { paths, target } => {
-                if self.is_uploading() || self.state != ConnectionState::Connected {
+                if self.is_transferring() || self.state != ConnectionState::Connected {
                     return;
                 }
                 match RemotePath::new(target.clone())
                     .and_then(|path| UploadRequest::new(paths.clone(), path))
                 {
                     Ok(request) => {
-                        self.upload_pending = true;
+                        self.transfer_pending = true;
                         self.details = false;
                         self.send(SftpCommand::Upload(request));
                     }
@@ -436,15 +623,15 @@ impl ExplorerPanel {
                     });
                 }
             }
-            ExplorerCommand::CancelUpload => self.send(SftpCommand::Cancel),
-            ExplorerCommand::ResumeUpload => {
-                if !self.is_uploading() {
-                    self.upload_pending = true;
+            ExplorerCommand::CancelTransfer => self.send(SftpCommand::Cancel),
+            ExplorerCommand::ResumeTransfer => {
+                if !self.is_transferring() {
+                    self.transfer_pending = true;
                     self.send(SftpCommand::Resume);
                 }
             }
-            ExplorerCommand::DiscardUpload => {
-                if !self.is_uploading() {
+            ExplorerCommand::DiscardTransfer => {
+                if !self.is_transferring() {
                     self.send(SftpCommand::Discard);
                 }
             }
@@ -481,7 +668,10 @@ impl BasePanel for ExplorerPanel {
             let id = self.session_id;
             self.store
                 .update(cx, |store, cx| store.set_active(Some(id), cx));
-            window.focus(&self.focus_handle, cx);
+            // Focus a file list, not the panel root, so list shortcuts work
+            // without a click first. Both stay inside this panel.
+            let focus = self.pane(self.last_remote).read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
             cx.emit(ExplorerPanelEvent::Activated(id));
         }
     }
@@ -554,7 +744,7 @@ fn tab_menu(
 impl Render for ExplorerPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sid = self.session_id;
-        let command_button = |id: &'static str, label: &'static str, command: ExplorerCommand| {
+        let command_button = |id: &'static str, label: SharedString, command: ExplorerCommand| {
             let dispatch = self.dispatch.clone();
             Button::new(id)
                 .ghost()
@@ -584,12 +774,12 @@ impl Render for ExplorerPanel {
                     .border_color(cx.theme().border)
                     .child(div().flex_1().min_w_0().child(self.message.clone()))
                     .when(
-                        self.state == ConnectionState::Disconnected && !self.is_uploading(),
+                        self.state == ConnectionState::Disconnected && !self.is_transferring(),
                         |this| {
                             this.child(command_button(
                                 "reconnect-sftp",
-                                "重新连接",
-                                ExplorerCommand::ResumeUpload,
+                                "重新连接".into(),
+                                ExplorerCommand::ResumeTransfer,
                             ))
                         },
                     ),
@@ -611,21 +801,22 @@ impl Render for ExplorerPanel {
                 ),
             )
             .when_some(self.progress.as_ref(), |this, progress| {
+                let verb = progress.direction().verb();
                 let status = match progress.phase() {
-                    UploadPhase::Scanning => "正在扫描",
-                    UploadPhase::Uploading => "正在上传",
-                    UploadPhase::Waiting => "等待处理",
-                    UploadPhase::Reconnecting => "正在重连",
-                    UploadPhase::Stopped => "已停止 · 可继续上传",
-                    UploadPhase::Completed => {
+                    TransferPhase::Scanning => "正在扫描".to_string(),
+                    TransferPhase::Transferring => format!("正在{verb}"),
+                    TransferPhase::Waiting => "等待处理".to_string(),
+                    TransferPhase::Reconnecting => "正在重连".to_string(),
+                    TransferPhase::Stopped => format!("已停止 · 可继续{verb}"),
+                    TransferPhase::Completed => {
                         if progress.failed() > 0 {
-                            "上传结束 · 部分失败"
+                            format!("{verb}结束 · 部分失败")
                         } else {
-                            "上传结束"
+                            format!("{verb}结束")
                         }
                     }
                 };
-                let value = if progress.phase() == UploadPhase::Completed {
+                let value = if progress.phase() == TransferPhase::Completed {
                     100.
                 } else if progress.total_bytes() > 0 {
                     progress.completed_bytes() as f32 / progress.total_bytes() as f32 * 100.
@@ -634,7 +825,7 @@ impl Render for ExplorerPanel {
                 };
                 this.child(
                     v_flex()
-                        .id("upload-progress")
+                        .id("transfer-progress")
                         .test_support()
                         .gap_2()
                         .px_3()
@@ -646,7 +837,7 @@ impl Render for ExplorerPanel {
                                 .gap_2()
                                 .child(
                                     div()
-                                        .id("upload-status")
+                                        .id("transfer-status")
                                         .test_support()
                                         .text_sm()
                                         .child(status),
@@ -654,26 +845,26 @@ impl Render for ExplorerPanel {
                                 .child(div().flex_1())
                                 .when(progress.is_active(), |this| {
                                     this.child(command_button(
-                                        "cancel-upload",
-                                        "取消",
-                                        ExplorerCommand::CancelUpload,
+                                        "cancel-transfer",
+                                        "取消".into(),
+                                        ExplorerCommand::CancelTransfer,
                                     ))
                                 })
-                                .when(progress.phase() == UploadPhase::Stopped, |this| {
+                                .when(progress.phase() == TransferPhase::Stopped, |this| {
                                     this.child(command_button(
-                                        "resume-upload",
-                                        "继续上传",
-                                        ExplorerCommand::ResumeUpload,
+                                        "resume-transfer",
+                                        format!("继续{verb}").into(),
+                                        ExplorerCommand::ResumeTransfer,
                                     ))
                                     .child(command_button(
-                                        "discard-upload",
-                                        "丢弃续传进度",
-                                        ExplorerCommand::DiscardUpload,
+                                        "discard-transfer",
+                                        "丢弃续传进度".into(),
+                                        ExplorerCommand::DiscardTransfer,
                                     ))
                                 })
                                 .child(command_button(
-                                    "upload-details",
-                                    "详情",
+                                    "transfer-details",
+                                    "详情".into(),
                                     ExplorerCommand::ToggleDetails,
                                 )),
                         )
@@ -684,9 +875,9 @@ impl Render for ExplorerPanel {
                                 .child(progress.current().to_string()),
                         )
                         .child(
-                            Progress::new("upload-bytes")
+                            Progress::new("transfer-bytes")
                                 .value(value)
-                                .accessibility_label("上传进度")
+                                .accessibility_label(format!("{verb}进度"))
                                 .small(),
                         )
                         .child(
@@ -706,7 +897,7 @@ impl Render for ExplorerPanel {
                         .when(self.details, |this| {
                             this.child(
                                 div()
-                                    .id("upload-detail-list")
+                                    .id("transfer-detail-list")
                                     .max_h_32()
                                     .overflow_y_scroll()
                                     .text_xs()

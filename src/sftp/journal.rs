@@ -126,16 +126,14 @@ impl Journal {
         Self { root }
     }
     fn path(&self, endpoint: &str, source: &Path, target: &RemotePath) -> PathBuf {
-        let mut hash = Sha256::new();
-        for part in [
-            endpoint.as_bytes(),
-            source.as_os_str().as_encoded_bytes(),
-            target.as_str().as_bytes(),
-        ] {
-            hash.update((part.len() as u64).to_be_bytes());
-            hash.update(part);
-        }
-        self.root.join(format!("{:x}.json", hash.finalize()))
+        record_path(
+            &self.root,
+            [
+                endpoint.as_bytes(),
+                source.as_os_str().as_encoded_bytes(),
+                target.as_str().as_bytes(),
+            ],
+        )
     }
     pub async fn load(
         &self,
@@ -152,27 +150,149 @@ impl Journal {
         }
     }
     pub async fn save(&self, record: &ResumeRecord) -> Result<()> {
-        tokio::fs::create_dir_all(&self.root).await?;
         let path = self.path(&record.endpoint, &record.source, &record.target);
-        let temp = path.with_extension("pending");
-        let mut options = tokio::fs::OpenOptions::new();
-        options.create(true).truncate(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = options.open(&temp).await?;
-        file.write_all(&serde_json::to_vec(record)?).await?;
-        file.sync_all().await?;
-        drop(file);
-        tokio::fs::rename(&temp, &path)
+        write_atomic(&self.root, &path, &serde_json::to_vec(record)?).await
+    }
+    pub async fn remove(&self, record: &ResumeRecord) -> Result<()> {
+        match tokio::fs::remove_file(self.path(&record.endpoint, &record.source, &record.target))
             .await
-            .context("无法保存续传进度")?;
-        #[cfg(unix)]
         {
-            tokio::fs::File::open(&self.root).await?.sync_all().await?;
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+/// Write a record so a crash leaves either the old or the new file: write a
+/// sibling, fsync it, rename over, then fsync the directory. Private to the
+/// user (0600), since records name local and remote paths.
+async fn write_atomic(root: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
+    tokio::fs::create_dir_all(root).await?;
+    let temp = path.with_extension("pending");
+    let mut options = tokio::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&temp).await?;
+    file.write_all(bytes).await?;
+    file.sync_all().await?;
+    drop(file);
+    tokio::fs::rename(&temp, path)
+        .await
+        .context("无法保存续传进度")?;
+    #[cfg(unix)]
+    {
+        tokio::fs::File::open(root).await?.sync_all().await?;
+    }
+    Ok(())
+}
+
+fn record_path(root: &Path, parts: [&[u8]; 3]) -> PathBuf {
+    let mut hash = Sha256::new();
+    for part in parts {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part);
+    }
+    root.join(format!("{:x}.json", hash.finalize()))
+}
+
+/// Resume state of one downloaded file. The remote size and modification
+/// time are what the partial `.filepart` was read from; a changed remote
+/// file cannot be resumed.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct DownloadRecord {
+    pub version: u32,
+    pub endpoint: String,
+    pub host_key: String,
+    pub source: RemotePath,
+    pub source_metadata: FileMetadata,
+    pub target: PathBuf,
+    pub temporary: PathBuf,
+}
+impl DownloadRecord {
+    pub fn new(
+        endpoint: &str,
+        host_key: &str,
+        source: RemotePath,
+        source_metadata: FileMetadata,
+        target: PathBuf,
+    ) -> Self {
+        Self {
+            version: 1,
+            endpoint: endpoint.into(),
+            host_key: host_key.into(),
+            temporary: partial_path(&target),
+            source,
+            source_metadata,
+            target,
+        }
+    }
+    pub fn validate(
+        &self,
+        endpoint: &str,
+        host_key: &str,
+        source: &RemotePath,
+        target: &Path,
+    ) -> Result<()> {
+        if self.version != 1
+            || self.endpoint != endpoint
+            || self.host_key != host_key
+            || &self.source != source
+            || self.target != target
+            || self.temporary != partial_path(target)
+        {
+            bail!("续传记录与当前来源或服务器不匹配");
         }
         Ok(())
     }
-    pub async fn remove(&self, record: &ResumeRecord) -> Result<()> {
+}
+
+/// `<target>.filepart`, next to the target so the final rename stays on one
+/// file system.
+pub(crate) fn partial_path(target: &Path) -> PathBuf {
+    let mut name = target.file_name().unwrap_or_default().to_os_string();
+    name.push(".filepart");
+    target.with_file_name(name)
+}
+
+#[derive(Clone)]
+pub(crate) struct DownloadJournal {
+    root: PathBuf,
+}
+impl DownloadJournal {
+    pub fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+    fn path(&self, endpoint: &str, source: &RemotePath, target: &Path) -> PathBuf {
+        record_path(
+            &self.root,
+            [
+                endpoint.as_bytes(),
+                source.as_str().as_bytes(),
+                target.as_os_str().as_encoded_bytes(),
+            ],
+        )
+    }
+    pub async fn load(
+        &self,
+        endpoint: &str,
+        source: &RemotePath,
+        target: &Path,
+    ) -> Result<Option<DownloadRecord>> {
+        match tokio::fs::read(self.path(endpoint, source, target)).await {
+            Ok(bytes) => Ok(Some(
+                serde_json::from_slice(&bytes).context("续传记录损坏，临时文件已保留")?,
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error).context("无法读取续传记录"),
+        }
+    }
+    pub async fn save(&self, record: &DownloadRecord) -> Result<()> {
+        let path = self.path(&record.endpoint, &record.source, &record.target);
+        write_atomic(&self.root, &path, &serde_json::to_vec(record)?).await
+    }
+    pub async fn remove(&self, record: &DownloadRecord) -> Result<()> {
         match tokio::fs::remove_file(self.path(&record.endpoint, &record.source, &record.target))
             .await
         {

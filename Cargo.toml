@@ -25,6 +25,7 @@ tokio = { version = "1", features = ["fs", "io-util", "net", "rt", "sync", "time
 unicode-width = "0.2"
 zeroize = "1"
 keyring = "4"
+trash = "5"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["process", "test-util"] }

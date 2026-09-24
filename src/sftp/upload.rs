@@ -1,8 +1,8 @@
 use super::{
-    EntryKind, FileMetadata, RemotePath, SftpEvent, UploadChoice, UploadPhase, UploadProgress,
-    UploadQuestionKind, UploadRequest,
+    EntryKind, FileMetadata, RemotePath, SftpEvent, TransferChoice, TransferPhase,
+    TransferProgress, TransferQuestionKind, UploadRequest,
     client::RemoteFs,
-    control::UploadControl,
+    control::{TargetGuard, TransferControl},
     journal::{Journal, PublishPhase, ResumeRecord, SourceMetadata},
     model::local_metadata,
 };
@@ -27,11 +27,11 @@ struct UploadItem {
 pub(crate) struct UploadBatch {
     items: Vec<UploadItem>,
     cursor: usize,
-    pub progress: UploadProgress,
+    pub progress: TransferProgress,
     endpoint: String,
     host_key: String,
     journal: Journal,
-    all_conflicts: Option<UploadChoice>,
+    all_conflicts: Option<TransferChoice>,
     approved_resumes: HashSet<RemotePath>,
     blocked_directories: Vec<RemotePath>,
     started: Instant,
@@ -45,7 +45,7 @@ impl UploadBatch {
         endpoint: &str,
         host_key: &str,
         journal: Journal,
-        control: &UploadControl,
+        control: &TransferControl,
     ) -> Result<Self> {
         let mut sources = Vec::new();
         for source in request.sources() {
@@ -125,10 +125,10 @@ impl UploadBatch {
                 error: scan_error,
             });
         }
-        let progress = UploadProgress {
+        let progress = TransferProgress {
             total: items.len(),
             total_bytes,
-            ..UploadProgress::default()
+            ..TransferProgress::default()
         };
         Ok(Self {
             items,
@@ -155,23 +155,26 @@ impl UploadBatch {
     pub fn is_complete(&self) -> bool {
         self.cursor >= self.items.len()
     }
-    pub fn emit(&self, control: &UploadControl) {
+    pub fn emit(&self, control: &TransferControl) {
         let _ = control
             .events
             .try_send(SftpEvent::Progress(self.progress.clone()));
     }
-    pub fn phase(&mut self, phase: UploadPhase, control: &UploadControl) {
+    pub fn phase(&mut self, phase: TransferPhase, control: &TransferControl) {
         self.progress.phase = phase;
         self.emit(control);
     }
-    pub async fn run<F: RemoteFs>(&mut self, fs: &F, control: &UploadControl) -> Result<()> {
-        self.phase(UploadPhase::Uploading, control);
+    pub async fn run<F: RemoteFs>(&mut self, fs: &F, control: &TransferControl) -> Result<()> {
+        self.phase(TransferPhase::Transferring, control);
         while self.cursor < self.items.len() {
             control.check()?;
             let item = self.items[self.cursor].clone();
             self.progress.current = item.target.to_string();
             self.emit(control);
-            let _target_guard = TargetGuard::acquire(&self.endpoint, &item.target)?;
+            let _target_guard = TargetGuard::acquire(
+                format!("{}\0{}", self.endpoint, item.target),
+                "其他会话正在上传同一目标，请稍后继续上传",
+            )?;
             let result = if self
                 .blocked_directories
                 .iter()
@@ -207,15 +210,15 @@ impl UploadBatch {
                     return Err(error);
                 }
                 Err(error) => {
-                    self.phase(UploadPhase::Waiting, control);
+                    self.phase(TransferPhase::Waiting, control);
                     let answer = control
                         .ask(
-                            UploadQuestionKind::Error,
+                            TransferQuestionKind::Error,
                             item.target.as_str(),
                             &format!("无法上传：{error:#}"),
                         )
                         .await?;
-                    if answer.choice() == UploadChoice::Retry {
+                    if answer.choice() == TransferChoice::Retry {
                         if item.error.is_some() {
                             let request = UploadRequest::new(
                                 vec![item.source.clone()],
@@ -251,9 +254,9 @@ impl UploadBatch {
             }
             self.cursor += 1;
             self.progress.completed_bytes = self.completed_bytes;
-            self.phase(UploadPhase::Uploading, control);
+            self.phase(TransferPhase::Transferring, control);
         }
-        self.phase(UploadPhase::Completed, control);
+        self.phase(TransferPhase::Completed, control);
         Ok(())
     }
     async fn approve(
@@ -261,7 +264,7 @@ impl UploadBatch {
         target: &RemotePath,
         original: &Option<FileMetadata>,
         changed: bool,
-        control: &UploadControl,
+        control: &TransferControl,
     ) -> Result<bool> {
         if original.is_none() && !changed {
             return Ok(true);
@@ -273,9 +276,9 @@ impl UploadBatch {
             bail!("目录与文件类型冲突，不会删除远程目录");
         }
         if !changed && let Some(choice) = self.all_conflicts {
-            return Ok(choice == UploadChoice::Overwrite);
+            return Ok(choice == TransferChoice::Overwrite);
         }
-        self.phase(UploadPhase::Waiting, control);
+        self.phase(TransferPhase::Waiting, control);
         let message = match original {
             Some(metadata) => format!(
                 "{}远程项目已存在（{} 字节，修改时间 {:?}）。覆盖会替换这个文件或链接。",
@@ -290,19 +293,19 @@ impl UploadBatch {
             None => "原目标在上传期间已被删除或移走。是否继续发布此文件？".into(),
         };
         let answer = control
-            .ask(UploadQuestionKind::Conflict, target.as_str(), &message)
+            .ask(TransferQuestionKind::Conflict, target.as_str(), &message)
             .await?;
         if answer.apply_to_all() && !changed {
             self.all_conflicts = Some(answer.choice());
         }
-        self.phase(UploadPhase::Uploading, control);
-        Ok(answer.choice() == UploadChoice::Overwrite)
+        self.phase(TransferPhase::Transferring, control);
+        Ok(answer.choice() == TransferChoice::Overwrite)
     }
     async fn upload_item<F: RemoteFs>(
         &mut self,
         fs: &F,
         item: &UploadItem,
-        control: &UploadControl,
+        control: &TransferControl,
     ) -> Result<bool> {
         let existing_record = self
             .journal
@@ -311,15 +314,15 @@ impl UploadBatch {
         if item.metadata.kind() == EntryKind::Directory {
             if let Some(record) = &existing_record {
                 record.validate(&self.endpoint, &self.host_key, &item.source, &item.target)?;
-                self.phase(UploadPhase::Waiting, control);
+                self.phase(TransferPhase::Waiting, control);
                 let answer = control
                     .ask(
-                        UploadQuestionKind::InvalidResume,
+                        TransferQuestionKind::InvalidResume,
                         item.target.as_str(),
                         "来源已变为目录，请丢弃旧文件进度后重新上传，或跳过。",
                     )
                     .await?;
-                if answer.choice() != UploadChoice::Restart {
+                if answer.choice() != TransferChoice::Restart {
                     return Ok(false);
                 }
                 self.discard_record(fs, record).await?;
@@ -339,17 +342,17 @@ impl UploadBatch {
         let mut record = if let Some(record) = existing_record {
             record.validate(&self.endpoint, &self.host_key, &item.source, &item.target)?;
             if !self.approved_resumes.contains(&item.target) {
-                self.phase(UploadPhase::Waiting, control);
+                self.phase(TransferPhase::Waiting, control);
                 let answer = control
                     .ask(
-                        UploadQuestionKind::Resume,
+                        TransferQuestionKind::Resume,
                         item.target.as_str(),
                         "发现未完成的 .filepart 文件。续传会按它的现有大小跳过本地文件前缀，请确认本地文件仍是同一版本。",
                     )
                     .await?;
                 match answer.choice() {
-                    UploadChoice::Skip => return Ok(false),
-                    UploadChoice::Restart => {
+                    TransferChoice::Skip => return Ok(false),
+                    TransferChoice::Restart => {
                         self.discard_record(fs, &record).await?;
                         return Box::pin(self.upload_item(fs, item, control)).await;
                     }
@@ -376,22 +379,22 @@ impl UploadBatch {
                 record.source_metadata =
                     Some(control.run(SourceMetadata::read(&item.source)).await?);
                 if control.run(fs.metadata(&record.temporary)).await?.is_some() {
-                    self.phase(UploadPhase::Waiting, control);
+                    self.phase(TransferPhase::Waiting, control);
                     let answer = control
                         .ask(
-                            UploadQuestionKind::Resume,
+                            TransferQuestionKind::Resume,
                             item.target.as_str(),
                             "发现未完成的 .filepart 文件。续传会按它的现有大小跳过本地文件前缀，请确认本地文件仍是同一版本。",
                         )
                         .await?;
                     match answer.choice() {
-                        UploadChoice::Skip => return Ok(false),
-                        UploadChoice::Restart => {
+                        TransferChoice::Skip => return Ok(false),
+                        TransferChoice::Restart => {
                             control.run(fs.remove(&record.temporary)).await?;
                         }
                         _ => {}
                     }
-                    self.phase(UploadPhase::Uploading, control);
+                    self.phase(TransferPhase::Transferring, control);
                 }
             } else {
                 record.link_target = Some(
@@ -431,15 +434,15 @@ impl UploadBatch {
         };
         if let Err(error) = uploaded {
             if error.is::<InvalidResume>() {
-                self.phase(UploadPhase::Waiting, control);
+                self.phase(TransferPhase::Waiting, control);
                 let answer = control
                     .ask(
-                        UploadQuestionKind::InvalidResume,
+                        TransferQuestionKind::InvalidResume,
                         item.target.as_str(),
                         &error.to_string(),
                     )
                     .await?;
-                if answer.choice() == UploadChoice::Restart {
+                if answer.choice() == TransferChoice::Restart {
                     self.discard_record(fs, &record).await?;
                     return Box::pin(self.upload_item(fs, item, control)).await;
                 }
@@ -456,7 +459,7 @@ impl UploadBatch {
         fs: &F,
         item: &UploadItem,
         record: &mut ResumeRecord,
-        control: &UploadControl,
+        control: &TransferControl,
     ) -> Result<()> {
         let source_metadata = record
             .source_metadata
@@ -476,7 +479,7 @@ impl UploadBatch {
         let result: Result<()> = async {
             let mut local = tokio::fs::File::open(&item.source).await?;
             local.seek(std::io::SeekFrom::Start(resume_offset)).await?;
-            self.phase(UploadPhase::Uploading, control);
+            self.phase(TransferPhase::Transferring, control);
             let mut next_offset = resume_offset;
             let mut uploaded = resume_offset;
             let mut writes = FuturesUnordered::new();
@@ -532,7 +535,7 @@ impl UploadBatch {
         fs: &F,
         path: &RemotePath,
         record: &ResumeRecord,
-        control: &UploadControl,
+        control: &TransferControl,
     ) -> Result<bool> {
         let Some(metadata) = control.run(fs.metadata(path)).await? else {
             return Ok(false);
@@ -550,7 +553,7 @@ impl UploadBatch {
         &mut self,
         fs: &F,
         record: &mut ResumeRecord,
-        control: &UploadControl,
+        control: &TransferControl,
     ) -> Result<bool> {
         let temporary = control.run(fs.metadata(&record.temporary)).await?;
         if temporary.is_none() {
@@ -696,28 +699,3 @@ impl std::fmt::Display for InvalidResume {
     }
 }
 impl std::error::Error for InvalidResume {}
-
-/// Coordinate sibling sessions using the same endpoint and destination.
-struct TargetGuard(String);
-static ACTIVE_TARGETS: std::sync::Mutex<Option<HashSet<String>>> = std::sync::Mutex::new(None);
-impl TargetGuard {
-    fn acquire(endpoint: &str, target: &RemotePath) -> Result<Self> {
-        let key = format!("{endpoint}\0{target}");
-        let mut active = ACTIVE_TARGETS.lock().unwrap_or_else(|e| e.into_inner());
-        if !active.get_or_insert_with(HashSet::new).insert(key.clone()) {
-            bail!("其他会话正在上传同一目标，请稍后继续上传");
-        }
-        Ok(Self(key))
-    }
-}
-impl Drop for TargetGuard {
-    fn drop(&mut self) {
-        if let Some(active) = ACTIVE_TARGETS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_mut()
-        {
-            active.remove(&self.0);
-        }
-    }
-}

@@ -23,14 +23,13 @@ use crate::app::{
     CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectSession, CopySessionHost, CopyTerminal,
     DeleteGroup, DeleteSession, DisconnectSession, DisconnectTerminal, DismissTerminalFind,
     DuplicateSession, EditSession, ExpandAllGroups, ExplorerAction, ExplorerCommand,
-    FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch, MoveSessionNode,
-    NewChildGroup, NewGroup, NewLocalTerminal, NewSession, NewSessionInGroup, OpenExplorer,
-    PasteTerminal, ReconnectTerminal, RenameGroup, RenameTerminal, RestartLocalTerminal,
-    SelectAllUploadFiles, ToggleSessionPanel, ToggleTheme, ToggleUploadSelection,
-    UploadSelectedFiles, ZoomIn, ZoomOut, ZoomReset,
+    ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch,
+    MoveSessionNode, NewChildGroup, NewGroup, NewLocalTerminal, NewSession, NewSessionInGroup,
+    OpenExplorer, PasteTerminal, ReconnectTerminal, RenameGroup, RenameTerminal,
+    RestartLocalTerminal, ToggleSessionPanel, ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::connection::SharedConnectionTester;
-use crate::explorer::{ExplorerPanel, ExplorerPanelEvent, confirm_close_upload};
+use crate::explorer::{ExplorerPanel, ExplorerPanelEvent, confirm_close_transfer};
 use crate::session::{
     ConnectionState, GroupId, SessionId, SessionPanel, SessionStore, SessionStoreEvent,
     confirm_delete_group, confirm_delete_session, open_group_dialog, open_session_dialog,
@@ -141,6 +140,7 @@ impl Workspace {
         let sftp = Arc::new(SshSftpTransportProvider::new(
             connector,
             crate::app::data_dir().join("upload-resume"),
+            crate::app::data_dir().join("download-resume"),
         ));
         Self::new_with_services(
             store,
@@ -171,6 +171,7 @@ impl Workspace {
         let sftp = Arc::new(SshSftpTransportProvider::new(
             connector,
             crate::app::data_dir().join("upload-resume"),
+            crate::app::data_dir().join("download-resume"),
         ));
         Self::new_with_services(
             store,
@@ -866,8 +867,16 @@ impl Workspace {
     ) {
         if let Some(panel) = self.explorers.get(&action.0).cloned() {
             let generation = panel.read(cx).generation();
-            if panel.read(cx).is_uploading() {
-                confirm_close_upload(action.0, generation, self.focus_handle.clone(), window, cx);
+            if panel.read(cx).is_transferring() {
+                let direction = panel.read(cx).transfer_direction();
+                confirm_close_transfer(
+                    action.0,
+                    generation,
+                    direction,
+                    self.focus_handle.clone(),
+                    window,
+                    cx,
+                );
             } else {
                 self.remove_explorer(action.0, window, cx);
             }
@@ -900,7 +909,7 @@ impl Workspace {
         {
             return;
         }
-        if matches!(action.command(), ExplorerCommand::CancelUpload) {
+        if matches!(action.command(), ExplorerCommand::CancelTransfer) {
             self.cancel_prompts_for_owner(
                 PromptOwner::Sftp(action.session(), panel.read(cx).generation()),
                 window,
@@ -913,39 +922,22 @@ impl Workspace {
             panel.update(cx, |panel, cx| panel.execute(action.command(), window, cx));
         }
     }
-    fn explorer_shortcut(
+    /// File-list shortcuts go to the explorer holding focus, not the tab
+    /// activated last: two SFTP tabs can sit side by side in split groups.
+    fn on_explorer_shortcut(
         &mut self,
-        command: ExplorerCommand,
+        action: &ExplorerShortcut,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(CenterTab::Explorer(id)) = self.active_tab {
-            self.on_explorer_action(&ExplorerAction::new(id, command), window, cx);
+        let focused = self
+            .explorers
+            .iter()
+            .find(|(_, panel)| panel.read(cx).contains_focus(window, cx))
+            .map(|(id, _)| *id);
+        if let Some(id) = focused {
+            self.on_explorer_action(&ExplorerAction::new(id, action.0.clone()), window, cx);
         }
-    }
-    fn on_upload_selected(
-        &mut self,
-        _: &UploadSelectedFiles,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.explorer_shortcut(ExplorerCommand::UploadSelected, window, cx);
-    }
-    fn on_toggle_upload_selection(
-        &mut self,
-        _: &ToggleUploadSelection,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.explorer_shortcut(ExplorerCommand::ToggleSelection, window, cx);
-    }
-    fn on_select_all_upload_files(
-        &mut self,
-        _: &SelectAllUploadFiles,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.explorer_shortcut(ExplorerCommand::SelectAll, window, cx);
     }
 
     fn on_close_local_terminal(
@@ -1301,7 +1293,7 @@ impl Workspace {
                 usize::from(
                     self.explorers
                         .get(&id)
-                        .is_some_and(|p| p.read(cx).is_uploading()),
+                        .is_some_and(|p| p.read(cx).is_transferring()),
                 ),
             ),
             Rc::new(move |window, cx| {
@@ -1441,7 +1433,7 @@ impl Workspace {
                     .filter(|id| {
                         self.explorers
                             .get(id)
-                            .is_some_and(|p| p.read(cx).is_uploading())
+                            .is_some_and(|p| p.read(cx).is_transferring())
                     })
                     .count(),
             ),
@@ -1763,9 +1755,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_disconnect_terminal))
             .on_action(cx.listener(Self::on_open_explorer))
             .on_action(cx.listener(Self::on_explorer_action))
-            .on_action(cx.listener(Self::on_upload_selected))
-            .on_action(cx.listener(Self::on_toggle_upload_selection))
-            .on_action(cx.listener(Self::on_select_all_upload_files))
+            .on_action(cx.listener(Self::on_explorer_shortcut))
             .on_action(cx.listener(Self::on_close_terminal))
             .on_action(cx.listener(Self::on_close_explorer))
             .on_action(cx.listener(Self::on_close_local_terminal))

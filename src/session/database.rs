@@ -10,7 +10,8 @@ use std::path::Path;
 use rusqlite::{Connection, params};
 
 use super::{
-    AuthKind, GroupDraft, GroupId, HostOs, Session, SessionDraft, SessionGroup, SessionId,
+    AuthKind, BookmarkSide, GroupDraft, GroupId, HostOs, Session, SessionDraft, SessionGroup,
+    SessionId,
 };
 
 /// SQLite's only integer type is `i64`, so the `u64` ids cross the boundary
@@ -25,7 +26,7 @@ fn from_sql(id: i64) -> u64 {
 }
 
 /// Bumped whenever `migrate` gains a step. Stored in `PRAGMA user_version`.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA_V1: &str = "\
 BEGIN;
@@ -76,6 +77,21 @@ ALTER TABLE groups ADD COLUMN expanded INTEGER NOT NULL DEFAULT 1;
 PRAGMA user_version = 5;
 COMMIT;";
 
+/// Per-session SFTP bookmarks, one list per pane. The cascade removes them
+/// with their session, the way WinSCP drops a site's bookmarks with the site.
+const SCHEMA_V6: &str = "\
+BEGIN;
+CREATE TABLE bookmarks (
+    id         INTEGER PRIMARY KEY,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    side       TEXT NOT NULL CHECK (side IN ('local', 'remote')),
+    path       TEXT NOT NULL,
+    sort_order INTEGER NOT NULL,
+    UNIQUE (session_id, side, path)
+);
+PRAGMA user_version = 6;
+COMMIT;";
+
 /// Everything one launch reads back from disk.
 pub struct StoredData {
     /// Groups in id order; `parent` and `sort_order` give the visible tree.
@@ -84,6 +100,8 @@ pub struct StoredData {
     pub sessions: Vec<Session>,
     /// Sessions that have ever connected, most recently connected first.
     pub recent: Vec<SessionId>,
+    /// SFTP bookmarks in the order they were added.
+    pub bookmarks: Vec<(SessionId, BookmarkSide, String)>,
 }
 
 pub struct SessionDatabase {
@@ -174,10 +192,30 @@ impl SessionDatabase {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        let bookmarks = self
+            .connection
+            .prepare("SELECT session_id, side, path FROM bookmarks ORDER BY sort_order, id")?
+            .query_map([], |row| {
+                let session: i64 = row.get(0)?;
+                let side: String = row.get(1)?;
+                Ok((
+                    SessionId(from_sql(session)),
+                    BookmarkSide::from_stored(&side),
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .filter_map(|row| match row {
+                Ok((session, Some(side), path)) => Some(Ok((session, side, path))),
+                Ok((_, None, _)) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
         Ok(StoredData {
             groups,
             sessions,
             recent,
+            bookmarks,
         })
     }
 
@@ -311,6 +349,34 @@ impl SessionDatabase {
         transaction.commit()
     }
 
+    /// Append a bookmark; adding one that exists is a no-op.
+    pub fn insert_bookmark(
+        &self,
+        session: SessionId,
+        side: BookmarkSide,
+        path: &str,
+    ) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "INSERT OR IGNORE INTO bookmarks (session_id, side, path, sort_order) \
+             VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM bookmarks))",
+            params![to_sql(session.0), side.as_str(), path],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_bookmark(
+        &self,
+        session: SessionId,
+        side: BookmarkSide,
+        path: &str,
+    ) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "DELETE FROM bookmarks WHERE session_id = ?1 AND side = ?2 AND path = ?3",
+            params![to_sql(session.0), side.as_str(), path],
+        )?;
+        Ok(())
+    }
+
     /// Record the operating system a probe found on the host. `None` clears
     /// it, which is what a failed probe on a rebuilt host leaves behind.
     pub fn set_host_os(&self, id: SessionId, os: Option<HostOs>) -> rusqlite::Result<()> {
@@ -351,6 +417,9 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     }
     if version < 5 {
         connection.execute_batch(SCHEMA_V5)?;
+    }
+    if version < 6 {
+        connection.execute_batch(SCHEMA_V6)?;
     }
     Ok(())
 }
@@ -590,6 +659,53 @@ mod tests {
 
         db.set_host_os(session.id, None).unwrap();
         assert_eq!(db.load().unwrap().sessions[0].os, None);
+    }
+
+    #[test]
+    fn v5_databases_gain_bookmarks_that_cascade_with_their_session() {
+        let connection = Connection::open_in_memory().unwrap();
+        for step in [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5] {
+            connection.execute_batch(step).unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO sessions (id, name, host, port, username, auth) \
+             VALUES (1, 'web', 'example.test', 22, 'root', 'auto'), \
+                    (2, 'db', 'example.test', 22, 'root', 'auto')",
+                [],
+            )
+            .unwrap();
+        let db = SessionDatabase::prepare(connection).unwrap();
+        db.insert_bookmark(SessionId(1), BookmarkSide::Remote, "/var/log")
+            .unwrap();
+        db.insert_bookmark(SessionId(1), BookmarkSide::Local, "/Users/me")
+            .unwrap();
+        db.insert_bookmark(SessionId(1), BookmarkSide::Remote, "/etc")
+            .unwrap();
+        // Adding the same path twice keeps one bookmark in its first place.
+        db.insert_bookmark(SessionId(1), BookmarkSide::Remote, "/var/log")
+            .unwrap();
+        db.insert_bookmark(SessionId(2), BookmarkSide::Remote, "/srv")
+            .unwrap();
+        assert_eq!(
+            db.load().unwrap().bookmarks,
+            [
+                (SessionId(1), BookmarkSide::Remote, "/var/log".to_string()),
+                (SessionId(1), BookmarkSide::Local, "/Users/me".to_string()),
+                (SessionId(1), BookmarkSide::Remote, "/etc".to_string()),
+                (SessionId(2), BookmarkSide::Remote, "/srv".to_string()),
+            ]
+        );
+        db.remove_bookmark(SessionId(1), BookmarkSide::Remote, "/etc")
+            .unwrap();
+        db.remove_session(SessionId(2)).unwrap();
+        assert_eq!(
+            db.load().unwrap().bookmarks,
+            [
+                (SessionId(1), BookmarkSide::Remote, "/var/log".to_string()),
+                (SessionId(1), BookmarkSide::Local, "/Users/me".to_string()),
+            ]
+        );
     }
 
     #[test]

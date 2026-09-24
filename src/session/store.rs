@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui_kit::{Context, EventEmitter, SharedString};
@@ -6,8 +7,8 @@ use crate::secrets::{NoSecretStore, SecretRef, SharedSecretStore};
 
 use super::database::now_seconds;
 use super::{
-    AuthKind, ConnectionState, GroupDraft, GroupId, HostOs, NodeDrop, Session, SessionDatabase,
-    SessionDraft, SessionGroup, SessionId, SessionNode, StoredData,
+    AuthKind, BookmarkSide, ConnectionState, GroupDraft, GroupId, HostOs, NodeDrop, Session,
+    SessionDatabase, SessionDraft, SessionGroup, SessionId, SessionNode, StoredData,
 };
 
 /// The single source of truth for sessions and groups. Created once by the
@@ -33,6 +34,8 @@ pub struct SessionStore {
     active: Option<SessionId>,
     /// Sessions in the order they last connected, most recent first.
     recent: Vec<SessionId>,
+    /// SFTP bookmarks per session and pane, in the order they were added.
+    bookmarks: HashMap<(SessionId, BookmarkSide), Vec<String>>,
     /// `None` for a memory-only store, as used by tests.
     database: Option<SessionDatabase>,
     /// Where passwords go. Defaults to a store that keeps nothing, so unit
@@ -65,6 +68,7 @@ impl SessionStore {
             next_group_id: 1,
             active: None,
             recent: Vec::new(),
+            bookmarks: HashMap::new(),
             database: None,
             secrets: Arc::new(NoSecretStore),
         }
@@ -84,8 +88,13 @@ impl SessionStore {
             groups,
             sessions,
             mut recent,
+            bookmarks: stored_bookmarks,
         } = database.load()?;
         recent.truncate(MAX_RECENT);
+        let mut bookmarks: HashMap<_, Vec<String>> = HashMap::new();
+        for (session, side, path) in stored_bookmarks {
+            bookmarks.entry((session, side)).or_default().push(path);
+        }
         Ok(Self {
             next_group_id: groups.iter().map(|group| group.id.0).max().unwrap_or(0) + 1,
             next_session_id: sessions.iter().map(|s| s.id.0).max().unwrap_or(0) + 1,
@@ -93,6 +102,7 @@ impl SessionStore {
             sessions,
             active: None,
             recent,
+            bookmarks,
             database: Some(database),
             secrets: Arc::new(NoSecretStore),
         })
@@ -369,6 +379,8 @@ impl SessionStore {
         let before = self.sessions.len();
         self.sessions.retain(|s| s.id != id);
         self.recent.retain(|recent| *recent != id);
+        // The database drops them through `ON DELETE CASCADE`.
+        self.bookmarks.retain(|(session, _), _| *session != id);
         if self.active == Some(id) {
             self.active = None;
         }
@@ -482,6 +494,81 @@ impl SessionStore {
             new_order
         };
         true
+    }
+
+    /// A session's SFTP bookmarks for one pane, oldest first.
+    pub fn bookmarks(&self, id: SessionId, side: BookmarkSide) -> &[String] {
+        self.bookmarks
+            .get(&(id, side))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    pub fn add_bookmark(
+        &mut self,
+        id: SessionId,
+        side: BookmarkSide,
+        path: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.add_bookmark_unnotified(id, side, path) {
+            return false;
+        }
+        if let Some(database) = self.database.as_ref() {
+            let result = database.insert_bookmark(id, side, path);
+            self.report(result, "添加书签", cx);
+        }
+        cx.notify();
+        true
+    }
+
+    pub fn add_bookmark_unnotified(
+        &mut self,
+        id: SessionId,
+        side: BookmarkSide,
+        path: &str,
+    ) -> bool {
+        if self.session(id).is_none() || path.is_empty() {
+            return false;
+        }
+        let list = self.bookmarks.entry((id, side)).or_default();
+        if list.iter().any(|existing| existing == path) {
+            return false;
+        }
+        list.push(path.to_string());
+        true
+    }
+
+    pub fn remove_bookmark(
+        &mut self,
+        id: SessionId,
+        side: BookmarkSide,
+        path: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.remove_bookmark_unnotified(id, side, path) {
+            return false;
+        }
+        if let Some(database) = self.database.as_ref() {
+            let result = database.remove_bookmark(id, side, path);
+            self.report(result, "删除书签", cx);
+        }
+        cx.notify();
+        true
+    }
+
+    pub fn remove_bookmark_unnotified(
+        &mut self,
+        id: SessionId,
+        side: BookmarkSide,
+        path: &str,
+    ) -> bool {
+        let Some(list) = self.bookmarks.get_mut(&(id, side)) else {
+            return false;
+        };
+        let before = list.len();
+        list.retain(|existing| existing != path);
+        list.len() != before
     }
 
     /// Persist a group's expanded or collapsed state after a tree interaction.
@@ -850,6 +937,28 @@ mod tests {
 
     fn draft(name: &str, group: Option<GroupId>) -> SessionDraft {
         SessionDraft::new(name, "10.0.0.1", 22, "root", AuthKind::Auto, group)
+    }
+
+    #[test]
+    fn bookmarks_are_per_pane_and_leave_with_their_session() {
+        let mut store = SessionStore::empty();
+        let group = store.insert_group_unnotified(GroupDraft::new("生产", None));
+        let web = store.insert_unnotified(draft("web", Some(group)));
+        let db = store.insert_unnotified(draft("db", None));
+        assert!(store.add_bookmark_unnotified(web, BookmarkSide::Remote, "/var/log"));
+        assert!(!store.add_bookmark_unnotified(web, BookmarkSide::Remote, "/var/log"));
+        assert!(store.add_bookmark_unnotified(web, BookmarkSide::Local, "/tmp"));
+        assert!(store.add_bookmark_unnotified(db, BookmarkSide::Remote, "/srv"));
+        assert!(!store.add_bookmark_unnotified(SessionId(99), BookmarkSide::Remote, "/x"));
+        assert_eq!(store.bookmarks(web, BookmarkSide::Remote), ["/var/log"]);
+        assert_eq!(store.bookmarks(web, BookmarkSide::Local), ["/tmp"]);
+        assert!(store.remove_bookmark_unnotified(db, BookmarkSide::Remote, "/srv"));
+        assert!(store.bookmarks(db, BookmarkSide::Remote).is_empty());
+
+        // Removing a group matches the database cascade.
+        store.remove_group_unnotified(group);
+        assert!(store.bookmarks(web, BookmarkSide::Remote).is_empty());
+        assert!(store.bookmarks(web, BookmarkSide::Local).is_empty());
     }
 
     #[test]

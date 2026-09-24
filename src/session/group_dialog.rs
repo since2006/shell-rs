@@ -217,7 +217,7 @@ pub fn confirm_delete_group(
     if uploads > 0 {
         description = Some(
             format!(
-                "{}将停止 {uploads} 个上传批次并保留续传进度。",
+                "{}将停止 {uploads} 个传输批次并保留续传进度。",
                 description.unwrap_or_default()
             )
             .into(),

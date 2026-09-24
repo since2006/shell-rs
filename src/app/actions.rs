@@ -224,6 +224,7 @@ pub struct CloseTabs {
 }
 
 /// Commands shared by explorer controls, drops, dialogs and keyboard bindings.
+/// `remote` names the pane a command acts on.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub enum ExplorerCommand {
     Navigate {
@@ -236,14 +237,92 @@ pub enum ExplorerCommand {
     Refresh {
         remote: bool,
     },
-    Check {
-        name: String,
-        checked: bool,
+    Root {
+        remote: bool,
+    },
+    Home {
+        remote: bool,
+    },
+    Back {
+        remote: bool,
+    },
+    Forward {
+        remote: bool,
+    },
+    /// Enter or double-click: open the directory under the cursor.
+    Open {
+        remote: bool,
+    },
+    /// Move keyboard focus to a pane's file list.
+    FocusPane {
+        remote: bool,
+    },
+    MoveCursor {
+        remote: bool,
+        motion: crate::explorer::CursorMotion,
         extend: bool,
     },
-    ToggleSelection,
-    SelectAll,
-    UploadSelected,
+    ToggleSelection {
+        remote: bool,
+    },
+    SelectAll {
+        remote: bool,
+    },
+    AddBookmark {
+        remote: bool,
+    },
+    RemoveBookmark {
+        remote: bool,
+        path: String,
+    },
+    /// F5: upload the local selection or download the remote one.
+    Transfer {
+        remote: bool,
+    },
+    /// Ask where to download these remote paths, starting from `target`.
+    DownloadPaths {
+        paths: Vec<String>,
+        target: String,
+    },
+    BeginDownload {
+        paths: Vec<String>,
+        target: String,
+    },
+    /// Ask to delete the pane's selection.
+    Delete {
+        remote: bool,
+    },
+    BeginDelete {
+        remote: bool,
+        names: Vec<String>,
+    },
+    Rename {
+        remote: bool,
+    },
+    CommitRename {
+        remote: bool,
+        from: String,
+        to: String,
+    },
+    New {
+        remote: bool,
+        kind: crate::explorer::NewEntryKind,
+    },
+    CommitNew {
+        remote: bool,
+        kind: crate::explorer::NewEntryKind,
+        name: String,
+    },
+    Properties {
+        remote: bool,
+    },
+    ApplyPermissions {
+        remote: bool,
+        names: Vec<String>,
+        edit: crate::sftp::PermissionEdit,
+        recursive: bool,
+        add_x_to_dirs: bool,
+    },
     ChooseFiles,
     UploadPaths {
         paths: Vec<std::path::PathBuf>,
@@ -255,11 +334,11 @@ pub enum ExplorerCommand {
     },
     Answer {
         request_id: u64,
-        answer: crate::sftp::UploadAnswer,
+        answer: crate::sftp::TransferAnswer,
     },
-    CancelUpload,
-    ResumeUpload,
-    DiscardUpload,
+    CancelTransfer,
+    ResumeTransfer,
+    DiscardTransfer,
     ToggleDetails,
     CloseConfirmed,
 }
@@ -292,14 +371,11 @@ impl ExplorerAction {
         &self.command
     }
 }
-gpui_kit::actions!(
-    shellr,
-    [
-        UploadSelectedFiles,
-        ToggleUploadSelection,
-        SelectAllUploadFiles
-    ]
-);
+/// A file-list key binding. The binding carries the pane side, and the
+/// workspace sends it to the explorer that holds focus.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = shellr, no_json)]
+pub struct ExplorerShortcut(pub ExplorerCommand);
 
 /// UI entities dispatch after their update has finished so Workspace can read
 /// their latest snapshot without re-entering a leased entity.

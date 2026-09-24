@@ -20,7 +20,15 @@ icon_assets!(
         FolderTree,
         FolderPlus,
         Eraser,
-        ClipboardPaste
+        ClipboardPaste,
+        House,
+        FolderUp,
+        FolderRoot,
+        FolderSymlink,
+        FileSymlink,
+        FilePlus,
+        Bookmark,
+        SquarePen
     ]
 );
 
