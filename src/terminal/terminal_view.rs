@@ -1,4 +1,5 @@
 use std::ops::Range;
+use std::rc::Rc;
 use std::time::Duration;
 
 use alacritty_terminal::index::{Column, Line, Point as TerminalPoint, Side};
@@ -7,21 +8,50 @@ use alacritty_terminal::term::TermMode;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::COUNT;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
-use gpui_kit::component::{ActiveTheme as _, menu::PopupMenu};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
+    button::{Button, ButtonVariants as _},
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    menu::PopupMenu,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use unicode_width::UnicodeWidthChar as _;
 
-use crate::app::{CopyTerminal, PasteTerminal};
+use crate::app::{
+    CatalogIcon, ClearTerminal, CopyTerminal, DismissTerminalFind, FindInTerminal,
+    FindNextInTerminal, FindPreviousInTerminal, PasteTerminal,
+};
 use crate::session::HostOs;
 
+use super::search::SearchMark;
 use super::{
-    Latency, SharedTerminalTransportFactory, TerminalEngine, TerminalEngineEvent,
+    Latency, SearchDirection, SharedTerminalTransportFactory, TerminalEngine, TerminalEngineEvent,
     TerminalLifecycle, TerminalPrompt, TerminalPromptReply, TerminalSize, TerminalSnapshot,
     TerminalStatus,
 };
 
 pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";
+/// Key context of a terminal's find bar.
+pub const TERMINAL_FIND_KEY_CONTEXT: &str = "TerminalFind";
+
+/// How long typing in the find bar pauses before the scrollback is searched.
+/// A full search of a long scrollback takes a frame or more, so it waits for
+/// the query to settle rather than running on every keystroke.
+const FIND_DEBOUNCE: Duration = Duration::from_millis(80);
+
+/// The commands a terminal's owner adds to the bottom of its context menu,
+/// built from the terminal's lifecycle when the menu opens.
+pub type TerminalMenuItems = Rc<dyn Fn(PopupMenu, &TerminalLifecycle) -> PopupMenu>;
+
+/// The open find bar of one terminal.
+struct FindBar {
+    input: Entity<InputState>,
+    /// The search waiting for typing to pause, if any.
+    pending: Option<Task<()>>,
+    _subscription: Subscription,
+}
 
 gpui_kit::actions!(shellr_terminal, [SendTab, SendBackTab]);
 
@@ -142,6 +172,8 @@ pub struct TerminalView {
     scroll_accumulator: ScrollAccumulator,
     context_menu: Option<(Entity<PopupMenu>, gpui_kit::Point<Pixels>)>,
     context_menu_subscription: Option<Subscription>,
+    menu_items: Option<TerminalMenuItems>,
+    find: Option<FindBar>,
     cursor_visible: bool,
     focused: bool,
     _subscriptions: Vec<Subscription>,
@@ -225,6 +257,8 @@ impl TerminalView {
             scroll_accumulator: ScrollAccumulator::default(),
             context_menu: None,
             context_menu_subscription: None,
+            menu_items: None,
+            find: None,
             cursor_visible: true,
             focused: false,
             _subscriptions: subscriptions,
@@ -248,6 +282,7 @@ impl TerminalView {
         self.scroll_accumulator.reset();
         self.context_menu = None;
         self.context_menu_subscription = None;
+        self.find = None;
         self.cursor_visible = true;
         self.engine.update(cx, |engine, cx| engine.restart(cx));
     }
@@ -258,6 +293,7 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.reset_interaction();
+        self.find = None;
         self.engine
             .update(cx, |engine, cx| engine.restart_with_factory(factory, cx));
     }
@@ -285,6 +321,7 @@ impl TerminalView {
         self.scroll_accumulator.reset();
         self.context_menu = None;
         self.context_menu_subscription = None;
+        self.find = None;
         self.engine.update(cx, |engine, cx| engine.shutdown(cx));
     }
 
@@ -348,6 +385,115 @@ impl TerminalView {
         self.cursor_visible = true;
         cx.notify();
         true
+    }
+
+    /// Add the owner's commands below the terminal's own in the context menu.
+    pub fn set_menu_items(&mut self, items: TerminalMenuItems) {
+        self.menu_items = Some(items);
+    }
+
+    /// Clear the screen and the scrollback, keeping the prompt line.
+    pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.selection_gesture.finish();
+        self.scroll_accumulator.reset();
+        self.engine
+            .update(cx, |engine, cx| engine.clear_keeping_prompt(cx));
+    }
+
+    /// Open the find bar and put the cursor in it. An open bar selects its
+    /// query again. A selection, when there is one, becomes the query.
+    pub fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = self
+            .engine
+            .read(cx)
+            .selection_text()
+            .filter(|text| !text.is_empty() && !text.contains('\n'));
+        let input = match &self.find {
+            Some(find) => find.input.clone(),
+            None => {
+                let input = cx.new(|cx| InputState::new(window, cx).placeholder("查找"));
+                let subscription =
+                    cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
+                        match event {
+                            InputEvent::Change => this.schedule_find(window, cx),
+                            InputEvent::PressEnter { shift, .. } => {
+                                let direction = if *shift {
+                                    SearchDirection::Up
+                                } else {
+                                    SearchDirection::Down
+                                };
+                                this.step_find(direction, cx);
+                            }
+                            _ => {}
+                        }
+                    });
+                self.find = Some(FindBar {
+                    input: input.clone(),
+                    pending: None,
+                    _subscription: subscription,
+                });
+                input
+            }
+        };
+        if let Some(query) = selection {
+            input.update(cx, |input, cx| input.set_value(query, window, cx));
+            self.run_find(cx);
+        }
+        input.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.select_all(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// Focus the next match up or down. A query still being typed is searched
+    /// first, and that search picks the match to focus.
+    pub fn step_find(&mut self, direction: SearchDirection, cx: &mut Context<Self>) {
+        let Some(find) = &mut self.find else {
+            return;
+        };
+        if find.pending.take().is_some() {
+            self.run_find(cx);
+            return;
+        }
+        self.engine
+            .update(cx, |engine, cx| engine.step_search(direction, cx));
+    }
+
+    /// Close the find bar, drop its highlights and hand the keyboard back to
+    /// the terminal.
+    pub fn dismiss_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.find.take().is_none() {
+            return;
+        }
+        self.engine.update(cx, |engine, cx| engine.clear_search(cx));
+        self.focus(window, cx);
+        cx.notify();
+    }
+
+    fn schedule_find(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(find) = &mut self.find else {
+            return;
+        };
+        find.pending = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(FIND_DEBOUNCE).await;
+            _ = this.update(cx, |this, cx| {
+                if let Some(find) = &mut this.find {
+                    find.pending = None;
+                }
+                this.run_find(cx);
+            });
+        }));
+    }
+
+    fn run_find(&mut self, cx: &mut Context<Self>) {
+        let Some(find) = &mut self.find else {
+            return;
+        };
+        find.pending = None;
+        let query = find.input.read(cx).value();
+        self.engine
+            .update(cx, |engine, cx| engine.set_search_query(&query, cx));
     }
 
     fn snapshot(&self, cx: &App) -> TerminalSnapshot {
@@ -437,17 +583,48 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.focus(window, cx);
-        let has_selection = self.engine.read(cx).has_selection();
-        let can_paste = self.engine.read(cx).lifecycle().accepts_input()
+        let engine = self.engine.read(cx);
+        let has_selection = engine.has_selection();
+        let lifecycle = engine.lifecycle().clone();
+        let can_clear = engine.accepts_clear();
+        let can_paste = lifecycle.accepts_input()
             && cx
                 .read_from_clipboard()
                 .and_then(|item| item.text())
                 .is_some();
         let action_context = self.focus_handle.clone();
+        let owner_items = self.menu_items.clone();
         let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            menu.action_context(action_context)
-                .menu_with_disabled("复制", Box::new(CopyTerminal), !has_selection)
-                .menu_with_disabled("粘贴", Box::new(PasteTerminal), !can_paste)
+            let menu = menu
+                .action_context(action_context)
+                .menu_with_icon_and_disabled(
+                    "复制",
+                    Icon::new(IconName::Copy),
+                    Box::new(CopyTerminal),
+                    !has_selection,
+                )
+                .menu_with_icon_and_disabled(
+                    "粘贴",
+                    Icon::new(CatalogIcon::ClipboardPaste),
+                    Box::new(PasteTerminal),
+                    !can_paste,
+                )
+                .separator()
+                .menu_with_icon(
+                    "查找…",
+                    Icon::new(IconName::Search),
+                    Box::new(FindInTerminal),
+                )
+                .menu_with_icon_and_disabled(
+                    "清屏",
+                    Icon::new(CatalogIcon::Eraser),
+                    Box::new(ClearTerminal),
+                    !can_clear,
+                );
+            match &owner_items {
+                Some(items) => items(menu.separator(), &lifecycle),
+                None => menu,
+            }
         });
         let terminal = cx.weak_entity();
         let subscription = window.subscribe(&menu, cx, move |_, _: &DismissEvent, _, cx| {
@@ -622,7 +799,97 @@ impl Render for TerminalView {
                 )
             });
 
-        div().size_full().p_2().child(terminal)
+        // The find bar is the terminal's sibling, not its child: keys typed
+        // into it must not bubble to the terminal's key handler, which would
+        // send them to the shell (and Tab would hit `SendTab`).
+        div()
+            .relative()
+            .size_full()
+            .p_2()
+            .child(terminal)
+            .when_some(self.find.as_ref(), |container, find| {
+                container.child(self.render_find_bar(find, cx))
+            })
+    }
+}
+
+impl TerminalView {
+    fn render_find_bar(&self, find: &FindBar, cx: &App) -> impl IntoElement {
+        let has_query = !find.input.read(cx).value().is_empty();
+        let position = self
+            .engine
+            .read(cx)
+            .search_position()
+            .filter(|_| has_query && find.pending.is_none());
+        let navigate = position.is_some_and(|position| position.total() > 0);
+        h_flex()
+            .key_context(TERMINAL_FIND_KEY_CONTEXT)
+            // Keep the terminal underneath from taking clicks on the bar,
+            // which would move focus and start a selection there.
+            .occlude()
+            .absolute()
+            .top_2()
+            .right_4()
+            .w_80()
+            .gap_1()
+            .p_1()
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded(cx.theme().radius)
+            .shadow_md()
+            .child(
+                Input::new(&find.input)
+                    .id("terminal-find")
+                    .small()
+                    .appearance(false)
+                    .prefix(Icon::new(IconName::Search).small()),
+            )
+            .when_some(position, |bar, position| {
+                let label = position.label();
+                bar.child(
+                    div()
+                        .id("terminal-find-count")
+                        .test_support()
+                        .aria_label(label.clone())
+                        .flex_none()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(label),
+                )
+            })
+            .child(
+                Button::new("terminal-find-previous")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::ChevronUp)
+                    .tooltip("上一项（⇧↩）")
+                    .disabled(!navigate)
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(FindPreviousInTerminal), cx)
+                    }),
+            )
+            .child(
+                Button::new("terminal-find-next")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::ChevronDown)
+                    .tooltip("下一项（↩）")
+                    .disabled(!navigate)
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(FindNextInTerminal), cx)
+                    }),
+            )
+            .child(
+                Button::new("terminal-find-close")
+                    .ghost()
+                    .xsmall()
+                    .icon(IconName::Close)
+                    .tooltip("关闭（Esc）")
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(DismissTerminalFind), cx)
+                    }),
+            )
     }
 }
 
@@ -757,7 +1024,11 @@ impl Element for TerminalElement {
                 let cell_background = if cell.selected {
                     cx.theme().selection
                 } else {
-                    background
+                    match cell.search {
+                        SearchMark::Focused => cx.theme().warning,
+                        SearchMark::Match => cx.theme().warning.opacity(0.35),
+                        SearchMark::None => background,
+                    }
                 };
                 if column == 0 {
                     background_color = Some(cell_background);
@@ -782,6 +1053,8 @@ impl Element for TerminalElement {
                     font,
                     color: if cell.selected {
                         palette.foreground
+                    } else if cell.search == SearchMark::Focused {
+                        cx.theme().warning_foreground
                     } else {
                         foreground
                     },

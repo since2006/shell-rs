@@ -19,14 +19,15 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CenterTab, CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseTabs, CloseTerminal,
-    CollapseAllGroups, ConnectGroup, ConnectSession, CopySessionHost, CopyTerminal, DeleteGroup,
-    DeleteSession, DisconnectSession, DuplicateSession, EditSession, ExpandAllGroups,
-    ExplorerAction, ExplorerCommand, FocusSearch, MoveSessionNode, NewChildGroup, NewGroup,
-    NewLocalTerminal, NewSession, NewSessionInGroup, OpenExplorer, PasteTerminal,
-    ReconnectTerminal, RenameGroup, RenameTerminal, RestartLocalTerminal, SelectAllUploadFiles,
-    ToggleSessionPanel, ToggleTheme, ToggleUploadSelection, UploadSelectedFiles, ZoomIn, ZoomOut,
-    ZoomReset,
+    CenterTab, ClearTerminal, CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseTabs,
+    CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectSession, CopySessionHost, CopyTerminal,
+    DeleteGroup, DeleteSession, DisconnectSession, DisconnectTerminal, DismissTerminalFind,
+    DuplicateSession, EditSession, ExpandAllGroups, ExplorerAction, ExplorerCommand,
+    FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch, MoveSessionNode,
+    NewChildGroup, NewGroup, NewLocalTerminal, NewSession, NewSessionInGroup, OpenExplorer,
+    PasteTerminal, ReconnectTerminal, RenameGroup, RenameTerminal, RestartLocalTerminal,
+    SelectAllUploadFiles, ToggleSessionPanel, ToggleTheme, ToggleUploadSelection,
+    UploadSelectedFiles, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::connection::SharedConnectionTester;
 use crate::explorer::{ExplorerPanel, ExplorerPanelEvent, confirm_close_upload};
@@ -40,9 +41,10 @@ use crate::sftp::{
 };
 use crate::terminal::{
     LocalPtyTransportFactory, LocalTerminalId, LocalTerminalPanel, LocalTerminalPanelEvent,
-    RemoteTerminalId, SharedRemoteTerminalTransportProvider, SharedTerminalTransportFactory,
-    TerminalLifecycle, TerminalPanel, TerminalPanelEvent, TerminalPrompt, TerminalPromptField,
-    TerminalPromptKind, TerminalPromptReply, TerminalSecret, open_rename_tab_dialog,
+    RemoteTerminalId, SearchDirection, SharedRemoteTerminalTransportProvider,
+    SharedTerminalTransportFactory, TerminalLifecycle, TerminalPanel, TerminalPanelEvent,
+    TerminalPrompt, TerminalPromptField, TerminalPromptKind, TerminalPromptReply, TerminalSecret,
+    TerminalView, open_rename_tab_dialog,
 };
 
 use super::{
@@ -1085,37 +1087,95 @@ impl Workspace {
         }
     }
 
+    /// The terminal of the center tab shown most recently, remote or local.
+    fn active_terminal(&self, cx: &App) -> Option<Entity<TerminalView>> {
+        match self.active_tab? {
+            CenterTab::Terminal(id) => Some(self.terminals.get(&id)?.read(cx).terminal().clone()),
+            CenterTab::LocalTerminal(id) => {
+                Some(self.local_terminals.get(&id)?.read(cx).terminal().clone())
+            }
+            CenterTab::Explorer(_) => None,
+        }
+    }
+
     fn on_copy_terminal(&mut self, _: &CopyTerminal, _: &mut Window, cx: &mut Context<Self>) {
-        match self.active_tab {
-            Some(CenterTab::Terminal(id)) => {
-                if let Some(panel) = self.terminals.get(&id) {
-                    let terminal = panel.read(cx).terminal().clone();
-                    terminal.update(cx, |terminal, cx| terminal.copy_selection(cx));
-                }
-            }
-            Some(CenterTab::LocalTerminal(id)) => {
-                if let Some(panel) = self.local_terminals.get(&id) {
-                    panel.update(cx, |panel, cx| panel.copy(cx));
-                }
-            }
-            Some(CenterTab::Explorer(_)) | None => {}
+        if let Some(terminal) = self.active_terminal(cx) {
+            terminal.update(cx, |terminal, cx| terminal.copy_selection(cx));
         }
     }
 
     fn on_paste_terminal(&mut self, _: &PasteTerminal, _: &mut Window, cx: &mut Context<Self>) {
-        match self.active_tab {
-            Some(CenterTab::Terminal(id)) => {
-                if let Some(panel) = self.terminals.get(&id) {
-                    let terminal = panel.read(cx).terminal().clone();
-                    terminal.update(cx, |terminal, cx| terminal.paste_clipboard(cx));
-                }
-            }
-            Some(CenterTab::LocalTerminal(id)) => {
-                if let Some(panel) = self.local_terminals.get(&id) {
-                    panel.update(cx, |panel, cx| panel.paste(cx));
-                }
-            }
-            Some(CenterTab::Explorer(_)) | None => {}
+        if let Some(terminal) = self.active_terminal(cx) {
+            terminal.update(cx, |terminal, cx| terminal.paste_clipboard(cx));
+        }
+    }
+
+    fn on_find_in_terminal(
+        &mut self,
+        _: &FindInTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.active_terminal(cx) {
+            terminal.update(cx, |terminal, cx| terminal.open_find(window, cx));
+        }
+    }
+
+    fn on_find_next_in_terminal(
+        &mut self,
+        _: &FindNextInTerminal,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.active_terminal(cx) {
+            terminal.update(cx, |terminal, cx| {
+                terminal.step_find(SearchDirection::Down, cx)
+            });
+        }
+    }
+
+    fn on_find_previous_in_terminal(
+        &mut self,
+        _: &FindPreviousInTerminal,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.active_terminal(cx) {
+            terminal.update(cx, |terminal, cx| {
+                terminal.step_find(SearchDirection::Up, cx)
+            });
+        }
+    }
+
+    fn on_dismiss_terminal_find(
+        &mut self,
+        _: &DismissTerminalFind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.active_terminal(cx) {
+            terminal.update(cx, |terminal, cx| terminal.dismiss_find(window, cx));
+        }
+    }
+
+    fn on_clear_terminal(&mut self, _: &ClearTerminal, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(terminal) = self.active_terminal(cx) {
+            terminal.update(cx, |terminal, cx| terminal.clear(cx));
+        }
+    }
+
+    fn on_disconnect_terminal(
+        &mut self,
+        action: &DisconnectTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = action.0;
+        self.cancel_prompts_for_terminal(id, window, cx);
+        if let Some(terminal) = self.terminals.get(&id).cloned() {
+            let session_id = terminal.read(cx).session_id();
+            terminal.update(cx, |terminal, cx| terminal.disconnect(cx));
+            self.refresh_session_connection_state(session_id, cx);
         }
     }
 
@@ -1700,6 +1760,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_connect_group))
             .on_action(cx.listener(Self::on_disconnect_session))
             .on_action(cx.listener(Self::on_reconnect_terminal))
+            .on_action(cx.listener(Self::on_disconnect_terminal))
             .on_action(cx.listener(Self::on_open_explorer))
             .on_action(cx.listener(Self::on_explorer_action))
             .on_action(cx.listener(Self::on_upload_selected))
@@ -1715,6 +1776,11 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_restart_local_terminal))
             .on_action(cx.listener(Self::on_copy_terminal))
             .on_action(cx.listener(Self::on_paste_terminal))
+            .on_action(cx.listener(Self::on_find_in_terminal))
+            .on_action(cx.listener(Self::on_find_next_in_terminal))
+            .on_action(cx.listener(Self::on_find_previous_in_terminal))
+            .on_action(cx.listener(Self::on_dismiss_terminal_find))
+            .on_action(cx.listener(Self::on_clear_terminal))
             .on_action(cx.listener(Self::on_toggle_session_panel))
             .on_action(cx.listener(Self::on_toggle_theme))
             .on_action(cx.listener(Self::on_focus_search))

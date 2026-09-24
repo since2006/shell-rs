@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -6,7 +7,7 @@ use std::time::Duration;
 use alacritty_terminal::Term;
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Point, Side};
+use alacritty_terminal::index::{Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
@@ -16,6 +17,7 @@ use alacritty_terminal::vte::ansi::{Color, CursorShape, CursorStyle, Processor, 
 
 use crate::session::HostOs;
 
+use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
 use super::{
     Latency, SharedTerminalTransportFactory, TerminalLifecycle, TerminalPrompt,
     TerminalPromptReply, TerminalSize, TerminalStatus, TerminalTransportCommand,
@@ -31,6 +33,7 @@ pub struct TerminalCell {
     pub background: Color,
     pub flags: Flags,
     pub selected: bool,
+    pub search: SearchMark,
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +74,9 @@ pub struct TerminalEngine {
     title: Option<String>,
     /// The connection's latest round trip, while one is running.
     latency: Option<Latency>,
+    /// The open find, if any. Rendering reads it through `&self` and still
+    /// has to advance the search engine's cache, hence the `RefCell`.
+    search: RefCell<Option<TerminalSearch>>,
     generation: u64,
     size: TerminalSize,
     event_sender: mpsc::Sender<TerminalUiEvent>,
@@ -93,6 +99,7 @@ impl TerminalEngine {
             lifecycle: TerminalLifecycle::Starting,
             title: None,
             latency: None,
+            search: RefCell::new(None),
             generation,
             size,
             event_sender,
@@ -175,6 +182,8 @@ impl TerminalEngine {
         self.lifecycle = TerminalLifecycle::Starting;
         self.title = None;
         self.latency = None;
+        // The new emulator starts empty; matches in the old one mean nothing.
+        self.search.replace(None);
         self.runtime = TerminalRuntime::start(
             self.generation,
             self.size,
@@ -307,6 +316,65 @@ impl TerminalEngine {
         cx.notify();
     }
 
+    /// Open the find, or search the open one for `query`, focusing the newest
+    /// match at or above the bottom of the viewport.
+    pub fn set_search_query(&mut self, query: &str, cx: &mut gpui_kit::Context<Self>) {
+        let mut term = self.runtime.term.lock();
+        self.search
+            .borrow_mut()
+            .get_or_insert_with(TerminalSearch::new)
+            .set_query(query, &mut term);
+        drop(term);
+        cx.notify();
+    }
+
+    /// Focus the next match up (older output) or down (newer output).
+    pub fn step_search(&mut self, direction: SearchDirection, cx: &mut gpui_kit::Context<Self>) {
+        let mut term = self.runtime.term.lock();
+        if let Some(search) = self.search.borrow_mut().as_mut() {
+            search.step(direction, &mut term);
+        }
+        drop(term);
+        cx.notify();
+    }
+
+    pub fn clear_search(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        if self.search.replace(None).is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Where the focused match is, while the find has a query.
+    pub fn search_position(&self) -> Option<SearchPosition> {
+        self.search
+            .borrow()
+            .as_ref()
+            .and_then(|search| search.position())
+    }
+
+    /// Whether `clear_keeping_prompt` has anything to do: a full-screen program
+    /// owns its screen and has no scrollback to clear.
+    pub fn accepts_clear(&self) -> bool {
+        !self.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    /// Clear the screen and the scrollback, keeping only the line the cursor
+    /// is on (with everything wrapped into it), at the top. This happens in
+    /// the emulator alone; the shell is not told, and carries on writing from
+    /// the cursor, which stays beside its prompt.
+    pub fn clear_keeping_prompt(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        let mut term = self.runtime.term.lock();
+        if !clear_keeping_cursor_line(&mut term) {
+            return;
+        }
+        if let Some(search) = self.search.borrow_mut().as_mut() {
+            search.refresh(&mut term);
+        }
+        drop(term);
+        cx.emit(TerminalEngineEvent::Changed);
+        cx.notify();
+    }
+
     pub fn selection_text(&self) -> Option<String> {
         self.runtime.term.lock().selection_to_string()
     }
@@ -364,6 +432,13 @@ impl TerminalEngine {
         let cursor_point = content.cursor.point;
         let cursor_shape = content.cursor.shape;
         let columns = term.grid().columns();
+        let (matches, focused) = self
+            .search
+            .borrow_mut()
+            .as_mut()
+            .map(|search| search.visible(&term))
+            .unwrap_or_default();
+        let mut marker = MatchMarker::new(&matches, focused.as_ref());
         let mut cells: Vec<_> = content
             .display_iter
             .map(|indexed| {
@@ -379,6 +454,7 @@ impl TerminalEngine {
                     selected: selection.is_some_and(|range| {
                         range.contains_cell(&indexed, cursor_point, cursor_shape)
                     }),
+                    search: marker.mark(indexed.point),
                 }
             })
             .collect();
@@ -400,7 +476,8 @@ impl TerminalEngine {
     }
 }
 
-/// Keep the leading cell and spacer of a full-width glyph visually atomic.
+/// Keep the leading cell and spacer of a full-width glyph visually atomic,
+/// for the selection and for find highlights alike.
 /// Alacritty stores CJK glyphs in one `WIDE_CHAR` cell followed by a
 /// `WIDE_CHAR_SPACER`; painting only one half produces a one-column highlight
 /// that cannot line up with the two-column glyph.
@@ -417,6 +494,9 @@ fn normalize_wide_character_selection(cells: &mut [TerminalCell], columns: usize
                 let selected = row[column].selected || row[column + 1].selected;
                 row[column].selected = selected;
                 row[column + 1].selected = selected;
+                let search = row[column].search.max(row[column + 1].search);
+                row[column].search = search;
+                row[column + 1].search = search;
             }
         }
     }
@@ -736,6 +816,29 @@ fn encode_paste(text: &str, mode: TermMode) -> Vec<u8> {
     }
 }
 
+/// See `TerminalEngine::clear_keeping_prompt`. Returns whether anything was
+/// cleared.
+fn clear_keeping_cursor_line(term: &mut AlacrittyTerm) -> bool {
+    if term.mode().contains(TermMode::ALT_SCREEN) {
+        return false;
+    }
+    term.scroll_display(Scroll::Bottom);
+    term.selection = None;
+    let cursor = term.grid().cursor.point;
+    // The prompt may have wrapped onto the cursor's row; keep it whole. A part
+    // already pushed into the scrollback goes with the scrollback.
+    let start = term.line_search_left(cursor).line.max(Line(0));
+    let lines = start.0 as usize;
+    if lines > 0 {
+        let screen = Line(0)..Line(term.screen_lines() as i32);
+        let grid = term.grid_mut();
+        grid.scroll_up(&screen, lines);
+        grid.cursor.point.line -= lines;
+    }
+    term.grid_mut().clear_history();
+    true
+}
+
 fn prepare_term_for_user_input(term: &mut AlacrittyTerm) {
     term.scroll_display(Scroll::Bottom);
     term.selection = None;
@@ -767,6 +870,137 @@ mod tests {
 
     fn feed(term: &mut AlacrittyTerm, bytes: &[u8]) {
         Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new().advance(term, bytes);
+    }
+
+    fn line_text(term: &AlacrittyTerm, line: i32) -> String {
+        term.grid()[Line(line)]
+            .into_iter()
+            .map(|cell| cell.c)
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    }
+
+    fn position(search: &TerminalSearch) -> (Option<usize>, usize) {
+        let position = search.position().unwrap();
+        (position.current(), position.total())
+    }
+
+    #[test]
+    fn find_reaches_into_the_scrollback_and_wraps() {
+        let mut term = test_term(10, 3);
+        feed(&mut term, b"err 1\r\nok\r\nerr 2\r\nok\r\nok\r\nerr 3");
+        assert!(term.history_size() > 0);
+        let mut search = TerminalSearch::new();
+
+        search.set_query("err", &mut term);
+        assert_eq!(position(&search), (Some(3), 3));
+
+        search.step(SearchDirection::Up, &mut term);
+        assert_eq!(position(&search), (Some(2), 3));
+        search.step(SearchDirection::Up, &mut term);
+        assert_eq!(position(&search), (Some(1), 3));
+        // The oldest match is in the scrollback; the view scrolls up to it.
+        assert!(term.grid().display_offset() > 0);
+        let (_, focused) = search.visible(&term);
+        assert_eq!(line_text(&term, focused.unwrap().start().line.0), "err 1");
+
+        search.step(SearchDirection::Up, &mut term);
+        assert_eq!(position(&search), (Some(3), 3));
+        search.step(SearchDirection::Down, &mut term);
+        assert_eq!(position(&search), (Some(1), 3));
+    }
+
+    #[test]
+    fn find_starts_at_the_first_match_on_screen() {
+        let mut term = test_term(10, 3);
+        feed(&mut term, b"err 1\r\nok\r\nok\r\nerr 2\r\nerr 3");
+        let mut search = TerminalSearch::new();
+        search.set_query("err", &mut term);
+        assert_eq!(position(&search), (Some(2), 3));
+        assert_eq!(term.grid().display_offset(), 0);
+    }
+
+    #[test]
+    fn find_is_literal_and_smart_case() {
+        let mut term = test_term(20, 2);
+        feed(&mut term, b"Error: err");
+        let mut search = TerminalSearch::new();
+        search.set_query("err", &mut term);
+        assert_eq!(position(&search).1, 2);
+        search.set_query("Err", &mut term);
+        assert_eq!(position(&search).1, 1);
+        search.set_query("e.r", &mut term);
+        assert_eq!(position(&search).1, 0);
+        assert_eq!(search.position().unwrap().label(), "无结果");
+        search.set_query("", &mut term);
+        assert!(search.position().is_none());
+    }
+
+    #[test]
+    fn focused_match_follows_output_into_the_scrollback() {
+        let mut term = test_term(10, 3);
+        feed(&mut term, b"one\r\nmark\r\n");
+        let mut search = TerminalSearch::new();
+        search.set_query("mark", &mut term);
+        feed(&mut term, b"two\r\nthree\r\nfour\r\n");
+
+        let (_, focused) = search.visible(&term);
+        let focused = focused.expect("the match is still in the buffer");
+        assert!(focused.start().line.0 < 0);
+        assert_eq!(line_text(&term, focused.start().line.0), "mark");
+        assert_eq!(position(&search), (Some(1), 1));
+    }
+
+    #[test]
+    fn find_highlights_both_cells_of_a_wide_match() {
+        let mut term = test_term(12, 2);
+        feed(&mut term, "a 日志".as_bytes());
+        let mut search = TerminalSearch::new();
+        search.set_query("日志", &mut term);
+        let (matches, focused) = search.visible(&term);
+        let mut marker = MatchMarker::new(&matches, focused.as_ref());
+        let marks: Vec<_> = (0..6)
+            .map(|column| marker.mark(Point::new(Line(0), Column(column))))
+            .collect();
+        assert_eq!(marks[1], SearchMark::None);
+        assert_eq!(marks[2], SearchMark::Focused);
+        assert_eq!(marks[4], SearchMark::Focused);
+    }
+
+    #[test]
+    fn clearing_keeps_only_the_prompt_line() {
+        let mut term = test_term(30, 4);
+        feed(&mut term, b"a\r\nb\r\nc\r\nd\r\ne\r\nroot@localhost:~# ls");
+        assert!(term.history_size() > 0);
+
+        assert!(clear_keeping_cursor_line(&mut term));
+
+        assert_eq!(term.history_size(), 0);
+        assert_eq!(line_text(&term, 0), "root@localhost:~# ls");
+        assert!((1..4).all(|line| line_text(&term, line).is_empty()));
+        assert_eq!(term.grid().cursor.point, Point::new(Line(0), Column(20)));
+        // The shell keeps writing beside its prompt.
+        feed(&mut term, b"\r\nfile");
+        assert_eq!(line_text(&term, 1), "file");
+    }
+
+    #[test]
+    fn clearing_keeps_a_wrapped_prompt_whole() {
+        let mut term = test_term(10, 4);
+        feed(&mut term, b"x\r\ny\r\n0123456789abc");
+        assert!(clear_keeping_cursor_line(&mut term));
+        assert_eq!(line_text(&term, 0), "0123456789");
+        assert_eq!(line_text(&term, 1), "abc");
+        assert_eq!(term.grid().cursor.point, Point::new(Line(1), Column(3)));
+    }
+
+    #[test]
+    fn clearing_leaves_a_full_screen_program_alone() {
+        let mut term = test_term(10, 3);
+        feed(&mut term, b"\x1b[?1049hvim");
+        assert!(!clear_keeping_cursor_line(&mut term));
+        assert_eq!(line_text(&term, 0), "vim");
     }
 
     #[test]
@@ -909,6 +1143,11 @@ mod tests {
             background: Color::Named(NamedColor::Background),
             flags,
             selected,
+            search: if selected {
+                SearchMark::Match
+            } else {
+                SearchMark::None
+            },
         };
         let mut cells = vec![
             cell(Flags::WIDE_CHAR, true),
@@ -927,6 +1166,9 @@ mod tests {
         assert!(cells[3].selected);
         assert!(cells[4].selected);
         assert!(!cells[5].selected);
+        assert_eq!(cells[1].search, SearchMark::Match);
+        assert_eq!(cells[3].search, SearchMark::Match);
+        assert_eq!(cells[2].search, SearchMark::None);
     }
 
     #[test]

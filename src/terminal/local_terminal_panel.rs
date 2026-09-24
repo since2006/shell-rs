@@ -87,16 +87,6 @@ impl LocalTerminalPanel {
         window.focus(&focus, cx);
     }
 
-    pub fn copy(&mut self, cx: &mut Context<Self>) -> bool {
-        self.terminal
-            .update(cx, |terminal, cx| terminal.copy_selection(cx))
-    }
-
-    pub fn paste(&mut self, cx: &mut Context<Self>) -> bool {
-        self.terminal
-            .update(cx, |terminal, cx| terminal.paste_clipboard(cx))
-    }
-
     fn display_title(&self, cx: &App) -> String {
         self.terminal
             .read(cx)

@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
     button::Button,
@@ -7,15 +9,15 @@ use gpui_kit::component::{
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CenterTab, CloseTerminal, ConnectSession, CopySessionHost, EditSession,
-    OpenExplorer, ReconnectTerminal, RenameTerminal,
+    CatalogIcon, CenterTab, CloseTerminal, ConnectSession, CopySessionHost, DisconnectTerminal,
+    EditSession, OpenExplorer, ReconnectTerminal, RenameTerminal,
 };
 use crate::session::{HostOs, SessionId, SessionStore};
 use crate::shared::{ClosableTabTitle, HostMark, close_tab_items};
 
 use super::{
     LatencyLevel, RemoteTerminalId, SharedRemoteTerminalTransportProvider, TerminalLifecycle,
-    TerminalPrompt, TerminalPromptReply, TerminalView, TerminalViewEvent,
+    TerminalMenuItems, TerminalPrompt, TerminalPromptReply, TerminalView, TerminalViewEvent,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,13 +59,15 @@ impl TerminalPanel {
             .cloned()
             .expect("terminal sessions must exist in the store");
         let terminal = cx.new(|cx| {
-            TerminalView::new(
+            let mut terminal = TerminalView::new(
                 ("terminal", id.0),
                 format!("{} 的终端", session.name),
                 remote_provider.factory_for(&session),
                 window,
                 cx,
-            )
+            );
+            terminal.set_menu_items(connection_menu_items(id, session_id));
+            terminal
         });
         let subscriptions = vec![
             cx.observe(&store, |_, _, cx| cx.notify()),
@@ -314,6 +318,32 @@ impl Panel for TerminalPanel {
     fn inner_padding(&self, _: &App) -> bool {
         false
     }
+}
+
+/// The connection commands at the bottom of a remote terminal's context menu.
+fn connection_menu_items(id: RemoteTerminalId, session_id: SessionId) -> TerminalMenuItems {
+    Rc::new(move |menu, lifecycle| {
+        let connected = matches!(
+            lifecycle,
+            TerminalLifecycle::Starting | TerminalLifecycle::Running
+        );
+        menu.menu_with_icon(
+            "打开 SFTP",
+            Icon::new(CatalogIcon::FolderTree),
+            Box::new(OpenExplorer(session_id)),
+        )
+        .menu_with_icon(
+            "重新连接",
+            Icon::new(CatalogIcon::RefreshCw),
+            Box::new(ReconnectTerminal(id)),
+        )
+        .menu_with_icon_and_disabled(
+            "断开连接",
+            Icon::new(CatalogIcon::Unplug),
+            Box::new(DisconnectTerminal(id)),
+            !connected,
+        )
+    })
 }
 
 /// The commands of one remote terminal tab, as a snapshot taken while the tab

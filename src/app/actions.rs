@@ -22,6 +22,17 @@ gpui_kit::actions!(
         CopyTerminal,
         /// Paste the clipboard into the active terminal.
         PasteTerminal,
+        /// Open the active terminal's find bar, or select its query again.
+        FindInTerminal,
+        /// Focus the next match down (newer output) in the active terminal.
+        FindNextInTerminal,
+        /// Focus the next match up (older output) in the active terminal.
+        FindPreviousInTerminal,
+        /// Close the active terminal's find bar and its highlights.
+        DismissTerminalFind,
+        /// Clear the active terminal's screen and scrollback, keeping the
+        /// prompt line.
+        ClearTerminal,
         /// Show or hide the left session dock.
         ToggleSessionPanel,
         /// Switch between the light and dark theme.
@@ -158,6 +169,10 @@ remote_terminal_action!(
 remote_terminal_action!(
     /// Reconnect one remote terminal using the session's latest settings.
     ReconnectTerminal
+);
+remote_terminal_action!(
+    /// Disconnect one remote terminal, keeping its tab to reconnect from.
+    DisconnectTerminal
 );
 remote_terminal_action!(
     /// Open the dialog that gives one remote terminal tab its own title.

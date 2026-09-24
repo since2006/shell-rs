@@ -11,7 +11,7 @@ pub use paths::{data_dir, database_path, known_hosts_path};
 use gpui_kit::component::{Theme, dock::ToggleZoom};
 use gpui_kit::*;
 
-use crate::terminal::{TERMINAL_KEY_CONTEXT, terminal_key_bindings};
+use crate::terminal::{TERMINAL_FIND_KEY_CONTEXT, TERMINAL_KEY_CONTEXT, terminal_key_bindings};
 
 /// Key context of the session panel, for bindings that only apply there.
 pub const SESSION_PANEL_CONTEXT: &str = "SessionPanel";
@@ -79,7 +79,32 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-c", CopyTerminal, Some(TERMINAL_KEY_CONTEXT)),
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-shift-v", PasteTerminal, Some(TERMINAL_KEY_CONTEXT)),
+        // In a terminal ⌘K clears, as in other macOS terminals; everywhere
+        // else it still focuses the session search. Inside a terminal, Ctrl
+        // with a letter belongs to the shell, so other platforms add Shift, as
+        // they do for copy and paste.
+        #[cfg(target_os = "macos")]
+        KeyBinding::new("cmd-k", ClearTerminal, Some(TERMINAL_KEY_CONTEXT)),
+        #[cfg(not(target_os = "macos"))]
+        KeyBinding::new("ctrl-shift-k", ClearTerminal, Some(TERMINAL_KEY_CONTEXT)),
+        KeyBinding::new(
+            "escape",
+            DismissTerminalFind,
+            Some(TERMINAL_FIND_KEY_CONTEXT),
+        ),
     ];
+    // The find keys work from the terminal and from inside the find bar.
+    #[cfg(target_os = "macos")]
+    let find_keys = ["cmd-f", "cmd-g", "cmd-shift-g"];
+    #[cfg(not(target_os = "macos"))]
+    let find_keys = ["ctrl-shift-f", "f3", "shift-f3"];
+    for context in [TERMINAL_KEY_CONTEXT, TERMINAL_FIND_KEY_CONTEXT] {
+        bindings.extend([
+            KeyBinding::new(find_keys[0], FindInTerminal, Some(context)),
+            KeyBinding::new(find_keys[1], FindNextInTerminal, Some(context)),
+            KeyBinding::new(find_keys[2], FindPreviousInTerminal, Some(context)),
+        ]);
+    }
     bindings.extend(terminal_key_bindings());
     bindings
 }

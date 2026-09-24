@@ -5,6 +5,7 @@ mod local_pty;
 mod local_terminal_panel;
 mod model;
 mod rename_tab_dialog;
+mod search;
 mod terminal_panel;
 mod terminal_view;
 mod transport;
@@ -17,9 +18,13 @@ pub use model::{
     TerminalStatus,
 };
 pub use rename_tab_dialog::open_rename_tab_dialog;
+pub use search::{SearchDirection, SearchMark, SearchPosition};
 pub use terminal_panel::{TerminalPanel, TerminalPanelEvent};
 pub(crate) use terminal_view::terminal_key_bindings;
-pub use terminal_view::{TERMINAL_KEY_CONTEXT, TerminalView, TerminalViewEvent};
+pub use terminal_view::{
+    TERMINAL_FIND_KEY_CONTEXT, TERMINAL_KEY_CONTEXT, TerminalMenuItems, TerminalView,
+    TerminalViewEvent,
+};
 pub(crate) use transport::send_event;
 pub use transport::{
     AuthenticationPrompt, FixedRemoteTerminalTransportProvider, HostKeyChangedPrompt,

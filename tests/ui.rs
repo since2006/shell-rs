@@ -8,14 +8,15 @@ use std::time::Duration;
 use gpui_kit::component::{ActiveTheme as _, Root, WindowExt as _};
 use gpui_kit::test::{TestAppContextExt, TestWindowExt};
 use gpui_kit::{
-    AppContext as _, ClipboardItem, ElementId, Entity, InputEvent as _, MouseButton,
+    App, AppContext as _, ClipboardItem, ElementId, Entity, InputEvent as _, MouseButton,
     MouseMoveEvent, TestAppContext, WindowHandle, point, px, size,
 };
 
 use shellr::app::{
-    CenterTab, CloseScope, CloseTabs, CollapseAllGroups, ConnectGroup, ConnectSession,
-    CopySessionHost, DeleteGroup, DeleteSession, EditSession, ExpandAllGroups, NewLocalTerminal,
-    NewSessionInGroup, OpenExplorer, RenameGroup, RenameTerminal,
+    CenterTab, ClearTerminal, CloseScope, CloseTabs, CollapseAllGroups, ConnectGroup,
+    ConnectSession, CopySessionHost, DeleteGroup, DeleteSession, DisconnectTerminal, EditSession,
+    ExpandAllGroups, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, NewLocalTerminal,
+    NewSessionInGroup, OpenExplorer, ReconnectTerminal, RenameGroup, RenameTerminal,
 };
 use shellr::connection::{ConnectionPromptKind, ConnectionTester, LoginTest, TrustCallback};
 use shellr::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
@@ -2226,6 +2227,236 @@ async fn cjk_input_is_sent_once_and_resize_commands_are_deduplicated(cx: &mut Te
         .unwrap_or_else(|error| error.into_inner());
     assert!(!resizes.is_empty());
     assert!(resizes.windows(2).all(|sizes| sizes[0] != sizes[1]));
+}
+
+/// Open a local terminal on `factory` and wait for the fake shell's banner.
+async fn open_running_local_terminal(
+    cx: &mut TestAppContext,
+    factory: Arc<FakeTerminalFactory>,
+) -> (WindowHandle<Root>, Entity<Workspace>) {
+    let (handle, workspace) = open_workspace_with_factory(cx, factory);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("new-local-terminal", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window
+            .try_find("status-connection")
+            .is_some_and(|element| element.label() == Some("运行中 本地终端"))
+    })
+    .await;
+    (handle, workspace)
+}
+
+fn local_screen(workspace: &Entity<Workspace>, cx: &App) -> String {
+    workspace
+        .read(cx)
+        .local_terminal(LocalTerminalId(1))
+        .expect("local terminal exists")
+        .read(cx)
+        .terminal()
+        .read(cx)
+        .screen_text(cx)
+}
+
+fn remote_lifecycle(
+    workspace: &Entity<Workspace>,
+    id: RemoteTerminalId,
+    cx: &App,
+) -> TerminalLifecycle {
+    workspace
+        .read(cx)
+        .remote_terminal(id)
+        .expect("terminal exists")
+        .read(cx)
+        .lifecycle(cx)
+}
+
+async fn wait_for_find_count(cx: &mut TestAppContext, handle: WindowHandle<Root>, label: &str) {
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("terminal-find-count")
+            .is_some_and(|element| element.label() == Some(label))
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn find_highlights_matches_and_steps_between_them(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    // The banner holds one 「alpha」; the fake shell echoes two more.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.input("alpha alpha", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        local_screen(&workspace, cx).matches("alpha").count() == 3
+    })
+    .await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(FindInTerminal), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("terminal-find").focused(), Some(true));
+        // Nothing is counted before there is a query.
+        assert!(window.try_find("terminal-find-count").is_none());
+        // The bar floats over the terminal; clicking it must not hand the
+        // keyboard back to the terminal underneath.
+        window.click("terminal-find", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("terminal-find").focused(), Some(true));
+        window.input("alpha", cx);
+    })
+    .unwrap();
+    // The first match on screen is focused.
+    wait_for_find_count(cx, handle, "1/3").await;
+    // What is typed into the find bar never reaches the shell.
+    assert_eq!(factory.written_text(), "alpha alpha");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(FindNextInTerminal), cx);
+    })
+    .unwrap();
+    wait_for_find_count(cx, handle, "2/3").await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(FindPreviousInTerminal), cx);
+        window.dispatch_action(Box::new(FindPreviousInTerminal), cx);
+    })
+    .unwrap();
+    // Stepping up from the first match wraps to the last.
+    wait_for_find_count(cx, handle, "3/3").await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    wait_for_find_count(cx, handle, "1/3").await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("backspace", cx);
+        window.input("z", cx);
+    })
+    .unwrap();
+    wait_for_find_count(cx, handle, "无结果").await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("terminal-find").is_none());
+        assert_eq!(window.find(("local-terminal", 1_u64)).focused(), Some(true));
+        window.input("!", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        factory.written_text() == "alpha alpha!"
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn clearing_a_terminal_keeps_only_the_prompt_line(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.input("root@localhost:~# ", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        local_screen(&workspace, cx).contains("root@localhost:~#")
+    })
+    .await;
+    assert!(
+        cx.update(|cx| local_screen(&workspace, cx))
+            .contains("alpha.txt")
+    );
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(ClearTerminal), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(
+        cx.update(|cx| local_screen(&workspace, cx)).trim_end(),
+        "root@localhost:~#"
+    );
+    // Clearing happens on this side; the shell is not sent anything.
+    assert_eq!(factory.written_text(), "root@localhost:~# ");
+}
+
+#[gpui_kit::test]
+async fn disconnecting_one_tab_leaves_the_other_tabs_of_its_session(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let second = RemoteTerminalId(FIRST_NEW_TERMINAL);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(ConnectSession(SessionId(WEB_01))), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        remote_lifecycle(&workspace, second, cx) == TerminalLifecycle::Running
+    })
+    .await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(DisconnectTerminal(second)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        assert!(!remote_lifecycle(&workspace, second, cx).accepts_input());
+        assert_eq!(
+            remote_lifecycle(&workspace, RemoteTerminalId(INITIAL_WEB_TERMINAL), cx),
+            TerminalLifecycle::Running
+        );
+        let workspace = workspace.read(cx);
+        let store = workspace.store().read(cx);
+        assert_eq!(
+            store.session(SessionId(WEB_01)).unwrap().state,
+            ConnectionState::Connected
+        );
+        let screen = workspace
+            .remote_terminal(second)
+            .unwrap()
+            .read(cx)
+            .terminal()
+            .read(cx)
+            .screen_text(cx);
+        assert!(screen.contains("已断开连接"));
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(ReconnectTerminal(second)), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        remote_lifecycle(&workspace, second, cx) == TerminalLifecycle::Running
+    })
+    .await;
 }
 
 #[gpui_kit::test]
