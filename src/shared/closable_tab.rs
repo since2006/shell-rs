@@ -1,31 +1,51 @@
+use std::rc::Rc;
+
 use gpui_kit::component::{
-    Icon, IconName, Sizable as _,
+    IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
+    menu::{ContextMenuExt as _, PopupMenu},
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-/// A dock tab title: icon, label and, for closable panels, a close button
-/// that dispatches the panel's close action.
+type MenuBuilder = Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
+
+/// A dock tab title: a leading mark, the label and, for closable panels, a
+/// close button that dispatches the panel's close action. A panel may also
+/// give the title a context menu, which opens on a right click anywhere on it.
 ///
 /// Closing goes through an action rather than `TabGroup::close_panel` on
 /// purpose: the group refuses to close the last panel of a region, while the
 /// workspace wants every tab closable (an empty center shows the recent
 /// sessions instead) and removes the panel from the dock itself.
+///
+/// The context menu hangs on the title rather than on the dock's `Tab`, which
+/// the application does not render. The tab's own horizontal padding is
+/// therefore outside it; a right click there does nothing.
 #[derive(IntoElement)]
 pub struct ClosableTabTitle {
-    icon: Icon,
+    id: ElementId,
+    leading: AnyElement,
     label: SharedString,
     close: Option<(ElementId, Box<dyn Action>)>,
+    menu: Option<MenuBuilder>,
 }
 
 impl ClosableTabTitle {
-    pub fn new(icon: impl Into<Icon>, label: impl Into<SharedString>) -> Self {
+    /// `id` identifies the tab and must be unique among the tabs of a bar:
+    /// the context menu keeps its open state under it.
+    pub fn new(
+        id: impl Into<ElementId>,
+        leading: impl IntoElement,
+        label: impl Into<SharedString>,
+    ) -> Self {
         Self {
-            icon: icon.into(),
+            id: id.into(),
+            leading: leading.into_any_element(),
             label: label.into(),
             close: None,
+            menu: None,
         }
     }
 
@@ -34,14 +54,25 @@ impl ClosableTabTitle {
         self.close = Some((id.into(), action));
         self
     }
+
+    /// Open a menu built by `builder` on a right click. The builder runs when
+    /// the menu opens, not while the tab renders.
+    pub fn context_menu(
+        mut self,
+        builder: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> Self {
+        self.menu = Some(Rc::new(builder));
+        self
+    }
 }
 
 impl RenderOnce for ClosableTabTitle {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        h_flex()
+        let row = h_flex()
+            .id("title")
             .gap_1()
-            .child(self.icon.small())
-            .child(self.label)
+            .child(self.leading)
+            .child(self.label.clone())
             .when_some(self.close, |row, (id, action)| {
                 row.child(
                     Button::new(id)
@@ -55,6 +86,16 @@ impl RenderOnce for ClosableTabTitle {
                             window.dispatch_action(action.boxed_clone(), cx);
                         }),
                 )
+            });
+        div()
+            .id(self.id)
+            .test_support()
+            .aria_label(self.label)
+            .child(match self.menu {
+                Some(menu) => row
+                    .context_menu(move |popup, window, cx| menu(popup, window, cx))
+                    .into_any_element(),
+                None => row.into_any_element(),
             })
     }
 }

@@ -9,10 +9,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::{
-    CatalogIcon, CloseLocalTerminal, CopyTerminal, PasteTerminal, RestartLocalTerminal,
-};
-use crate::shared::ClosableTabTitle;
+use crate::app::{CatalogIcon, CenterTab, CloseLocalTerminal, RestartLocalTerminal};
+use crate::shared::{ClosableTabTitle, close_tab_items};
 
 use super::{
     LocalTerminalId, SharedTerminalTransportFactory, TerminalLifecycle, TerminalStatus,
@@ -121,6 +119,13 @@ impl BasePanel for LocalTerminalPanel {
         "LocalTerminalPanel"
     }
 
+    /// Closing goes through `CloseLocalTerminal`; see `ClosableTabTitle`.
+    /// Saying no here also keeps the dock from adding a second 「关闭」 to the
+    /// 「…」 menu, beside the tab's own close commands.
+    fn closable(&self, _: &App) -> bool {
+        false
+    }
+
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         if active {
             let focus = self.terminal.read(cx).focus_handle();
@@ -143,10 +148,17 @@ impl BasePanel for LocalTerminalPanel {
 
 impl Panel for LocalTerminalPanel {
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        ClosableTabTitle::new(CatalogIcon::Terminal, self.display_title(cx)).closable(
+        let (id, group, panel) = (self.id, self.tab_group.clone(), cx.entity_id());
+        ClosableTabTitle::new(
+            ("local-terminal-tab", self.id.0),
+            Icon::new(CatalogIcon::Terminal).small(),
+            self.display_title(cx),
+        )
+        .closable(
             ("close-local-terminal", self.id.0),
             Box::new(CloseLocalTerminal(self.id)),
         )
+        .context_menu(move |menu, _, cx| tab_menu(menu, id, group.clone(), panel, cx))
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
@@ -167,17 +179,7 @@ impl Panel for LocalTerminalPanel {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let terminal = self.terminal.read(cx);
-        let has_selection = terminal.has_selection(cx);
-        let can_paste = terminal.lifecycle(cx).accepts_input()
-            && cx
-                .read_from_clipboard()
-                .and_then(|item| item.text())
-                .is_some();
-        menu.menu_with_disabled("复制", Box::new(CopyTerminal), !has_selection)
-            .menu_with_disabled("粘贴", Box::new(PasteTerminal), !can_paste)
-            .separator()
-            .menu("重新启动", Box::new(RestartLocalTerminal(self.id)))
+        tab_menu(menu, self.id, self.tab_group.clone(), cx.entity_id(), cx)
     }
 
     fn inner_padding(&self, _: &App) -> bool {
@@ -222,4 +224,23 @@ impl Render for LocalTerminalPanel {
                 )
             })
     }
+}
+
+/// The commands of a local terminal tab, shared by its context menu and the
+/// tab bar's 「…」 menu.
+fn tab_menu(
+    menu: PopupMenu,
+    id: LocalTerminalId,
+    group: Option<WeakEntity<TabGroup>>,
+    panel: EntityId,
+    cx: &App,
+) -> PopupMenu {
+    let menu = menu
+        .menu_with_icon(
+            "重新启动",
+            Icon::new(CatalogIcon::RefreshCw),
+            Box::new(RestartLocalTerminal(id)),
+        )
+        .separator();
+    close_tab_items(menu, CenterTab::LocalTerminal(id), group, panel, cx)
 }

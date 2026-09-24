@@ -15,8 +15,9 @@ use gpui_kit::{
 };
 
 use shellr::app::{
-    CollapseAllGroups, ConnectGroup, ConnectSession, DeleteGroup, DeleteSession, EditSession,
-    ExpandAllGroups, NewSessionInGroup, OpenExplorer, RenameGroup,
+    CenterTab, CloseScope, CloseTabs, CollapseAllGroups, ConnectGroup, ConnectSession,
+    CopySessionHost, DeleteGroup, DeleteSession, EditSession, ExpandAllGroups, NewLocalTerminal,
+    NewSessionInGroup, OpenExplorer, RenameGroup, RenameTerminal,
 };
 use shellr::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
 use shellr::session::{
@@ -2345,6 +2346,186 @@ fn both_tabs_of_one_session_stay_closable(cx: &mut TestAppContext) {
         assert!(workspace.explorer(SessionId(DB_01)).is_none());
         assert!(workspace.terminal(SessionId(DB_01), cx).is_none());
     });
+}
+
+#[gpui_kit::test]
+async fn a_terminal_tab_can_be_renamed_and_follow_the_session_again(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let tab = ("terminal-tab", INITIAL_WEB_TERMINAL);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(tab).label(), Some("web-01"));
+        // Undetected hosts show the fallback mark in the tab too.
+        assert_eq!(
+            window
+                .find(("terminal-tab-os", INITIAL_WEB_TERMINAL))
+                .label(),
+            Some("未探测到系统")
+        );
+        window.dispatch_action(
+            Box::new(RenameTerminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("tab-name").value(), Some("web-01"));
+        window.click("tab-name", cx);
+        window.press("cmd-a", cx);
+        window.input("日志排查", cx);
+        window.click("commit", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("commit").is_none()
+    })
+    .await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(tab).label(), Some("日志排查"));
+        // The other tab of the bar keeps its session name.
+        assert_eq!(
+            window
+                .find(("terminal-tab", INITIAL_STAGING_TERMINAL))
+                .label(),
+            Some("staging-api")
+        );
+    })
+    .unwrap();
+    cx.update(|cx| {
+        // A tab title is not a session setting.
+        let store = workspace.read(cx).store().read(cx);
+        let session = store.session(SessionId(WEB_01)).expect("session kept");
+        assert_eq!(session.name.as_ref(), "web-01");
+    });
+
+    // Clearing the field returns the tab to the session name.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // A closed dialog leaves nothing focused, and an action only reaches
+        // handlers on the focused element's path.
+        window.click("session-search", cx);
+        window.dispatch_action(
+            Box::new(RenameTerminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("tab-name").value(), Some("日志排查"));
+        window.click("tab-name", cx);
+        window.press("cmd-a", cx);
+        window.press("backspace", cx);
+        window.click("commit", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("commit").is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(tab).label(), Some("web-01"));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn copy_session_host_puts_the_host_on_the_clipboard(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(CopySessionHost(SessionId(STAGING_API))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Only the host field: no user, no port.
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("10.0.9.20".to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn batch_close_commands_take_the_tabs_around_the_clicked_one(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let dispatch = |cx: &mut TestAppContext, action: Box<dyn gpui_kit::Action>| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.dispatch_action(action, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let close = |tab, scope| Box::new(CloseTabs { tab, scope });
+    let terminal = |id| CenterTab::Terminal(RemoteTerminalId(id));
+    let open_terminals = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            let workspace = workspace.read(cx);
+            (1..=FIRST_NEW_TERMINAL + 1)
+                .filter(|id| workspace.remote_terminal(RemoteTerminalId(*id)).is_some())
+                .collect::<Vec<_>>()
+        })
+    };
+
+    // [web-01, staging-api, web-01 · SFTP, local]
+    dispatch(cx, Box::new(OpenExplorer(SessionId(WEB_01))));
+    dispatch(cx, Box::new(NewLocalTerminal));
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert!(workspace.explorer(SessionId(WEB_01)).is_some());
+        assert!(workspace.local_terminal(LocalTerminalId(1)).is_some());
+    });
+
+    // Right of staging-api: the SFTP and local tabs, whatever their kind.
+    dispatch(
+        cx,
+        close(terminal(INITIAL_STAGING_TERMINAL), CloseScope::Right),
+    );
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert!(workspace.explorer(SessionId(WEB_01)).is_none());
+        assert!(workspace.local_terminal(LocalTerminalId(1)).is_none());
+    });
+    assert_eq!(
+        open_terminals(cx),
+        [INITIAL_WEB_TERMINAL, INITIAL_STAGING_TERMINAL]
+    );
+
+    // [web-01, staging-api, web-01 #2] → left of staging-api.
+    dispatch(cx, Box::new(ConnectSession(SessionId(WEB_01))));
+    dispatch(
+        cx,
+        close(terminal(INITIAL_STAGING_TERMINAL), CloseScope::Left),
+    );
+    assert_eq!(
+        open_terminals(cx),
+        [INITIAL_STAGING_TERMINAL, FIRST_NEW_TERMINAL]
+    );
+
+    // [staging-api, web-01 #2, staging-api #2] → others than web-01 #2.
+    dispatch(cx, Box::new(ConnectSession(SessionId(STAGING_API))));
+    assert_eq!(open_terminals(cx).len(), 3);
+    dispatch(cx, close(terminal(FIRST_NEW_TERMINAL), CloseScope::Others));
+    assert_eq!(open_terminals(cx), [FIRST_NEW_TERMINAL]);
+
+    // All of them, down to the start page.
+    dispatch(cx, close(terminal(FIRST_NEW_TERMINAL), CloseScope::All));
+    assert!(open_terminals(cx).is_empty());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("recent-sessions").visible());
+    })
+    .unwrap();
 }
 
 /// A store holding one session, wired to a keychain the test can inspect.

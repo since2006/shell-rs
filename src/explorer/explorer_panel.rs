@@ -1,17 +1,17 @@
 use super::{FilePane, PaneSide};
 use crate::app::ExplorerDispatch as _;
 use crate::{
-    app::{CatalogIcon, CloseExplorer, EditSession, ExplorerAction, ExplorerCommand},
+    app::{CatalogIcon, CenterTab, CloseExplorer, EditSession, ExplorerAction, ExplorerCommand},
     connection::{ConnectionPrompt, ConnectionPromptReply},
     session::{ConnectionState, SessionId, SessionStore},
     sftp::{
         RemotePath, SftpCommand, SftpEvent, SharedLocalDirectoryProvider,
         SharedSftpTransportProvider, UploadPhase, UploadProgress, UploadQuestion, UploadRequest,
     },
-    shared::ClosableTabTitle,
+    shared::{ClosableTabTitle, close_tab_items},
 };
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Icon, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     h_flex,
@@ -471,6 +471,11 @@ impl BasePanel for ExplorerPanel {
     fn panel_name(&self) -> &'static str {
         "ExplorerPanel"
     }
+    /// Closing goes through `CloseExplorer`, which asks first while an upload
+    /// runs. The dock's own 「关闭」 would skip that question.
+    fn closable(&self, _: &App) -> bool {
+        false
+    }
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         if active {
             let id = self.session_id;
@@ -498,22 +503,53 @@ impl Panel for ExplorerPanel {
             .session(self.session_id)
             .map(|s| s.name.clone())
             .unwrap_or_else(|| "SFTP".into());
-        ClosableTabTitle::new(CatalogIcon::FolderTree, format!("{name} · SFTP")).closable(
+        let (session_id, group, panel) = (self.session_id, self.tab_group.clone(), cx.entity_id());
+        ClosableTabTitle::new(
+            ("explorer-tab", self.session_id.0),
+            Icon::new(CatalogIcon::FolderTree).small(),
+            format!("{name} · SFTP"),
+        )
+        .closable(
             ("close-explorer", self.session_id.0),
             Box::new(CloseExplorer(self.session_id)),
         )
+        .context_menu(move |menu, _, cx| tab_menu(menu, session_id, group.clone(), panel, cx))
     }
     fn dropdown_menu(
         &mut self,
         menu: PopupMenu,
         _: &mut Window,
-        _: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> PopupMenu {
-        menu.menu("编辑会话…", Box::new(EditSession(self.session_id)))
+        tab_menu(
+            menu,
+            self.session_id,
+            self.tab_group.clone(),
+            cx.entity_id(),
+            cx,
+        )
     }
     fn inner_padding(&self, _: &App) -> bool {
         false
     }
+}
+/// The commands of an SFTP tab, shared by its context menu and the tab bar's
+/// 「…」 menu.
+fn tab_menu(
+    menu: PopupMenu,
+    session_id: SessionId,
+    group: Option<WeakEntity<TabGroup>>,
+    panel: EntityId,
+    cx: &App,
+) -> PopupMenu {
+    let menu = menu
+        .menu_with_icon(
+            "编辑会话…",
+            Icon::new(CatalogIcon::Pencil),
+            Box::new(EditSession(session_id)),
+        )
+        .separator();
+    close_tab_items(menu, CenterTab::Explorer(session_id), group, panel, cx)
 }
 impl Render for ExplorerPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

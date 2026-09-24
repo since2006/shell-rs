@@ -19,13 +19,14 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseTerminal, CollapseAllGroups,
-    ConnectGroup, ConnectSession, CopyTerminal, DeleteGroup, DeleteSession, DisconnectSession,
-    DuplicateSession, EditSession, ExpandAllGroups, ExplorerAction, ExplorerCommand, FocusSearch,
-    MoveSessionNode, NewChildGroup, NewGroup, NewLocalTerminal, NewSession, NewSessionInGroup,
-    OpenExplorer, PasteTerminal, ReconnectTerminal, RenameGroup, RestartLocalTerminal,
-    SelectAllUploadFiles, ToggleSessionPanel, ToggleTheme, ToggleUploadSelection,
-    UploadSelectedFiles, ZoomIn, ZoomOut, ZoomReset,
+    CenterTab, CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseTabs, CloseTerminal,
+    CollapseAllGroups, ConnectGroup, ConnectSession, CopySessionHost, CopyTerminal, DeleteGroup,
+    DeleteSession, DisconnectSession, DuplicateSession, EditSession, ExpandAllGroups,
+    ExplorerAction, ExplorerCommand, FocusSearch, MoveSessionNode, NewChildGroup, NewGroup,
+    NewLocalTerminal, NewSession, NewSessionInGroup, OpenExplorer, PasteTerminal,
+    ReconnectTerminal, RenameGroup, RenameTerminal, RestartLocalTerminal, SelectAllUploadFiles,
+    ToggleSessionPanel, ToggleTheme, ToggleUploadSelection, UploadSelectedFiles, ZoomIn, ZoomOut,
+    ZoomReset,
 };
 use crate::explorer::{ExplorerPanel, ExplorerPanelEvent, confirm_close_upload};
 use crate::session::{
@@ -40,7 +41,7 @@ use crate::terminal::{
     LocalPtyTransportFactory, LocalTerminalId, LocalTerminalPanel, LocalTerminalPanelEvent,
     RemoteTerminalId, SharedRemoteTerminalTransportProvider, SharedTerminalTransportFactory,
     TerminalLifecycle, TerminalPanel, TerminalPanelEvent, TerminalPrompt, TerminalPromptField,
-    TerminalPromptKind, TerminalPromptReply, TerminalSecret,
+    TerminalPromptKind, TerminalPromptReply, TerminalSecret, open_rename_tab_dialog,
 };
 
 use super::{
@@ -67,14 +68,6 @@ pub fn window_options(cx: &mut App) -> WindowOptions {
         }),
         ..TitleBar::window_options()
     }
-}
-
-/// A center tab, by the session it belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CenterTab {
-    Terminal(RemoteTerminalId),
-    Explorer(SessionId),
-    LocalTerminal(LocalTerminalId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -959,14 +952,114 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match self.active_tab {
-            Some(CenterTab::Terminal(id)) => self.on_close_terminal(&CloseTerminal(id), window, cx),
-            Some(CenterTab::Explorer(id)) => self.on_close_explorer(&CloseExplorer(id), window, cx),
-            Some(CenterTab::LocalTerminal(id)) => {
+        if let Some(tab) = self.active_tab {
+            self.close_center_tab(tab, window, cx);
+        }
+    }
+
+    /// Close one center tab through its own close path, so an explorer that
+    /// is uploading still asks first.
+    fn close_center_tab(&mut self, tab: CenterTab, window: &mut Window, cx: &mut Context<Self>) {
+        match tab {
+            CenterTab::Terminal(id) => self.on_close_terminal(&CloseTerminal(id), window, cx),
+            CenterTab::Explorer(id) => self.on_close_explorer(&CloseExplorer(id), window, cx),
+            CenterTab::LocalTerminal(id) => {
                 self.on_close_local_terminal(&CloseLocalTerminal(id), window, cx)
             }
-            None => {}
         }
+    }
+
+    /// The tab group holding a center tab, and the tab's panel id in it.
+    fn center_tab_location(&self, tab: CenterTab, cx: &App) -> Option<(Entity<TabGroup>, PanelId)> {
+        let (group, entity) = match tab {
+            CenterTab::Terminal(id) => {
+                let panel = self.terminals.get(&id)?;
+                (panel.read(cx).tab_group(), panel.entity_id())
+            }
+            CenterTab::Explorer(id) => {
+                let panel = self.explorers.get(&id)?;
+                (panel.read(cx).tab_group(), panel.entity_id())
+            }
+            CenterTab::LocalTerminal(id) => {
+                let panel = self.local_terminals.get(&id)?;
+                (panel.read(cx).tab_group(), panel.entity_id())
+            }
+        };
+        Some((group?.upgrade()?, PanelId::from(entity)))
+    }
+
+    /// The center tab a dock panel stands for, if it is one of ours.
+    fn center_tab_for_panel(&self, panel: PanelId) -> Option<CenterTab> {
+        let is = |entity: EntityId| PanelId::from(entity) == panel;
+        self.terminals
+            .iter()
+            .find(|(_, entity)| is(entity.entity_id()))
+            .map(|(id, _)| CenterTab::Terminal(*id))
+            .or_else(|| {
+                self.explorers
+                    .iter()
+                    .find(|(_, entity)| is(entity.entity_id()))
+                    .map(|(id, _)| CenterTab::Explorer(*id))
+            })
+            .or_else(|| {
+                self.local_terminals
+                    .iter()
+                    .find(|(_, entity)| is(entity.entity_id()))
+                    .map(|(id, _)| CenterTab::LocalTerminal(*id))
+            })
+    }
+
+    fn on_close_tabs(&mut self, action: &CloseTabs, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((group, anchor)) = self.center_tab_location(action.tab, cx) else {
+            return;
+        };
+        let panels: Vec<PanelId> = group
+            .read(cx)
+            .panels()
+            .iter()
+            .map(|panel| panel.panel_id(cx))
+            .collect();
+        let Some(ix) = panels.iter().position(|panel| *panel == anchor) else {
+            return;
+        };
+        let tabs: Vec<CenterTab> = action
+            .scope
+            .targets(panels.len(), ix)
+            .into_iter()
+            .filter_map(|target| self.center_tab_for_panel(panels[target]))
+            .collect();
+        for tab in tabs {
+            self.close_center_tab(tab, window, cx);
+        }
+    }
+
+    fn on_rename_terminal(
+        &mut self,
+        action: &RenameTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.terminals.get(&action.0).cloned() {
+            open_rename_tab_dialog(panel, window, cx);
+        }
+    }
+
+    fn on_copy_session_host(
+        &mut self,
+        action: &CopySessionHost,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(host) = self
+            .store
+            .read(cx)
+            .session(action.0)
+            .map(|session| session.host.clone())
+        else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(host.to_string()));
+        window.push_notification(Notification::success(format!("已复制 {host}")), cx);
     }
 
     fn on_restart_local_terminal(
@@ -1583,6 +1676,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_close_explorer))
             .on_action(cx.listener(Self::on_close_local_terminal))
             .on_action(cx.listener(Self::on_close_active_tab))
+            .on_action(cx.listener(Self::on_close_tabs))
+            .on_action(cx.listener(Self::on_rename_terminal))
+            .on_action(cx.listener(Self::on_copy_session_host))
             .on_action(cx.listener(Self::on_restart_local_terminal))
             .on_action(cx.listener(Self::on_copy_terminal))
             .on_action(cx.listener(Self::on_paste_terminal))

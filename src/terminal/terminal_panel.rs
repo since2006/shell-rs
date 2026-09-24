@@ -1,5 +1,5 @@
 use gpui_kit::component::{
-    Icon,
+    Icon, IconName, Sizable as _,
     button::Button,
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     menu::PopupMenu,
@@ -7,11 +7,11 @@ use gpui_kit::component::{
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CloseTerminal, CopyTerminal, DuplicateSession, EditSession, OpenExplorer,
-    PasteTerminal, ReconnectTerminal,
+    CatalogIcon, CenterTab, CloseTerminal, ConnectSession, CopySessionHost, EditSession,
+    OpenExplorer, ReconnectTerminal, RenameTerminal,
 };
 use crate::session::{HostOs, SessionId, SessionStore};
-use crate::shared::ClosableTabTitle;
+use crate::shared::{ClosableTabTitle, HostMark, close_tab_items};
 
 use super::{
     RemoteTerminalId, SharedRemoteTerminalTransportProvider, TerminalLifecycle, TerminalPrompt,
@@ -36,6 +36,9 @@ pub struct TerminalPanel {
     terminal: Entity<TerminalView>,
     remote_provider: SharedRemoteTerminalTransportProvider,
     tab_group: Option<WeakEntity<TabGroup>>,
+    /// A title the user gave this tab, to tell apart several connections to
+    /// the same host. Lives as long as the tab, like the rest of the layout.
+    custom_title: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -93,6 +96,7 @@ impl TerminalPanel {
             terminal,
             remote_provider,
             tab_group: None,
+            custom_title: None,
             _subscriptions: subscriptions,
         }
     }
@@ -107,6 +111,42 @@ impl TerminalPanel {
 
     pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
         self.tab_group.clone()
+    }
+
+    /// The session's name, as the tab shows it without a title of its own.
+    pub fn session_name(&self, cx: &App) -> SharedString {
+        self.store
+            .read(cx)
+            .session(self.session_id)
+            .map(|session| session.name.clone())
+            .unwrap_or_else(|| "终端".into())
+    }
+
+    /// The tab's label: its own title when it has one, else the session name.
+    pub fn title_text(&self, cx: &App) -> SharedString {
+        self.custom_title
+            .clone()
+            .unwrap_or_else(|| self.session_name(cx))
+    }
+
+    /// Give the tab its own title, or `None` to follow the session name again.
+    pub fn set_custom_title(&mut self, title: Option<SharedString>, cx: &mut Context<Self>) {
+        self.custom_title = title;
+        cx.notify();
+    }
+
+    fn tab_menu(&self, cx: &Context<Self>) -> TabMenu {
+        TabMenu {
+            id: self.id,
+            session_id: self.session_id,
+            host_is_ip: self
+                .store
+                .read(cx)
+                .session(self.session_id)
+                .is_some_and(|session| session.host_is_ip()),
+            group: self.tab_group.clone(),
+            panel: cx.entity_id(),
+        }
     }
 
     pub fn terminal(&self) -> &Entity<TerminalView> {
@@ -166,6 +206,13 @@ impl BasePanel for TerminalPanel {
         "TerminalPanel"
     }
 
+    /// Closing goes through `CloseTerminal`; see `ClosableTabTitle`. Saying
+    /// no here also keeps the dock from adding a second 「关闭」 to the 「…」
+    /// menu, beside the tab's own close commands.
+    fn closable(&self, _: &App) -> bool {
+        false
+    }
+
     fn set_active(&mut self, active: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !active {
             return;
@@ -193,16 +240,17 @@ impl BasePanel for TerminalPanel {
 
 impl Panel for TerminalPanel {
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let name = self
+        let id = self.id;
+        let os = self
             .store
             .read(cx)
             .session(self.session_id)
-            .map(|session| session.name.clone())
-            .unwrap_or_else(|| "终端".into());
-        ClosableTabTitle::new(CatalogIcon::Terminal, name).closable(
-            ("close-terminal", self.id.0),
-            Box::new(CloseTerminal(self.id)),
-        )
+            .and_then(|session| session.os);
+        let mark = HostMark::new(("terminal-tab-os", id.0), self.session_name(cx), os).small();
+        let tab_menu = self.tab_menu(cx);
+        ClosableTabTitle::new(("terminal-tab", id.0), mark, self.title_text(cx))
+            .closable(("close-terminal", id.0), Box::new(CloseTerminal(id)))
+            .context_menu(move |menu, _, cx| tab_menu.build(menu, cx))
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
@@ -218,7 +266,7 @@ impl Panel for TerminalPanel {
                 }),
             Button::new(("reconnect", terminal_id.0))
                 .icon(Icon::new(CatalogIcon::RefreshCw))
-                .tooltip("重连")
+                .tooltip("重新连接")
                 .on_click(move |_, window, cx| {
                     window.dispatch_action(Box::new(ReconnectTerminal(terminal_id)), cx)
                 }),
@@ -231,23 +279,73 @@ impl Panel for TerminalPanel {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        let id = self.session_id;
-        let terminal = self.terminal.read(cx);
-        let has_selection = terminal.has_selection(cx);
-        let can_paste = terminal.lifecycle(cx).accepts_input()
-            && cx
-                .read_from_clipboard()
-                .and_then(|item| item.text())
-                .is_some();
-        menu.menu_with_disabled("复制", Box::new(CopyTerminal), !has_selection)
-            .menu_with_disabled("粘贴", Box::new(PasteTerminal), !can_paste)
-            .separator()
-            .menu("复制会话配置", Box::new(DuplicateSession(id)))
-            .menu("编辑会话…", Box::new(EditSession(id)))
+        self.tab_menu(cx).build(menu, cx)
     }
 
     fn inner_padding(&self, _: &App) -> bool {
         false
+    }
+}
+
+/// The commands of one remote terminal tab, as a snapshot taken while the tab
+/// renders. The tab's context menu and the tab bar's 「…」 menu both build
+/// from it, so the two always list the same commands.
+#[derive(Clone)]
+struct TabMenu {
+    id: RemoteTerminalId,
+    session_id: SessionId,
+    host_is_ip: bool,
+    group: Option<WeakEntity<TabGroup>>,
+    panel: EntityId,
+}
+
+impl TabMenu {
+    fn build(&self, menu: PopupMenu, cx: &App) -> PopupMenu {
+        let (id, session_id) = (self.id, self.session_id);
+        let copy_host = if self.host_is_ip {
+            "复制 IP 地址"
+        } else {
+            "复制主机名"
+        };
+        let menu = menu
+            .menu_with_icon(
+                "重命名标签…",
+                Icon::new(CatalogIcon::Pencil),
+                Box::new(RenameTerminal(id)),
+            )
+            .menu_with_icon(
+                "在新标签页中连接",
+                Icon::new(CatalogIcon::Plug),
+                Box::new(ConnectSession(session_id)),
+            )
+            .menu_with_icon(
+                "打开 SFTP",
+                Icon::new(CatalogIcon::FolderTree),
+                Box::new(OpenExplorer(session_id)),
+            )
+            .menu_with_icon(
+                copy_host,
+                Icon::new(IconName::Copy),
+                Box::new(CopySessionHost(session_id)),
+            )
+            .menu_with_icon(
+                "重新连接",
+                Icon::new(CatalogIcon::RefreshCw),
+                Box::new(ReconnectTerminal(id)),
+            )
+            .menu_with_icon(
+                "编辑会话…",
+                Icon::new(CatalogIcon::Pencil),
+                Box::new(EditSession(session_id)),
+            )
+            .separator();
+        close_tab_items(
+            menu,
+            CenterTab::Terminal(id),
+            self.group.clone(),
+            self.panel,
+            cx,
+        )
     }
 }
 

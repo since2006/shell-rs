@@ -242,6 +242,12 @@ impl Session {
         format!("{}@{}:{}", self.user, self.host, self.port)
     }
 
+    /// Whether the host field is a literal IP address rather than a name, so
+    /// a command can say which of the two it copies.
+    pub fn host_is_ip(&self) -> bool {
+        is_ip_address(&self.host)
+    }
+
     /// Where this session's login password lives in the system keychain.
     /// Keyed by the endpoint, so renaming or copying a session keeps the
     /// password and two sessions on the same account share one entry.
@@ -261,6 +267,17 @@ impl Session {
             group: self.group,
         }
     }
+}
+
+/// IPv6 literals are accepted with or without the brackets a URL puts around
+/// them.
+fn is_ip_address(host: &str) -> bool {
+    let host = host.trim();
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(host);
+    bare.parse::<std::net::IpAddr>().is_ok()
 }
 
 /// A folder in the session tree. Groups nest: `parent` is `None` for a
@@ -355,6 +372,16 @@ impl SessionDraft {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ip_literals_are_told_apart_from_host_names() {
+        assert!(is_ip_address("10.0.1.21"));
+        assert!(is_ip_address("::1"));
+        assert!(is_ip_address("[fe80::1]"));
+        assert!(!is_ip_address("web-01.example.com"));
+        assert!(!is_ip_address("localhost"));
+        assert!(!is_ip_address(""));
+    }
 
     #[test]
     fn every_operating_system_round_trips_through_the_database_spelling() {

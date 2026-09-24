@@ -111,6 +111,11 @@ session_action!(
     /// Ask for confirmation, then delete a session.
     DeleteSession
 );
+session_action!(
+    /// Copy a session's host field (an IP address or a host name) to the
+    /// clipboard.
+    CopySessionHost
+);
 
 group_action!(
     /// Open a terminal connection for every session in this group's subtree.
@@ -154,10 +159,54 @@ remote_terminal_action!(
     /// Reconnect one remote terminal using the session's latest settings.
     ReconnectTerminal
 );
+remote_terminal_action!(
+    /// Open the dialog that gives one remote terminal tab its own title.
+    RenameTerminal
+);
 local_terminal_action!(
     /// Restart a local terminal with a fresh emulator and PTY.
     RestartLocalTerminal
 );
+
+/// One tab of the center area, by the identity of what it shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum CenterTab {
+    Terminal(RemoteTerminalId),
+    Explorer(SessionId),
+    LocalTerminal(LocalTerminalId),
+}
+
+/// Which tabs of a tab bar a batch close takes, relative to one tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum CloseScope {
+    Left,
+    Right,
+    Others,
+    All,
+}
+
+impl CloseScope {
+    /// The indexes to close in a bar of `len` tabs, relative to the tab at
+    /// `ix`. Empty when there is nothing to close, which is also how a menu
+    /// decides to disable the command.
+    pub fn targets(self, len: usize, ix: usize) -> Vec<usize> {
+        match self {
+            CloseScope::Left => (0..ix.min(len)).collect(),
+            CloseScope::Right => (ix + 1..len).collect(),
+            CloseScope::Others => (0..len).filter(|&other| other != ix).collect(),
+            CloseScope::All => (0..len).collect(),
+        }
+    }
+}
+
+/// Close several tabs of the tab bar that holds `tab`, each through its own
+/// close path.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = shellr, no_json)]
+pub struct CloseTabs {
+    pub tab: CenterTab,
+    pub scope: CloseScope,
+}
 
 /// Commands shared by explorer controls, drops, dialogs and keyboard bindings.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -259,5 +308,26 @@ impl ExplorerDispatch for gpui_kit::FocusHandle {
         window.defer(cx, move |window, cx| {
             focus.dispatch_action(&action, window, cx)
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CloseScope;
+
+    #[test]
+    fn close_scopes_are_relative_to_the_anchor_tab() {
+        assert_eq!(CloseScope::Left.targets(4, 2), vec![0, 1]);
+        assert_eq!(CloseScope::Right.targets(4, 2), vec![3]);
+        assert_eq!(CloseScope::Others.targets(4, 2), vec![0, 1, 3]);
+        assert_eq!(CloseScope::All.targets(4, 2), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn close_scopes_are_empty_at_the_edges() {
+        assert!(CloseScope::Left.targets(3, 0).is_empty());
+        assert!(CloseScope::Right.targets(3, 2).is_empty());
+        assert!(CloseScope::Others.targets(1, 0).is_empty());
+        assert_eq!(CloseScope::All.targets(1, 0), vec![0]);
     }
 }
