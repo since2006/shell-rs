@@ -21,9 +21,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, ConnectSelected, ConnectSession, DeleteGroup, DeleteSession, DisconnectSession,
-    DuplicateSession, EditSession, MoveSessionNode, NewChildGroup, NewGroup, NewSession,
-    NewSessionInGroup, OpenExplorer, RenameGroup, SESSION_PANEL_CONTEXT,
+    CatalogIcon, ConnectSelected, ConnectSession, DeleteGroup, DeleteSession, DuplicateSession,
+    EditSession, MoveSessionNode, NewChildGroup, NewGroup, NewSession, NewSessionInGroup,
+    OpenExplorer, RenameGroup, SESSION_PANEL_CONTEXT,
 };
 
 use crate::shared::HostMark;
@@ -61,11 +61,16 @@ impl SessionPanel {
     pub fn new(store: Entity<SessionStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (expanded, known_groups, known_sessions, items) = {
             let read = store.read(cx);
-            let expanded: HashSet<GroupId> = read.groups().iter().map(|g| g.id).collect();
+            let expanded: HashSet<GroupId> = read
+                .groups()
+                .iter()
+                .filter(|group| group.expanded)
+                .map(|group| group.id)
+                .collect();
             let items = session_tree_items(read.groups(), read.sessions(), "", &expanded);
             (
-                expanded.clone(),
                 expanded,
+                read.groups().iter().map(|group| group.id).collect(),
                 read.sessions().iter().map(|s| s.id).collect(),
                 items,
             )
@@ -91,16 +96,23 @@ impl SessionPanel {
                     _ => {}
                 },
             ),
-            cx.subscribe(&tree_state, |this, _, event: &TreeEvent, _| match event {
-                TreeEvent::Expanded(id) => {
-                    if let Some(SessionNode::Group(group)) = SessionNode::parse(id) {
-                        this.expanded.insert(group);
-                    }
+            cx.subscribe(&tree_state, |this, _, event: &TreeEvent, cx| {
+                if !this.query.trim().is_empty() {
+                    return;
                 }
-                TreeEvent::Collapsed(id) => {
-                    if let Some(SessionNode::Group(group)) = SessionNode::parse(id) {
+                let (id, expanded) = match event {
+                    TreeEvent::Expanded(id) => (id, true),
+                    TreeEvent::Collapsed(id) => (id, false),
+                };
+                if let Some(SessionNode::Group(group)) = SessionNode::parse(id) {
+                    if expanded {
+                        this.expanded.insert(group);
+                    } else {
                         this.expanded.remove(&group);
                     }
+                    this.store.update(cx, |store, cx| {
+                        store.set_group_expanded(group, expanded, cx);
+                    });
                 }
             }),
         ];
@@ -174,6 +186,15 @@ impl SessionPanel {
         self.known_groups = groups;
         self.known_sessions = sessions;
         self.expanded.extend(ancestors);
+        if let Some(SessionNode::Group(id)) = created
+            && self
+                .store
+                .read(cx)
+                .group(id)
+                .is_some_and(|group| group.expanded)
+        {
+            self.expanded.insert(id);
+        }
         created
     }
 
@@ -282,9 +303,18 @@ impl SessionPanel {
                 window.dispatch_action(Box::new(ConnectSession(id)), cx);
             }
             Some(SessionNode::Group(group)) => {
-                if !self.expanded.remove(&group) {
-                    self.expanded.insert(group);
+                if !self.query.trim().is_empty() {
+                    return;
                 }
+                let expanded = if self.expanded.remove(&group) {
+                    false
+                } else {
+                    self.expanded.insert(group);
+                    true
+                };
+                self.store.update(cx, |store, cx| {
+                    store.set_group_expanded(group, expanded, cx);
+                });
                 self.rebuild_tree(cx);
             }
             None => {}
@@ -348,16 +378,6 @@ impl Render for SessionPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // A plain snapshot for the row renderer: render callbacks must not
         // read entities.
-        let connected: Rc<HashSet<SessionId>> = Rc::new(
-            self.store
-                .read(cx)
-                .sessions()
-                .iter()
-                .filter(|session| session.state.is_connected())
-                .map(|session| session.id)
-                .collect(),
-        );
-        let connected_for_menu = connected.clone();
         // Same reason: the marks in front of the rows are a snapshot too.
         let host_os: Rc<HashMap<SessionId, HostOs>> = Rc::new(
             self.store
@@ -375,6 +395,10 @@ impl Render for SessionPanel {
                 .map(|group| (group.id, group.parent))
                 .collect(),
         );
+        let group_counts = Rc::new(group_host_counts(
+            self.store.read(cx).sessions(),
+            &group_parents,
+        ));
         let clicked_row = self.right_clicked.clone();
         let clicked_blank = self.right_clicked.clone();
         let clicked_menu = self.right_clicked.clone();
@@ -423,7 +447,7 @@ impl Render for SessionPanel {
                                         render_row(
                                             entry,
                                             state.is_selected() || state.is_right_clicked(),
-                                            &connected,
+                                            &group_counts,
                                             &host_os,
                                             &row_interactions,
                                             cx,
@@ -471,9 +495,7 @@ impl Render for SessionPanel {
                             },
                         )
                     })
-                    .context_menu(move |menu, _, _| {
-                        build_context_menu(clicked_menu.get(), &connected_for_menu, menu)
-                    }),
+                    .context_menu(move |menu, _, _| build_context_menu(clicked_menu.get(), menu)),
             )
     }
 }
@@ -497,10 +519,27 @@ struct RowInteractions {
     can_reorder: bool,
 }
 
+/// Count hosts in each group, including hosts in nested child groups.
+fn group_host_counts(
+    sessions: &[super::Session],
+    parents: &HashMap<GroupId, Option<GroupId>>,
+) -> HashMap<GroupId, usize> {
+    let mut counts = HashMap::new();
+    for session in sessions {
+        let mut group = session.group;
+        for _ in 0..parents.len() {
+            let Some(id) = group else { break };
+            *counts.entry(id).or_insert(0) += 1;
+            group = parents.get(&id).copied().flatten();
+        }
+    }
+    counts
+}
+
 fn render_row(
     entry: &TreeEntry,
     selected: bool,
-    connected: &HashSet<SessionId>,
+    group_counts: &HashMap<GroupId, usize>,
     host_os: &HashMap<SessionId, HostOs>,
     interactions: &RowInteractions,
     cx: &mut App,
@@ -541,7 +580,6 @@ fn render_row(
         ),
     };
     let session_id = node.and_then(SessionNode::session_id);
-    let is_connected = session_id.is_some_and(|id| connected.contains(&id));
 
     ListItem::new(row_id)
         .w_full()
@@ -554,18 +592,17 @@ fn render_row(
         })
         .pl(rems(0.75 + entry.depth() as f32))
         .child(h_flex().gap_2().child(mark).child(item.label.clone()))
-        .when(is_connected, |row| {
-            row.suffix(|_, cx| {
-                h_flex()
-                    .gap_1()
+        .when_some(node.and_then(SessionNode::group_id), |row, id| {
+            let count = group_counts.get(&id).copied().unwrap_or(0);
+            row.suffix(move |_, cx| {
+                div()
+                    .id(("group-count", id.0))
+                    .test_support()
+                    .aria_label(format!("{count} 台主机"))
+                    .flex_shrink_0()
                     .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(
-                        Icon::new(IconName::CircleCheck)
-                            .xsmall()
-                            .text_color(cx.theme().success),
-                    )
-                    .child("已连接")
+                    .text_color(cx.theme().muted_foreground.opacity(0.7))
+                    .child(count.to_string())
             })
         })
         .when_some(session_id, |row, id| {
@@ -716,22 +753,13 @@ fn valid_drop(
     }
 }
 
-fn build_context_menu(
-    node: Option<SessionNode>,
-    connected: &HashSet<SessionId>,
-    menu: PopupMenu,
-) -> PopupMenu {
+fn build_context_menu(node: Option<SessionNode>, menu: PopupMenu) -> PopupMenu {
     match node {
         Some(SessionNode::Session(id)) => menu
             .menu_with_icon(
                 "连接",
                 Icon::new(CatalogIcon::Plug),
                 Box::new(ConnectSession(id)),
-            )
-            .menu_with_disabled(
-                "断开",
-                Box::new(DisconnectSession(id)),
-                !connected.contains(&id),
             )
             .menu_with_icon(
                 "打开 SFTP",

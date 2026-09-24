@@ -25,7 +25,7 @@ fn from_sql(id: i64) -> u64 {
 }
 
 /// Bumped whenever `migrate` gains a step. Stored in `PRAGMA user_version`.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA_V1: &str = "\
 BEGIN;
@@ -70,6 +70,12 @@ UPDATE sessions SET sort_order = id;
 PRAGMA user_version = 4;
 COMMIT;";
 
+const SCHEMA_V5: &str = "\
+BEGIN;
+ALTER TABLE groups ADD COLUMN expanded INTEGER NOT NULL DEFAULT 1;
+PRAGMA user_version = 5;
+COMMIT;";
+
 /// Everything one launch reads back from disk.
 pub struct StoredData {
     /// Groups in id order; `parent` and `sort_order` give the visible tree.
@@ -108,7 +114,7 @@ impl SessionDatabase {
     pub fn load(&self) -> rusqlite::Result<StoredData> {
         let groups = self
             .connection
-            .prepare("SELECT id, name, parent_id, sort_order FROM groups ORDER BY id")?
+            .prepare("SELECT id, name, parent_id, sort_order, expanded FROM groups ORDER BY id")?
             .query_map([], |row| {
                 let id: i64 = row.get(0)?;
                 let name: String = row.get(1)?;
@@ -118,6 +124,7 @@ impl SessionDatabase {
                     GroupDraft::new(name, parent.map(|id| GroupId(from_sql(id)))),
                 );
                 group.sort_order = row.get(3)?;
+                group.expanded = row.get(4)?;
                 Ok(group)
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -176,12 +183,13 @@ impl SessionDatabase {
 
     pub fn insert_group(&self, group: &SessionGroup) -> rusqlite::Result<()> {
         self.connection.execute(
-            "INSERT INTO groups (id, name, parent_id, sort_order) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO groups (id, name, parent_id, sort_order, expanded) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 to_sql(group.id.0),
                 group.name.as_ref(),
                 group.parent.map(|parent| to_sql(parent.0)),
                 group.sort_order,
+                group.expanded,
             ],
         )?;
         Ok(())
@@ -189,13 +197,23 @@ impl SessionDatabase {
 
     pub fn update_group(&self, group: &SessionGroup) -> rusqlite::Result<()> {
         self.connection.execute(
-            "UPDATE groups SET name = ?2, parent_id = ?3, sort_order = ?4 WHERE id = ?1",
+            "UPDATE groups SET name = ?2, parent_id = ?3, sort_order = ?4, expanded = ?5 WHERE id = ?1",
             params![
                 to_sql(group.id.0),
                 group.name.as_ref(),
                 group.parent.map(|parent| to_sql(parent.0)),
                 group.sort_order,
+                group.expanded,
             ],
+        )?;
+        Ok(())
+    }
+
+    /// Save the session tree's expansion choice for one group.
+    pub fn set_group_expanded(&self, id: GroupId, expanded: bool) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE groups SET expanded = ?2 WHERE id = ?1",
+            params![to_sql(id.0), expanded],
         )?;
         Ok(())
     }
@@ -323,6 +341,9 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     }
     if version < 4 {
         connection.execute_batch(SCHEMA_V4)?;
+    }
+    if version < 5 {
+        connection.execute_batch(SCHEMA_V5)?;
     }
     Ok(())
 }
@@ -492,6 +513,29 @@ mod tests {
         assert_eq!(data.groups[1].parent, Some(GroupId(1)));
         assert_eq!(data.sessions[0].group, Some(GroupId(2)));
         assert_eq!(data.sessions[1].sort_order, 0);
+    }
+
+    #[test]
+    fn v4_groups_start_expanded_and_then_keep_the_saved_choice() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA_V1).unwrap();
+        connection.execute_batch(SCHEMA_V2).unwrap();
+        connection.execute_batch(SCHEMA_V3).unwrap();
+        connection.execute_batch(SCHEMA_V4).unwrap();
+        connection
+            .execute("INSERT INTO groups (id, name) VALUES (1, '生产')", [])
+            .unwrap();
+
+        let database = SessionDatabase::prepare(connection).unwrap();
+        let mut group = database.load().unwrap().groups.remove(0);
+        assert!(group.expanded);
+        database.set_group_expanded(group.id, false).unwrap();
+        group.name = "生产环境".into();
+        group.expanded = false;
+        database.update_group(&group).unwrap();
+        let saved = database.load().unwrap().groups.remove(0);
+        assert_eq!(saved.name.as_ref(), "生产环境");
+        assert!(!saved.expanded);
     }
 
     #[test]

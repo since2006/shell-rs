@@ -473,12 +473,39 @@ impl SessionStore {
         };
         let old_parent = group.parent;
         let old_order = group.sort_order;
+        let expanded = group.expanded;
         *group = SessionGroup::new(id, draft);
+        group.expanded = expanded;
         group.sort_order = if group.parent == old_parent {
             old_order
         } else {
             new_order
         };
+        true
+    }
+
+    /// Persist a group's expanded or collapsed state after a tree interaction.
+    pub fn set_group_expanded(
+        &mut self,
+        id: GroupId,
+        expanded: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(group) = self.groups.iter_mut().find(|group| group.id == id) else {
+            return false;
+        };
+        if group.expanded == expanded {
+            return false;
+        }
+        group.expanded = expanded;
+        if let Some(database) = self.database.as_ref() {
+            self.report(
+                database.set_group_expanded(id, expanded),
+                "保存分组展开状态",
+                cx,
+            );
+        }
+        cx.notify();
         true
     }
 
@@ -1071,6 +1098,21 @@ mod tests {
         assert!(store.update_group_unnotified(replicas, GroupDraft::new("副本", Some(production))));
         assert_eq!(store.group_path(replicas), "生产 / 副本");
         assert!(!store.update_group_unnotified(GroupId(99), GroupDraft::new("x", None)));
+    }
+
+    #[test]
+    fn renaming_a_group_preserves_its_expansion_choice() {
+        let mut store = SessionStore::empty();
+        let id = store.insert_group_unnotified(GroupDraft::new("生产", None));
+        store
+            .groups
+            .iter_mut()
+            .find(|group| group.id == id)
+            .unwrap()
+            .expanded = false;
+
+        assert!(store.update_group_unnotified(id, GroupDraft::new("生产环境", None)));
+        assert!(!store.group(id).unwrap().expanded);
     }
 
     #[test]

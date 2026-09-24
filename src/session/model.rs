@@ -273,6 +273,8 @@ pub struct SessionGroup {
     pub parent: Option<GroupId>,
     /// Order among groups with the same parent.
     pub sort_order: i64,
+    /// Whether the group is expanded in the session tree across launches.
+    pub expanded: bool,
 }
 
 impl SessionGroup {
@@ -282,6 +284,7 @@ impl SessionGroup {
             name: draft.name,
             parent: draft.parent,
             sort_order: 0,
+            expanded: true,
         }
     }
 

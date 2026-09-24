@@ -889,11 +889,85 @@ fn search_filters_the_tree(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn group_expansion_survives_reopening_the_database(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shellr.db");
+    let database = SessionDatabase::open(&path).unwrap();
+    let seed = SessionStore::seed();
+    for group in seed.groups() {
+        database.insert_group(group).unwrap();
+    }
+    for session in seed.sessions() {
+        database.insert_session(session).unwrap();
+    }
+    let (handle, _) = open_workspace_with_store(cx, SessionStore::load(database).unwrap());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(("session-row", WEB_01)).visible());
+        window.click(("group-row", PRODUCTION), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(("group-row", PRODUCTION)).visible());
+        assert!(window.try_find(("session-row", WEB_01)).is_none());
+    })
+    .unwrap();
+    let database = SessionDatabase::open(&path).unwrap();
+    assert!(
+        !database
+            .load()
+            .unwrap()
+            .groups
+            .iter()
+            .find(|group| group.id == GroupId(PRODUCTION))
+            .unwrap()
+            .expanded
+    );
+
+    let (reopened, _) = open_workspace_with_store(cx, SessionStore::load(database).unwrap());
+    cx.update_window(reopened.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(("group-row", PRODUCTION)).visible());
+        assert!(window.try_find(("session-row", WEB_01)).is_none());
+        assert!(window.find(("session-row", STAGING_API)).visible());
+        window.click(("group-row", PRODUCTION), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(reopened.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(("session-row", WEB_01)).visible());
+    })
+    .unwrap();
+    let saved = SessionDatabase::open(&path).unwrap().load().unwrap();
+    assert!(
+        saved
+            .groups
+            .iter()
+            .find(|group| group.id == GroupId(PRODUCTION))
+            .unwrap()
+            .expanded
+    );
+}
+
+#[gpui_kit::test]
 fn dragging_a_host_into_a_group_updates_the_session_tree(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
+        assert_eq!(
+            window.find(("group-count", PRODUCTION)).label(),
+            Some("3 台主机")
+        );
+        assert_eq!(
+            window.find(("group-count", DEVELOPMENT)).label(),
+            Some("1 台主机")
+        );
         window.within("session-tree").drag_to(
             ("session-row", DB_01),
             ("group-row", DEVELOPMENT),
@@ -910,6 +984,18 @@ fn dragging_a_host_into_a_group_updates_the_session_tree(cx: &mut TestAppContext
             Some(GroupId(DEVELOPMENT))
         );
     });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("group-count", PRODUCTION)).label(),
+            Some("2 台主机")
+        );
+        assert_eq!(
+            window.find(("group-count", DEVELOPMENT)).label(),
+            Some("2 台主机")
+        );
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -940,6 +1026,18 @@ fn dragging_peers_changes_their_order_and_groups_can_nest(cx: &mut TestAppContex
         let web02 = store.session(SessionId(2)).unwrap();
         assert!(web.sort_order < db.sort_order && db.sort_order < web02.sort_order);
     });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("group-count", PRODUCTION)).label(),
+            Some("4 台主机")
+        );
+        assert_eq!(
+            window.find(("group-count", DEVELOPMENT)).label(),
+            Some("1 台主机")
+        );
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -1738,6 +1836,10 @@ async fn new_group_from_the_toolbar_appears_in_the_tree(cx: &mut TestAppContext)
         window.render_frame(cx);
         let tree = window.within("session-tree");
         assert!(tree.find(("group-row", created.0)).visible());
+        assert_eq!(
+            tree.find(("group-count", created.0)).label(),
+            Some("0 台主机")
+        );
     })
     .unwrap();
 }
