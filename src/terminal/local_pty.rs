@@ -171,7 +171,8 @@ mod tests {
                     TerminalTransportEvent::Started
                     | TerminalTransportEvent::Failed(_)
                     | TerminalTransportEvent::Prompt(_)
-                    | TerminalTransportEvent::HostOsDetected(_),
+                    | TerminalTransportEvent::HostOsDetected(_)
+                    | TerminalTransportEvent::Latency(_),
                 ) => {}
                 Err(async_channel::TryRecvError::Empty) => thread::sleep(Duration::from_millis(5)),
                 Err(async_channel::TryRecvError::Closed) => break,

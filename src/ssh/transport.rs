@@ -6,7 +6,7 @@ use crate::{
     secrets::SharedSecretStore,
     session::Session,
     terminal::{
-        RemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalSize,
+        Latency, RemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalSize,
         TerminalTransport, TerminalTransportCommand, TerminalTransportEvent,
         TerminalTransportFactory,
     },
@@ -15,17 +15,24 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use async_channel::Sender;
 use russh::{ChannelMsg, client};
 use std::{
+    future::Future,
     path::PathBuf,
+    pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{mpsc as tokio_mpsc, watch};
+use tokio::time::MissedTickBehavior;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// How often the connection's round trip is measured while the shell runs.
+const LATENCY_INTERVAL: Duration = Duration::from_secs(5);
+/// A ping unanswered for this long reads as timed out.
+const LATENCY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Production remote-terminal adapter for the shared SSH connector.
 pub struct SshTerminalTransportProvider {
@@ -181,6 +188,17 @@ impl SshTerminalTransport {
         let mut probe = HostOsProbe::new();
         let mut probe_channel = open_probe(&handle, probe.command()).await;
 
+        // Round trips are measured with `keepalive@openssh.com`, which every
+        // server answers (a refusal is an answer too), so this is the SSH-level
+        // delay a keystroke's echo sees. The ping queues behind output on the
+        // same connection: during a flood of output the reading rises, which is
+        // the responsiveness the user actually gets. It doubles as a keepalive.
+        // The first tick fires at once, so a reading shows up right after
+        // connecting; a new ping only goes out once the last one has settled.
+        let mut latency_ticker = tokio::time::interval(LATENCY_INTERVAL);
+        latency_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut ping: Option<Pin<Box<dyn Future<Output = Latency> + Send + '_>>> = None;
+
         let mut exit_code = 0;
         let mut exit_signal = None;
         loop {
@@ -236,6 +254,20 @@ impl SshTerminalTransport {
                         }
                         _ => {}
                     }
+                },
+                _ = latency_ticker.tick(), if ping.is_none() => {
+                    let handle = &handle;
+                    ping = Some(Box::pin(async move {
+                        let sent = Instant::now();
+                        match tokio::time::timeout(LATENCY_TIMEOUT, handle.send_ping()).await {
+                            Ok(Ok(())) => Latency::Measured(sent.elapsed()),
+                            _ => Latency::TimedOut,
+                        }
+                    }));
+                },
+                latency = async { ping.as_mut().expect("guarded").await }, if ping.is_some() => {
+                    ping = None;
+                    let _ = events.send(TerminalTransportEvent::Latency(latency)).await;
                 },
                 message = channel.wait() => match message {
                     Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
@@ -629,8 +661,8 @@ mod tests {
         connect(session, known_hosts, secrets, false, answer)
     }
 
-    /// Same, but waits for the host-operating-system probe to report before
-    /// shutting the connection down.
+    /// Same, but waits for the host-operating-system probe and the first
+    /// round-trip measurement to report before shutting the connection down.
     fn connect_and_probe(
         session: Session,
         known_hosts: &Path,
@@ -644,6 +676,7 @@ mod tests {
     struct ConnectionReport {
         prompts: Vec<TerminalPromptKind>,
         host_os: Option<HostOs>,
+        latency: Option<Latency>,
     }
 
     /// Connect, answer whatever is asked, then shut down. The report says what
@@ -684,18 +717,25 @@ mod tests {
                 TerminalTransportEvent::Started => break,
                 TerminalTransportEvent::Failed(error) => panic!("SSH failed: {error}"),
                 TerminalTransportEvent::Exited { .. } => panic!("unexpected early exit"),
-                TerminalTransportEvent::HostOsDetected(_) | TerminalTransportEvent::Output(_) => {}
+                TerminalTransportEvent::HostOsDetected(_)
+                | TerminalTransportEvent::Latency(_)
+                | TerminalTransportEvent::Output(_) => {}
             }
         }
-        // The probe opens its channel after the shell is up, so its answer
-        // lands after `Started`. Only the tests that care pay the wait.
+        // The probe and the first ping start after the shell is up, so their
+        // answers land after `Started`. Only the tests that care pay the wait.
         if wait_for_host_os {
             // Loopback answers in single-digit milliseconds; this only runs
             // out for a host that never answers at all.
             let deadline = std::time::Instant::now() + Duration::from_secs(1);
-            while report.host_os.is_none() && std::time::Instant::now() < deadline {
+            while (report.host_os.is_none() || report.latency.is_none())
+                && std::time::Instant::now() < deadline
+            {
                 match event_rx.try_recv() {
                     Ok(TerminalTransportEvent::HostOsDetected(os)) => report.host_os = Some(os),
+                    Ok(TerminalTransportEvent::Latency(latency)) => {
+                        report.latency.get_or_insert(latency);
+                    }
                     Ok(_) => {}
                     Err(async_channel::TryRecvError::Empty) => {
                         thread::sleep(Duration::from_millis(5))
@@ -768,7 +808,7 @@ mod tests {
                     TerminalPromptKind::HostKeyChanged(_) => panic!("unexpected changed key"),
                 },
                 TerminalTransportEvent::Started => started = true,
-                TerminalTransportEvent::HostOsDetected(_) => {}
+                TerminalTransportEvent::HostOsDetected(_) | TerminalTransportEvent::Latency(_) => {}
                 TerminalTransportEvent::Output(bytes) => {
                     ready |= String::from_utf8_lossy(&bytes).contains("ready")
                 }
@@ -982,6 +1022,12 @@ mod tests {
             execs,
             vec![PROBE_COMMAND.to_string()],
             "认出来了就不该再问第二遍"
+        );
+        // The server answered the keepalive ping, so there is a real reading.
+        assert!(
+            matches!(report.latency, Some(Latency::Measured(_))),
+            "连上之后应当马上测到一次往返延迟：{:?}",
+            report.latency
         );
     }
 

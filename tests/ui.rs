@@ -29,9 +29,10 @@ use shellr::sftp::{
     SftpCommand, SftpEvent, SftpTransport, SftpTransportProvider, UploadRequest,
 };
 use shellr::terminal::{
-    FixedRemoteTerminalTransportProvider, LocalTerminalId, RemoteTerminalId, TerminalLifecycle,
-    TerminalPrompt, TerminalPromptField, TerminalPromptKind, TerminalPromptReply, TerminalSize,
-    TerminalTransport, TerminalTransportCommand, TerminalTransportEvent, TerminalTransportFactory,
+    FixedRemoteTerminalTransportProvider, Latency, LocalTerminalId, RemoteTerminalId,
+    TerminalLifecycle, TerminalPrompt, TerminalPromptField, TerminalPromptKind,
+    TerminalPromptReply, TerminalSize, TerminalTransport, TerminalTransportCommand,
+    TerminalTransportEvent, TerminalTransportFactory,
 };
 use shellr::workspace::Workspace;
 
@@ -89,6 +90,7 @@ enum FakeBehavior {
     ExitFirst,
     FailFirst,
     ReportsOs(HostOs),
+    ReportsLatency(Latency),
 }
 
 #[derive(Default)]
@@ -117,6 +119,13 @@ impl FakeTerminalFactory {
     fn reports_os(os: HostOs) -> Self {
         Self {
             behavior: FakeBehavior::ReportsOs(os),
+            ..Self::default()
+        }
+    }
+
+    fn reports_latency(latency: Latency) -> Self {
+        Self {
+            behavior: FakeBehavior::ReportsLatency(latency),
             ..Self::default()
         }
     }
@@ -170,6 +179,9 @@ impl TerminalTransport for FakeTerminalTransport {
         events.send_blocking(TerminalTransportEvent::Started)?;
         if let FakeBehavior::ReportsOs(os) = self.behavior {
             events.send_blocking(TerminalTransportEvent::HostOsDetected(os))?;
+        }
+        if let FakeBehavior::ReportsLatency(latency) = self.behavior {
+            events.send_blocking(TerminalTransportEvent::Latency(latency))?;
         }
         events.send_blocking(TerminalTransportEvent::Output(
             format!(
@@ -2794,6 +2806,46 @@ async fn connecting_marks_the_session_with_the_host_operating_system(cx: &mut Te
         let store = workspace.read(cx).store().read(cx);
         assert_eq!(store.session(id).unwrap().os, Some(HostOs::Fedora));
     });
+}
+
+#[gpui_kit::test]
+async fn the_tab_bar_shows_the_connection_latency_while_it_runs(cx: &mut TestAppContext) {
+    let (store, id) = one_session_store(AuthKind::Auto);
+    let factory = Arc::new(FakeTerminalFactory::reports_latency(Latency::Measured(
+        Duration::from_millis(32),
+    )));
+    let (handle, _) = open_workspace_with_remote_factory(cx, store, factory);
+    // The first terminal of a store with nothing connected.
+    let terminal = 1_u64;
+    let latency = ("terminal-latency", terminal);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("session-tree")
+            .double_click(("session-row", id.0), cx);
+    })
+    .unwrap();
+    // Transport events reach the engine on its 16ms batching timer.
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(latency)
+            .is_some_and(|element| element.label() == Some("32 ms"))
+    })
+    .await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("close-terminal", terminal), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(latency).is_none());
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]

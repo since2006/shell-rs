@@ -16,8 +16,9 @@ use crate::app::{CopyTerminal, PasteTerminal};
 use crate::session::HostOs;
 
 use super::{
-    SharedTerminalTransportFactory, TerminalEngine, TerminalEngineEvent, TerminalLifecycle,
-    TerminalPrompt, TerminalPromptReply, TerminalSize, TerminalSnapshot, TerminalStatus,
+    Latency, SharedTerminalTransportFactory, TerminalEngine, TerminalEngineEvent,
+    TerminalLifecycle, TerminalPrompt, TerminalPromptReply, TerminalSize, TerminalSnapshot,
+    TerminalStatus,
 };
 
 pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";
@@ -307,6 +308,10 @@ impl TerminalView {
 
     pub fn title(&self, cx: &App) -> Option<String> {
         self.engine.read(cx).title().map(str::to_owned)
+    }
+
+    pub fn latency(&self, cx: &App) -> Option<Latency> {
+        self.engine.read(cx).latency()
     }
 
     pub fn screen_text(&self, cx: &App) -> String {

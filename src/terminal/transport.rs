@@ -3,7 +3,7 @@ use std::sync::{Arc, mpsc};
 use anyhow::Result;
 use async_channel::Sender;
 
-use super::TerminalSize;
+use super::{Latency, TerminalSize};
 use crate::session::{HostOs, Session};
 
 pub use crate::connection::{
@@ -48,6 +48,9 @@ pub enum TerminalTransportEvent {
     /// What the transport found running on the host. Sent once per successful
     /// connection, after the shell is up.
     HostOsDetected(HostOs),
+    /// A round trip measured on the live connection. Sent periodically while
+    /// the shell runs; transports without a network hop never send it.
+    Latency(Latency),
     Exited {
         code: u32,
         signal: Option<String>,

@@ -1,5 +1,5 @@
 use gpui_kit::component::{
-    Icon, IconName, Sizable as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _,
     button::Button,
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     menu::PopupMenu,
@@ -14,8 +14,8 @@ use crate::session::{HostOs, SessionId, SessionStore};
 use crate::shared::{ClosableTabTitle, HostMark, close_tab_items};
 
 use super::{
-    RemoteTerminalId, SharedRemoteTerminalTransportProvider, TerminalLifecycle, TerminalPrompt,
-    TerminalPromptReply, TerminalView, TerminalViewEvent,
+    LatencyLevel, RemoteTerminalId, SharedRemoteTerminalTransportProvider, TerminalLifecycle,
+    TerminalPrompt, TerminalPromptReply, TerminalView, TerminalViewEvent,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -251,6 +251,35 @@ impl Panel for TerminalPanel {
         ClosableTabTitle::new(("terminal-tab", id.0), mark, self.title_text(cx))
             .closable(("close-terminal", id.0), Box::new(CloseTerminal(id)))
             .context_menu(move |menu, _, cx| tab_menu.build(menu, cx))
+    }
+
+    /// The connection's latest round trip, beside the toolbar. Shown only
+    /// while the shell runs, so a dropped connection leaves no stale number.
+    fn title_suffix(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let terminal = self.terminal.read(cx);
+        if terminal.lifecycle(cx) != TerminalLifecycle::Running {
+            return None;
+        }
+        let latency = terminal.latency(cx)?;
+        let color = match latency.level() {
+            LatencyLevel::Good => cx.theme().success,
+            LatencyLevel::Fair => cx.theme().warning,
+            LatencyLevel::Poor => cx.theme().danger,
+        };
+        let label = latency.label();
+        Some(
+            div()
+                .id(("terminal-latency", self.id.0))
+                .test_support()
+                .aria_label(label.clone())
+                // Keeps the buttons beside it still as the digits change.
+                .min_w_12()
+                .text_xs()
+                .font_weight(FontWeight::BOLD)
+                .text_right()
+                .text_color(color)
+                .child(label),
+        )
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {

@@ -13,7 +13,8 @@ pub use engine::{TerminalCell, TerminalEngine, TerminalEngineEvent, TerminalSnap
 pub use local_pty::LocalPtyTransportFactory;
 pub use local_terminal_panel::{LocalTerminalPanel, LocalTerminalPanelEvent};
 pub use model::{
-    LocalTerminalId, RemoteTerminalId, TerminalLifecycle, TerminalSize, TerminalStatus,
+    Latency, LatencyLevel, LocalTerminalId, RemoteTerminalId, TerminalLifecycle, TerminalSize,
+    TerminalStatus,
 };
 pub use rename_tab_dialog::open_rename_tab_dialog;
 pub use terminal_panel::{TerminalPanel, TerminalPanelEvent};

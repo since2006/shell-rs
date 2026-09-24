@@ -17,8 +17,9 @@ use alacritty_terminal::vte::ansi::{Color, CursorShape, CursorStyle, Processor, 
 use crate::session::HostOs;
 
 use super::{
-    SharedTerminalTransportFactory, TerminalLifecycle, TerminalPrompt, TerminalPromptReply,
-    TerminalSize, TerminalStatus, TerminalTransportCommand, TerminalTransportEvent,
+    Latency, SharedTerminalTransportFactory, TerminalLifecycle, TerminalPrompt,
+    TerminalPromptReply, TerminalSize, TerminalStatus, TerminalTransportCommand,
+    TerminalTransportEvent,
 };
 
 pub type AlacrittyTerm = Term<TerminalEventProxy>;
@@ -68,6 +69,8 @@ pub struct TerminalEngine {
     runtime: TerminalRuntime,
     lifecycle: TerminalLifecycle,
     title: Option<String>,
+    /// The connection's latest round trip, while one is running.
+    latency: Option<Latency>,
     generation: u64,
     size: TerminalSize,
     event_sender: mpsc::Sender<TerminalUiEvent>,
@@ -89,6 +92,7 @@ impl TerminalEngine {
             runtime,
             lifecycle: TerminalLifecycle::Starting,
             title: None,
+            latency: None,
             generation,
             size,
             event_sender,
@@ -143,10 +147,13 @@ impl TerminalEngine {
             TerminalUiEventKind::ResetTitle => self.title = None,
             TerminalUiEventKind::Exited { code, signal } => {
                 self.lifecycle = TerminalLifecycle::Exited { code, signal };
+                self.latency = None;
             }
             TerminalUiEventKind::Failed(error) => {
                 self.lifecycle = TerminalLifecycle::Failed(error);
+                self.latency = None;
             }
+            TerminalUiEventKind::Latency(latency) => self.latency = Some(latency),
             TerminalUiEventKind::Prompt(prompt) => {
                 return Some(TerminalEngineEvent::PromptRequested(prompt));
             }
@@ -167,6 +174,7 @@ impl TerminalEngine {
         self.runtime.shutdown();
         self.lifecycle = TerminalLifecycle::Starting;
         self.title = None;
+        self.latency = None;
         self.runtime = TerminalRuntime::start(
             self.generation,
             self.size,
@@ -332,6 +340,10 @@ impl TerminalEngine {
         self.title.as_deref()
     }
 
+    pub fn latency(&self) -> Option<Latency> {
+        self.latency
+    }
+
     pub fn status(&self) -> TerminalStatus {
         let term = self.runtime.term.lock();
         let cursor = term.grid().cursor.point;
@@ -474,6 +486,13 @@ impl TerminalRuntime {
                                 &parser_ui_events,
                                 generation,
                                 TerminalUiEventKind::HostOs(os),
+                            );
+                        }
+                        TerminalTransportEvent::Latency(latency) => {
+                            send_ui(
+                                &parser_ui_events,
+                                generation,
+                                TerminalUiEventKind::Latency(latency),
                             );
                         }
                         TerminalTransportEvent::Prompt(prompt) => {
@@ -661,6 +680,7 @@ enum TerminalUiEventKind {
     Failed(String),
     Prompt(TerminalPrompt),
     HostOs(HostOs),
+    Latency(Latency),
     ColorRequest(usize, Arc<dyn Fn(Rgb) -> String + Send + Sync>),
 }
 
