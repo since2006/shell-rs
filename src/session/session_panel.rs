@@ -444,9 +444,14 @@ impl Render for SessionPanel {
                             .child(
                                 BaseTree::new(&self.tree_state)
                                     .item(move |_, entry, state, _, cx| {
+                                        let node = SessionNode::parse(&entry.item().id);
+                                        let selected = match row_interactions.right_clicked.get() {
+                                            Some(right_clicked) => node == Some(right_clicked),
+                                            None => state.is_selected(),
+                                        };
                                         render_row(
                                             entry,
-                                            state.is_selected() || state.is_right_clicked(),
+                                            selected,
                                             &group_counts,
                                             &host_os,
                                             &row_interactions,
@@ -468,11 +473,11 @@ impl Render for SessionPanel {
                     // being prepainted, and the focus it takes there lands in
                     // the middle of the frame, which trips gpui's "set_focus
                     // called more than once in a single frame" assertion.
-                    // Capture runs before every bubble handler, so this clears
-                    // the target and the row that was hit writes itself back;
-                    // a click on blank space leaves it cleared.
+                    // Capture runs before every bubble handler. Clear the
+                    // context selection on any new click; a right-clicked row
+                    // writes itself back before the menu is built.
                     .capture_any_mouse_down(move |event, _, _| {
-                        if event.button == MouseButton::Right {
+                        if matches!(event.button, MouseButton::Left | MouseButton::Right) {
                             clicked_blank.set(None);
                         }
                     })
