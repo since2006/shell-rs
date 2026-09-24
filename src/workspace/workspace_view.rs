@@ -28,6 +28,7 @@ use crate::app::{
     ToggleSessionPanel, ToggleTheme, ToggleUploadSelection, UploadSelectedFiles, ZoomIn, ZoomOut,
     ZoomReset,
 };
+use crate::connection::SharedConnectionTester;
 use crate::explorer::{ExplorerPanel, ExplorerPanelEvent, confirm_close_upload};
 use crate::session::{
     ConnectionState, GroupId, SessionId, SessionPanel, SessionStore, SessionStoreEvent,
@@ -100,6 +101,8 @@ pub struct Workspace {
     remote_terminal_provider: SharedRemoteTerminalTransportProvider,
     sftp_provider: SharedSftpTransportProvider,
     local_directory_provider: SharedLocalDirectoryProvider,
+    /// Backs the session dialog's 「测试连接」.
+    connection_tester: SharedConnectionTester,
     next_remote_terminal_id: u64,
     next_local_terminal_id: u64,
     /// The center tab displayed most recently; `CloseActiveTab` closes it.
@@ -132,6 +135,7 @@ impl Workspace {
         let remote = Arc::new(crate::ssh::SshTerminalTransportProvider::with_connector(
             connector.clone(),
         ));
+        let tester = Arc::new(crate::ssh::SshConnectionTester::new(connector.clone()));
         let sftp = Arc::new(SshSftpTransportProvider::new(
             connector,
             crate::app::data_dir().join("upload-resume"),
@@ -142,6 +146,7 @@ impl Workspace {
             local_terminal_factory,
             sftp,
             Arc::new(SystemLocalDirectoryProvider),
+            tester,
             window,
             cx,
         )
@@ -160,6 +165,7 @@ impl Workspace {
             crate::app::data_dir().join("known_hosts"),
             store.read(cx).secrets(),
         );
+        let tester = Arc::new(crate::ssh::SshConnectionTester::new(connector.clone()));
         let sftp = Arc::new(SshSftpTransportProvider::new(
             connector,
             crate::app::data_dir().join("upload-resume"),
@@ -170,18 +176,23 @@ impl Workspace {
             local_terminal_factory,
             sftp,
             Arc::new(SystemLocalDirectoryProvider),
+            tester,
             window,
             cx,
         )
     }
 
     /// Inject every filesystem and transport service; tests require neither a server nor a keychain.
+    // One parameter per injected service, which is the point of this
+    // constructor; bundling them would only move the list elsewhere.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_services(
         store: Entity<SessionStore>,
         remote_terminal_provider: SharedRemoteTerminalTransportProvider,
         local_terminal_factory: SharedTerminalTransportFactory,
         sftp_provider: SharedSftpTransportProvider,
         local_directory_provider: SharedLocalDirectoryProvider,
+        connection_tester: SharedConnectionTester,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -303,6 +314,7 @@ impl Workspace {
             remote_terminal_provider,
             sftp_provider,
             local_directory_provider,
+            connection_tester,
             next_remote_terminal_id,
             next_local_terminal_id: 1,
             active_tab: None,
@@ -408,13 +420,7 @@ impl Workspace {
         let workspace = cx.entity().downgrade();
         match prompt.kind().clone() {
             TerminalPromptKind::UnknownHost(prompt) => {
-                let description = format!(
-                    "主机：{}:{}\n算法：{}\nSHA-256 指纹：{}\n\n请先确认该指纹来自可信渠道。",
-                    prompt.host(),
-                    prompt.port(),
-                    prompt.algorithm(),
-                    prompt.fingerprint(),
-                );
+                let description = prompt.description();
                 window.open_alert_dialog(cx, move |alert, _, _| {
                     alert
                         .title("首次连接此主机")
@@ -1154,7 +1160,14 @@ impl Workspace {
     }
 
     fn on_new_session(&mut self, _: &NewSession, window: &mut Window, cx: &mut Context<Self>) {
-        open_session_dialog(None, None, self.store.clone(), window, cx);
+        open_session_dialog(
+            None,
+            None,
+            self.store.clone(),
+            self.connection_tester.clone(),
+            window,
+            cx,
+        );
     }
 
     fn on_edit_session(
@@ -1164,7 +1177,14 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.store.read(cx).session(action.0).is_some() {
-            open_session_dialog(Some(action.0), None, self.store.clone(), window, cx);
+            open_session_dialog(
+                Some(action.0),
+                None,
+                self.store.clone(),
+                self.connection_tester.clone(),
+                window,
+                cx,
+            );
         }
     }
 
@@ -1268,7 +1288,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        open_session_dialog(None, Some(action.0), self.store.clone(), window, cx);
+        open_session_dialog(
+            None,
+            Some(action.0),
+            self.store.clone(),
+            self.connection_tester.clone(),
+            window,
+            cx,
+        );
     }
 
     fn on_new_group(&mut self, _: &NewGroup, window: &mut Window, cx: &mut Context<Self>) {

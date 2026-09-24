@@ -7,14 +7,15 @@ use gpui_kit::component::{
     form::{Field, Form},
     h_flex,
     input::{Input, InputContentType, InputEvent, InputState},
+    notification::Notification,
     select::{Select, SelectState},
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use zeroize::Zeroizing;
 
+use crate::connection::{LoginTest, SharedConnectionTester, TrustCallback, UnknownHostPrompt};
 use crate::secrets::{SecretRef, SharedSecretStore};
 
 use super::{AuthKind, GroupId, Session, SessionDraft, SessionId, SessionStore, group_options};
@@ -53,7 +54,8 @@ pub struct SessionForm {
     group_ids: Vec<Option<GroupId>>,
     error: Option<SharedString>,
     testing_connection: bool,
-    connection_test_result: Option<(bool, SharedString)>,
+    /// Logs in with the form's current values for 「测试连接」.
+    tester: SharedConnectionTester,
     editing_connected: bool,
     /// Where saved secrets are read from. Writes go through the store, which
     /// owns the one error channel.
@@ -72,6 +74,7 @@ impl SessionForm {
         editing: Option<SessionId>,
         preselect_group: Option<GroupId>,
         store: Entity<SessionStore>,
+        tester: SharedConnectionTester,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -183,7 +186,7 @@ impl SessionForm {
             group_ids,
             error: None,
             testing_connection: false,
-            connection_test_result: None,
+            tester,
             editing_connected,
             secrets,
             password_loaded: false,
@@ -283,47 +286,118 @@ impl SessionForm {
         .detach();
     }
 
-    /// Probe the endpoint currently shown in the form without saving it.
-    fn test_connection(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+    /// The login the form's current values describe, saved or not, or why
+    /// there is nothing to test yet.
+    fn login_test(&self, cx: &App) -> Result<LoginTest, &'static str> {
+        let host = self.host.read(cx).value().trim().to_string();
+        let port = parse_port(self.port.read(cx).value().trim());
+        let user = self.user.read(cx).value().trim().to_string();
+        let auth = self
+            .auth
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|ix| AuthKind::ALL.get(ix.row).copied())
+            .unwrap_or_default();
+        let key_path = self.key_path.read(cx).value().trim().to_string();
+        let port = match (host.is_empty(), port, user.is_empty()) {
+            (true, _, _) => return Err("请输入主机"),
+            (_, None, _) => return Err("端口必须是 1 到 65535 之间的数字"),
+            (_, _, true) => return Err("请输入用户名"),
+            (_, Some(port), _) => port,
+        };
+        if auth == AuthKind::Key && key_path.is_empty() {
+            return Err("私钥认证需要选择私钥文件");
+        }
+        let mut request = LoginTest::new(host, port, user, auth);
+        // Only what the chosen method uses, which is also what the form shows.
+        if uses_password(auth) {
+            let password = self.password.read(cx).value();
+            if !password.is_empty() {
+                request = request.with_password(password.to_string());
+            }
+        }
+        if auth == AuthKind::Key {
+            request = request.with_key_path(key_path);
+            let passphrase = self.passphrase.read(cx).value();
+            if !passphrase.is_empty() {
+                request = request.with_passphrase(passphrase.to_string());
+            }
+        }
+        Ok(request)
+    }
+
+    /// Log in with the form's current values without saving them, and report
+    /// the outcome as a notification. The login runs on a thread of its own;
+    /// a host key seen for the first time is put to the user in a dialog
+    /// above this one.
+    fn test_connection(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.testing_connection {
             return;
         }
-        let host = self.host.read(cx).value().trim().to_string();
-        let port = self.port.read(cx).value().trim().parse::<u16>();
-        let error = if host.is_empty() {
-            Some("请输入主机")
-        } else if !matches!(port, Ok(1..=u16::MAX)) {
-            Some("端口必须是 1 到 65535 之间的数字")
-        } else {
-            None
+        let request = match self.login_test(cx) {
+            Ok(request) => request,
+            Err(reason) => {
+                window.push_notification(connection_test_notification(Err(reason.into())), cx);
+                return;
+            }
         };
-        if let Some(error) = error {
-            self.connection_test_result = Some((false, error.into()));
-            cx.notify();
+        let (trust_tx, trust_rx) = std::sync::mpsc::channel::<TrustQuestion>();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let tester = self.tester.clone();
+        let spawned = std::thread::Builder::new()
+            .name("shellr-connection-test".into())
+            .spawn(move || {
+                // Nobody left to answer (the form closed) reads as "no".
+                let trust: TrustCallback = Box::new(move |prompt| {
+                    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+                    trust_tx.send((prompt, reply_tx)).is_ok() && reply_rx.recv().unwrap_or(false)
+                });
+                let _ = result_tx.send(tester.test(request, trust));
+            });
+        if let Err(error) = spawned {
+            window.push_notification(
+                connection_test_notification(Err(format!("无法启动连接测试：{error}"))),
+                cx,
+            );
             return;
         }
-        let port = port.expect("validated port");
-        let endpoint = format!("{host}:{port}");
         self.testing_connection = true;
-        self.connection_test_result = None;
         cx.notify();
-        cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_executor()
-                .spawn(async move { probe_ssh_service(&host, port) })
-                .await;
-            this.update_in(cx, |this, _, cx| {
-                this.testing_connection = false;
-                this.connection_test_result = Some(match result {
-                    Ok(()) => (
-                        true,
-                        format!("{endpoint}：SSH 服务可达，尚未验证登录认证").into(),
-                    ),
-                    Err(error) => (false, format!("{endpoint}：{error}").into()),
-                });
-                cx.notify();
-            })
-            .ok();
+        // Polled rather than woken by the worker, as with every other worker
+        // in the application.
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(50))
+                    .await;
+                while let Ok((prompt, reply)) = trust_rx.try_recv() {
+                    if this
+                        .update_in(cx, |_, window, cx| ask_to_trust(prompt, reply, window, cx))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                let result = match result_rx.try_recv() {
+                    Ok(result) => result,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        if this.update(cx, |_, _| ()).is_err() {
+                            return;
+                        }
+                        continue;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Err("连接测试意外中止".to_string())
+                    }
+                };
+                this.update_in(cx, |this, window, cx| {
+                    this.testing_connection = false;
+                    window.push_notification(connection_test_notification(result), cx);
+                    cx.notify();
+                })
+                .ok();
+                return;
+            }
         })
         .detach();
     }
@@ -555,70 +629,64 @@ impl Render for SessionForm {
                         .child(error),
                 )
             })
-            .when_some(
-                self.connection_test_result.clone(),
-                |form, (success, message)| {
-                    form.child(
-                        div()
-                            .id("connection-test-result")
-                            .test_support()
-                            .aria_label(message.clone())
-                            .text_sm()
-                            .text_color(if success {
-                                cx.theme().success
-                            } else {
-                                cx.theme().danger
-                            })
-                            .child(message),
-                    )
-                },
-            )
     }
 }
 
-/// Check that a TCP endpoint speaks SSH. Authentication is intentionally not
-/// attempted, so the form can test unsaved hosts without storing credentials
-/// or changing the application's trusted-host list.
-fn probe_ssh_service(host: &str, port: u16) -> Result<(), String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| format!("无法启动连接测试：{error}"))?;
-    runtime.block_on(async {
-        tokio::time::timeout(Duration::from_secs(8), async {
-            let mut stream = tokio::net::TcpStream::connect((host, port))
-                .await
-                .map_err(|error| format!("无法连接：{error}"))?;
-            stream
-                .write_all(b"SSH-2.0-shellr-probe\r\n")
-                .await
-                .map_err(|error| format!("无法发送 SSH 标识：{error}"))?;
-            for _ in 0..10 {
-                let mut line = Vec::new();
-                for _ in 0..255 {
-                    let byte = stream
-                        .read_u8()
-                        .await
-                        .map_err(|error| format!("无法读取 SSH 标识：{error}"))?;
-                    if byte == b'\n' {
-                        break;
-                    }
-                    line.push(byte);
-                }
-                if line.starts_with(b"SSH-2.0-") || line.starts_with(b"SSH-1.99-") {
-                    return Ok(());
-                }
-            }
-            Err("目标端口没有返回 SSH 服务标识".to_string())
-        })
-        .await
-        .map_err(|_| "连接超时".to_string())?
-    })
+/// A trust question from the test's worker, with where to send the answer.
+type TrustQuestion = (UnknownHostPrompt, std::sync::mpsc::Sender<bool>);
+
+/// A port field's value, when it is one.
+fn parse_port(port: &str) -> Option<u16> {
+    port.parse::<u16>().ok().filter(|port| *port != 0)
 }
 
-/// Open the new-session (`editing == None`) or edit-session dialog.
-/// `preselect_group` fills in the group field of a new session, so creating
-/// one from a group's context menu lands it in that group.
+/// Put a first-seen host key to the user, above the session dialog. Closing
+/// the dialog any other way than trusting counts as declining.
+fn ask_to_trust(
+    prompt: UnknownHostPrompt,
+    reply: std::sync::mpsc::Sender<bool>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let description = prompt.description();
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let answer = |trusted: bool| {
+            let reply = reply.clone();
+            move || {
+                let _ = reply.send(trusted);
+            }
+        };
+        let (trust, decline, dismiss) = (answer(true), answer(false), answer(false));
+        alert
+            .title("首次连接此主机")
+            .description(description.clone())
+            .button_props(
+                DialogButtonProps::default()
+                    .ok_text("信任并继续")
+                    .cancel_text("取消"),
+            )
+            .show_cancel(true)
+            .on_ok(move |_, _, _| {
+                trust();
+                true
+            })
+            .on_cancel(move |_, _, _| {
+                decline();
+                true
+            })
+            .on_close(move |_, _, _| dismiss())
+    });
+}
+
+/// A connection test has two outcomes: it connected, or it did not and the
+/// message says why.
+fn connection_test_notification(result: Result<(), String>) -> Notification {
+    match result {
+        Ok(()) => Notification::success("连接成功"),
+        Err(reason) => Notification::error(reason).title("连接失败"),
+    }
+}
+
 /// Whether this authentication kind can end up asking for a password.
 /// `Auto` walks agent, then keys, then password, so it can.
 fn uses_password(auth: AuthKind) -> bool {
@@ -641,14 +709,19 @@ fn secret_change(value: String, loaded: bool) -> Option<Option<String>> {
     }
 }
 
+/// Open the new-session (`editing == None`) or edit-session dialog.
+/// `preselect_group` fills in the group field of a new session, so creating
+/// one from a group's context menu lands it in that group. `tester` backs the
+/// dialog's 「测试连接」 button.
 pub fn open_session_dialog(
     editing: Option<SessionId>,
     preselect_group: Option<GroupId>,
     store: Entity<SessionStore>,
+    tester: SharedConnectionTester,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let form = cx.new(|cx| SessionForm::new(editing, preselect_group, store, window, cx));
+    let form = cx.new(|cx| SessionForm::new(editing, preselect_group, store, tester, window, cx));
     let title: SharedString = if editing.is_some() {
         "编辑会话"
     } else {
@@ -759,7 +832,16 @@ pub fn confirm_delete_session(
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthKind, secret_change, uses_password};
+    use super::{AuthKind, parse_port, secret_change, uses_password};
+
+    #[test]
+    fn a_port_field_is_a_number_from_1_to_65535() {
+        assert_eq!(parse_port("22"), Some(22));
+        assert_eq!(parse_port("65535"), Some(65535));
+        for port in ["0", "65536", "ssh", ""] {
+            assert_eq!(parse_port(port), None, "{port:?}");
+        }
+    }
 
     #[test]
     fn auto_and_password_can_reach_a_password_prompt() {

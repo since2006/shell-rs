@@ -1,13 +1,11 @@
 //! UI integration tests: the production `Workspace` rendered in a headless
 //! window, driven through real pointer and keyboard events.
 
-use std::io::Write as _;
-use std::net::TcpListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use gpui_kit::component::{ActiveTheme as _, Root};
+use gpui_kit::component::{ActiveTheme as _, Root, WindowExt as _};
 use gpui_kit::test::{TestAppContextExt, TestWindowExt};
 use gpui_kit::{
     AppContext as _, ClipboardItem, ElementId, Entity, InputEvent as _, MouseButton,
@@ -19,6 +17,7 @@ use shellr::app::{
     CopySessionHost, DeleteGroup, DeleteSession, EditSession, ExpandAllGroups, NewLocalTerminal,
     NewSessionInGroup, OpenExplorer, RenameGroup, RenameTerminal,
 };
+use shellr::connection::{ConnectionPromptKind, ConnectionTester, LoginTest, TrustCallback};
 use shellr::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
 use shellr::session::{
     AuthKind, ConnectionState, GroupDraft, GroupId, HostOs, SessionDatabase, SessionDraft,
@@ -59,6 +58,15 @@ fn open_workspace_with_store(
     cx: &mut TestAppContext,
     store: SessionStore,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
+    open_workspace_with_tester(cx, store, Arc::new(FakeConnectionTester::default()))
+}
+
+/// Same, with the session dialog's connection test answered by `tester`.
+fn open_workspace_with_tester(
+    cx: &mut TestAppContext,
+    store: SessionStore,
+    tester: Arc<FakeConnectionTester>,
+) -> (WindowHandle<Root>, Entity<Workspace>) {
     cx.update(shellr::init);
     let mut workspace = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
@@ -73,6 +81,7 @@ fn open_workspace_with_store(
                 Arc::new(FakeTerminalFactory::default()),
                 Arc::new(FakeSftpProvider::default()),
                 Arc::new(FakeLocalDirectory),
+                tester.clone(),
                 window,
                 cx,
             )
@@ -81,6 +90,92 @@ fn open_workspace_with_store(
         Root::new(view, window, cx)
     });
     (handle, workspace.expect("workspace created"))
+}
+
+/// `(host, port, user, password)` of one connection test.
+type TestedLogin = (String, u16, String, Option<String>);
+
+/// Stands in for the SSH login behind 「测试连接」: records what the form sent,
+/// optionally asks to trust a made-up host key, and answers with `result`.
+struct FakeConnectionTester {
+    asks_trust: bool,
+    result: Result<(), String>,
+    requests: Mutex<Vec<TestedLogin>>,
+    trust_answers: Mutex<Vec<bool>>,
+}
+
+impl Default for FakeConnectionTester {
+    fn default() -> Self {
+        Self {
+            asks_trust: false,
+            result: Ok(()),
+            requests: Mutex::default(),
+            trust_answers: Mutex::default(),
+        }
+    }
+}
+
+impl FakeConnectionTester {
+    fn failing(reason: &str) -> Self {
+        Self {
+            result: Err(reason.to_string()),
+            ..Self::default()
+        }
+    }
+
+    fn asking_trust() -> Self {
+        Self {
+            asks_trust: true,
+            ..Self::default()
+        }
+    }
+
+    fn requests(&self) -> Vec<TestedLogin> {
+        self.requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    fn trust_answers(&self) -> Vec<bool> {
+        self.trust_answers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+}
+
+impl ConnectionTester for FakeConnectionTester {
+    fn test(&self, request: LoginTest, trust: TrustCallback) -> Result<(), String> {
+        self.requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push((
+                request.host().to_string(),
+                request.port(),
+                request.user().to_string(),
+                request.password().map(str::to_string),
+            ));
+        if self.asks_trust {
+            let ConnectionPromptKind::UnknownHost(prompt) = ConnectionPromptKind::unknown_host(
+                request.host(),
+                request.port(),
+                "ssh-ed25519",
+                "SHA256:test-fingerprint",
+            ) else {
+                unreachable!("unknown_host builds an UnknownHost prompt");
+            };
+            let trusted = trust(prompt);
+            self.trust_answers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(trusted);
+            if !trusted {
+                return Err("未信任该主机的密钥".to_string());
+            }
+        }
+        self.result.clone()
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -238,6 +333,7 @@ fn open_workspace_with_factory(
                 factory.clone(),
                 Arc::new(FakeSftpProvider::default()),
                 Arc::new(FakeLocalDirectory),
+                Arc::new(FakeConnectionTester::default()),
                 window,
                 cx,
             )
@@ -265,6 +361,7 @@ fn open_workspace_with_remote_factory(
                 Arc::new(FakeTerminalFactory::default()),
                 Arc::new(FakeSftpProvider::default()),
                 Arc::new(FakeLocalDirectory),
+                Arc::new(FakeConnectionTester::default()),
                 window,
                 cx,
             )
@@ -878,17 +975,75 @@ async fn new_session_dialog_validates_then_inserts(cx: &mut TestAppContext) {
     });
 }
 
+/// What the user reported: the keychain has the working password, the edit
+/// dialog's field has been changed to a wrong one, and 「测试连接」 must try the
+/// field — without saving anything.
 #[gpui_kit::test]
-async fn session_dialog_tests_ssh_service_without_saving(cx: &mut TestAppContext) {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let (reply, resume) = mpsc::channel();
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        resume.recv_timeout(Duration::from_secs(3)).unwrap();
-        stream.write_all(b"SSH-2.0-test-server\r\n").unwrap();
+async fn testing_a_connection_logs_in_with_what_the_form_shows(cx: &mut TestAppContext) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (store, id, endpoint) = store_with_secrets(secrets.clone());
+    secrets.set(&endpoint, "hunter2").unwrap();
+    let tester = Arc::new(FakeConnectionTester::failing("用户名或密码错误"));
+    let (handle, workspace) = open_workspace_with_tester(cx, store, tester.clone());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(EditSession(id)), cx);
+    })
+    .unwrap();
+    // The saved password is read on a background thread, then fills the field.
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("session-password", cx);
+        window.press("cmd-a", cx);
+        window.input("wrong-password", cx);
+        window.click("session-port", cx);
+        window.press("cmd-a", cx);
+        window.input("2222", cx);
+        window.click("test-connection", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.notifications(cx).len() == 1
+    })
+    .await;
+
+    assert_eq!(
+        tester.requests(),
+        [(
+            "10.0.2.5".to_string(),
+            2222,
+            "postgres".to_string(),
+            Some("wrong-password".to_string())
+        )]
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // Nothing was saved, and the dialog stays open to fix the field.
+        assert!(window.find("commit").visible());
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(store.session(id).unwrap().port, 22);
     });
-    let (handle, workspace) = open_workspace_with_store(cx, SessionStore::empty());
+    assert_eq!(
+        secrets
+            .get(&endpoint)
+            .unwrap()
+            .as_deref()
+            .map(String::as_str),
+        Some("hunter2"),
+        "测试连接不写钥匙串"
+    );
+}
+
+#[gpui_kit::test]
+async fn a_connection_test_needs_a_host_and_a_user_first(cx: &mut TestAppContext) {
+    let tester = Arc::new(FakeConnectionTester::default());
+    let (handle, _) = open_workspace_with_tester(cx, SessionStore::empty(), tester.clone());
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -903,45 +1058,102 @@ async fn session_dialog_tests_ssh_service_without_saving(cx: &mut TestAppContext
         let commit = window.find("commit").bounds();
         assert!(test.right() < cancel.left());
         assert!(cancel.right() < commit.left());
-        assert!(commit.size.width < window.find("session-host").bounds().size.width);
-
+        assert!(window.notifications(cx).is_empty());
         window.click("test-connection", cx);
     })
     .unwrap();
+    cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(
-            window.find("connection-test-result").label(),
-            Some("请输入主机")
-        );
+        // Reported at once as a failed test; the form shows no result of its own.
+        assert_eq!(window.notifications(cx).len(), 1);
+        assert!(window.try_find("form-error").is_none());
         window.click("session-host", cx);
-        window.input("127.0.0.1", cx);
-        window.click("session-port", cx);
+        window.input("10.0.3.7", cx);
+        window.click("session-user", cx);
         #[cfg(target_os = "macos")]
         window.press("cmd-a", cx);
         #[cfg(not(target_os = "macos"))]
         window.press("ctrl-a", cx);
-        window.input(&port.to_string(), cx);
+        window.press("backspace", cx);
         window.click("test-connection", cx);
     })
     .unwrap();
+    cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find("test-connection").visible());
-        assert!(window.try_find("connection-test-result").is_none());
+        assert_eq!(window.notifications(cx).len(), 2, "没有用户名也不该去连");
     })
     .unwrap();
-    reply.send(()).unwrap();
+    assert!(tester.requests().is_empty());
+}
+
+#[gpui_kit::test]
+async fn a_first_seen_host_key_is_put_to_the_user_above_the_session_dialog(
+    cx: &mut TestAppContext,
+) {
+    let tester = Arc::new(FakeConnectionTester::asking_trust());
+    let (store, id) = one_session_store(AuthKind::Password);
+    let (handle, _) = open_workspace_with_tester(cx, store, tester.clone());
+
+    // Trust: the question reaches the tester as a yes.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(EditSession(id)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("test-connection", cx);
+    })
+    .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
         window.render_frame(cx);
-        window
-            .try_find("connection-test-result")
-            .and_then(|result| result.label().map(str::to_string))
-            .is_some_and(|message| message.contains("SSH 服务可达"))
+        window.try_find("ok").is_some()
     })
     .await;
-    server.join().unwrap();
-    cx.update(|cx| assert!(workspace.read(cx).store().read(cx).sessions().is_empty()));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("ok", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.notifications(cx).len() == 1
+    })
+    .await;
+    assert_eq!(tester.trust_answers(), [true]);
+
+    // Escape dismisses the question, which declines it; the session dialog
+    // underneath stays open.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("ok").is_none());
+        window.click("test-connection", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("ok").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.notifications(cx).len() == 2
+    })
+    .await;
+    assert_eq!(tester.trust_answers(), [true, false]);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("commit").visible());
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -2996,6 +3208,7 @@ fn open_workspace_with_sftp(
                 Arc::new(FakeTerminalFactory::default()),
                 provider,
                 Arc::new(FakeLocalDirectory),
+                Arc::new(FakeConnectionTester::default()),
                 window,
                 cx,
             )

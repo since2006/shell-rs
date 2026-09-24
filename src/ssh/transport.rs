@@ -323,7 +323,7 @@ async fn open_probe<H: client::Handler>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secrets::{InMemorySecretStore, NoSecretStore, SecretStore as _};
+    use crate::secrets::{InMemorySecretStore, NoSecretStore, SecretRef, SecretStore as _};
     use crate::session::HostOs;
     use crate::ssh::probe::{PROBE_COMMAND, WINDOWS_PROBE_COMMAND};
     use crate::terminal::TerminalSecret;
@@ -908,6 +908,187 @@ mod tests {
                 None,
             ),
         )
+    }
+
+    /// Run a connection test the way the session form does, recording
+    /// whether (and about what) it asked to trust the host.
+    fn test_login(
+        request: crate::connection::LoginTest,
+        known_hosts: &Path,
+        keychain: Arc<InMemorySecretStore>,
+        trust: bool,
+    ) -> (Result<(), String>, Vec<String>) {
+        use crate::connection::ConnectionTester as _;
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let tester = crate::ssh::SshConnectionTester::new(SshConnector::new(known_hosts, keychain));
+        let result = tester.test(request, {
+            let asked = asked.clone();
+            Box::new(move |prompt| {
+                asked.lock().unwrap().push(prompt.fingerprint().to_string());
+                trust
+            })
+        });
+        let asked = asked.lock().unwrap().clone();
+        (result, asked)
+    }
+
+    fn login_request(port: u16) -> crate::connection::LoginTest {
+        crate::connection::LoginTest::new("127.0.0.1", port, "tester", AuthKind::Password)
+    }
+
+    #[test]
+    fn a_connection_test_logs_in_with_the_form_password_and_trusts_on_request() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        let keychain = Arc::new(InMemorySecretStore::default());
+
+        let (result, asked) = test_login(
+            login_request(server.port).with_password(TEST_PASSWORD),
+            &known_hosts,
+            keychain.clone(),
+            true,
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(asked.len(), 1, "陌生主机应当问一次是否信任");
+        assert!(
+            std::fs::read_to_string(&known_hosts)
+                .unwrap()
+                .contains("127.0.0.1"),
+            "信任之后应当写进信任文件"
+        );
+        assert!(keychain.is_empty(), "测试连接不该写钥匙串");
+
+        // Trusted now: the second test asks nothing.
+        let (result, asked) = test_login(
+            login_request(server.port).with_password(TEST_PASSWORD),
+            &known_hosts,
+            keychain,
+            false,
+        );
+        assert_eq!(result, Ok(()));
+        assert!(asked.is_empty());
+    }
+
+    #[test]
+    fn a_wrong_form_password_fails_even_with_the_right_one_saved() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        // What the user reported: the keychain holds the working password,
+        // the form has been edited to a wrong one.
+        let keychain = Arc::new(InMemorySecretStore::default());
+        let saved = SecretRef::password("tester", "127.0.0.1", server.port);
+        keychain.set(&saved, TEST_PASSWORD).unwrap();
+
+        let (result, _) = test_login(
+            login_request(server.port).with_password("wrong-password"),
+            &known_hosts,
+            keychain.clone(),
+            true,
+        );
+        assert_eq!(result, Err("用户名或密码错误".to_string()));
+
+        let (result, _) = test_login(
+            login_request(server.port),
+            &known_hosts,
+            keychain.clone(),
+            true,
+        );
+        assert_eq!(result, Err("未填写密码".to_string()));
+        assert_eq!(
+            keychain.get(&saved).unwrap().as_deref().map(String::as_str),
+            Some(TEST_PASSWORD),
+            "保存的密码原样不动"
+        );
+        assert_eq!(keychain.len(), 1);
+    }
+
+    #[test]
+    fn declining_to_trust_fails_the_test_and_saves_nothing() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+
+        let (result, asked) = test_login(
+            login_request(server.port).with_password(TEST_PASSWORD),
+            &known_hosts,
+            Arc::new(InMemorySecretStore::default()),
+            false,
+        );
+        assert_eq!(result, Err("未信任该主机的密钥".to_string()));
+        assert_eq!(asked.len(), 1);
+        assert!(
+            !known_hosts.exists()
+                || !std::fs::read_to_string(&known_hosts)
+                    .unwrap()
+                    .contains("127.0.0.1")
+        );
+    }
+
+    #[test]
+    fn a_changed_host_key_fails_the_test_without_asking() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        let mut rng = russh::keys::key::safe_rng();
+        let stale_key =
+            russh::keys::PrivateKey::random(&mut rng, russh::keys::Algorithm::Ed25519).unwrap();
+        learn_known_hosts_path(
+            "127.0.0.1",
+            server.port,
+            stale_key.public_key(),
+            &known_hosts,
+        )
+        .unwrap();
+
+        let (result, asked) = test_login(
+            login_request(server.port).with_password(TEST_PASSWORD),
+            &known_hosts,
+            Arc::new(InMemorySecretStore::default()),
+            true,
+        );
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|reason| reason.starts_with("主机密钥与已保存的不一致")),
+            "{result:?}"
+        );
+        assert!(asked.is_empty(), "密钥变了不该再问要不要信任");
+    }
+
+    #[test]
+    fn a_closed_port_fails_the_test_with_the_reason() {
+        let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", 0)) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let directory = tempfile::tempdir().unwrap();
+        let (result, asked) = test_login(
+            login_request(port).with_password(TEST_PASSWORD),
+            &directory.path().join("known_hosts"),
+            Arc::new(InMemorySecretStore::default()),
+            true,
+        );
+        assert_eq!(
+            result,
+            Err("连接被拒绝，该端口上没有服务在监听".to_string())
+        );
+        assert!(asked.is_empty());
     }
 
     #[test]

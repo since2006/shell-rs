@@ -79,6 +79,21 @@ impl SshConnector {
         config: &SshConnectionConfig,
         broker: Arc<SshPrompts>,
     ) -> Result<(client::Handle<SshClientHandler>, String)> {
+        self.connect_with(config, broker, &self.secrets).await
+    }
+
+    /// The keychain this connector reads saved secrets from.
+    pub(super) fn secrets(&self) -> &SharedSecretStore {
+        &self.secrets
+    }
+
+    /// Same as [`Self::connect`], with saved secrets read from `secrets`.
+    pub(super) async fn connect_with(
+        &self,
+        config: &SshConnectionConfig,
+        broker: Arc<SshPrompts>,
+        secrets: &SharedSecretStore,
+    ) -> Result<(client::Handle<SshClientHandler>, String)> {
         let fingerprint = Arc::new(Mutex::new(String::new()));
         let handler = SshClientHandler {
             host: config.host.clone(),
@@ -104,7 +119,7 @@ impl SshConnector {
             _ = shutdown.changed() => bail!("连接已取消"),
         };
         tokio::select! {
-            result = authenticate(&mut handle, config, &self.secrets, &broker) => result?,
+            result = authenticate(&mut handle, config, secrets, &broker) => result?,
             _ = shutdown.changed() => bail!("连接已取消"),
         }
         let fingerprint = fingerprint
@@ -115,6 +130,26 @@ impl SshConnector {
     }
 }
 impl SshConnectionConfig {
+    pub fn new(
+        host: impl Into<String>,
+        port: u16,
+        user: impl Into<String>,
+        auth: AuthKind,
+        key_path: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            host: host.into(),
+            port,
+            user: user.into(),
+            auth,
+            key_path,
+        }
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
     pub fn endpoint(&self) -> String {
         format!("{}@{}:{}", self.user, self.host, self.port)
     }
@@ -125,7 +160,40 @@ pub struct SshPrompts {
     events: Arc<dyn Fn(ConnectionPrompt) -> bool + Send + Sync>,
     shutdown: watch::Receiver<bool>,
     prompt_activity: watch::Sender<bool>,
+    /// Whether a password, passphrase or keyboard-interactive answer may be
+    /// asked of the user. When not, such a need fails the connection with a
+    /// [`MissingCredential`] instead.
+    interactive: bool,
 }
+
+/// A credential authentication needed and could not ask for, because the
+/// connection runs without anyone to answer (a connection test).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MissingCredential {
+    /// `rejected` when a password was tried and the server refused it.
+    Password {
+        rejected: bool,
+    },
+    /// `rejected` when a passphrase was tried and did not unlock the key.
+    Passphrase {
+        rejected: bool,
+    },
+    KeyboardInteractive,
+}
+
+impl std::fmt::Display for MissingCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            MissingCredential::Password { rejected: true } => "用户名或密码错误",
+            MissingCredential::Password { rejected: false } => "未填写密码",
+            MissingCredential::Passphrase { rejected: true } => "私钥口令错误",
+            MissingCredential::Passphrase { rejected: false } => "私钥已加密，未填写口令",
+            MissingCredential::KeyboardInteractive => "服务器要求键盘交互式认证，无法在测试中完成",
+        })
+    }
+}
+
+impl std::error::Error for MissingCredential {}
 
 impl SshPrompts {
     pub fn new(
@@ -138,14 +206,21 @@ impl SshPrompts {
             events,
             shutdown,
             prompt_activity,
+            interactive: true,
         }
+    }
+
+    /// Fail on a credential need instead of asking; see [`MissingCredential`].
+    pub fn non_interactive(mut self) -> Self {
+        self.interactive = false;
+        self
     }
 
     pub fn shutdown_receiver(&self) -> watch::Receiver<bool> {
         self.shutdown.clone()
     }
 
-    fn prompt_activity_receiver(&self) -> watch::Receiver<bool> {
+    pub(super) fn prompt_activity_receiver(&self) -> watch::Receiver<bool> {
         self.prompt_activity.subscribe()
     }
 
@@ -176,6 +251,18 @@ impl SshPrompts {
         result
     }
 
+    /// Ask for a credential, or fail with `need` when nobody may be asked.
+    async fn ask_credential(
+        &self,
+        need: MissingCredential,
+        kind: ConnectionPromptKind,
+    ) -> Result<ConnectionPromptReply> {
+        if !self.interactive {
+            return Err(need.into());
+        }
+        self.ask(kind).await
+    }
+
     async fn emit(&self, kind: ConnectionPromptKind) {
         let request_id = NEXT_PROMPT_ID.fetch_add(1, Ordering::Relaxed);
         (self.events)(ConnectionPrompt::new(request_id, kind));
@@ -202,7 +289,7 @@ impl SshPrompts {
 
 /// Apply the network handshake timeout without counting time spent waiting
 /// for an explicit answer from the user to a host-trust prompt.
-async fn timeout_excluding_prompts<F>(
+pub(super) async fn timeout_excluding_prompts<F>(
     future: F,
     mut prompt_activity: watch::Receiver<bool>,
     timeout: Duration,
@@ -434,7 +521,16 @@ where
             };
             if !partial && methods.contains(&MethodKind::Password) {
                 for _ in 0..AUTH_RETRIES {
-                    let answer = ask_one_secret(broker, "SSH 登录", instructions, "密码").await?;
+                    let answer = ask_one_secret(
+                        broker,
+                        MissingCredential::Password {
+                            rejected: saved_rejected,
+                        },
+                        "SSH 登录",
+                        instructions,
+                        "密码",
+                    )
+                    .await?;
                     let result = handle
                         .authenticate_password(&config.user, answer.into_inner())
                         .await
@@ -547,7 +643,16 @@ async fn load_private_key(
         format!("请输入 {} 的口令", path.display())
     };
     for _ in 0..AUTH_RETRIES {
-        let answer = ask_one_secret(broker, "私钥口令", &instructions, "口令").await?;
+        let answer = ask_one_secret(
+            broker,
+            MissingCredential::Passphrase {
+                rejected: saved_rejected,
+            },
+            "私钥口令",
+            &instructions,
+            "口令",
+        )
+        .await?;
         if let Ok(key) = load_secret_key(path, Some(answer.expose())) {
             return Ok(Some(key));
         }
@@ -577,16 +682,20 @@ fn saved_secret(secrets: &SharedSecretStore, secret: &SecretRef) -> Option<Zeroi
 
 async fn ask_one_secret(
     broker: &SshPrompts,
+    need: MissingCredential,
     title: &str,
     instructions: &str,
     label: &str,
 ) -> Result<crate::connection::ConnectionSecret> {
     let reply = broker
-        .ask(ConnectionPromptKind::authentication(
-            title,
-            instructions,
-            vec![ConnectionPromptField::new(label, false)],
-        ))
+        .ask_credential(
+            need,
+            ConnectionPromptKind::authentication(
+                title,
+                instructions,
+                vec![ConnectionPromptField::new(label, false)],
+            ),
+        )
         .await?;
     match reply {
         ConnectionPromptReply::Answers(mut answers) if answers.len() == 1 => Ok(answers.remove(0)),
@@ -621,11 +730,10 @@ where
                     .map(|prompt| ConnectionPromptField::new(prompt.prompt, prompt.echo))
                     .collect();
                 let reply = broker
-                    .ask(ConnectionPromptKind::authentication(
-                        name,
-                        instructions,
-                        fields,
-                    ))
+                    .ask_credential(
+                        MissingCredential::KeyboardInteractive,
+                        ConnectionPromptKind::authentication(name, instructions, fields),
+                    )
                     .await?;
                 let ConnectionPromptReply::Answers(answers) = reply else {
                     bail!("交互式认证已取消")

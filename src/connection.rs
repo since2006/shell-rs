@@ -73,6 +73,14 @@ impl UnknownHostPrompt {
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
     }
+
+    /// What the trust dialog tells the user about the key.
+    pub fn description(&self) -> String {
+        format!(
+            "主机：{}:{}\n算法：{}\nSHA-256 指纹：{}\n\n请先确认该指纹来自可信渠道。",
+            self.host, self.port, self.algorithm, self.fingerprint,
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -212,3 +220,102 @@ impl std::fmt::Debug for ConnectionPromptReply {
         }
     }
 }
+
+/// What a connection test logs in with: the session form's current values,
+/// saved or not. Secrets stay zeroized and never print.
+pub struct LoginTest {
+    host: String,
+    port: u16,
+    user: String,
+    auth: crate::session::AuthKind,
+    key_path: Option<std::path::PathBuf>,
+    password: Option<Zeroizing<String>>,
+    passphrase: Option<Zeroizing<String>>,
+}
+
+impl LoginTest {
+    pub fn new(
+        host: impl Into<String>,
+        port: u16,
+        user: impl Into<String>,
+        auth: crate::session::AuthKind,
+    ) -> Self {
+        Self {
+            host: host.into(),
+            port,
+            user: user.into(),
+            auth,
+            key_path: None,
+            password: None,
+            passphrase: None,
+        }
+    }
+
+    pub fn with_key_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.key_path = Some(path.into());
+        self
+    }
+
+    pub fn with_password(mut self, password: impl Into<String>) -> Self {
+        self.password = Some(Zeroizing::new(password.into()));
+        self
+    }
+
+    pub fn with_passphrase(mut self, passphrase: impl Into<String>) -> Self {
+        self.passphrase = Some(Zeroizing::new(passphrase.into()));
+        self
+    }
+
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+    pub fn user(&self) -> &str {
+        &self.user
+    }
+    pub fn auth(&self) -> crate::session::AuthKind {
+        self.auth
+    }
+    pub fn key_path(&self) -> Option<&std::path::Path> {
+        self.key_path.as_deref()
+    }
+    pub fn password(&self) -> Option<&str> {
+        self.password.as_deref().map(String::as_str)
+    }
+    pub fn passphrase(&self) -> Option<&str> {
+        self.passphrase.as_deref().map(String::as_str)
+    }
+}
+
+impl std::fmt::Debug for LoginTest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginTest")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("auth", &self.auth)
+            .field("key_path", &self.key_path)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field(
+                "passphrase",
+                &self.passphrase.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
+/// Answers whether to trust a host key seen for the first time. It blocks
+/// until a person decides; `false` also covers "nobody is there to ask".
+pub type TrustCallback = Box<dyn Fn(UnknownHostPrompt) -> bool + Send + Sync>;
+
+/// Logs in once with a [`LoginTest`] and hangs up, so the session form can
+/// check its values before saving them.
+pub trait ConnectionTester: Send + Sync + 'static {
+    /// Blocks: call it on a thread of its own. `Err` holds the reason, worded
+    /// for the user.
+    fn test(&self, request: LoginTest, trust: TrustCallback) -> Result<(), String>;
+}
+
+pub type SharedConnectionTester = std::sync::Arc<dyn ConnectionTester>;
