@@ -211,6 +211,8 @@ pub struct Session {
     pub auth: AuthKind,
     pub key_path: Option<SharedString>,
     pub group: Option<GroupId>,
+    /// Order among sessions in the same group.
+    pub sort_order: i64,
     pub state: ConnectionState,
     /// Detected on every successful connection and persisted, so the tree can
     /// show the right mark before anyone connects. `None` until a probe
@@ -229,6 +231,7 @@ impl Session {
             auth: draft.auth,
             key_path: draft.key_path,
             group: draft.group,
+            sort_order: 0,
             state: ConnectionState::Disconnected,
             os: None,
         }
@@ -268,6 +271,8 @@ pub struct SessionGroup {
     pub id: GroupId,
     pub name: SharedString,
     pub parent: Option<GroupId>,
+    /// Order among groups with the same parent.
+    pub sort_order: i64,
 }
 
 impl SessionGroup {
@@ -276,6 +281,7 @@ impl SessionGroup {
             id,
             name: draft.name,
             parent: draft.parent,
+            sort_order: 0,
         }
     }
 

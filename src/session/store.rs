@@ -6,8 +6,8 @@ use crate::secrets::{NoSecretStore, SecretRef, SharedSecretStore};
 
 use super::database::now_seconds;
 use super::{
-    AuthKind, ConnectionState, GroupDraft, GroupId, HostOs, Session, SessionDatabase, SessionDraft,
-    SessionGroup, SessionId, StoredData,
+    AuthKind, ConnectionState, GroupDraft, GroupId, HostOs, NodeDrop, Session, SessionDatabase,
+    SessionDraft, SessionGroup, SessionId, SessionNode, StoredData,
 };
 
 /// The single source of truth for sessions and groups. Created once by the
@@ -183,10 +183,12 @@ impl SessionStore {
         self.groups.iter().find(|g| g.id == id)
     }
 
-    /// The groups directly under `parent`, in insertion order. `None` asks
+    /// The groups directly under `parent`, in display order. `None` asks
     /// for the top-level groups.
     pub fn child_groups(&self, parent: Option<GroupId>) -> impl Iterator<Item = &SessionGroup> {
-        self.groups.iter().filter(move |g| g.parent == parent)
+        let mut children: Vec<_> = self.groups.iter().filter(|g| g.parent == parent).collect();
+        children.sort_by_key(|group| (group.sort_order, group.id));
+        children.into_iter()
     }
 
     /// Every group below `id`, at any depth. Shared by the cascading delete
@@ -269,9 +271,19 @@ impl SessionStore {
     }
 
     pub fn insert_unnotified(&mut self, draft: SessionDraft) -> SessionId {
+        let sort_order = self
+            .sessions
+            .iter()
+            .filter(|s| s.group == draft.group)
+            .map(|s| s.sort_order)
+            .max()
+            .unwrap_or(-1)
+            + 1;
         let id = SessionId(self.next_session_id);
         self.next_session_id += 1;
-        self.sessions.push(Session::new(id, draft));
+        let mut session = Session::new(id, draft);
+        session.sort_order = sort_order;
+        self.sessions.push(session);
         id
     }
 
@@ -307,6 +319,14 @@ impl SessionStore {
     }
 
     pub fn update_unnotified(&mut self, id: SessionId, draft: SessionDraft) -> bool {
+        let new_order = self
+            .sessions
+            .iter()
+            .filter(|s| s.id != id && s.group == draft.group)
+            .map(|s| s.sort_order)
+            .max()
+            .unwrap_or(-1)
+            + 1;
         let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) else {
             return false;
         };
@@ -314,9 +334,16 @@ impl SessionStore {
         // drop them.
         let state = session.state;
         let os = session.os;
+        let sort_order = session.sort_order;
+        let old_group = session.group;
         *session = Session::new(id, draft);
         session.state = state;
         session.os = os;
+        session.sort_order = if session.group == old_group {
+            sort_order
+        } else {
+            new_order
+        };
         true
     }
 
@@ -354,6 +381,8 @@ impl SessionStore {
         if let (Some(database), Some(session)) = (self.database.as_ref(), self.session(copy)) {
             let result = database.insert_session(session);
             self.report(result, "复制会话", cx);
+            let result = database.save_tree_order(&self.groups, &self.sessions);
+            self.report(result, "保存会话顺序", cx);
         }
         cx.notify();
         Some(copy)
@@ -369,6 +398,12 @@ impl SessionStore {
         self.next_session_id += 1;
         let mut copy = Session::new(copy_id, draft);
         copy.os = os;
+        copy.sort_order = self.sessions[ix].sort_order + 1;
+        for session in &mut self.sessions {
+            if session.group == copy.group && session.sort_order >= copy.sort_order {
+                session.sort_order += 1;
+            }
+        }
         self.sessions.insert(ix + 1, copy);
         Some(copy_id)
     }
@@ -384,9 +419,19 @@ impl SessionStore {
     }
 
     pub fn insert_group_unnotified(&mut self, draft: GroupDraft) -> GroupId {
+        let sort_order = self
+            .groups
+            .iter()
+            .filter(|g| g.parent == draft.parent)
+            .map(|g| g.sort_order)
+            .max()
+            .unwrap_or(-1)
+            + 1;
         let id = GroupId(self.next_group_id);
         self.next_group_id += 1;
-        self.groups.push(SessionGroup::new(id, draft));
+        let mut group = SessionGroup::new(id, draft);
+        group.sort_order = sort_order;
+        self.groups.push(group);
         id
     }
 
@@ -415,11 +460,160 @@ impl SessionStore {
         {
             return false;
         }
+        let new_order = self
+            .groups
+            .iter()
+            .filter(|g| g.id != id && g.parent == draft.parent)
+            .map(|g| g.sort_order)
+            .max()
+            .unwrap_or(-1)
+            + 1;
         let Some(group) = self.groups.iter_mut().find(|g| g.id == id) else {
             return false;
         };
+        let old_parent = group.parent;
+        let old_order = group.sort_order;
         *group = SessionGroup::new(id, draft);
+        group.sort_order = if group.parent == old_parent {
+            old_order
+        } else {
+            new_order
+        };
         true
+    }
+
+    /// Move a group or host in the tree and persist its new location and
+    /// sibling order in one transaction.
+    pub fn move_node(
+        &mut self,
+        source: SessionNode,
+        drop: NodeDrop,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.move_node_unnotified(source, drop) {
+            return false;
+        }
+        if let Some(database) = self.database.as_ref() {
+            let result = database.save_tree_order(&self.groups, &self.sessions);
+            self.report(result, "调整会话顺序", cx);
+        }
+        cx.notify();
+        true
+    }
+
+    pub fn move_node_unnotified(&mut self, source: SessionNode, drop: NodeDrop) -> bool {
+        let (parent, target, after) = match drop {
+            NodeDrop::Before(target) => (self.node_parent(target), Some(target), false),
+            NodeDrop::After(target) => (self.node_parent(target), Some(target), true),
+            NodeDrop::Into(group) if self.group(group).is_some() => {
+                (Some(Some(group)), None, false)
+            }
+            NodeDrop::Root => (Some(None), None, false),
+            _ => return false,
+        };
+        let Some(parent) = parent else {
+            return false;
+        };
+        if target == Some(source) {
+            return false;
+        }
+        match source {
+            SessionNode::Group(id) => {
+                let Some(old_parent) = self.group(id).map(|g| g.parent) else {
+                    return false;
+                };
+                if parent == Some(id)
+                    || parent.is_some_and(|parent| self.descendant_groups(id).contains(&parent))
+                {
+                    return false;
+                }
+                let target = match target {
+                    Some(SessionNode::Group(target)) => Some(target),
+                    Some(SessionNode::Session(_)) => return false,
+                    None => None,
+                };
+                let mut siblings: Vec<_> = self
+                    .groups
+                    .iter()
+                    .filter(|g| g.parent == parent)
+                    .map(|g| (g.sort_order, g.id))
+                    .collect();
+                siblings.sort();
+                let old_index = siblings.iter().position(|(_, sibling)| *sibling == id);
+                siblings.retain(|(_, sibling)| *sibling != id);
+                let mut ids: Vec<_> = siblings.into_iter().map(|(_, sibling)| sibling).collect();
+                let index = match target {
+                    Some(target) => {
+                        let Some(index) = ids.iter().position(|sibling| *sibling == target) else {
+                            return false;
+                        };
+                        index + usize::from(after)
+                    }
+                    None => ids.len(),
+                };
+                if old_parent == parent && old_index == Some(index) {
+                    return false;
+                }
+                ids.insert(index, id);
+                if let Some(group) = self.groups.iter_mut().find(|g| g.id == id) {
+                    group.parent = parent;
+                }
+                for (order, sibling) in ids.into_iter().enumerate() {
+                    if let Some(group) = self.groups.iter_mut().find(|g| g.id == sibling) {
+                        group.sort_order = order as i64;
+                    }
+                }
+            }
+            SessionNode::Session(id) => {
+                let Some(old_parent) = self.session(id).map(|s| s.group) else {
+                    return false;
+                };
+                let target = match target {
+                    Some(SessionNode::Session(target)) => Some(target),
+                    Some(SessionNode::Group(_)) => return false,
+                    None => None,
+                };
+                let mut siblings: Vec<_> = self
+                    .sessions
+                    .iter()
+                    .filter(|s| s.group == parent)
+                    .map(|s| (s.sort_order, s.id))
+                    .collect();
+                siblings.sort();
+                let old_index = siblings.iter().position(|(_, sibling)| *sibling == id);
+                siblings.retain(|(_, sibling)| *sibling != id);
+                let mut ids: Vec<_> = siblings.into_iter().map(|(_, sibling)| sibling).collect();
+                let index = match target {
+                    Some(target) => {
+                        let Some(index) = ids.iter().position(|sibling| *sibling == target) else {
+                            return false;
+                        };
+                        index + usize::from(after)
+                    }
+                    None => ids.len(),
+                };
+                if old_parent == parent && old_index == Some(index) {
+                    return false;
+                }
+                ids.insert(index, id);
+                if let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) {
+                    session.group = parent;
+                }
+                for (order, sibling) in ids.into_iter().enumerate() {
+                    if let Some(session) = self.sessions.iter_mut().find(|s| s.id == sibling) {
+                        session.sort_order = order as i64;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn node_parent(&self, node: SessionNode) -> Option<Option<GroupId>> {
+        match node {
+            SessionNode::Group(id) => self.group(id).map(|g| g.parent),
+            SessionNode::Session(id) => self.session(id).map(|s| s.group),
+        }
     }
 
     /// Delete a group with its subgroups and every session inside them.
@@ -877,6 +1071,48 @@ mod tests {
         assert!(store.update_group_unnotified(replicas, GroupDraft::new("副本", Some(production))));
         assert_eq!(store.group_path(replicas), "生产 / 副本");
         assert!(!store.update_group_unnotified(GroupId(99), GroupDraft::new("x", None)));
+    }
+
+    #[test]
+    fn dragging_reorders_peers_and_moves_hosts_between_groups() {
+        let mut store = SessionStore::seed();
+        let web = SessionNode::Session(SessionId(1));
+        let db = SessionNode::Session(SessionId(3));
+        assert!(store.move_node_unnotified(db, NodeDrop::Before(web)));
+        let mut production: Vec<_> = store
+            .sessions()
+            .iter()
+            .filter(|session| session.group == Some(GroupId(1)))
+            .collect();
+        production.sort_by_key(|session| session.sort_order);
+        assert_eq!(
+            production
+                .iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>(),
+            [SessionId(3), SessionId(1), SessionId(2)]
+        );
+        assert!(!store.move_node_unnotified(db, NodeDrop::Before(web)));
+
+        assert!(store.move_node_unnotified(web, NodeDrop::Into(GroupId(2))));
+        assert_eq!(store.session(SessionId(1)).unwrap().group, Some(GroupId(2)));
+        assert!(store.move_node_unnotified(web, NodeDrop::Root));
+        assert_eq!(store.session(SessionId(1)).unwrap().group, None);
+    }
+
+    #[test]
+    fn dragging_a_group_refuses_its_descendants() {
+        let mut store = SessionStore::empty();
+        let parent = store.insert_group_unnotified(GroupDraft::new("parent", None));
+        let child = store.insert_group_unnotified(GroupDraft::new("child", Some(parent)));
+        let peer = store.insert_group_unnotified(GroupDraft::new("peer", None));
+        assert!(!store.move_node_unnotified(SessionNode::Group(parent), NodeDrop::Into(child)));
+        assert!(!store.move_node_unnotified(SessionNode::Group(parent), NodeDrop::Into(parent)));
+        assert!(store.move_node_unnotified(
+            SessionNode::Group(peer),
+            NodeDrop::Before(SessionNode::Group(parent))
+        ));
+        assert!(store.group(peer).unwrap().sort_order < store.group(parent).unwrap().sort_order);
     }
 
     #[test]

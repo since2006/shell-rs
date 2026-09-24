@@ -889,6 +889,113 @@ fn search_filters_the_tree(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn dragging_a_host_into_a_group_updates_the_session_tree(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("session-tree").drag_to(
+            ("session-row", DB_01),
+            ("group-row", DEVELOPMENT),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(
+            store.session(SessionId(DB_01)).unwrap().group,
+            Some(GroupId(DEVELOPMENT))
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn dragging_peers_changes_their_order_and_groups_can_nest(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("session-tree")
+            .drag_to(("session-row", DB_01), ("session-row", WEB_01), cx);
+        window.within("session-tree").drag_to(
+            ("group-row", DEVELOPMENT),
+            ("group-row", PRODUCTION),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(
+            store.group(GroupId(DEVELOPMENT)).unwrap().parent,
+            Some(GroupId(PRODUCTION))
+        );
+        let db = store.session(SessionId(DB_01)).unwrap();
+        let web = store.session(SessionId(WEB_01)).unwrap();
+        let web02 = store.session(SessionId(2)).unwrap();
+        assert!(web.sort_order < db.sort_order && db.sort_order < web02.sort_order);
+    });
+}
+
+#[gpui_kit::test]
+fn dragging_a_host_to_blank_tree_space_moves_it_to_the_root(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let from = window.find(("session-row", DB_01)).bounds().center();
+        let tree = window.find("session-tree").bounds();
+        window.drag(from, point(tree.center().x, tree.bottom() - px(12.)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(store.session(SessionId(DB_01)).unwrap().group, None);
+    });
+}
+
+#[gpui_kit::test]
+fn dragged_order_survives_reopening_the_database(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shellr.db");
+    let database = SessionDatabase::open(&path).unwrap();
+    let seed = SessionStore::seed();
+    for group in seed.groups() {
+        database.insert_group(group).unwrap();
+    }
+    for session in seed.sessions() {
+        database.insert_session(session).unwrap();
+    }
+    let (handle, _) = open_workspace_with_store(cx, SessionStore::load(database).unwrap());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("session-tree")
+            .drag_to(("session-row", DB_01), ("session-row", WEB_01), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let reopened = SessionDatabase::open(&path).unwrap().load().unwrap();
+    let order = |id| {
+        reopened
+            .sessions
+            .iter()
+            .find(|session| session.id == SessionId(id))
+            .unwrap()
+            .sort_order
+    };
+    assert!(order(WEB_01) < order(DB_01));
+    assert!(order(DB_01) < order(2));
+}
+
+#[gpui_kit::test]
 async fn sftp_button_opens_explorer_and_navigates(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
@@ -950,7 +1057,12 @@ async fn sftp_button_opens_explorer_and_navigates(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn theme_toggle_flips_mode(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
-    let before = cx.update(|cx| cx.theme().is_dark());
+    let before = cx.update(|cx| {
+        let theme = cx.theme();
+        assert_eq!(theme.list_hover, theme.tokens.list_hover.color);
+        assert!(theme.list_hover.a > 0.9);
+        theme.is_dark()
+    });
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -959,7 +1071,12 @@ fn theme_toggle_flips_mode(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
 
-    let after = cx.update(|cx| cx.theme().is_dark());
+    let after = cx.update(|cx| {
+        let theme = cx.theme();
+        assert_eq!(theme.list_hover, theme.tokens.list_hover.color);
+        assert!(theme.list_hover.a > 0.9);
+        theme.is_dark()
+    });
     assert_ne!(before, after);
 }
 
@@ -1062,6 +1179,15 @@ async fn closing_every_tab_shows_the_recent_sessions(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
 
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("recent-sessions").visible());
+        assert!(window.try_find(("terminal", FIRST_NEW_TERMINAL)).is_none());
+        window.double_click(("recent-session", WEB_01), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
         window.render_frame(cx);
         window.find("status-connection").label() == Some("已连接 web-01")
@@ -1088,6 +1214,43 @@ async fn closing_every_tab_shows_the_recent_sessions(cx: &mut TestAppContext) {
         // Reconnecting moved web-01 to the front.
         assert_eq!(recent, ["web-01", "staging-api"]);
     });
+}
+
+#[gpui_kit::test]
+async fn enter_connects_the_selected_recent_session(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("close-terminal", INITIAL_WEB_TERMINAL), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("close-terminal", INITIAL_STAGING_TERMINAL), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("recent-session", STAGING_API), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("recent-sessions").visible());
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("status-connection").label() == Some("已连接 staging-api")
+    })
+    .await;
 }
 
 #[gpui_kit::test]

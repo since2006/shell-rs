@@ -5,7 +5,7 @@ use gpui_kit::*;
 use serde::Deserialize;
 
 use crate::{
-    session::{GroupId, SessionId},
+    session::{GroupId, NodeDrop, SessionId, SessionNode},
     terminal::{LocalTerminalId, RemoteTerminalId},
 };
 
@@ -28,7 +28,7 @@ gpui_kit::actions!(
         ToggleTheme,
         /// Move keyboard focus to the session search field.
         FocusSearch,
-        /// Connect the session selected in the tree (Enter in the tree).
+        /// Connect the session selected in the focused session list.
         ConnectSelected,
         /// Close the center tab displayed most recently (the one ⌘W acts on).
         CloseActiveTab,
@@ -112,6 +112,14 @@ group_action!(
     /// Open the new-session dialog with this group pre-selected.
     NewSessionInGroup
 );
+
+/// Move a session-tree row by dropping it beside a peer or into a group.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = shellr, no_json)]
+pub struct MoveSessionNode {
+    pub source: SessionNode,
+    pub destination: NodeDrop,
+}
 group_action!(
     /// Open the new-group dialog for a group nested inside this one.
     NewChildGroup

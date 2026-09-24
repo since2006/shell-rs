@@ -4,6 +4,7 @@ use std::{
     rc::Rc,
 };
 
+use gpui_kit::base::Tree as BaseTree;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
     button::Button,
@@ -12,7 +13,8 @@ use gpui_kit::component::{
     input::{Input, InputEvent, InputState},
     list::ListItem,
     menu::{ContextMenuExt as _, PopupMenu},
-    tree::{TreeEntry, TreeEvent, TreeState, tree},
+    scroll::ScrollableElement as _,
+    tree::{TreeEntry, TreeEvent, TreeState},
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -20,14 +22,15 @@ use gpui_kit::*;
 
 use crate::app::{
     CatalogIcon, ConnectSelected, ConnectSession, DeleteGroup, DeleteSession, DisconnectSession,
-    DuplicateSession, EditSession, NewChildGroup, NewGroup, NewSession, NewSessionInGroup,
-    OpenExplorer, RenameGroup, SESSION_PANEL_CONTEXT,
+    DuplicateSession, EditSession, MoveSessionNode, NewChildGroup, NewGroup, NewSession,
+    NewSessionInGroup, OpenExplorer, RenameGroup, SESSION_PANEL_CONTEXT,
 };
 
 use crate::shared::HostMark;
 
 use super::{
-    GroupId, HostOs, SessionId, SessionNode, SessionStore, matches_query, session_tree_items,
+    GroupId, HostOs, NodeDrop, SessionId, SessionNode, SessionStore, matches_query,
+    session_tree_items,
 };
 
 /// The left dock panel: a searchable, grouped tree of sessions.
@@ -49,6 +52,7 @@ pub struct SessionPanel {
     /// below the rows. Shared with the row renderer and the context menu
     /// builder, both of which run outside this entity.
     right_clicked: Rc<Cell<Option<SessionNode>>>,
+    drop_target: Rc<Cell<Option<(SessionNode, NodeDrop)>>>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -110,6 +114,7 @@ impl SessionPanel {
             known_groups,
             known_sessions,
             right_clicked: Rc::new(Cell::new(None)),
+            drop_target: Rc::new(Cell::new(None)),
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
@@ -216,6 +221,29 @@ impl SessionPanel {
             let ix = state.index_of(&row_id);
             state.set_selected_index(ix, cx);
         });
+    }
+
+    /// Keep the moved row visible even when it was dropped into a closed group.
+    pub fn reveal_node(&mut self, node: SessionNode, cx: &mut Context<Self>) {
+        let ancestors = {
+            let store = self.store.read(cx);
+            let parent = match node {
+                SessionNode::Group(id) => store.group(id).and_then(|group| group.parent),
+                SessionNode::Session(id) => store.session(id).and_then(|session| session.group),
+            };
+            parent
+                .map(|id| {
+                    let mut chain = store.ancestor_groups(id);
+                    chain.push(id);
+                    chain
+                })
+                .unwrap_or_default()
+        };
+        self.expanded.extend(ancestors);
+        match node {
+            SessionNode::Group(id) => self.select_group(id, cx),
+            SessionNode::Session(id) => self.select_session(id, cx),
+        }
     }
 
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -339,9 +367,28 @@ impl Render for SessionPanel {
                 .filter_map(|session| session.os.map(|os| (session.id, os)))
                 .collect(),
         );
+        let group_parents: Rc<HashMap<GroupId, Option<GroupId>>> = Rc::new(
+            self.store
+                .read(cx)
+                .groups()
+                .iter()
+                .map(|group| (group.id, group.parent))
+                .collect(),
+        );
         let clicked_row = self.right_clicked.clone();
         let clicked_blank = self.right_clicked.clone();
         let clicked_menu = self.right_clicked.clone();
+        let drop_target = self.drop_target.clone();
+        let drop_target_for_root = self.drop_target.clone();
+        let drop_target_for_move = self.drop_target.clone();
+        let can_reorder = self.query.trim().is_empty();
+        let row_interactions = Rc::new(RowInteractions {
+            group_parents,
+            right_clicked: clicked_row,
+            drop_target,
+            can_reorder,
+        });
+        let tree_scroll = self.tree_state.read(cx).scroll_handle().clone();
 
         v_flex()
             .id("session-panel")
@@ -363,13 +410,34 @@ impl Render for SessionPanel {
             .child(
                 div()
                     .id("session-tree")
+                    .test_support()
                     .flex_1()
                     .min_h_0()
                     .child(
-                        tree(&self.tree_state, move |_, entry, _, _, cx| {
-                            render_row(entry, &connected, &host_os, &clicked_row, cx)
-                        })
-                        .px_1(),
+                        div()
+                            .size_full()
+                            .px_1()
+                            .child(
+                                BaseTree::new(&self.tree_state)
+                                    .item(move |_, entry, state, _, cx| {
+                                        render_row(
+                                            entry,
+                                            state.is_selected() || state.is_right_clicked(),
+                                            &connected,
+                                            &host_os,
+                                            &row_interactions,
+                                            cx,
+                                        )
+                                        .disabled(entry.is_disabled())
+                                        .into_any_element()
+                                    })
+                                    .list_style(
+                                        StyleRefinement::default().flex_grow_1().size_full(),
+                                    )
+                                    .relative()
+                                    .size_full(),
+                            )
+                            .vertical_scrollbar(&tree_scroll),
                     )
                     // The menu hangs off the container, not off the rows: a
                     // row's menu would be built while the virtualized list is
@@ -383,6 +451,25 @@ impl Render for SessionPanel {
                         if event.button == MouseButton::Right {
                             clicked_blank.set(None);
                         }
+                    })
+                    .when(can_reorder, |view| {
+                        view.on_drag_move(move |_: &DragMoveEvent<DraggedSessionNode>, _, _| {
+                            drop_target_for_move.set(None);
+                        })
+                        .on_drop(
+                            move |drag: &DraggedSessionNode, window, cx| {
+                                if drop_target_for_root.get().is_none() {
+                                    window.dispatch_action(
+                                        Box::new(MoveSessionNode {
+                                            source: drag.node,
+                                            destination: NodeDrop::Root,
+                                        }),
+                                        cx,
+                                    );
+                                }
+                                drop_target_for_root.set(None);
+                            },
+                        )
                     })
                     .context_menu(move |menu, _, _| {
                         build_context_menu(clicked_menu.get(), &connected_for_menu, menu)
@@ -403,13 +490,27 @@ fn plain_mark(icon: Icon, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
+struct RowInteractions {
+    group_parents: Rc<HashMap<GroupId, Option<GroupId>>>,
+    right_clicked: Rc<Cell<Option<SessionNode>>>,
+    drop_target: Rc<Cell<Option<(SessionNode, NodeDrop)>>>,
+    can_reorder: bool,
+}
+
 fn render_row(
     entry: &TreeEntry,
+    selected: bool,
     connected: &HashSet<SessionId>,
     host_os: &HashMap<SessionId, HostOs>,
-    right_clicked: &Rc<Cell<Option<SessionNode>>>,
+    interactions: &RowInteractions,
     cx: &mut App,
 ) -> ListItem {
+    let RowInteractions {
+        group_parents,
+        right_clicked,
+        drop_target,
+        can_reorder,
+    } = interactions;
     let item = entry.item();
     let node = SessionNode::parse(&item.id);
     let (mark, row_id): (AnyElement, ElementId) = match node {
@@ -446,6 +547,11 @@ fn render_row(
         .w_full()
         .px_2()
         .rounded(cx.theme().radius)
+        // Make selection stronger than hover against the sidebar background.
+        .confirmed(selected)
+        .when(selected, |row| {
+            row.bg(crate::app::session_tree_selection_color(cx.theme()))
+        })
         .pl(rems(0.75 + entry.depth() as f32))
         .child(h_flex().gap_2().child(mark).child(item.label.clone()))
         .when(is_connected, |row| {
@@ -475,6 +581,139 @@ fn render_row(
                 right_clicked.set(Some(node));
             })
         })
+        .when(*can_reorder, |row| {
+            row.when_some(node, |row, node| {
+                let drop_target_for_move = drop_target.clone();
+                let drop_target_for_style = drop_target.clone();
+                let drop_target_for_drop = drop_target.clone();
+                let parents_for_move = group_parents.clone();
+                let label = item.label.clone();
+                row.on_drag(DraggedSessionNode { node, label }, |drag, _, _, cx| {
+                    cx.new(|_| drag.clone())
+                })
+                .on_drag_move(move |event: &DragMoveEvent<DraggedSessionNode>, _, cx| {
+                    if event.bounds.contains(&event.event.position) {
+                        let source = event.drag(cx).node;
+                        let relative = (event.event.position.y - event.bounds.top())
+                            / event.bounds.size.height;
+                        let destination = match (source, node) {
+                            (SessionNode::Session(_), SessionNode::Group(id)) => NodeDrop::Into(id),
+                            (_, SessionNode::Group(id)) if relative > 0.25 && relative < 0.75 => {
+                                NodeDrop::Into(id)
+                            }
+                            _ if relative < 0.5 => NodeDrop::Before(node),
+                            _ => NodeDrop::After(node),
+                        };
+                        if valid_drop(source, destination, &parents_for_move) {
+                            drop_target_for_move.set(Some((node, destination)));
+                        }
+                    }
+                })
+                .drag_over::<DraggedSessionNode>(move |style, drag, _, cx| {
+                    if drag.node == node {
+                        return style;
+                    }
+                    match drop_target_for_style.get() {
+                        Some((target, NodeDrop::Before(_))) if target == node => {
+                            style.border_t_1().border_color(cx.theme().primary)
+                        }
+                        Some((target, NodeDrop::After(_))) if target == node => {
+                            style.border_b_1().border_color(cx.theme().primary)
+                        }
+                        Some((target, NodeDrop::Into(_))) if target == node => style
+                            .bg(cx.theme().accent)
+                            .border_1()
+                            .border_color(cx.theme().primary),
+                        _ => style,
+                    }
+                })
+                .on_drop(move |drag: &DraggedSessionNode, window, cx| {
+                    if let Some((target, destination)) = drop_target_for_drop.get()
+                        && target == node
+                        && drag.node != node
+                    {
+                        window.dispatch_action(
+                            Box::new(MoveSessionNode {
+                                source: drag.node,
+                                destination,
+                            }),
+                            cx,
+                        );
+                    }
+                    drop_target_for_drop.set(None);
+                    cx.stop_propagation();
+                })
+            })
+        })
+}
+
+#[derive(Clone)]
+struct DraggedSessionNode {
+    node: SessionNode,
+    label: SharedString,
+}
+
+impl Render for DraggedSessionNode {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_2()
+            .py_1()
+            .rounded(cx.theme().radius)
+            .bg(cx.theme().popover)
+            .text_color(cx.theme().popover_foreground)
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(self.label.clone())
+    }
+}
+
+/// Use the render snapshot to keep impossible group drops from looking active.
+fn valid_drop(
+    source: SessionNode,
+    destination: NodeDrop,
+    parents: &HashMap<GroupId, Option<GroupId>>,
+) -> bool {
+    let target = match destination {
+        NodeDrop::Before(target) | NodeDrop::After(target) => Some(target),
+        _ => None,
+    };
+    if target == Some(source) {
+        return false;
+    }
+    match source {
+        SessionNode::Session(_) => match destination {
+            NodeDrop::Before(SessionNode::Session(_))
+            | NodeDrop::After(SessionNode::Session(_))
+            | NodeDrop::Root => true,
+            NodeDrop::Into(group) => parents.contains_key(&group),
+            _ => false,
+        },
+        SessionNode::Group(id) => {
+            let mut parent = match destination {
+                NodeDrop::Before(SessionNode::Group(target))
+                | NodeDrop::After(SessionNode::Group(target)) => match parents.get(&target) {
+                    Some(parent) => *parent,
+                    None => return false,
+                },
+                NodeDrop::Into(group) if parents.contains_key(&group) => Some(group),
+                NodeDrop::Root => None,
+                _ => return false,
+            };
+            for _ in 0..=parents.len() {
+                let Some(current) = parent else {
+                    return true;
+                };
+                if current == id {
+                    return false;
+                }
+                parent = match parents.get(&current) {
+                    Some(parent) => *parent,
+                    None => return false,
+                };
+            }
+            false
+        }
+    }
 }
 
 fn build_context_menu(

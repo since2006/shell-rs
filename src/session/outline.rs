@@ -4,15 +4,26 @@ use std::collections::HashSet;
 
 use gpui_kit::SharedString;
 use gpui_kit::component::tree::TreeItem;
+use serde::Deserialize;
 
 use super::{GroupId, Session, SessionGroup, SessionId};
 
 /// What a tree row stands for. Encoded into the row's `TreeItem` id so the
 /// renderer and the context menu can recover the domain object.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum SessionNode {
     Group(GroupId),
     Session(SessionId),
+}
+
+/// A drop location in the session tree. Groups and sessions each have their
+/// own order within a parent; a drop into a group changes the parent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub enum NodeDrop {
+    Before(SessionNode),
+    After(SessionNode),
+    Into(GroupId),
+    Root,
 }
 
 impl SessionNode {
@@ -90,7 +101,12 @@ fn items_under(
         return Vec::new();
     }
     let mut items: Vec<TreeItem> = Vec::new();
-    for group in groups.iter().filter(|group| group.parent == parent) {
+    let mut child_groups: Vec<_> = groups
+        .iter()
+        .filter(|group| group.parent == parent)
+        .collect();
+    child_groups.sort_by_key(|group| (group.sort_order, group.id));
+    for group in child_groups {
         let children = items_under(
             Some(group.id),
             depth + 1,
@@ -109,11 +125,15 @@ fn items_under(
                 .children(children),
         );
     }
+    let mut child_sessions: Vec<_> = sessions
+        .iter()
+        .filter(|s| s.group == parent && matches_query(s, query))
+        .collect();
+    child_sessions.sort_by_key(|session| (session.sort_order, session.id));
     items.extend(
-        sessions
-            .iter()
-            .filter(|s| s.group == parent && matches_query(s, query))
-            .map(|s| TreeItem::new(SessionNode::Session(s.id).id(), s.name.clone())),
+        child_sessions.into_iter().map(|session| {
+            TreeItem::new(SessionNode::Session(session.id).id(), session.name.clone())
+        }),
     );
     items
 }
@@ -142,7 +162,12 @@ fn collect_group_options(
     if depth > groups.len() {
         return;
     }
-    for group in groups.iter().filter(|group| group.parent == parent) {
+    let mut children: Vec<_> = groups
+        .iter()
+        .filter(|group| group.parent == parent)
+        .collect();
+    children.sort_by_key(|group| (group.sort_order, group.id));
+    for group in children {
         if excluded.contains(&group.id) {
             continue;
         }

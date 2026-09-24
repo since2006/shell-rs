@@ -5,14 +5,16 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::{CatalogIcon, ConnectSession, NewSession};
+use crate::app::{
+    CatalogIcon, ConnectSelected, ConnectSession, NewSession, RECENT_SESSIONS_CONTEXT,
+};
 use crate::session::{HostOs, SessionId, SessionStore};
 use crate::shared::HostMark;
 
 /// The center's empty state: shown in place of the tabs while none is open.
 ///
 /// Lists the sessions most recently connected, newest first, so the next
-/// connection is one click away. Not a dock panel: the workspace's dock skin
+/// connection is a double click away. Not a dock panel: the workspace's dock skin
 /// lays it over the empty center, and it goes away as soon as a tab opens.
 pub struct RecentSessions {
     store: Entity<SessionStore>,
@@ -21,6 +23,7 @@ pub struct RecentSessions {
     target: FocusHandle,
     focus_handle: FocusHandle,
     scroll_handle: ScrollHandle,
+    selected: Option<SessionId>,
     _subscription: Subscription,
 }
 
@@ -42,6 +45,7 @@ impl RecentSessions {
             target,
             focus_handle: cx.focus_handle(),
             scroll_handle: ScrollHandle::new(),
+            selected: None,
             _subscription: subscription,
         }
     }
@@ -84,7 +88,7 @@ impl RecentSessions {
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child("选择一个会话继续，或新建一个会话"),
+                            .child("双击会话连接，或新建一个会话"),
                     ),
             )
             .child(
@@ -107,15 +111,28 @@ impl RecentSessions {
             .child(div().text_xs().child("双击左侧的会话即可连接"))
     }
 
-    fn render_row(&self, row: RecentRow, cx: &App) -> ListItem {
+    fn on_connect_selected(
+        &mut self,
+        _: &ConnectSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(id) = self.selected {
+            self.target.dispatch_action(&ConnectSession(id), window, cx);
+        }
+    }
+
+    fn render_row(&self, row: RecentRow, cx: &Context<Self>) -> ListItem {
         let muted = cx.theme().muted_foreground;
-        let target = self.target.clone();
         let id = row.id;
+        let selected = self.selected == Some(id);
         ListItem::new(("recent-session", id.0))
             .w_full()
             .px_3()
             .py_2()
             .rounded(cx.theme().radius)
+            .confirmed(selected)
+            .when(selected, |item| item.bg(cx.theme().tokens.list_hover))
             .child(
                 h_flex()
                     .gap_3()
@@ -159,7 +176,14 @@ impl RecentSessions {
                         .child("已连接")
                 })
             })
-            .on_click(move |_, window, cx| target.dispatch_action(&ConnectSession(id), window, cx))
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                this.selected = Some(id);
+                this.focus_handle.focus(window, cx);
+                cx.notify();
+                if event.click_count() == 2 {
+                    this.target.dispatch_action(&ConnectSession(id), window, cx);
+                }
+            }))
     }
 }
 
@@ -177,6 +201,8 @@ impl Render for RecentSessions {
             .id("recent-sessions")
             .test_support()
             .track_focus(&self.focus_handle)
+            .key_context(RECENT_SESSIONS_CONTEXT)
+            .on_action(cx.listener(Self::on_connect_selected))
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll_handle)

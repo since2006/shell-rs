@@ -25,7 +25,7 @@ fn from_sql(id: i64) -> u64 {
 }
 
 /// Bumped whenever `migrate` gains a step. Stored in `PRAGMA user_version`.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA_V1: &str = "\
 BEGIN;
@@ -61,11 +61,20 @@ ALTER TABLE sessions ADD COLUMN os TEXT;
 PRAGMA user_version = 3;
 COMMIT;";
 
+const SCHEMA_V4: &str = "\
+BEGIN;
+ALTER TABLE groups ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+UPDATE groups SET sort_order = id;
+UPDATE sessions SET sort_order = id;
+PRAGMA user_version = 4;
+COMMIT;";
+
 /// Everything one launch reads back from disk.
 pub struct StoredData {
-    /// Groups in insertion order; `parent` gives the nesting.
+    /// Groups in id order; `parent` and `sort_order` give the visible tree.
     pub groups: Vec<SessionGroup>,
-    /// Sessions in insertion order, all of them disconnected.
+    /// Sessions in id order, all of them disconnected.
     pub sessions: Vec<Session>,
     /// Sessions that have ever connected, most recently connected first.
     pub recent: Vec<SessionId>,
@@ -99,22 +108,24 @@ impl SessionDatabase {
     pub fn load(&self) -> rusqlite::Result<StoredData> {
         let groups = self
             .connection
-            .prepare("SELECT id, name, parent_id FROM groups ORDER BY id")?
+            .prepare("SELECT id, name, parent_id, sort_order FROM groups ORDER BY id")?
             .query_map([], |row| {
                 let id: i64 = row.get(0)?;
                 let name: String = row.get(1)?;
                 let parent: Option<i64> = row.get(2)?;
-                Ok(SessionGroup::new(
+                let mut group = SessionGroup::new(
                     GroupId(from_sql(id)),
                     GroupDraft::new(name, parent.map(|id| GroupId(from_sql(id)))),
-                ))
+                );
+                group.sort_order = row.get(3)?;
+                Ok(group)
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let sessions = self
             .connection
             .prepare(
-                "SELECT id, name, host, port, username, auth, group_id, key_path, os \
+                "SELECT id, name, host, port, username, auth, group_id, key_path, os, sort_order \
                  FROM sessions ORDER BY id",
             )?
             .query_map([], |row| {
@@ -140,6 +151,7 @@ impl SessionDatabase {
                     .with_optional_key_path(key_path),
                 );
                 session.os = os.as_deref().and_then(HostOs::from_stored);
+                session.sort_order = row.get(9)?;
                 Ok(session)
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -164,11 +176,12 @@ impl SessionDatabase {
 
     pub fn insert_group(&self, group: &SessionGroup) -> rusqlite::Result<()> {
         self.connection.execute(
-            "INSERT INTO groups (id, name, parent_id) VALUES (?1, ?2, ?3)",
+            "INSERT INTO groups (id, name, parent_id, sort_order) VALUES (?1, ?2, ?3, ?4)",
             params![
                 to_sql(group.id.0),
                 group.name.as_ref(),
                 group.parent.map(|parent| to_sql(parent.0)),
+                group.sort_order,
             ],
         )?;
         Ok(())
@@ -176,11 +189,12 @@ impl SessionDatabase {
 
     pub fn update_group(&self, group: &SessionGroup) -> rusqlite::Result<()> {
         self.connection.execute(
-            "UPDATE groups SET name = ?2, parent_id = ?3 WHERE id = ?1",
+            "UPDATE groups SET name = ?2, parent_id = ?3, sort_order = ?4 WHERE id = ?1",
             params![
                 to_sql(group.id.0),
                 group.name.as_ref(),
                 group.parent.map(|parent| to_sql(parent.0)),
+                group.sort_order,
             ],
         )?;
         Ok(())
@@ -196,8 +210,8 @@ impl SessionDatabase {
 
     pub fn insert_session(&self, session: &Session) -> rusqlite::Result<()> {
         self.connection.execute(
-            "INSERT INTO sessions (id, name, host, port, username, auth, group_id, key_path, os) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO sessions (id, name, host, port, username, auth, group_id, key_path, os, sort_order) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 to_sql(session.id.0),
                 session.name.as_ref(),
@@ -208,6 +222,7 @@ impl SessionDatabase {
                 session.group.map(|group| to_sql(group.0)),
                 session.key_path.as_deref(),
                 session.os.map(HostOs::as_str),
+                session.sort_order,
             ],
         )?;
         Ok(())
@@ -219,7 +234,7 @@ impl SessionDatabase {
     pub fn update_session(&self, session: &Session) -> rusqlite::Result<()> {
         self.connection.execute(
             "UPDATE sessions SET name = ?2, host = ?3, port = ?4, username = ?5, \
-             auth = ?6, group_id = ?7, key_path = ?8 WHERE id = ?1",
+             auth = ?6, group_id = ?7, key_path = ?8, sort_order = ?9 WHERE id = ?1",
             params![
                 to_sql(session.id.0),
                 session.name.as_ref(),
@@ -229,6 +244,7 @@ impl SessionDatabase {
                 session.auth.as_str(),
                 session.group.map(|group| to_sql(group.0)),
                 session.key_path.as_deref(),
+                session.sort_order,
             ],
         )?;
         Ok(())
@@ -238,6 +254,36 @@ impl SessionDatabase {
         self.connection
             .execute("DELETE FROM sessions WHERE id = ?1", params![to_sql(id.0)])?;
         Ok(())
+    }
+
+    /// Save one drag as a unit, including parent changes and sibling order.
+    pub fn save_tree_order(
+        &self,
+        groups: &[SessionGroup],
+        sessions: &[Session],
+    ) -> rusqlite::Result<()> {
+        let transaction = self.connection.unchecked_transaction()?;
+        {
+            let mut update_group = transaction
+                .prepare("UPDATE groups SET parent_id = ?2, sort_order = ?3 WHERE id = ?1")?;
+            for group in groups {
+                update_group.execute(params![
+                    to_sql(group.id.0),
+                    group.parent.map(|id| to_sql(id.0)),
+                    group.sort_order,
+                ])?;
+            }
+            let mut update_session = transaction
+                .prepare("UPDATE sessions SET group_id = ?2, sort_order = ?3 WHERE id = ?1")?;
+            for session in sessions {
+                update_session.execute(params![
+                    to_sql(session.id.0),
+                    session.group.map(|id| to_sql(id.0)),
+                    session.sort_order,
+                ])?;
+            }
+        }
+        transaction.commit()
     }
 
     /// Record the operating system a probe found on the host. `None` clears
@@ -274,6 +320,9 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     }
     if version < 3 {
         connection.execute_batch(SCHEMA_V3)?;
+    }
+    if version < 4 {
+        connection.execute_batch(SCHEMA_V4)?;
     }
     Ok(())
 }
@@ -420,6 +469,29 @@ mod tests {
         assert_eq!(data.groups.len(), 1);
         assert_eq!(data.sessions[0].name.as_ref(), "web-01");
         assert_eq!(data.recent, [SessionId(1)]);
+    }
+
+    #[test]
+    fn tree_order_and_parent_survive_reopening() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellr.db");
+        {
+            let db = SessionDatabase::open(&path).unwrap();
+            db.insert_group(&group(1, "生产", None)).unwrap();
+            db.insert_group(&group(2, "测试", None)).unwrap();
+            db.insert_session(&session(1, "web", Some(1))).unwrap();
+            db.insert_session(&session(2, "db", Some(1))).unwrap();
+            let mut data = db.load().unwrap();
+            data.groups[1].parent = Some(GroupId(1));
+            data.groups[1].sort_order = 0;
+            data.sessions[0].group = Some(GroupId(2));
+            data.sessions[1].sort_order = 0;
+            db.save_tree_order(&data.groups, &data.sessions).unwrap();
+        }
+        let data = SessionDatabase::open(&path).unwrap().load().unwrap();
+        assert_eq!(data.groups[1].parent, Some(GroupId(1)));
+        assert_eq!(data.sessions[0].group, Some(GroupId(2)));
+        assert_eq!(data.sessions[1].sort_order, 0);
     }
 
     #[test]

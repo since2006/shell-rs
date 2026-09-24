@@ -21,8 +21,8 @@ use gpui_kit::*;
 use crate::app::{
     CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseTerminal, ConnectSession, CopyTerminal,
     DeleteGroup, DeleteSession, DisconnectSession, DuplicateSession, EditSession, ExplorerAction,
-    ExplorerCommand, FocusSearch, NewChildGroup, NewGroup, NewLocalTerminal, NewSession,
-    NewSessionInGroup, OpenExplorer, PasteTerminal, ReconnectTerminal, RenameGroup,
+    ExplorerCommand, FocusSearch, MoveSessionNode, NewChildGroup, NewGroup, NewLocalTerminal,
+    NewSession, NewSessionInGroup, OpenExplorer, PasteTerminal, ReconnectTerminal, RenameGroup,
     RestartLocalTerminal, SelectAllUploadFiles, ToggleSessionPanel, ToggleTheme,
     ToggleUploadSelection, UploadSelectedFiles, ZoomIn, ZoomOut, ZoomReset,
 };
@@ -1061,6 +1061,21 @@ impl Workspace {
         }
     }
 
+    fn on_move_session_node(
+        &mut self,
+        action: &MoveSessionNode,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let moved = self.store.update(cx, |store, cx| {
+            store.move_node(action.source, action.destination, cx)
+        });
+        if moved {
+            self.session_panel
+                .update(cx, |panel, cx| panel.reveal_node(action.source, cx));
+        }
+    }
+
     fn on_delete_session(
         &mut self,
         action: &DeleteSession,
@@ -1236,6 +1251,7 @@ impl Workspace {
             ThemeMode::Dark
         };
         Theme::change(mode, Some(window), cx);
+        crate::app::deepen_list_hover(cx);
     }
 
     fn on_focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
@@ -1497,6 +1513,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_new_local_terminal))
             .on_action(cx.listener(Self::on_edit_session))
             .on_action(cx.listener(Self::on_duplicate_session))
+            .on_action(cx.listener(Self::on_move_session_node))
             .on_action(cx.listener(Self::on_delete_session))
             .on_action(cx.listener(Self::on_new_session_in_group))
             .on_action(cx.listener(Self::on_new_group))
