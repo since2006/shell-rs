@@ -154,6 +154,27 @@ impl Selection {
         }
     }
 
+    /// A selection rectangle over the rows `rows` of `order`, adding to
+    /// `base` when the drag began with ⌘ or Shift held and replacing
+    /// otherwise. The cursor goes to `cursor`, the row under the pointer.
+    pub fn sweep(
+        &mut self,
+        base: Option<&Selection>,
+        rows: Option<std::ops::RangeInclusive<usize>>,
+        cursor: Option<usize>,
+        order: &[&str],
+    ) {
+        let mut names = base.map(|base| base.names.clone()).unwrap_or_default();
+        if let Some(rows) = rows {
+            names.extend(order[rows].iter().filter_map(|name| selectable(name)));
+        }
+        self.names = names;
+        if let Some(name) = cursor.and_then(|row| order.get(row)) {
+            self.cursor = Some(name.to_string());
+            self.anchor = Some(name.to_string());
+        }
+    }
+
     /// The selected names in display order: what an operation acts on.
     pub fn targets(&self, order: &[&str]) -> Vec<String> {
         order
@@ -162,6 +183,36 @@ impl Selection {
             .map(|name| name.to_string())
             .collect()
     }
+}
+
+/// The rows a selection rectangle covers, from where the drag began to where
+/// the pointer is, both measured from the top of the first row and in
+/// pixels. `None` when it covers none, above the first row or below the last.
+pub fn swept_rows(
+    from: f32,
+    to: f32,
+    row_height: f32,
+    row_count: usize,
+) -> Option<std::ops::RangeInclusive<usize>> {
+    if row_height <= 0.0 || row_count == 0 {
+        return None;
+    }
+    let (top, bottom) = (from.min(to), from.max(to));
+    let last = row_count as f32 * row_height;
+    if bottom < 0.0 || top >= last {
+        return None;
+    }
+    let first = (top.max(0.0) / row_height).floor() as usize;
+    let end = ((bottom.min(last - 0.5)) / row_height).floor() as usize;
+    Some(first..=end.min(row_count - 1))
+}
+
+/// The row a point falls on, clamped to the listing.
+pub fn row_at(y: f32, row_height: f32, row_count: usize) -> Option<usize> {
+    if row_height <= 0.0 || row_count == 0 {
+        return None;
+    }
+    Some(((y.max(0.0) / row_height).floor() as usize).min(row_count - 1))
 }
 
 fn selectable(name: &str) -> Option<String> {
@@ -265,5 +316,42 @@ mod tests {
         assert_eq!(selection.cursor(), Some("a"));
         selection.retain(&[".."]);
         assert!(selection.is_empty() && selection.cursor().is_none());
+    }
+
+    #[test]
+    fn a_rectangle_selects_the_rows_it_crosses() {
+        // Rows 20 px high: 0..20 is row 0, 20..40 row 1, and so on.
+        assert_eq!(swept_rows(25.0, 65.0, 20.0, 5), Some(1..=3));
+        // Upwards is the same rectangle.
+        assert_eq!(swept_rows(65.0, 25.0, 20.0, 5), Some(1..=3));
+        // Starting below the last row, in the empty space, and going up.
+        assert_eq!(swept_rows(300.0, 70.0, 20.0, 5), Some(3..=4));
+        // Past the top keeps the first row.
+        assert_eq!(swept_rows(-30.0, 10.0, 20.0, 5), Some(0..=0));
+        // Entirely in the empty space: nothing.
+        assert_eq!(swept_rows(120.0, 300.0, 20.0, 5), None);
+        assert_eq!(swept_rows(-40.0, -1.0, 20.0, 5), None);
+        assert_eq!(row_at(300.0, 20.0, 5), Some(4));
+        assert_eq!(row_at(-5.0, 20.0, 5), Some(0));
+    }
+
+    #[test]
+    fn a_sweep_replaces_the_selection_or_adds_to_it_and_skips_the_parent() {
+        let mut selection = Selection::default();
+        selection.click("d", ClickMode::Replace, &ROWS);
+        let before = selection.clone();
+
+        selection.sweep(None, Some(0..=2), Some(2), &ROWS);
+        assert_eq!(names(&selection), ["a", "b"]);
+        assert_eq!(selection.cursor(), Some("b"));
+
+        selection.sweep(Some(&before), Some(1..=2), Some(1), &ROWS);
+        assert_eq!(names(&selection), ["a", "b", "d"]);
+
+        // Shrinking the rectangle back gives rows up again.
+        selection.sweep(Some(&before), Some(1..=1), Some(1), &ROWS);
+        assert_eq!(names(&selection), ["a", "d"]);
+        selection.sweep(None, None, None, &ROWS);
+        assert!(selection.is_empty());
     }
 }

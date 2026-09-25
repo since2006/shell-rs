@@ -82,10 +82,12 @@ impl TransferBatch {
             Self::Download(batch) => batch.phase(phase, control),
         }
     }
-    fn set_current(&mut self, current: String) {
+    /// Say what a reconnecting batch is waiting for; the next phase
+    /// other than reconnecting clears it.
+    fn set_note(&mut self, note: String) {
         match self {
-            Self::Upload(batch) => batch.progress.current = current,
-            Self::Download(batch) => batch.progress.current = current,
+            Self::Upload(batch) => batch.progress.note = Some(note),
+            Self::Download(batch) => batch.progress.note = Some(note),
         }
     }
     async fn run(&mut self, client: &SftpClient, control: &TransferControl) -> Result<()> {
@@ -438,7 +440,7 @@ impl SshSftpTransport {
                                 .await?;
                             let mut recovered = false;
                             while reconnects < 3 {
-                                batch.set_current(format!(
+                                batch.set_note(format!(
                                     "将在 {} 秒后重连（{}/3）",
                                     [1, 3, 10][reconnects],
                                     reconnects + 1

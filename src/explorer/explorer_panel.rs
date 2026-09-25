@@ -1,5 +1,6 @@
 use super::{
-    ExplorerId, FilePane, LoadIntent, PaneSide,
+    ExplorerId, FilePane, LoadIntent, PaneSide, QueueEntry, QueueId, QueueState, Removal,
+    TransferJob, TransferQueue,
     pane_operations::{PaneOperation, PendingOperation},
 };
 use crate::app::ExplorerDispatch as _;
@@ -9,23 +10,19 @@ use crate::{
     session::{BookmarkSide, ConnectionState, SessionId, SessionStore},
     sftp::{
         DownloadRequest, RemotePath, SftpCommand, SftpEvent, SharedLocalDirectoryProvider,
-        SharedSftpTransportProvider, TransferDirection, TransferOutcome, TransferPhase,
-        TransferProgress, TransferQuestion, UploadRequest,
+        SharedSftpTransportProvider, TransferDirection, TransferPhase, TransferProgress,
+        TransferQuestion, UploadRequest,
     },
     shared::{ClosableTabTitle, HostMark, RenamableTab, close_tab_items},
 };
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
+    Icon, Sizable as _, WindowExt as _,
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
-    h_flex,
     menu::PopupMenu,
     notification::Notification,
-    progress::Progress,
-    resizable::{h_resizable, resizable_panel},
+    resizable::{h_resizable, resizable_panel, v_resizable},
     v_flex,
 };
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use std::{
     collections::HashMap,
@@ -54,10 +51,16 @@ pub struct ExplorerPanel {
     pub(super) next_operation: u64,
     commands: async_channel::Sender<SftpCommand>,
     state: ConnectionState,
-    progress: Option<TransferProgress>,
-    details: bool,
-    transfer_pending: bool,
+    /// Batches waiting, running and ended, WinSCP's queue. The engine runs
+    /// one at a time and the panel hands it the next.
+    pub(super) queue: TransferQueue,
+    /// The engine is working on a command: a batch, a resume or a discard.
+    /// Cleared by its `Idle`, which is when the next batch may go.
+    pub(super) engine_busy: bool,
     pub(super) question: Option<TransferQuestion>,
+    /// A transfer question is on screen, as opposed to a dialog of the
+    /// user's own such as the confirmation of the next upload.
+    pub(super) question_shown: bool,
     pub(super) dialog_open: bool,
     pub(super) dispatch: FocusHandle,
     focus_handle: FocusHandle,
@@ -192,10 +195,10 @@ impl ExplorerPanel {
             next_operation: 0,
             commands,
             state: ConnectionState::Connecting,
-            progress: None,
-            details: false,
-            transfer_pending: false,
+            queue: TransferQueue::default(),
+            engine_busy: false,
             question: None,
+            question_shown: false,
             dialog_open: false,
             dispatch,
             focus_handle: cx.focus_handle(),
@@ -245,23 +248,59 @@ impl ExplorerPanel {
     pub fn connection_state(&self) -> ConnectionState {
         self.state
     }
+    /// The engine's last report on the batch at the head of the queue.
     pub fn progress(&self) -> Option<&TransferProgress> {
-        self.progress.as_ref()
+        self.queue.head().and_then(QueueEntry::progress)
     }
-    /// The direction of the current or last batch; the next one is upload
-    /// until a download starts.
+    pub fn queue(&self) -> &TransferQueue {
+        &self.queue
+    }
+    /// The direction of the batch at the head, or the next one to go.
     pub fn transfer_direction(&self) -> TransferDirection {
-        self.progress
-            .as_ref()
-            .map(TransferProgress::direction)
-            .unwrap_or_default()
+        self.queue.direction().unwrap_or_default()
     }
+    /// Anything not yet done: running, stopped or waiting its turn.
     pub fn is_transferring(&self) -> bool {
-        self.transfer_pending
-            || self
-                .progress
-                .as_ref()
-                .is_some_and(TransferProgress::is_active)
+        self.queue.unfinished_count() > 0
+    }
+    /// A stopped batch holds the head, waiting for 继续.
+    fn head_stopped(&self) -> bool {
+        self.queue
+            .head()
+            .is_some_and(|head| head.state() == QueueState::Stopped)
+    }
+    /// Hand the engine the next batch if it is free for one. A batch that
+    /// cannot be made into a request ends there and the next one goes.
+    fn start_next_if_idle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        while !self.engine_busy && self.state == ConnectionState::Connected {
+            let Some((_, job)) = self.queue.start_next() else {
+                return;
+            };
+            match transfer_command(&job) {
+                Ok(command) => {
+                    self.engine_busy = true;
+                    self.send(command);
+                }
+                Err(error) => {
+                    self.queue
+                        .abandon_head(Removal::NotStarted(error.to_string()));
+                    window.push_notification(Notification::error(error.to_string()), cx);
+                }
+            }
+        }
+    }
+    /// Put a confirmed batch on the queue, and start it if nothing runs.
+    fn enqueue(&mut self, job: TransferJob, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state != ConnectionState::Connected {
+            return;
+        }
+        // Refused now rather than when its turn comes.
+        if let Err(error) = transfer_command(&job) {
+            window.push_notification(Notification::error(error.to_string()), cx);
+            return;
+        }
+        self.queue.push(job);
+        self.start_next_if_idle(window, cx);
     }
     pub fn send(&self, command: SftpCommand) {
         let _ = self.commands.try_send(command);
@@ -283,6 +322,7 @@ impl ExplorerPanel {
         if self.dialog_open {
             self.dialog_open = false;
             self.question = None;
+            self.question_shown = false;
             if window.has_active_dialog(cx) {
                 window.close_dialog(cx);
             }
@@ -290,9 +330,11 @@ impl ExplorerPanel {
     }
     fn sync_available(&mut self, cx: &mut Context<Self>) {
         let state = self.state;
-        let transfer = state == ConnectionState::Connected && !self.is_transferring();
+        // A batch confirmed while another runs waits its turn in the queue.
+        let transfer = state == ConnectionState::Connected;
         // A stopped transfer offers its own 继续 instead.
-        let reconnect = state == ConnectionState::Disconnected && !self.is_transferring();
+        let reconnect =
+            state == ConnectionState::Disconnected && !self.head_stopped() && !self.engine_busy;
         self.local.update(cx, |pane, cx| {
             pane.set_available(ConnectionState::Connected, transfer, false, cx)
         });
@@ -346,10 +388,18 @@ impl ExplorerPanel {
             SftpEvent::Progress(progress) => {
                 let complete = progress.phase() == TransferPhase::Completed;
                 let direction = progress.direction();
-                self.transfer_pending = false;
-                self.progress = Some(progress);
-                if !self.is_transferring() {
-                    self.close_upload_dialog(window, cx);
+                self.queue.on_progress(progress);
+                // A question outlives nothing: once the batch stops or ends,
+                // one on screen goes, and one not shown yet never will be.
+                let running = self
+                    .queue
+                    .head()
+                    .is_some_and(|head| head.state() == QueueState::Active);
+                if !running {
+                    if self.question_shown {
+                        self.close_upload_dialog(window, cx);
+                    }
+                    self.question = None;
                 }
                 // Show what arrived: the remote pane after an upload, the local
                 // one after a download.
@@ -390,7 +440,8 @@ impl ExplorerPanel {
                 .detach();
             }
             SftpEvent::Idle => {
-                self.transfer_pending = false;
+                self.engine_busy = false;
+                self.start_next_if_idle(window, cx);
             }
             SftpEvent::Notice(message) => {
                 window.push_notification(Notification::error(message), cx);
@@ -549,26 +600,14 @@ impl ExplorerPanel {
             ExplorerCommand::DownloadPaths { paths, target } => {
                 self.open_download(paths.clone(), target.clone(), window, cx)
             }
-            ExplorerCommand::BeginDownload { paths, target } => {
-                if self.is_transferring() || self.state != ConnectionState::Connected {
-                    return;
-                }
-                let request = paths
-                    .iter()
-                    .map(|path| RemotePath::new(path.clone()))
-                    .collect::<anyhow::Result<Vec<_>>>()
-                    .and_then(|paths| DownloadRequest::new(paths, target.into()));
-                match request {
-                    Ok(request) => {
-                        self.transfer_pending = true;
-                        self.details = false;
-                        self.send(SftpCommand::Download(request));
-                    }
-                    Err(error) => {
-                        window.push_notification(Notification::error(error.to_string()), cx)
-                    }
-                }
-            }
+            ExplorerCommand::BeginDownload { paths, target } => self.enqueue(
+                TransferJob::Download {
+                    paths: paths.clone(),
+                    target: target.clone(),
+                },
+                window,
+                cx,
+            ),
             ExplorerCommand::Delete { remote } => self.confirm_delete(*remote, window, cx),
             ExplorerCommand::BeginDelete { remote, names } => {
                 self.start_operation(*remote, PaneOperation::Delete(names.clone()), window, cx)
@@ -612,7 +651,7 @@ impl ExplorerPanel {
                 cx,
             ),
             ExplorerCommand::ChooseFiles => {
-                if self.is_transferring() || self.state != ConnectionState::Connected {
+                if self.state != ConnectionState::Connected {
                     return;
                 }
                 let choice = cx.prompt_for_paths(PathPromptOptions {
@@ -641,23 +680,14 @@ impl ExplorerPanel {
             ExplorerCommand::UploadPaths { paths, target } => {
                 self.open_upload(paths.clone(), target.clone(), window, cx)
             }
-            ExplorerCommand::BeginUpload { paths, target } => {
-                if self.is_transferring() || self.state != ConnectionState::Connected {
-                    return;
-                }
-                match RemotePath::new(target.clone())
-                    .and_then(|path| UploadRequest::new(paths.clone(), path))
-                {
-                    Ok(request) => {
-                        self.transfer_pending = true;
-                        self.details = false;
-                        self.send(SftpCommand::Upload(request));
-                    }
-                    Err(error) => {
-                        window.push_notification(Notification::error(error.to_string()), cx)
-                    }
-                }
-            }
+            ExplorerCommand::BeginUpload { paths, target } => self.enqueue(
+                TransferJob::Upload {
+                    paths: paths.clone(),
+                    target: target.clone(),
+                },
+                window,
+                cx,
+            ),
             ExplorerCommand::Answer { request_id, answer } => {
                 if self
                     .question
@@ -665,6 +695,7 @@ impl ExplorerPanel {
                     .is_some_and(|q| q.id() == *request_id)
                 {
                     self.question = None;
+                    self.question_shown = false;
                     self.dialog_open = false;
                     self.send(SftpCommand::Answer {
                         request_id: *request_id,
@@ -673,18 +704,31 @@ impl ExplorerPanel {
                 }
             }
             ExplorerCommand::CancelTransfer => self.send(SftpCommand::Cancel),
+            // Goes on with a stopped head; with none, it only reconnects,
+            // and the queue moves on once that is done.
             ExplorerCommand::ResumeTransfer => {
-                if !self.is_transferring() {
-                    self.transfer_pending = true;
+                if !self.engine_busy {
+                    self.engine_busy = true;
                     self.send(SftpCommand::Resume);
                 }
             }
             ExplorerCommand::DiscardTransfer => {
-                if !self.is_transferring() {
+                if !self.engine_busy && self.head_stopped() {
+                    self.queue.abandon_head(Removal::Discarded);
+                    self.engine_busy = true;
                     self.send(SftpCommand::Discard);
                 }
             }
-            ExplorerCommand::ToggleDetails => self.details = !self.details,
+            ExplorerCommand::SelectQueueEntry { id } => self.queue.select(QueueId(*id)),
+            ExplorerCommand::ToggleQueueEntry { id } => self.queue.toggle_expanded(QueueId(*id)),
+            ExplorerCommand::RemoveQueueEntry => {
+                if let Some(id) = self.queue.removable()
+                    && self.queue.remove(id)
+                {
+                    self.start_next_if_idle(window, cx);
+                }
+            }
+            ExplorerCommand::ClearFinishedTransfers => self.queue.clear_finished(),
             ExplorerCommand::CloseConfirmed => {}
         }
         self.sync_available(cx);
@@ -801,20 +845,8 @@ fn tab_menu(
 impl Render for ExplorerPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sid = self.id;
-        let command_button = |id: &'static str, label: SharedString, command: ExplorerCommand| {
-            let dispatch = self.dispatch.clone();
-            Button::new(id)
-                .ghost()
-                .small()
-                .label(label)
-                .on_click(move |_, w, cx| {
-                    dispatch.dispatch_explorer_action(
-                        &ExplorerAction::new(sid, command.clone()),
-                        w,
-                        cx,
-                    )
-                })
-        };
+        // The queue always has its place, shown only with something in it,
+        // so the panes keep their split when it comes and goes.
         v_flex()
             .id(("explorer", sid.0))
             .test_support()
@@ -823,182 +855,46 @@ impl Render for ExplorerPanel {
             .min_w_0()
             .child(
                 div().flex_1().min_h_0().child(
-                    h_resizable(("explorer-panes", sid.0))
+                    v_resizable(("explorer-queue", sid.0))
                         .child(
-                            resizable_panel()
-                                .size(px(480.))
-                                .size_range(px(320.)..Pixels::MAX)
-                                .child(self.local.clone()),
+                            resizable_panel().child(
+                                h_resizable(("explorer-panes", sid.0))
+                                    .child(
+                                        resizable_panel()
+                                            .size(px(480.))
+                                            .size_range(px(320.)..Pixels::MAX)
+                                            .child(self.local.clone()),
+                                    )
+                                    .child(
+                                        resizable_panel()
+                                            .size_range(px(280.)..Pixels::MAX)
+                                            .child(self.remote.clone()),
+                                    ),
+                            ),
                         )
                         .child(
                             resizable_panel()
-                                .size_range(px(280.)..Pixels::MAX)
-                                .child(self.remote.clone()),
+                                .size(px(180.))
+                                .size_range(px(96.)..px(480.))
+                                .visible(!self.queue.is_empty())
+                                .child(self.render_queue(cx)),
                         ),
                 ),
             )
-            .when_some(self.progress.as_ref(), |this, progress| {
-                let verb = progress.direction().verb();
-                let status = match progress.phase() {
-                    TransferPhase::Scanning => "正在扫描".to_string(),
-                    TransferPhase::Transferring => format!("正在{verb}"),
-                    TransferPhase::Waiting => "等待处理".to_string(),
-                    TransferPhase::Reconnecting => "正在重连".to_string(),
-                    TransferPhase::Stopped => format!("已停止 · 可继续{verb}"),
-                    TransferPhase::Completed => {
-                        if progress.failed() > 0 {
-                            format!("{verb}结束 · 部分失败")
-                        } else {
-                            format!("{verb}结束")
-                        }
-                    }
-                };
-                let value = if progress.phase() == TransferPhase::Completed {
-                    100.
-                } else if progress.total_bytes() > 0 {
-                    progress.completed_bytes() as f32 / progress.total_bytes() as f32 * 100.
-                } else {
-                    0.
-                };
-                this.child(
-                    v_flex()
-                        .id("transfer-progress")
-                        .test_support()
-                        .gap_2()
-                        .px_3()
-                        .py_2()
-                        .border_t_1()
-                        .border_color(cx.theme().border)
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .id("transfer-status")
-                                        .test_support()
-                                        .text_sm()
-                                        .child(status),
-                                )
-                                .child(div().flex_1())
-                                .when(progress.is_active(), |this| {
-                                    this.child(command_button(
-                                        "cancel-transfer",
-                                        "取消".into(),
-                                        ExplorerCommand::CancelTransfer,
-                                    ))
-                                })
-                                .when(progress.phase() == TransferPhase::Stopped, |this| {
-                                    this.child(command_button(
-                                        "resume-transfer",
-                                        format!("继续{verb}").into(),
-                                        ExplorerCommand::ResumeTransfer,
-                                    ))
-                                    .child(command_button(
-                                        "discard-transfer",
-                                        "丢弃续传进度".into(),
-                                        ExplorerCommand::DiscardTransfer,
-                                    ))
-                                })
-                                .child(
-                                    command_button(
-                                        "transfer-details",
-                                        "详情".into(),
-                                        ExplorerCommand::ToggleDetails,
-                                    )
-                                    .icon(Icon::new(if self.details {
-                                        IconName::ChevronDown
-                                    } else {
-                                        IconName::ChevronUp
-                                    }))
-                                    .selected(self.details),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_ellipsis()
-                                .child(progress.current().to_string()),
-                        )
-                        .child(
-                            Progress::new("transfer-bytes")
-                                .value(value)
-                                .accessibility_label(format!("{verb}进度"))
-                                .small(),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(format!(
-                                    "{} / {} · {}/秒 · 成功 {} · 跳过 {} · 失败 {}",
-                                    super::format_size(progress.completed_bytes()),
-                                    super::format_size(progress.total_bytes()),
-                                    super::format_size(progress.bytes_per_second()),
-                                    progress.succeeded(),
-                                    progress.skipped(),
-                                    progress.failed()
-                                )),
-                        )
-                        .when(self.details, |this| {
-                            this.child(transfer_details(progress, cx))
-                        }),
-                )
-            })
     }
 }
 
-/// 详情: how each item of the transfer ended, the latest on top so it is in
-/// view without scrolling. Items are listed as they end, so until the first
-/// one does, the list says so rather than opening empty.
-fn transfer_details(progress: &TransferProgress, cx: &App) -> impl IntoElement + use<> {
-    let theme = cx.theme();
-    let (muted, success, danger) = (theme.muted_foreground, theme.success, theme.danger);
-    let verb = progress.direction().verb();
-    v_flex()
-        .id("transfer-detail-list")
-        .test_support()
-        .max_h_32()
-        .overflow_y_scroll()
-        .py_1()
-        .rounded(theme.radius)
-        .border_1()
-        .border_color(theme.border)
-        .text_xs()
-        .when(progress.details().is_empty(), |this| {
-            this.child(
-                div()
-                    .id("transfer-detail-empty")
-                    .test_support()
-                    .px_2()
-                    .py_0p5()
-                    .text_color(muted)
-                    .child(format!("还没有{verb}完的项目，每完成一项会列在这里")),
-            )
-        })
-        .children(progress.details().iter().rev().map(|detail| {
-            let (icon, color, outcome) = match detail.outcome() {
-                TransferOutcome::Done => (Icon::new(IconName::CircleCheck), success, "完成"),
-                TransferOutcome::Skipped => (Icon::new(CatalogIcon::CircleMinus), muted, "已跳过"),
-                TransferOutcome::Failed => (Icon::new(IconName::CircleX), danger, "失败"),
-            };
-            h_flex()
-                .id(ElementId::Name(
-                    format!("transfer-detail:{}", detail.path()).into(),
-                ))
-                .test_support()
-                .aria_label(format!("{outcome} {}", detail.path()))
-                .items_start()
-                .gap_2()
-                .px_2()
-                .py_0p5()
-                .child(icon.xsmall().text_color(color))
-                .child(
-                    v_flex()
-                        .min_w_0()
-                        .child(detail.path().to_string())
-                        .when_some(detail.reason(), |this, reason| {
-                            this.child(div().text_color(danger).child(reason.to_string()))
-                        }),
-                )
-        }))
+/// The engine's command for a queued batch; fails for paths it cannot take.
+fn transfer_command(job: &TransferJob) -> anyhow::Result<SftpCommand> {
+    match job {
+        TransferJob::Upload { paths, target } => RemotePath::new(target.clone())
+            .and_then(|target| UploadRequest::new(paths.clone(), target))
+            .map(SftpCommand::Upload),
+        TransferJob::Download { paths, target } => paths
+            .iter()
+            .map(|path| RemotePath::new(path.clone()))
+            .collect::<anyhow::Result<Vec<_>>>()
+            .and_then(|paths| DownloadRequest::new(paths, target.into()))
+            .map(SftpCommand::Download),
+    }
 }

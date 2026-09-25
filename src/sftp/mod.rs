@@ -8,6 +8,7 @@ mod control;
 mod download;
 mod journal;
 mod operations;
+mod speed;
 mod upload;
 mod worker;
 pub use worker::SshSftpTransportProvider;

@@ -1,8 +1,10 @@
+use super::speed::TransferClock;
 use super::{
     EntryKind, FileMetadata, RemotePath, SftpEvent, TransferChoice, TransferDetail, TransferPhase,
     TransferProgress, TransferQuestionKind, UploadRequest,
     client::RemoteFs,
     control::{TargetGuard, TransferControl},
+    file_size,
     journal::{Journal, PublishPhase, ResumeRecord, SourceMetadata},
     model::local_metadata,
 };
@@ -34,7 +36,7 @@ pub(crate) struct UploadBatch {
     all_conflicts: Option<TransferChoice>,
     approved_resumes: HashSet<RemotePath>,
     blocked_directories: Vec<RemotePath>,
-    started: Instant,
+    clock: TransferClock,
     sent_bytes: u64,
     completed_bytes: u64,
     last_progress: Instant,
@@ -146,7 +148,7 @@ impl UploadBatch {
             all_conflicts: None,
             approved_resumes: HashSet::new(),
             blocked_directories: Vec::new(),
-            started: Instant::now(),
+            clock: TransferClock::default(),
             sent_bytes: 0,
             completed_bytes: 0,
             last_progress: Instant::now(),
@@ -168,7 +170,24 @@ impl UploadBatch {
             .try_send(SftpEvent::Progress(self.progress.clone()));
     }
     pub fn phase(&mut self, phase: TransferPhase, control: &TransferControl) {
+        let now = Instant::now();
+        if phase == TransferPhase::Transferring {
+            self.clock.run(now, self.sent_bytes);
+        } else {
+            self.clock.pause(now);
+        }
+        if phase != TransferPhase::Reconnecting {
+            self.progress.note = None;
+        }
+        if phase == TransferPhase::Completed {
+            self.progress.current.clear();
+            self.progress.current_source.clear();
+            self.progress.current_bytes = 0;
+            self.progress.current_total = 0;
+        }
         self.progress.phase = phase;
+        self.progress.elapsed = self.clock.elapsed(now);
+        self.progress.bytes_per_second = self.clock.speed();
         self.emit(control);
     }
     pub async fn run<F: RemoteFs>(&mut self, fs: &F, control: &TransferControl) -> Result<()> {
@@ -177,6 +196,9 @@ impl UploadBatch {
             control.check()?;
             let item = self.items[self.cursor].clone();
             self.progress.current = item.target.to_string();
+            self.progress.current_source = item.source.display().to_string();
+            self.progress.current_bytes = 0;
+            self.progress.current_total = file_size(&item.metadata);
             self.emit(control);
             let _target_guard = TargetGuard::acquire(
                 format!("{}\0{}", self.endpoint, item.target),
@@ -206,6 +228,7 @@ impl UploadBatch {
                 }
                 Ok(false) => {
                     self.progress.skipped += 1;
+                    self.progress.settled_bytes += file_size(&item.metadata);
                     self.progress
                         .details
                         .push(TransferDetail::skipped(item.target.to_string()));
@@ -251,6 +274,7 @@ impl UploadBatch {
                         continue;
                     }
                     self.progress.failed += 1;
+                    self.progress.settled_bytes += file_size(&item.metadata);
                     self.progress.details.push(TransferDetail::failed(
                         item.target.to_string(),
                         format!("{error:#}"),
@@ -490,6 +514,7 @@ impl UploadBatch {
             self.phase(TransferPhase::Transferring, control);
             let mut next_offset = resume_offset;
             let mut uploaded = resume_offset;
+            self.progress.current_bytes = uploaded;
             let mut writes = FuturesUnordered::new();
             while next_offset < source_metadata.size || !writes.is_empty() {
                 while next_offset < source_metadata.size && writes.len() < MAX_IN_FLIGHT {
@@ -511,10 +536,12 @@ impl UploadBatch {
                     .ok_or_else(|| anyhow!("上传写入流水线意外结束"))??;
                 self.sent_bytes += length;
                 uploaded += length;
+                let now = Instant::now();
+                self.clock.record(now, self.sent_bytes);
                 self.progress.completed_bytes = self.completed_bytes.saturating_add(uploaded);
-                self.progress.bytes_per_second = (self.sent_bytes as f64
-                    / self.started.elapsed().as_secs_f64().max(0.001))
-                    as u64;
+                self.progress.current_bytes = uploaded;
+                self.progress.bytes_per_second = self.clock.speed();
+                self.progress.elapsed = self.clock.elapsed(now);
                 if self.last_progress.elapsed() >= Duration::from_millis(50) {
                     self.emit(control);
                     self.last_progress = Instant::now();

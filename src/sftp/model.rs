@@ -1,6 +1,9 @@
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 /// A server path. Never interpreted using the client operating system's rules.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -326,6 +329,17 @@ pub struct TransferProgress {
     pub(crate) failed: usize,
     pub(crate) bytes_per_second: u64,
     pub(crate) details: Vec<TransferDetail>,
+    /// The file in flight: where it comes from, and how far it has got.
+    /// One file moves at a time, so there is at most one.
+    pub(crate) current_source: String,
+    pub(crate) current_bytes: u64,
+    pub(crate) current_total: u64,
+    /// Time spent transferring, not waiting on questions or reconnects.
+    pub(crate) elapsed: Duration,
+    /// The size of the files skipped or failed: never sent, but done with.
+    pub(crate) settled_bytes: u64,
+    /// What a reconnecting batch is waiting for.
+    pub(crate) note: Option<String>,
 }
 
 /// How one item of a transfer ended, for 详情.
@@ -391,6 +405,12 @@ impl Default for TransferProgress {
             failed: 0,
             bytes_per_second: 0,
             details: Vec::new(),
+            current_source: String::new(),
+            current_bytes: 0,
+            current_total: 0,
+            elapsed: Duration::ZERO,
+            settled_bytes: 0,
+            note: None,
         }
     }
 }
@@ -403,6 +423,43 @@ impl TransferProgress {
     }
     pub fn with_direction(mut self, direction: TransferDirection) -> Self {
         self.direction = direction;
+        self
+    }
+    /// The batch's bytes so far and in all, for fakes and tests.
+    pub fn with_bytes(mut self, completed: u64, total: u64) -> Self {
+        self.completed_bytes = completed;
+        self.total_bytes = total;
+        self
+    }
+    /// The file in flight, for fakes and tests.
+    pub fn with_current(
+        mut self,
+        source: impl Into<String>,
+        target: impl Into<String>,
+        bytes: u64,
+        total: u64,
+    ) -> Self {
+        self.current_source = source.into();
+        self.current = target.into();
+        self.current_bytes = bytes;
+        self.current_total = total;
+        self
+    }
+    /// How the batch's items ended so far, for fakes and tests.
+    pub fn with_details(mut self, details: Vec<TransferDetail>) -> Self {
+        self.succeeded = details
+            .iter()
+            .filter(|detail| detail.outcome() == TransferOutcome::Done)
+            .count();
+        self.skipped = details
+            .iter()
+            .filter(|detail| detail.outcome() == TransferOutcome::Skipped)
+            .count();
+        self.failed = details
+            .iter()
+            .filter(|detail| detail.outcome() == TransferOutcome::Failed)
+            .count();
+        self.details = details;
         self
     }
     pub fn direction(&self) -> TransferDirection {
@@ -439,6 +496,51 @@ impl TransferProgress {
     pub fn details(&self) -> &[TransferDetail] {
         &self.details
     }
+    /// Where the file in flight comes from; empty between files.
+    pub fn current_source(&self) -> &str {
+        &self.current_source
+    }
+    pub fn current_bytes(&self) -> u64 {
+        self.current_bytes
+    }
+    pub fn current_total(&self) -> u64 {
+        self.current_total
+    }
+    /// How far the file in flight has got, from 0 to 1.
+    pub fn current_fraction(&self) -> f32 {
+        fraction(self.current_bytes, self.current_total)
+    }
+    pub fn elapsed(&self) -> Duration {
+        self.elapsed
+    }
+    pub fn note(&self) -> Option<&str> {
+        self.note.as_deref()
+    }
+    /// How far the batch has got, from 0 to 1. Files skipped or failed
+    /// count as dealt with, so a batch that ends reaches the end.
+    pub fn fraction(&self) -> f32 {
+        if self.phase == TransferPhase::Completed {
+            return 1.0;
+        }
+        fraction(
+            self.completed_bytes.saturating_add(self.settled_bytes),
+            self.total_bytes,
+        )
+    }
+    /// How long the rest should take at the current speed; unknown while
+    /// there is no speed.
+    pub fn remaining(&self) -> Option<Duration> {
+        if self.bytes_per_second == 0 || self.phase != TransferPhase::Transferring {
+            return None;
+        }
+        let left = self
+            .total_bytes
+            .saturating_sub(self.completed_bytes)
+            .saturating_sub(self.settled_bytes);
+        Some(Duration::from_secs_f64(
+            left as f64 / self.bytes_per_second as f64,
+        ))
+    }
     pub fn is_active(&self) -> bool {
         !matches!(
             self.phase,
@@ -446,6 +548,23 @@ impl TransferProgress {
         )
     }
 }
+/// The bytes an item puts through: a file's size, nothing for folders and
+/// links.
+pub(crate) fn file_size(metadata: &FileMetadata) -> u64 {
+    if metadata.kind() == EntryKind::File {
+        metadata.size()
+    } else {
+        0
+    }
+}
+
+fn fraction(part: u64, whole: u64) -> f32 {
+    if whole == 0 {
+        return 0.0;
+    }
+    (part as f64 / whole as f64).clamp(0.0, 1.0) as f32
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferQuestionKind {
     Conflict,
@@ -741,4 +860,44 @@ pub(crate) fn local_metadata(metadata: &std::fs::Metadata) -> FileMetadata {
     #[cfg(not(unix))]
     let permissions = None;
     FileMetadata::new(kind, metadata.len(), modified, permissions)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{TransferPhase, TransferProgress};
+
+    #[test]
+    fn skipped_and_failed_files_count_as_dealt_with() {
+        let progress = TransferProgress {
+            phase: TransferPhase::Transferring,
+            completed_bytes: 300,
+            settled_bytes: 200,
+            total_bytes: 1000,
+            bytes_per_second: 100,
+            ..TransferProgress::default()
+        };
+        assert_eq!(progress.fraction(), 0.5);
+        assert_eq!(progress.remaining(), Some(Duration::from_secs(5)));
+
+        // No speed yet, or not moving: no estimate.
+        let still = TransferProgress {
+            bytes_per_second: 0,
+            ..progress.clone()
+        };
+        assert_eq!(still.remaining(), None);
+        let waiting = TransferProgress {
+            phase: TransferPhase::Waiting,
+            ..progress
+        };
+        assert_eq!(waiting.remaining(), None);
+
+        // Nothing to move at all.
+        assert_eq!(TransferProgress::default().fraction(), 0.0);
+        assert_eq!(
+            TransferProgress::new(TransferPhase::Completed).fraction(),
+            1.0
+        );
+    }
 }

@@ -6,7 +6,12 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use std::{cell::RefCell, cmp::Ordering, path::PathBuf, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    cmp::Ordering,
+    path::PathBuf,
+    rc::Rc,
+};
 
 use super::{
     ClickMode, ExplorerId, FileEntry, FileKind, FilePane, FileSizeFormat, PaneSide, Selection,
@@ -25,6 +30,57 @@ pub(super) struct ListingContext {
     pub pane: Option<WeakEntity<FilePane>>,
     /// What the last right-click landed on, read by the list's context menu.
     pub menu_hit: Rc<RefCell<Option<MenuHit>>>,
+    /// Where the rows are, for the selection rectangle.
+    pub geometry: Rc<ListGeometry>,
+}
+
+/// Where the list and its rows are on screen, recorded as they paint, so a
+/// selection rectangle can tell which rows it covers. Rows are all the same
+/// height, so one row tells where all of them are.
+#[derive(Default)]
+pub(super) struct ListGeometry {
+    /// Where the first row's top is (scrolled out of view or not), and the
+    /// row height.
+    pub rows: Cell<Option<(Pixels, Pixels)>>,
+    /// The list, header included.
+    pub list: Cell<Option<Bounds<Pixels>>>,
+    /// Where the left button went down in the list last.
+    pub press: Cell<Option<Point<Pixels>>>,
+    /// What the last press in the list landed on.
+    pub pressed: Cell<Pressed>,
+}
+
+/// What a press in the list landed on. As in WinSCP without full row select,
+/// everything but the name cells and the column titles is empty space:
+/// clicking there clears the selection, and dragging from there draws a
+/// rectangle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Pressed {
+    #[default]
+    Empty,
+    /// A name cell, which clicks and right-clicks select. Dragging its icon
+    /// and text moves files; dragging the rest of it draws a rectangle.
+    Name,
+    /// A column title.
+    Title,
+}
+
+/// How far a press may move and still be a click: GPUI's own drag
+/// threshold, which is private.
+const DRAG_THRESHOLD: f64 = 2.;
+
+/// Whether a click is the end of a drag instead. GPUI forgets every pending
+/// press once it paints a frame with a drag active, but a drag started and
+/// let go within one frame (a quick flick) still clicks each element both
+/// ends were over, bar the drag's own: a rectangle or a file drag let go
+/// over the name cell it began in must not select that row alone.
+fn ends_a_drag(event: &ClickEvent) -> bool {
+    match event {
+        ClickEvent::Mouse(click) => {
+            (click.up.position - click.down.position).magnitude() > DRAG_THRESHOLD
+        }
+        _ => false,
+    }
 }
 
 /// Where a right-click in the list landed, when not on empty space.
@@ -46,6 +102,7 @@ impl Default for ListingContext {
             dispatch: None,
             pane: None,
             menu_hit: Rc::default(),
+            geometry: Rc::default(),
         }
     }
 }
@@ -65,7 +122,7 @@ impl FileListing {
         // Column widths are an API boundary that takes `Pixels`.
         let columns = match side {
             PaneSide::Local => vec![
-                Column::new("name", "名称").width(px(260.)).sortable(),
+                name_column(px(260.)),
                 Column::new("size", "大小").width(px(100.)).sortable(),
                 Column::new("type", "类型").width(px(100.)).sortable(),
                 Column::new("modified", "修改时间")
@@ -73,7 +130,7 @@ impl FileListing {
                     .sortable(),
             ],
             PaneSide::Remote => vec![
-                Column::new("name", "名称").width(px(240.)).sortable(),
+                name_column(px(240.)),
                 Column::new("size", "大小").width(px(100.)).sortable(),
                 Column::new("modified", "修改时间")
                     .width(px(150.))
@@ -112,6 +169,127 @@ impl FileListing {
 
     pub fn position(&self, name: &str) -> Option<usize> {
         self.rows.iter().position(|row| row.name.as_ref() == name)
+    }
+
+    /// Where a row's item is, on its side.
+    fn child_path(&self, name: &str) -> String {
+        let path = &self.context.path;
+        match self.side {
+            PaneSide::Local => PathBuf::from(path)
+                .join(name)
+                .to_string_lossy()
+                .into_owned(),
+            PaneSide::Remote => format!("{}/{name}", path.trim_end_matches('/')),
+        }
+    }
+
+    /// Let `cell` drag its row's item to the other pane, with the rest of the
+    /// selection when the row is part of it. Pressing it selects an item that
+    /// is not selected yet, alone, so what is highlighted is what goes.
+    fn drag_from(&self, cell: Stateful<Div>, name: &str) -> Stateful<Div> {
+        let names = if self.context.selection.contains(name) {
+            self.context.selection.targets(&self.order())
+        } else {
+            vec![name.to_string()]
+        };
+        // ⌘ and Shift presses are left to the name's click.
+        let cell = match self.context.pane.clone() {
+            Some(pane) => cell.on_mouse_down(MouseButton::Left, {
+                let name = name.to_string();
+                move |event, _, cx| {
+                    if !event.modifiers.secondary() && !event.modifiers.shift {
+                        let _ = pane.update(cx, |pane, cx| {
+                            pane.clear_menu_row(cx);
+                            pane.select_pressed(&name, cx);
+                        });
+                    }
+                }
+            }),
+            None => cell,
+        };
+        match self.side {
+            PaneSide::Local => {
+                let paths = names
+                    .iter()
+                    .map(|name| PathBuf::from(self.child_path(name)))
+                    .collect();
+                let drag = LocalFilesDrag {
+                    paths,
+                    spot: DropSpot::default(),
+                };
+                cell.on_drag(drag, |drag, _, _, cx| {
+                    cx.new(|_| FileDragPreview {
+                        verb: "上传",
+                        count: drag.paths.len(),
+                        spot: drag.spot.clone(),
+                    })
+                })
+            }
+            PaneSide::Remote => {
+                let paths = names.iter().map(|name| self.child_path(name)).collect();
+                let drag = RemoteFilesDrag {
+                    paths,
+                    spot: DropSpot::default(),
+                };
+                cell.on_drag(drag, |drag, _, _, cx| {
+                    cx.new(|_| FileDragPreview {
+                        verb: "下载",
+                        count: drag.paths.len(),
+                        spot: drag.spot.clone(),
+                    })
+                })
+            }
+        }
+    }
+
+    /// A name cell's clicks: select (⌘ adds or removes, Shift extends), open
+    /// on a double click, and select before the context menu so it acts on
+    /// what is highlighted.
+    fn name_events(&self, cell: Stateful<Div>, name: &str) -> Stateful<Div> {
+        let geometry = self.context.geometry.clone();
+        let cell = cell.on_any_mouse_down(move |_, _, _| geometry.pressed.set(Pressed::Name));
+        let (Some(dispatch), Some(pane)) =
+            (self.context.dispatch.clone(), self.context.pane.clone())
+        else {
+            return cell;
+        };
+        let sid = self.context.explorer;
+        let remote = self.side == PaneSide::Remote;
+        cell.on_click({
+            let name = name.to_string();
+            let pane = pane.clone();
+            move |event, window, cx| {
+                if ends_a_drag(event) {
+                    return;
+                }
+                let modifiers = event.modifiers();
+                let mode = if modifiers.shift {
+                    ClickMode::Extend
+                } else if modifiers.secondary() {
+                    ClickMode::Toggle
+                } else {
+                    ClickMode::Replace
+                };
+                let _ = pane.update(cx, |pane, cx| pane.click_row(&name, mode, cx));
+                if mode == ClickMode::Replace && event.click_count() == 2 {
+                    dispatch.dispatch_explorer_action(
+                        &ExplorerAction::new(sid, ExplorerCommand::Open { remote }),
+                        window,
+                        cx,
+                    );
+                }
+            }
+        })
+        .on_mouse_down(MouseButton::Right, {
+            let hit = (name != "..").then(|| name.to_string());
+            let menu_hit = self.context.menu_hit.clone();
+            move |_, _, cx| {
+                if let Some(hit) = &hit {
+                    let _ = pane.update(cx, |pane, cx| pane.select_pressed(hit, cx));
+                }
+                *menu_hit.borrow_mut() = hit.clone().map(MenuHit::Item);
+            }
+        })
     }
 
     pub fn set_rows(&mut self, rows: Vec<FileEntry>) {
@@ -188,14 +366,17 @@ impl TableDelegate for FileListing {
         let column = &self.columns[col_ix];
         let key = column.key.clone();
         let menu_hit = self.context.menu_hit.clone();
+        let geometry = self.context.geometry.clone();
         h_flex()
             .id(ElementId::Name(format!("column:{key}").into()))
             .test_support()
             .size_full()
             .when(key.as_ref() == "size", |this| this.justify_end())
+            .when(key.as_ref() == "name", |this| this.px_1p5())
             .on_mouse_down(MouseButton::Right, move |_, _, _| {
                 *menu_hit.borrow_mut() = Some(MenuHit::Column(key.clone()));
             })
+            .on_any_mouse_down(move |_, _, _| geometry.pressed.set(Pressed::Title))
             .child(column.name.clone())
     }
 
@@ -211,18 +392,56 @@ impl TableDelegate for FileListing {
         };
         let parent = entry.is_parent();
         match self.columns[col_ix].key.as_ref() {
-            "name" => h_flex()
-                .id(ElementId::Name(format!("name:{}", entry.name).into()))
-                .test_support()
-                .aria_selected(self.context.selection.contains(&entry.name))
-                .gap_2()
-                .child(
-                    icon_for(entry)
-                        .small()
-                        .text_color(cx.theme().muted_foreground),
-                )
-                .child(entry.name.clone())
-                .into_any_element(),
+            // As in WinSCP without full row select, the name cell is the item:
+            // it shows the hover, the selection and the cursor, and takes the
+            // clicks; the rest of the row is empty space. Only the icon and
+            // text drag files: a drag from the rest of the cell draws a
+            // selection rectangle.
+            "name" => {
+                let selection = &self.context.selection;
+                let selected = selection.contains(&entry.name);
+                // A selected name shows as selected whether it holds the
+                // cursor or not; the frame only finds the cursor on a name
+                // that is not selected: `..`, or one just taken out with ⌘.
+                let cursor = !selected && selection.cursor() == Some(entry.name.as_ref());
+                let label = h_flex()
+                    .id(ElementId::Name(format!("name:{}", entry.name).into()))
+                    .h_full()
+                    .min_w_0()
+                    .gap_2()
+                    .child(
+                        icon_for(entry)
+                            .small()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(div().min_w_0().truncate().child(entry.name.clone()));
+                let label = if parent {
+                    label
+                } else {
+                    self.drag_from(label, &entry.name)
+                };
+                let cell = h_flex()
+                    .id(ElementId::Name(format!("name-cell:{}", entry.name).into()))
+                    .size_full()
+                    .px_1p5()
+                    .border_1()
+                    .border_color(if cursor {
+                        cx.theme().table_active_border
+                    } else {
+                        gpui_kit::transparent_black()
+                    })
+                    .map(|this| {
+                        if selected {
+                            this.bg(cx.theme().tokens.table_active)
+                        } else {
+                            this.hover(|this| this.bg(cx.theme().tokens.table_hover))
+                        }
+                    })
+                    .child(label.test_support().aria_selected(selected));
+                self.name_events(cell, &entry.name)
+                    .test_support()
+                    .into_any_element()
+            }
             "size" => {
                 let size = (!entry.is_dir()).then(|| {
                     cx.try_global::<FileSizeFormat>()
@@ -270,114 +489,42 @@ impl TableDelegate for FileListing {
         };
         let name = entry.name.to_string();
         let context = &self.context;
-        let selected = context.selection.contains(&name);
-        let cursor = context.selection.cursor() == Some(name.as_str());
+        // The hover, the selection and the cursor show on the name cell, see
+        // `render_td`. `DataTable` paints its hover over the whole row after
+        // this row's own style, so the row covers it with the table's own
+        // (opaque) background, under the cells.
         let row = div()
             .id(ElementId::Name(format!("file:{name}").into()))
-            // Selected rows and the cursor are painted here, under the cells;
-            // the hover background replaces a plain row background.
-            .when(selected, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .bg(cx.theme().tokens.table_active),
+            .child(div().absolute().inset_0().bg(cx.theme().tokens.table))
+            // Where this row paints tells where every row is. Offsets are
+            // explicit: an absolute child without them lands below the cells.
+            .child({
+                let geometry = context.geometry.clone();
+                canvas(
+                    move |bounds, _, _| {
+                        let first = bounds.origin.y - bounds.size.height * row_ix as f32;
+                        geometry.rows.set(Some((first, bounds.size.height)));
+                    },
+                    |_, _, _, _| {},
                 )
-            })
-            .when(cursor, |this| {
-                this.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .border_1()
-                        .border_color(cx.theme().table_active_border),
-                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
             });
-        let (Some(dispatch), Some(pane)) = (context.dispatch.clone(), context.pane.clone()) else {
+        let Some(dispatch) = context.dispatch.clone() else {
             return row;
         };
         let sid = context.explorer;
-        let remote = self.side == PaneSide::Remote;
-        let row = row
-            .on_click({
-                let name = name.clone();
-                let pane = pane.clone();
-                let dispatch = dispatch.clone();
-                move |event, window, cx| {
-                    let modifiers = event.modifiers();
-                    let mode = if modifiers.shift {
-                        ClickMode::Extend
-                    } else if modifiers.secondary() {
-                        ClickMode::Toggle
-                    } else {
-                        ClickMode::Replace
-                    };
-                    let _ = pane.update(cx, |pane, cx| pane.click_row(&name, mode, cx));
-                    if mode == ClickMode::Replace && event.click_count() == 2 {
-                        dispatch.dispatch_explorer_action(
-                            &ExplorerAction::new(sid, ExplorerCommand::Open { remote }),
-                            window,
-                            cx,
-                        );
-                    }
-                }
-            })
-            .on_mouse_down(MouseButton::Right, {
-                let name = name.clone();
-                let menu_hit = context.menu_hit.clone();
-                move |_, _, cx| {
-                    let hit = (name != "..").then(|| name.clone());
-                    if let Some(hit) = &hit {
-                        let _ = pane.update(cx, |pane, cx| pane.select_for_menu(hit, cx));
-                    }
-                    *menu_hit.borrow_mut() = hit.map(MenuHit::Item);
-                }
-            });
         if entry.is_parent() {
             return row;
         }
-        let names = if selected {
-            context.selection.targets(&self.order())
-        } else {
-            vec![name.clone()]
-        };
         let enabled = context.transfer_enabled;
-        let child = |name: &str| match self.side {
-            PaneSide::Local => PathBuf::from(&context.path)
-                .join(name)
-                .to_string_lossy()
-                .into_owned(),
-            PaneSide::Remote => format!("{}/{name}", context.path.trim_end_matches('/')),
-        };
-        // Dragging carries the selection when the dragged row is part of it.
-        let row = match self.side {
-            PaneSide::Local => {
-                let paths = names
-                    .iter()
-                    .map(|name| PathBuf::from(child(name)))
-                    .collect();
-                row.on_drag(LocalFilesDrag { paths }, |drag, _, _, cx| {
-                    cx.new(|_| FileDragPreview {
-                        verb: "上传",
-                        count: drag.paths.len(),
-                    })
-                })
-            }
-            PaneSide::Remote => {
-                let paths = names.iter().map(|name| child(name)).collect();
-                row.on_drag(RemoteFilesDrag { paths }, |drag, _, _, cx| {
-                    cx.new(|_| FileDragPreview {
-                        verb: "下载",
-                        count: drag.paths.len(),
-                    })
-                })
-            }
-        };
         if !entry.is_dir() {
             return row;
         }
         // Dropping on a directory row puts the items in that directory.
-        let target = child(&name);
+        let target = self.child_path(&name);
         match self.side {
             PaneSide::Remote => row
                 .on_drop({
@@ -466,22 +613,79 @@ impl TableDelegate for FileListing {
     }
 }
 
+/// The name column paints its selection across the whole cell, padding
+/// included, so it has none of the table's: the cell and the title pad
+/// themselves as the table would (`px_1p5`, the small table's 6 px).
+fn name_column(width: Pixels) -> Column {
+    Column::new("name", "名称")
+        .width(width)
+        .paddings(Edges::all(px(0.)))
+        .sortable()
+}
+
 #[derive(Clone)]
 pub(super) struct LocalFilesDrag {
     pub paths: Vec<PathBuf>,
+    pub spot: DropSpot,
 }
 /// Remote rows dragged toward the local pane, as remote paths.
 #[derive(Clone)]
 pub(super) struct RemoteFilesDrag {
     pub paths: Vec<String>,
+    pub spot: DropSpot,
 }
+
+/// Where the pointer last was over a pane that takes a file drag, recorded
+/// by that pane as the pointer moves. Only there does the drag show what it
+/// will do; anywhere else, its own list included, the pointer says no, as in
+/// WinSCP. A position rather than a flag, so nothing has to clear it: GPUI
+/// tells every pane listening for the drag type about every move, and a pane
+/// the pointer is not over leaves it alone; it goes stale as soon as the
+/// pointer moves on.
+#[derive(Clone, Default)]
+pub(super) struct DropSpot(Rc<Cell<Option<Point<Pixels>>>>);
+
+impl DropSpot {
+    /// The pointer moved to `position`, over a pane taking the drag whose
+    /// list is `bounds`.
+    pub fn offer(&self, position: Point<Pixels>, bounds: Bounds<Pixels>) {
+        if bounds.contains(&position) {
+            self.0.set(Some(position));
+        }
+    }
+
+    fn is_under_pointer(&self, window: &Window) -> bool {
+        self.0.get() == Some(window.mouse_position())
+    }
+}
+
 struct FileDragPreview {
     verb: &'static str,
     count: usize,
+    spot: DropSpot,
 }
 impl Render for FileDragPreview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let droppable = self.spot.is_under_pointer(window);
+        let cursor = if droppable {
+            CursorStyle::DragCopy
+        } else {
+            CursorStyle::OperationNotAllowed
+        };
+        // The drag is painted after everything else, so its cursor wins.
+        let pointer = canvas(
+            |_, _, _| {},
+            move |_, _, window, _| window.set_window_cursor_style(cursor),
+        )
+        .absolute()
+        .top_0()
+        .left_0();
+        if !droppable {
+            return div().child(pointer).into_any_element();
+        }
+        let text = format!("{} {} 个项目", self.verb, self.count);
         div()
+            .id("file-drag-preview")
             .px_3()
             .py_2()
             .bg(cx.theme().popover)
@@ -489,6 +693,10 @@ impl Render for FileDragPreview {
             .border_1()
             .border_color(cx.theme().border)
             .rounded(cx.theme().radius)
-            .child(format!("{} {} 个项目", self.verb, self.count))
+            .child(pointer)
+            .child(text.clone())
+            .test_support()
+            .aria_label(text)
+            .into_any_element()
     }
 }

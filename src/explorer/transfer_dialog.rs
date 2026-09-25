@@ -33,7 +33,6 @@ impl ExplorerPanel {
         cx: &mut Context<Self>,
     ) {
         if paths.is_empty()
-            || self.is_transferring()
             || self.connection_state() != crate::session::ConnectionState::Connected
             || window.has_active_dialog(cx)
         {
@@ -45,7 +44,9 @@ impl ExplorerPanel {
             paths.iter().map(|path| path.to_string_lossy().into_owned()),
             cx,
         );
+        let queued = self.is_transferring();
         let form = cx.new(|_| UploadForm {
+            queued,
             sources,
             target: target_input.clone(),
             endpoint: self.endpoint().into(),
@@ -121,7 +122,6 @@ impl ExplorerPanel {
         cx: &mut Context<Self>,
     ) {
         if paths.is_empty()
-            || self.is_transferring()
             || self.connection_state() != crate::session::ConnectionState::Connected
             || window.has_active_dialog(cx)
         {
@@ -129,7 +129,9 @@ impl ExplorerPanel {
         }
         let target_input = cx.new(|cx| InputState::new(window, cx).default_value(&target));
         let sources = self.transfer_sources(true, paths.iter().cloned(), cx);
+        let queued = self.is_transferring();
         let form = cx.new(|_| DownloadForm {
+            queued,
             sources,
             target: target_input,
             endpoint: self.endpoint().into(),
@@ -238,6 +240,7 @@ impl ExplorerPanel {
         let generation = self.generation();
         let focus = window.focused(cx).unwrap_or_else(|| self.focus_handle(cx));
         self.dialog_open = true;
+        self.question_shown = true;
         let verb = self.transfer_direction().verb();
         let (title, primary_label, primary_choice): (SharedString, SharedString, _) =
             match question.kind() {
@@ -504,6 +507,16 @@ impl TransferSources {
     }
 }
 
+/// Said when another batch is running, which this one will follow.
+fn queued_note(cx: &App) -> impl IntoElement {
+    div()
+        .id("transfer-queued-note")
+        .test_support()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child("当前有传输在进行，这一批会排在传输队列里，轮到时自动开始。")
+}
+
 /// The dialog's first line: what goes where.
 fn summary(text: String) -> impl IntoElement {
     div()
@@ -515,6 +528,8 @@ fn summary(text: String) -> impl IntoElement {
 }
 
 struct UploadForm {
+    /// Another batch runs; this one will wait its turn.
+    queued: bool,
     sources: TransferSources,
     target: Entity<InputState>,
     endpoint: String,
@@ -530,6 +545,7 @@ impl Render for UploadForm {
                 self.endpoint
             )))
             .child(self.sources.render("upload-source-list", cx))
+            .when(self.queued, |this| this.child(queued_note(cx)))
             .child(
                 Form::new().child(
                     Field::new()
@@ -550,6 +566,8 @@ impl Render for UploadForm {
     }
 }
 struct DownloadForm {
+    /// Another batch runs; this one will wait its turn.
+    queued: bool,
     sources: TransferSources,
     target: Entity<InputState>,
     endpoint: String,
@@ -589,6 +607,7 @@ impl Render for DownloadForm {
                 self.sources.count()
             )))
             .child(self.sources.render("download-source-list", cx))
+            .when(self.queued, |this| this.child(queued_note(cx)))
             .child(
                 Form::new().child(
                     Field::new().label("下载到").required(true).child(

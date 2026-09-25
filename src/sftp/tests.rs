@@ -506,6 +506,25 @@ fn winscp_style_upload_finishes_without_a_verification_phase() {
             snapshot.phase(),
             TransferPhase::Transferring | TransferPhase::Completed
         )));
+        // The file in flight is reported on its own, up to its full size,
+        // and cleared once the batch is done.
+        let size = data.len() as u64;
+        assert!(progress.iter().any(|snapshot| {
+            snapshot.current_source() == source.display().to_string()
+                && snapshot.current_total() == size
+                && snapshot.current_bytes() == size
+        }));
+        assert!(
+            progress
+                .windows(2)
+                .all(|pair| pair[0].current_source() != pair[1].current_source()
+                    || pair[0].current_bytes() <= pair[1].current_bytes())
+        );
+        let last = progress.last().unwrap();
+        assert_eq!(last.phase(), TransferPhase::Completed);
+        assert_eq!(last.current_source(), "");
+        assert_eq!(last.fraction(), 1.0);
+        assert_eq!(last.remaining(), None);
     });
 }
 

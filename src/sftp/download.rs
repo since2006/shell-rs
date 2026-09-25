@@ -4,11 +4,13 @@
 //! as WinSCP does, as long as the remote file still has the size and time it
 //! had when the partial file was started.
 
+use super::speed::TransferClock;
 use super::{
     DownloadRequest, EntryKind, FileMetadata, RemotePath, SftpEvent, TransferChoice,
     TransferDetail, TransferDirection, TransferPhase, TransferProgress, TransferQuestionKind,
     client::RemoteFs,
     control::{Cancelled, TargetGuard, TransferControl},
+    file_size,
     journal::{DownloadJournal, DownloadRecord, partial_path},
 };
 use anyhow::{Result, anyhow, bail};
@@ -41,7 +43,7 @@ pub(crate) struct DownloadBatch {
     all_conflicts: Option<TransferChoice>,
     approved_resumes: HashSet<PathBuf>,
     blocked_directories: Vec<PathBuf>,
-    started: Instant,
+    clock: TransferClock,
     received_bytes: u64,
     completed_bytes: u64,
     last_progress: Instant,
@@ -193,7 +195,7 @@ impl DownloadBatch {
             all_conflicts: None,
             approved_resumes: HashSet::new(),
             blocked_directories: Vec::new(),
-            started: Instant::now(),
+            clock: TransferClock::default(),
             received_bytes: 0,
             completed_bytes: 0,
             last_progress: Instant::now(),
@@ -219,7 +221,24 @@ impl DownloadBatch {
     }
 
     pub fn phase(&mut self, phase: TransferPhase, control: &TransferControl) {
+        let now = Instant::now();
+        if phase == TransferPhase::Transferring {
+            self.clock.run(now, self.received_bytes);
+        } else {
+            self.clock.pause(now);
+        }
+        if phase != TransferPhase::Reconnecting {
+            self.progress.note = None;
+        }
+        if phase == TransferPhase::Completed {
+            self.progress.current.clear();
+            self.progress.current_source.clear();
+            self.progress.current_bytes = 0;
+            self.progress.current_total = 0;
+        }
         self.progress.phase = phase;
+        self.progress.elapsed = self.clock.elapsed(now);
+        self.progress.bytes_per_second = self.clock.speed();
         self.emit(control);
     }
 
@@ -229,6 +248,9 @@ impl DownloadBatch {
             control.check()?;
             let item = self.items[self.cursor].clone();
             self.progress.current = item.target.display().to_string();
+            self.progress.current_source = item.source.to_string();
+            self.progress.current_bytes = 0;
+            self.progress.current_total = file_size(&item.metadata);
             self.emit(control);
             let _target_guard = TargetGuard::acquire(
                 format!("local\0{}", item.target.display()),
@@ -258,6 +280,7 @@ impl DownloadBatch {
                 }
                 Ok(false) => {
                     self.progress.skipped += 1;
+                    self.progress.settled_bytes += file_size(&item.metadata);
                     self.progress
                         .details
                         .push(TransferDetail::skipped(item.target.display().to_string()));
@@ -309,6 +332,7 @@ impl DownloadBatch {
                         continue;
                     }
                     self.progress.failed += 1;
+                    self.progress.settled_bytes += file_size(&item.metadata);
                     self.progress.details.push(TransferDetail::failed(
                         item.target.display().to_string(),
                         format!("{error:#}"),
@@ -527,6 +551,7 @@ impl DownloadBatch {
             file.seek(std::io::SeekFrom::Start(offset)).await?;
             let mut next_request = offset;
             let mut next_write = offset;
+            self.progress.current_bytes = next_write;
             let mut remainders: Vec<(u64, u32)> = Vec::new();
             let mut ready: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
             let mut reads = FuturesUnordered::new();
@@ -564,10 +589,12 @@ impl DownloadBatch {
                     file.write_all(&chunk).await?;
                     next_write += chunk.len() as u64;
                     self.received_bytes += chunk.len() as u64;
+                    let now = Instant::now();
+                    self.clock.record(now, self.received_bytes);
                     self.progress.completed_bytes = self.completed_bytes.saturating_add(next_write);
-                    self.progress.bytes_per_second = (self.received_bytes as f64
-                        / self.started.elapsed().as_secs_f64().max(0.001))
-                        as u64;
+                    self.progress.current_bytes = next_write;
+                    self.progress.bytes_per_second = self.clock.speed();
+                    self.progress.elapsed = self.clock.elapsed(now);
                     if self.last_progress.elapsed() >= Duration::from_millis(50) {
                         self.emit(control);
                         self.last_progress = Instant::now();

@@ -1551,7 +1551,7 @@ async fn sftp_button_opens_explorer_and_navigates(cx: &mut TestAppContext) {
 
         window
             .within(("remote-pane", SFTP_TAB))
-            .double_click(ElementId::Name("file:..".into()), cx);
+            .double_click(ElementId::Name("name:..".into()), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -3980,10 +3980,19 @@ impl SftpTransport for FakeSftpTransport {
                     self.requests.lock().unwrap().push(request);
                     events.send_blocking(SftpEvent::Progress(Default::default()))?;
                 }
+                // The real engine says Idle once a batch stops or ends,
+                // which is when the queue may move on.
                 SftpCommand::Cancel => {
                     events.send_blocking(SftpEvent::Progress(TransferProgress::new(
                         TransferPhase::Stopped,
                     )))?;
+                    events.send_blocking(SftpEvent::Idle)?;
+                }
+                SftpCommand::Discard => {
+                    events.send_blocking(SftpEvent::Progress(TransferProgress::new(
+                        TransferPhase::Completed,
+                    )))?;
+                    events.send_blocking(SftpEvent::Idle)?;
                 }
                 SftpCommand::Resume => {
                     events.send_blocking(SftpEvent::Progress(TransferProgress::new(
@@ -3998,6 +4007,7 @@ impl SftpTransport for FakeSftpTransport {
                             TransferPhase::Completed
                         },
                     )))?;
+                    events.send_blocking(SftpEvent::Idle)?;
                 }
                 SftpCommand::Shutdown => break,
                 _ => {}
@@ -4137,6 +4147,21 @@ async fn open_test_explorer(cx: &mut TestAppContext, handle: WindowHandle<Root>)
     .await;
 }
 
+/// Wait until the batch at the head of the transfer queue reads `status`.
+async fn wait_for_head_status(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Root>,
+    status: &'static str,
+) {
+    cx.wait_for(handle.into(), Duration::from_secs(2), move |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("transfer-status")
+            .is_some_and(|head| head.label() == Some(status))
+    })
+    .await;
+}
+
 /// `TestWindowExt::click` sends no modifiers, and file lists need ⌘ and
 /// Shift clicks.
 fn modified_click(
@@ -4146,9 +4171,19 @@ fn modified_click(
     modifiers: gpui_kit::Modifiers,
     cx: &mut App,
 ) {
-    use gpui_kit::{MouseDownEvent, MouseUpEvent};
     let row = ElementId::Name(row.to_string().into());
     let position = window.within(pane).find(row).bounds().center();
+    click_at(window, position, modifiers, cx);
+}
+
+/// A left click at a point, for places without an element of their own.
+fn click_at(
+    window: &mut gpui_kit::Window,
+    position: gpui_kit::Point<gpui_kit::Pixels>,
+    modifiers: gpui_kit::Modifiers,
+    cx: &mut App,
+) {
+    use gpui_kit::{MouseDownEvent, MouseUpEvent};
     window.dispatch_event(
         MouseMoveEvent {
             position,
@@ -4206,7 +4241,7 @@ async fn sftp_multi_selection_keyboard_upload_freezes_paths_and_cancel_resumes(
     cx.update_window(handle.into(), |_, window, cx| {
         window
             .within(("local-pane", SFTP_TAB))
-            .click("file:文件 乙.txt", cx);
+            .click("name:文件 乙.txt", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -4282,22 +4317,18 @@ async fn sftp_multi_selection_keyboard_upload_freezes_paths_and_cancel_resumes(
         window.click("upload-confirm", cx);
     })
     .unwrap();
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
-        window.render_frame(cx);
-        window.try_find("cancel-transfer").is_some()
-    })
-    .await;
+    wait_for_head_status(cx, handle, "正在扫描").await;
     assert_eq!(
         provider.requests.lock().unwrap()[0].destination().as_str(),
         "/固定目标"
     );
     assert_eq!(provider.requests.lock().unwrap()[0].sources().len(), 4);
-    // 详情 lists items as they end. None has yet, and the list says so
-    // rather than opening empty; a second click closes it.
+    // A batch unfolds to its item results. None has ended yet, and the list
+    // says so rather than opening empty; a second click folds it again.
     for open in [true, false] {
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
-            window.click("transfer-details", cx);
+            window.click(("queue-expand", 1u64), cx);
         })
         .unwrap();
         cx.run_until_parked();
@@ -4322,26 +4353,153 @@ async fn sftp_multi_selection_keyboard_upload_freezes_paths_and_cancel_resumes(
         window.click("cancel-transfer", cx);
     })
     .unwrap();
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
-        window.render_frame(cx);
-        window.try_find("resume-transfer").is_some()
-    })
-    .await;
+    wait_for_head_status(cx, handle, "已停止").await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("resume-transfer", cx);
     })
     .unwrap();
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
-        window.render_frame(cx);
-        window.try_find("cancel-transfer").is_some()
-    })
-    .await;
+    wait_for_head_status(cx, handle, "0%").await;
     assert_eq!(provider.requests.lock().unwrap().len(), 1);
     assert_eq!(
         provider.requests.lock().unwrap()[0].destination().as_str(),
         "/固定目标"
     );
+}
+
+/// A transfer confirmed while another runs waits its turn in the queue,
+/// WinSCP-style, and starts when the engine is free again.
+#[gpui_kit::test]
+async fn sftp_transfers_wait_their_turn_in_the_queue(cx: &mut TestAppContext) {
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
+    use shellrs::sftp::{TransferPhase, TransferProgress};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, _) = open_workspace_with_sftp(cx, provider.clone());
+    open_test_explorer(cx, handle).await;
+    let upload = |cx: &mut TestAppContext, name: &str| {
+        let paths = vec![std::path::PathBuf::from(format!("/local/tester/{name}"))];
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.dispatch_action(
+                Box::new(ExplorerAction::new(
+                    ExplorerId(SFTP_TAB),
+                    ExplorerCommand::UploadPaths {
+                        paths,
+                        target: "/home/tester".into(),
+                    },
+                )),
+                cx,
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let confirm = |cx: &mut TestAppContext, queued: bool| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.try_find("transfer-queued-note").is_some(), queued);
+            window.click("upload-confirm", cx);
+        })
+        .unwrap();
+    };
+    let label = |cx: &mut TestAppContext, id: ElementId| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(id)
+                .and_then(|row| row.label().map(str::to_string))
+        })
+        .unwrap()
+    };
+    let send = |event: SftpEvent| {
+        provider.events.lock().unwrap()[0]
+            .send_blocking(event)
+            .unwrap()
+    };
+
+    upload(cx, "文件 甲.txt");
+    confirm(cx, false);
+    wait_for_head_status(cx, handle, "正在扫描").await;
+    upload(cx, "文件 乙.txt");
+    confirm(cx, true);
+    cx.run_until_parked();
+    assert_eq!(
+        label(cx, ("queue-entry", 2u64).into()).as_deref(),
+        Some("等待中")
+    );
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+
+    // The first one ends; the engine goes idle and takes the second.
+    send(SftpEvent::Progress(TransferProgress::new(
+        TransferPhase::Completed,
+    )));
+    send(SftpEvent::Idle);
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(("queue-entry", 1u64))
+            .is_some_and(|row| row.label() == Some("已完成"))
+    })
+    .await;
+    assert_eq!(provider.requests.lock().unwrap().len(), 2);
+    assert_eq!(
+        provider.requests.lock().unwrap()[1].sources(),
+        [std::path::PathBuf::from("/local/tester/文件 乙.txt")]
+    );
+
+    // Its file in flight gets a row and a bar of its own.
+    send(SftpEvent::Progress(
+        TransferProgress::new(TransferPhase::Transferring)
+            .with_bytes(512, 1024)
+            .with_current(
+                "/local/tester/文件 乙.txt",
+                "/home/tester/文件 乙.txt",
+                256,
+                1024,
+            ),
+    ));
+    wait_for_head_status(cx, handle, "50%").await;
+    assert_eq!(
+        label(cx, ("queue-file", 2u64).into()).as_deref(),
+        Some("/local/tester/文件 乙.txt")
+    );
+    assert_eq!(
+        label(cx, ("queue-file-status", 2u64).into()).as_deref(),
+        Some("25%")
+    );
+
+    // Cleared once done, and the queue goes away with its last row.
+    let clear = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("clear-finished-transfers", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    clear(cx);
+    assert_eq!(label(cx, ("queue-entry", 1u64).into()), None);
+    send(SftpEvent::Progress(TransferProgress::new(
+        TransferPhase::Completed,
+    )));
+    send(SftpEvent::Idle);
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(("queue-entry", 2u64))
+            .is_some_and(|row| row.label() == Some("已完成"))
+    })
+    .await;
+    clear(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window
+                .try_find(("transfer-queue", SFTP_TAB))
+                .is_none_or(|queue| !queue.visible())
+        );
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -4422,7 +4580,7 @@ async fn sftp_internal_drag_conflict_and_close_confirmation(cx: &mut TestAppCont
         window.render_frame(cx);
         let from = window
             .within(("local-pane", SFTP_TAB))
-            .find("file:文件 甲.txt")
+            .find("name:文件 甲.txt")
             .bounds()
             .center();
         let to = window
@@ -4443,11 +4601,7 @@ async fn sftp_internal_drag_conflict_and_close_confirmation(cx: &mut TestAppCont
         window.click("upload-confirm", cx);
     })
     .unwrap();
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
-        window.render_frame(cx);
-        window.try_find("cancel-transfer").is_some()
-    })
-    .await;
+    wait_for_head_status(cx, handle, "正在扫描").await;
     provider.events.lock().unwrap()[0]
         .send_blocking(SftpEvent::Question(TransferQuestion::new(
             900,
@@ -4467,21 +4621,13 @@ async fn sftp_internal_drag_conflict_and_close_confirmation(cx: &mut TestAppCont
         window.click("transfer-question-cancel", cx);
     })
     .unwrap();
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
-        window.render_frame(cx);
-        window.try_find("resume-transfer").is_some()
-    })
-    .await;
+    wait_for_head_status(cx, handle, "已停止").await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("resume-transfer", cx);
     })
     .unwrap();
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
-        window.render_frame(cx);
-        window.try_find("cancel-transfer").is_some()
-    })
-    .await;
+    wait_for_head_status(cx, handle, "0%").await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click(("close-explorer", SFTP_TAB), cx);
@@ -4510,7 +4656,7 @@ async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
         window.render_frame(cx);
         window
             .within(("local-pane", SFTP_TAB))
-            .click("file:文件 乙.txt", cx);
+            .click("name:文件 乙.txt", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -4545,7 +4691,7 @@ async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
         modified_click(
             window,
             ("local-pane", SFTP_TAB),
-            "file:目录",
+            "name:目录",
             gpui_kit::Modifiers::secondary_key(),
             cx,
         );
@@ -4578,7 +4724,7 @@ async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
         modified_click(
             window,
             ("local-pane", SFTP_TAB),
-            &format!("file:{last}"),
+            &format!("name:{last}"),
             gpui_kit::Modifiers::shift(),
             cx,
         );
@@ -4601,7 +4747,7 @@ async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
         window.render_frame(cx);
         window
             .within(("local-pane", SFTP_TAB))
-            .click("file:文件 甲.txt", cx);
+            .click("name:文件 甲.txt", cx);
         window.press("f5", cx);
     })
     .unwrap();
@@ -4660,7 +4806,7 @@ async fn sftp_panes_list_winscp_columns_and_open_links_to_directories(cx: &mut T
         window.render_frame(cx);
         window
             .within(("remote-pane", SFTP_TAB))
-            .double_click("file:链接目录", cx);
+            .double_click("name:链接目录", cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
@@ -5257,7 +5403,7 @@ fn press_on_row(
     row: &str,
     key: &str,
 ) {
-    let row = ElementId::Name(format!("file:{row}").into());
+    let row = ElementId::Name(format!("name:{row}").into());
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.within((pane, SFTP_TAB)).click(row, cx);
@@ -5374,7 +5520,7 @@ async fn sftp_file_commands_confirm_validate_and_send_one_operation(cx: &mut Tes
         window.render_frame(cx);
         window
             .within(("remote-pane", SFTP_TAB))
-            .click("file:目录", cx);
+            .click("name:目录", cx);
         window.dispatch_action(
             Box::new(ExplorerAction::new(
                 ExplorerId(SFTP_TAB),
@@ -5472,13 +5618,7 @@ async fn sftp_downloads_the_selection_with_f5_into_a_chosen_folder(cx: &mut Test
         window.click("download-confirm", cx);
     })
     .unwrap();
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
-        window.render_frame(cx);
-        window
-            .try_find("transfer-status")
-            .is_some_and(|status| status.visible())
-    })
-    .await;
+    wait_for_head_status(cx, handle, "0%").await;
     {
         let downloads = provider.downloads.lock().unwrap();
         assert_eq!(downloads.len(), 1);
@@ -5491,6 +5631,8 @@ async fn sftp_downloads_the_selection_with_f5_into_a_chosen_folder(cx: &mut Test
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find("cancel-transfer").visible());
+        // The running download's row, with the arrow pointing down.
+        assert_eq!(window.find(("queue-entry", 1u64)).label(), Some("0%"));
     })
     .unwrap();
 }
@@ -5498,32 +5640,326 @@ async fn sftp_downloads_the_selection_with_f5_into_a_chosen_folder(cx: &mut Test
 #[gpui_kit::test]
 async fn sftp_dragging_remote_rows_to_a_local_directory_asks_to_download(cx: &mut TestAppContext) {
     let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    // By its name: the rest of the row draws a selection rectangle.
+    let drag_name = |cx: &mut TestAppContext, name: &str| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let from = window
+                .within(("remote-pane", SFTP_TAB))
+                .find(ElementId::Name(format!("name:{name}").into()))
+                .bounds()
+                .center();
+            let to = window
+                .within(("local-pane", SFTP_TAB))
+                .find("file:目录")
+                .bounds()
+                .center();
+            window.drag(from, to, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let summary = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("download-target").value(),
+                Some("/local/tester/目录")
+            );
+            window.find("transfer-summary").label().unwrap().to_string()
+        })
+        .unwrap()
+    };
+
+    // A name that is not selected is selected alone and goes alone.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .click("name:文件 甲.txt", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    drag_name(cx, "文件 乙.txt");
+    cx.update(|cx| assert_eq!(pane_selection(&workspace, true, cx), ["文件 乙.txt"]));
+    assert!(summary(cx).ends_with(" 下载 1 个文件"));
+    cx.update_window(handle.into(), |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    // A selected name takes the whole selection with it.
+    cx.update_window(handle.into(), |_, window, cx| {
+        modified_click(
+            window,
+            ("remote-pane", SFTP_TAB),
+            "name:文件 甲.txt",
+            gpui_kit::Modifiers::secondary_key(),
+            cx,
+        )
+    })
+    .unwrap();
+    cx.run_until_parked();
+    drag_name(cx, "文件 乙.txt");
+    cx.update(|cx| {
+        assert_eq!(
+            pane_selection(&workspace, true, cx),
+            ["文件 乙.txt", "文件 甲.txt"]
+        )
+    });
+    assert!(summary(cx).ends_with(" 下载 2 个文件"));
+}
+
+/// A file drag shows what it will do only over the pane that takes it; over
+/// its own list the pointer says no instead, as in WinSCP.
+#[gpui_kit::test]
+async fn sftp_a_file_drag_shows_its_preview_only_over_the_other_pane(cx: &mut TestAppContext) {
+    use gpui_kit::{MouseDownEvent, MouseUpEvent};
+    let provider = Arc::new(FakeSftpProvider::default());
     let (handle, _) = open_workspace_with_sftp(cx, provider);
     open_test_explorer(cx, handle).await;
+    let move_to = |window: &mut gpui_kit::Window, position, cx: &mut App| {
+        window.dispatch_event(
+            MouseMoveEvent {
+                position,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: gpui_kit::Modifiers::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+        window
+            .try_find("file-drag-preview")
+            .and_then(|preview| preview.label().map(str::to_string))
+    };
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        let from = window
+        let local = window.within(("local-pane", SFTP_TAB));
+        let from = local.find("name:文件 甲.txt").bounds().center();
+        let still_local = local.find("size:目录").bounds().center();
+        let remote = window
             .within(("remote-pane", SFTP_TAB))
-            .find("file:文件 乙.txt")
+            .find("size:文件 乙.txt")
             .bounds()
             .center();
-        let to = window
-            .within(("local-pane", SFTP_TAB))
-            .find("file:目录")
-            .bounds()
-            .center();
-        window.drag(from, to, cx);
+        window.dispatch_event(
+            MouseDownEvent {
+                button: MouseButton::Left,
+                position: from,
+                modifiers: gpui_kit::Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        // Dragging, but still over its own list: no preview.
+        assert_eq!(move_to(window, still_local, cx), None);
+        // Over the other pane it says what a drop does.
+        assert_eq!(
+            move_to(window, remote, cx).as_deref(),
+            Some("上传 1 个项目")
+        );
+        // And back.
+        assert_eq!(move_to(window, still_local, cx), None);
+        // Let go where nothing takes it.
+        window.dispatch_event(
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position: still_local,
+                modifiers: gpui_kit::Modifiers::default(),
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
     })
     .unwrap();
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
+        assert!(window.try_find("upload-confirm").is_none());
+    })
+    .unwrap();
+}
+
+/// Dragging from anywhere but a name draws a selection rectangle, as in
+/// WinSCP without full row select: the rows it crosses are selected, and
+/// nothing is dragged to the other pane.
+#[gpui_kit::test]
+async fn sftp_dragging_outside_the_names_selects_the_rows_crossed(cx: &mut TestAppContext) {
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    // Remote rows: .., 目录, 链接目录, 文件 乙.txt, 文件 甲.txt.
+    let sweep = |cx: &mut TestAppContext, from: &str, to: &str| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let pane = window.within(("remote-pane", SFTP_TAB));
+            let from = pane
+                .find(ElementId::Name(format!("size:{from}").into()))
+                .bounds()
+                .center();
+            let to = pane
+                .find(ElementId::Name(format!("size:{to}").into()))
+                .bounds()
+                .center();
+            window.drag(from, to, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    sweep(cx, "文件 甲.txt", "链接目录");
+    cx.update(|cx| {
         assert_eq!(
-            window.find("download-target").value(),
-            Some("/local/tester/目录")
+            pane_selection(&workspace, true, cx),
+            ["链接目录", "文件 乙.txt", "文件 甲.txt"]
+        );
+        // GPUI tells every pane about the drag; the other one ignores it.
+        assert!(pane_selection(&workspace, false, cx).is_empty());
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // No transfer was started, and the rectangle is gone with the button.
+        assert!(window.try_find("download-confirm").is_none());
+        assert!(
+            window
+                .within(("remote-pane", SFTP_TAB))
+                .try_find("selection-rectangle")
+                .is_none()
         );
     })
     .unwrap();
+
+    // A new rectangle replaces the selection. The name cell right of the
+    // name is empty space too.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let pane = window.within(("remote-pane", SFTP_TAB));
+        let blank = |name: &str| {
+            let cell = pane
+                .find(ElementId::Name(format!("name-cell:{name}").into()))
+                .bounds();
+            gpui_kit::point(cell.right() - gpui_kit::px(8.), cell.center().y)
+        };
+        let (from, to) = (blank("目录"), blank("链接目录"));
+        window.drag(from, to, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| assert_eq!(pane_selection(&workspace, true, cx), ["目录", "链接目录"]));
+}
+
+/// As in WinSCP without full row select, only the name cell is the item: a
+/// click on the rest of a row, or below the rows, is a click on empty space
+/// and clears the selection. A ⌘ click there, or a click on a column title,
+/// leaves it alone.
+#[gpui_kit::test]
+async fn sftp_clicking_outside_the_names_clears_the_selection(cx: &mut TestAppContext) {
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let pane = ("remote-pane", SFTP_TAB);
+    let select_two = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within(pane).click("name:文件 甲.txt", cx);
+            modified_click(
+                window,
+                pane,
+                "name:文件 乙.txt",
+                gpui_kit::Modifiers::secondary_key(),
+                cx,
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(
+                pane_selection(&workspace, true, cx),
+                ["文件 乙.txt", "文件 甲.txt"]
+            )
+        });
+    };
+    let selection = |cx: &mut TestAppContext| {
+        cx.run_until_parked();
+        cx.update(|cx| pane_selection(&workspace, true, cx))
+    };
+
+    // The size of a selected row.
+    select_two(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // The selection shows across the whole name cell: the column's
+        // 240 px, and the row's height but for the row's 1 px bottom border.
+        let name = window.within(pane).find("name-cell:文件 甲.txt").bounds();
+        let row = window.within(pane).find("file:文件 甲.txt").bounds();
+        assert_eq!(name.top(), row.top());
+        assert_eq!(name.size.height, row.size.height - gpui_kit::px(1.));
+        assert_eq!(name.size.width, gpui_kit::px(240.));
+        window.within(pane).click("size:文件 甲.txt", cx);
+    })
+    .unwrap();
+    assert!(selection(cx).is_empty());
+
+    // The name cell is the item, right of the name too: a plain click
+    // selects that row alone.
+    select_two(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let cell = window.within(pane).find("name-cell:文件 甲.txt").bounds();
+        let blank = gpui_kit::point(cell.right() - gpui_kit::px(8.), cell.center().y);
+        click_at(window, blank, gpui_kit::Modifiers::default(), cx);
+    })
+    .unwrap();
+    assert_eq!(selection(cx), ["文件 甲.txt"]);
+
+    // A file drag let go over the name it began on is not a click: the
+    // selection it carried stays.
+    select_two(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let name = window.within(pane).find("name:文件 乙.txt").bounds();
+        let to = gpui_kit::point(name.right() + gpui_kit::px(20.), name.center().y);
+        window.drag(name.center(), to, cx);
+    })
+    .unwrap();
+    assert_eq!(selection(cx), ["文件 乙.txt", "文件 甲.txt"]);
+
+    // Below the last row.
+    select_two(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // Halfway between the last row and the status bar under the list,
+        // clear of the table's scrollbars.
+        let last = window.within(pane).find("file:文件 甲.txt").bounds();
+        let status = window.within(pane).find("pane-status").bounds();
+        let below = gpui_kit::point(
+            last.center().x,
+            last.bottom() + (status.top() - last.bottom()) / 2.,
+        );
+        click_at(window, below, gpui_kit::Modifiers::default(), cx);
+    })
+    .unwrap();
+    assert!(selection(cx).is_empty());
+
+    // ⌘ held, or a column title: the selection stays.
+    select_two(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        modified_click(
+            window,
+            pane,
+            "size:链接目录",
+            gpui_kit::Modifiers::secondary_key(),
+            cx,
+        );
+        window.render_frame(cx);
+        window.within(pane).click("column:size", cx);
+    })
+    .unwrap();
+    assert_eq!(selection(cx), ["文件 乙.txt", "文件 甲.txt"]);
 }
 
 #[gpui_kit::test]

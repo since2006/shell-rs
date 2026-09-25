@@ -33,7 +33,9 @@ icon_assets!(
         Settings,
         Palette,
         SquareTerminal,
-        CircleMinus
+        CircleMinus,
+        Play,
+        Square
     ]
 );
 

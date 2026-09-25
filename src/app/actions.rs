@@ -399,10 +399,24 @@ pub enum ExplorerCommand {
         request_id: u64,
         answer: crate::sftp::TransferAnswer,
     },
+    /// Stop the running batch, keeping its progress for 继续.
     CancelTransfer,
+    /// Go on with the stopped batch at the head of the queue, or reconnect.
     ResumeTransfer,
+    /// Throw away the stopped head's progress; the queue moves on.
     DiscardTransfer,
-    ToggleDetails,
+    /// Select a row of the transfer queue, by its id.
+    SelectQueueEntry {
+        id: u64,
+    },
+    /// Show or hide a queued batch's item results.
+    ToggleQueueEntry {
+        id: u64,
+    },
+    /// Take the selected batch, or a stopped head, off the queue.
+    RemoveQueueEntry,
+    /// 清除已完成.
+    ClearFinishedTransfers,
     CloseConfirmed,
 }
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]

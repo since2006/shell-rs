@@ -1,11 +1,12 @@
 use super::{
     ClickMode, CursorMotion, ExplorerId, FileEntry, FileListing, FileSizeFormat, LoadIntent,
     NavigationHistory, Selection,
-    file_listing::{ListingContext, MenuHit},
+    file_listing::{ListGeometry, ListingContext, MenuHit, Pressed},
     pane_menu::{
         PaneMenuState, bookmark_menu, directory_menu, item_menu, new_menu, size_format_menu,
     },
     path_ancestors,
+    selection::{row_at, swept_rows},
 };
 use crate::app::ExplorerDispatch as _;
 use crate::{
@@ -37,6 +38,32 @@ use std::{
 
 /// How long a directory load runs before the status line says so.
 const SLOW_LOAD: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// A selection rectangle being dragged over the list, as in WinSCP: it
+/// starts anywhere but on a name, which drags the file instead.
+struct Marquee {
+    /// Where it started: `x` in the window, `y` from the top of the first
+    /// row, so it stays put while the list scrolls.
+    anchor: Point<Pixels>,
+    /// The pointer now, in the window.
+    pointer: Point<Pixels>,
+    /// The selection it adds to, when ⌘ or Shift was held.
+    base: Option<Selection>,
+}
+
+/// What a drag from outside a name carries: only whose it is. GPUI tells
+/// every listener for the type about every drag of it, so the other pane,
+/// and other SFTP tabs, must leave this one alone.
+#[derive(Clone)]
+pub(super) struct MarqueeDrag {
+    pane: EntityId,
+}
+
+impl Render for MarqueeDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaneSide {
@@ -146,6 +173,12 @@ pub struct FilePane {
     path_select: Entity<SelectState<PathChoices>>,
     selection: Selection,
     menu_hit: Rc<RefCell<Option<MenuHit>>>,
+    /// Where the list and its rows are, for the selection rectangle.
+    geometry: Rc<ListGeometry>,
+    /// The selection rectangle being dragged.
+    marquee: Option<Marquee>,
+    /// Scrolls the list while the rectangle is dragged past its edge.
+    marquee_scroll: gpui_kit::base::AutoScroll,
     history: NavigationHistory,
     /// The load in flight, why it started, and where it started from.
     pending: Option<(u64, LoadIntent, String)>,
@@ -226,6 +259,9 @@ impl FilePane {
             path_select,
             selection: Selection::default(),
             menu_hit: Rc::default(),
+            geometry: Rc::default(),
+            marquee: None,
+            marquee_scroll: gpui_kit::base::AutoScroll::default(),
             history: NavigationHistory::default(),
             pending: None,
             select_after_load: None,
@@ -426,6 +462,7 @@ impl FilePane {
             dispatch: Some(self.dispatch.clone()),
             pane: Some(cx.entity().downgrade()),
             menu_hit: self.menu_hit.clone(),
+            geometry: self.geometry.clone(),
         };
         self.table.update(cx, |table, cx| {
             table.delegate_mut().configure(context);
@@ -455,9 +492,152 @@ impl FilePane {
         self.clear_menu_row(cx);
         self.update_selection(cx, |selection, order| selection.click(name, mode, order));
     }
-    /// Right-clicking an unselected row selects it first, as in WinSCP, so the
-    /// context menu acts on what is highlighted.
-    pub fn select_for_menu(&mut self, name: &str, cx: &mut Context<Self>) {
+    /// The selection rectangle follows the pointer: the rows it covers
+    /// become the selection, and the list scrolls when it goes past an edge.
+    fn drag_marquee(
+        &mut self,
+        pointer: Point<Pixels>,
+        modifiers: Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        // A title may move its column. A name's icon and text drag its
+        // files instead, and that drag, being theirs, wins.
+        if self.geometry.pressed.get() == Pressed::Title {
+            return;
+        }
+        let Some((first_row, _)) = self.geometry.rows.get() else {
+            return;
+        };
+        if self.marquee.is_none() {
+            let start = self.geometry.press.get().unwrap_or(pointer);
+            self.clear_menu_row(cx);
+            self.marquee = Some(Marquee {
+                anchor: point(start.x, start.y - first_row),
+                pointer,
+                base: (modifiers.secondary() || modifiers.shift).then(|| self.selection.clone()),
+            });
+        }
+        if let Some(marquee) = &mut self.marquee {
+            marquee.pointer = pointer;
+        }
+        self.apply_marquee(cx);
+        let delta = self
+            .geometry
+            .list
+            .get()
+            .and_then(|list| gpui_kit::base::AutoScroll::compute_delta(pointer.y, list));
+        self.marquee_scroll
+            .set(delta, cx, |delta, pane, cx| pane.scroll_marquee(delta, cx));
+    }
+
+    /// Select the rows under the rectangle.
+    fn apply_marquee(&mut self, cx: &mut Context<Self>) {
+        let (Some(marquee), Some((first_row, row_height))) =
+            (&self.marquee, self.geometry.rows.get())
+        else {
+            return;
+        };
+        let height = f32::from(row_height);
+        let from = f32::from(marquee.anchor.y);
+        let to = f32::from(marquee.pointer.y - first_row);
+        let base = marquee.base.clone();
+        self.update_selection(cx, |selection, order| {
+            selection.sweep(
+                base.as_ref(),
+                swept_rows(from, to, height, order.len()),
+                row_at(to, height, order.len()),
+                order,
+            )
+        });
+    }
+
+    /// One step of scrolling while the rectangle is past the list's edge.
+    fn scroll_marquee(&mut self, delta: Pixels, cx: &mut Context<Self>) {
+        if self.marquee.is_none() {
+            self.marquee_scroll.stop();
+            return;
+        }
+        let scroll = self
+            .table
+            .read(cx)
+            .vertical_scroll_handle
+            .0
+            .borrow()
+            .base_handle
+            .clone();
+        let offset = scroll.offset();
+        let lowest = -scroll.max_offset().y;
+        let y = (offset.y - delta).clamp(lowest, px(0.));
+        if y != offset.y {
+            scroll.set_offset(point(offset.x, y));
+            // The rows moved by as much; the next paint records it too.
+            if let Some((first_row, height)) = self.geometry.rows.get() {
+                self.geometry
+                    .rows
+                    .set(Some((first_row + (y - offset.y), height)));
+            }
+            self.apply_marquee(cx);
+        }
+    }
+
+    /// The rectangle as drawn, in the list's own coordinates and inside it.
+    fn marquee_rectangle(&self, cx: &App) -> Option<impl IntoElement + use<>> {
+        let marquee = self.marquee.as_ref()?;
+        let list = self.geometry.list.get()?;
+        let (first_row, _) = self.geometry.rows.get()?;
+        let anchor = point(marquee.anchor.x, marquee.anchor.y + first_row);
+        let clamp = |at: Point<Pixels>| {
+            point(
+                at.x.clamp(list.left(), list.right()),
+                at.y.clamp(list.top(), list.bottom()),
+            )
+        };
+        let (a, b) = (clamp(anchor), clamp(marquee.pointer));
+        let origin = point(a.x.min(b.x), a.y.min(b.y)) - list.origin;
+        let size = size((a.x - b.x).abs(), (a.y - b.y).abs());
+        let theme = cx.theme();
+        Some(
+            div()
+                .id("selection-rectangle")
+                .absolute()
+                .left(origin.x)
+                .top(origin.y)
+                .w(size.width)
+                .h(size.height)
+                .border_1()
+                .border_color(theme.primary)
+                .bg(theme.primary.opacity(0.12)),
+        )
+    }
+
+    /// A click or right-click on empty space (anything in the list but a name
+    /// cell or a column title) clears the selection, as in WinSCP. A ⌘ or
+    /// Shift click there leaves it alone. Any click also drops the outline
+    /// `DataTable` draws around a right-clicked row: the selection alone
+    /// shows what the menu acts on, on the name cells.
+    fn press_empty(&mut self, modifiers: Modifiers, cx: &mut Context<Self>) {
+        self.clear_menu_row(cx);
+        if self.geometry.pressed.get() != Pressed::Empty || modifiers.secondary() || modifiers.shift
+        {
+            return;
+        }
+        if self.selection != Selection::default() {
+            self.update_selection(cx, |selection, _| selection.clear());
+        }
+    }
+
+    fn end_marquee(&mut self, cx: &mut Context<Self>) {
+        if self.marquee.take().is_some() {
+            cx.notify();
+        }
+        self.marquee_scroll.stop();
+    }
+
+    /// Pressing a row that is not selected selects it alone at once, as in
+    /// WinSCP: right-clicking one, so the context menu acts on what is
+    /// highlighted, and pressing its name, so a drag from there takes only
+    /// that item. A selected row keeps the selection, and drags all of it.
+    pub fn select_pressed(&mut self, name: &str, cx: &mut Context<Self>) {
         if !self.selection.contains(name) {
             self.update_selection(cx, |selection, order| {
                 selection.click(name, ClickMode::Replace, order)
@@ -465,8 +645,8 @@ impl FilePane {
         }
     }
     /// The table outlines the right-clicked row until something clears it;
-    /// selection is ours, so the next click or move does.
-    fn clear_menu_row(&mut self, cx: &mut Context<Self>) {
+    /// selection is ours, so the next click, move or drag does.
+    pub(super) fn clear_menu_row(&mut self, cx: &mut Context<Self>) {
         self.table
             .update(cx, |table, cx| table.set_right_clicked_row(None, cx));
     }
@@ -961,14 +1141,57 @@ impl Render for FilePane {
                     // The right-click handlers of rows and column titles
                     // record the hit after this capture-phase reset, so empty
                     // space finds none.
+                    .relative()
                     .capture_any_mouse_down({
                         let menu_hit = menu_hit.clone();
+                        let geometry = self.geometry.clone();
                         move |event, _, _| {
+                            geometry.pressed.set(Pressed::Empty);
                             if event.button == MouseButton::Right {
                                 *menu_hit.borrow_mut() = None;
                             }
                         }
                     })
+                    // Names and titles say so as the press bubbles up; what
+                    // is left is empty space, as in WinSCP. A drag from there
+                    // draws a selection rectangle, from where the press was;
+                    // a click there, or a right-click, clears the selection.
+                    .on_mouse_down(MouseButton::Left, {
+                        let geometry = self.geometry.clone();
+                        move |event, _, _| geometry.press.set(Some(event.position))
+                    })
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|pane, event: &MouseDownEvent, _, cx| {
+                            pane.press_empty(event.modifiers, cx)
+                        }),
+                    )
+                    .on_click(cx.listener(|pane, event: &ClickEvent, _, cx| {
+                        if !event.is_keyboard() {
+                            pane.press_empty(event.modifiers(), cx)
+                        }
+                    }))
+                    .on_drag(
+                        MarqueeDrag {
+                            pane: cx.entity_id(),
+                        },
+                        |drag, _, _, cx| cx.new(|_| drag.clone()),
+                    )
+                    .on_drag_move(
+                        cx.listener(|pane, event: &DragMoveEvent<MarqueeDrag>, _, cx| {
+                            if event.drag(cx).pane == cx.entity_id() {
+                                pane.drag_marquee(event.event.position, event.event.modifiers, cx)
+                            }
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|pane, _, _, cx| pane.end_marquee(cx)),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|pane, _, _, cx| pane.end_marquee(cx)),
+                    )
                     .when(remote, |this| {
                         let dispatch = self.dispatch.clone();
                         let path = self.path.clone();
@@ -991,6 +1214,21 @@ impl Render for FilePane {
                                 );
                                 cx.stop_propagation();
                             }
+                        })
+                        .when(enabled, |this| {
+                            this.drag_over::<super::file_listing::LocalFilesDrag>(
+                                |style, _, _, cx| style.bg(cx.theme().muted),
+                            )
+                            .on_drag_move(
+                                |event: &DragMoveEvent<super::file_listing::LocalFilesDrag>,
+                                 _,
+                                 cx| {
+                                    event
+                                        .drag(cx)
+                                        .spot
+                                        .offer(event.event.position, event.bounds)
+                                },
+                            )
                         })
                         .on_drop({
                             let dispatch = self.dispatch.clone();
@@ -1017,8 +1255,20 @@ impl Render for FilePane {
                         let dispatch = self.dispatch.clone();
                         let path = self.path.clone();
                         let enabled = self.transfer_enabled;
-                        this.drag_over::<super::file_listing::RemoteFilesDrag>(|style, _, _, cx| {
-                            style.bg(cx.theme().muted)
+                        this.when(enabled, |this| {
+                            this.drag_over::<super::file_listing::RemoteFilesDrag>(
+                                |style, _, _, cx| style.bg(cx.theme().muted),
+                            )
+                            .on_drag_move(
+                                |event: &DragMoveEvent<super::file_listing::RemoteFilesDrag>,
+                                 _,
+                                 cx| {
+                                    event
+                                        .drag(cx)
+                                        .spot
+                                        .offer(event.event.position, event.bounds)
+                                },
+                            )
                         })
                         .on_drop(
                             move |drag: &super::file_listing::RemoteFilesDrag, window, cx| {
@@ -1066,7 +1316,19 @@ impl Render for FilePane {
                             .stripe(false)
                             .bordered(false)
                             .small(),
-                    ),
+                    )
+                    .child({
+                        let geometry = self.geometry.clone();
+                        canvas(
+                            move |bounds, _, _| geometry.list.set(Some(bounds)),
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                    })
+                    .children(self.marquee_rectangle(cx)),
             )
             .child({
                 // The status line is always there, so connecting and reading
