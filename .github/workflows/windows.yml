@@ -23,5 +23,5 @@ jobs:
       # objects.
       - uses: ilammy/setup-nasm@v1
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --lib cli::
+      - run: "cargo test --lib cli::"
       - run: cargo test --test cli_bin
