@@ -571,6 +571,49 @@ impl SessionStore {
         list.len() != before
     }
 
+    /// Move a bookmark to position `to` of its pane's list (WinSCP's 上移 /
+    /// 下移).
+    pub fn move_bookmark(
+        &mut self,
+        id: SessionId,
+        side: BookmarkSide,
+        path: &str,
+        to: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.move_bookmark_unnotified(id, side, path, to) {
+            return false;
+        }
+        if let Some(database) = self.database.as_ref() {
+            let result = database.set_bookmark_order(id, side, self.bookmarks(id, side));
+            self.report(result, "调整书签顺序", cx);
+        }
+        cx.notify();
+        true
+    }
+
+    pub fn move_bookmark_unnotified(
+        &mut self,
+        id: SessionId,
+        side: BookmarkSide,
+        path: &str,
+        to: usize,
+    ) -> bool {
+        let Some(list) = self.bookmarks.get_mut(&(id, side)) else {
+            return false;
+        };
+        let Some(from) = list.iter().position(|existing| existing == path) else {
+            return false;
+        };
+        let to = to.min(list.len() - 1);
+        if from == to {
+            return false;
+        }
+        let path = list.remove(from);
+        list.insert(to, path);
+        true
+    }
+
     /// Persist a group's expanded or collapsed state after a tree interaction.
     pub fn set_group_expanded(
         &mut self,
@@ -954,6 +997,17 @@ mod tests {
         assert_eq!(store.bookmarks(web, BookmarkSide::Local), ["/tmp"]);
         assert!(store.remove_bookmark_unnotified(db, BookmarkSide::Remote, "/srv"));
         assert!(store.bookmarks(db, BookmarkSide::Remote).is_empty());
+
+        assert!(store.add_bookmark_unnotified(web, BookmarkSide::Remote, "/etc"));
+        assert!(store.add_bookmark_unnotified(web, BookmarkSide::Remote, "/opt"));
+        assert!(store.move_bookmark_unnotified(web, BookmarkSide::Remote, "/opt", 0));
+        assert!(!store.move_bookmark_unnotified(web, BookmarkSide::Remote, "/opt", 0));
+        assert!(store.move_bookmark_unnotified(web, BookmarkSide::Remote, "/var/log", 9));
+        assert_eq!(
+            store.bookmarks(web, BookmarkSide::Remote),
+            ["/opt", "/etc", "/var/log"]
+        );
+        assert!(!store.move_bookmark_unnotified(web, BookmarkSide::Remote, "/missing", 0));
 
         // Removing a group matches the database cascade.
         store.remove_group_unnotified(group);

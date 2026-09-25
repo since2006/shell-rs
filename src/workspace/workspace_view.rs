@@ -25,11 +25,11 @@ use crate::app::{
     DuplicateSession, EditSession, ExpandAllGroups, ExplorerAction, ExplorerCommand,
     ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch,
     MoveSessionNode, NewChildGroup, NewGroup, NewLocalTerminal, NewSession, NewSessionInGroup,
-    OpenExplorer, PasteTerminal, ReconnectTerminal, RenameGroup, RenameTerminal,
+    OpenExplorer, PasteTerminal, ReconnectTerminal, RenameExplorer, RenameGroup, RenameTerminal,
     RestartLocalTerminal, ToggleSessionPanel, ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::connection::SharedConnectionTester;
-use crate::explorer::{ExplorerPanel, ExplorerPanelEvent, confirm_close_transfer};
+use crate::explorer::{ExplorerId, ExplorerPanel, ExplorerPanelEvent, confirm_close_transfer};
 use crate::session::{
     ConnectionState, GroupId, SessionId, SessionPanel, SessionStore, SessionStoreEvent,
     confirm_delete_group, confirm_delete_session, open_group_dialog, open_session_dialog,
@@ -38,12 +38,13 @@ use crate::sftp::{
     SharedLocalDirectoryProvider, SharedSftpTransportProvider, SshSftpTransportProvider,
     SystemLocalDirectoryProvider,
 };
+use crate::shared::open_rename_tab_dialog;
 use crate::terminal::{
     LocalPtyTransportFactory, LocalTerminalId, LocalTerminalPanel, LocalTerminalPanelEvent,
     RemoteTerminalId, SearchDirection, SharedRemoteTerminalTransportProvider,
     SharedTerminalTransportFactory, TerminalLifecycle, TerminalPanel, TerminalPanelEvent,
     TerminalPrompt, TerminalPromptField, TerminalPromptKind, TerminalPromptReply, TerminalSecret,
-    TerminalView, open_rename_tab_dialog,
+    TerminalView,
 };
 
 use super::{
@@ -81,7 +82,7 @@ pub fn window_options(cx: &mut App) -> WindowOptions {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PromptOwner {
     Terminal(RemoteTerminalId),
-    Sftp(SessionId, u64),
+    Sftp(ExplorerId, u64),
 }
 
 /// The main window content: title bar above the dock, status bar below.
@@ -96,7 +97,8 @@ pub struct Workspace {
     /// The start page the dock skin shows while the center has no tab.
     recent: Entity<RecentSessions>,
     terminals: HashMap<RemoteTerminalId, Entity<TerminalPanel>>,
-    explorers: HashMap<SessionId, Entity<ExplorerPanel>>,
+    /// SFTP tabs; a session can have several, like terminals.
+    explorers: HashMap<ExplorerId, Entity<ExplorerPanel>>,
     local_terminals: HashMap<LocalTerminalId, Entity<LocalTerminalPanel>>,
     local_terminal_factory: SharedTerminalTransportFactory,
     remote_terminal_provider: SharedRemoteTerminalTransportProvider,
@@ -106,6 +108,7 @@ pub struct Workspace {
     connection_tester: SharedConnectionTester,
     next_remote_terminal_id: u64,
     next_local_terminal_id: u64,
+    next_explorer_id: u64,
     /// The center tab displayed most recently; `CloseActiveTab` closes it.
     active_tab: Option<CenterTab>,
     prompt_queue: VecDeque<(PromptOwner, SessionId, TerminalPrompt)>,
@@ -320,6 +323,7 @@ impl Workspace {
             connection_tester,
             next_remote_terminal_id,
             next_local_terminal_id: 1,
+            next_explorer_id: 1,
             active_tab: None,
             prompt_queue: VecDeque::new(),
             active_prompt: None,
@@ -351,8 +355,22 @@ impl Workspace {
             .count()
     }
 
-    pub fn explorer(&self, id: SessionId) -> Option<&Entity<ExplorerPanel>> {
+    pub fn explorer(&self, id: ExplorerId) -> Option<&Entity<ExplorerPanel>> {
         self.explorers.get(&id)
+    }
+
+    /// A session's SFTP tabs, oldest first.
+    pub fn explorers_of(&self, session: SessionId, cx: &App) -> Vec<Entity<ExplorerPanel>> {
+        let mut explorers: Vec<_> = self
+            .explorers
+            .iter()
+            .filter(|(_, panel)| panel.read(cx).session_id() == session)
+            .collect();
+        explorers.sort_by_key(|(id, _)| id.0);
+        explorers
+            .into_iter()
+            .map(|(_, panel)| panel.clone())
+            .collect()
     }
 
     pub fn local_terminal(&self, id: LocalTerminalId) -> Option<&Entity<LocalTerminalPanel>> {
@@ -699,29 +717,6 @@ impl Workspace {
         }
     }
 
-    /// Select the tab of an already open panel.
-    fn activate_tab(
-        &self,
-        group: Option<WeakEntity<TabGroup>>,
-        panel: EntityId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(group) = group.and_then(|group| group.upgrade()) else {
-            return;
-        };
-        group.update(cx, |group, cx| {
-            let target = PanelId::from(panel);
-            if let Some(ix) = group
-                .panels()
-                .iter()
-                .position(|panel| panel.panel_id(cx) == target)
-            {
-                group.select_tab(ix, window, cx);
-            }
-        });
-    }
-
     fn refresh_session_connection_state(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
         let mut has_starting = false;
         let mut has_running = false;
@@ -738,7 +733,7 @@ impl Workspace {
                 | TerminalLifecycle::Closing => {}
             }
         }
-        if let Some(panel) = self.explorers.get(&session_id) {
+        for panel in self.explorers_of(session_id, cx) {
             match panel.read(cx).connection_state() {
                 ConnectionState::Connected => has_running = true,
                 ConnectionState::Connecting => has_starting = true,
@@ -810,16 +805,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let id = action.0;
-        if let Some(panel) = self.explorers.get(&id).cloned() {
-            let group = panel.read(cx).tab_group();
-            self.activate_tab(group, panel.entity_id(), window, cx);
+        let session_id = action.0;
+        if self.store.read(cx).session(session_id).is_none() {
             return;
         }
-        if self.store.read(cx).session(id).is_none() {
-            return;
-        }
-        let (panel, subscription) = new_explorer_panel(self, id, window, cx);
+        // Every request opens a tab of its own, as connecting does for
+        // terminals: two directories of one host side by side.
+        let id = ExplorerId(self.next_explorer_id);
+        self.next_explorer_id += 1;
+        let (panel, subscription) = new_explorer_panel(self, id, session_id, window, cx);
         self._subscriptions.push(subscription);
         self.explorers.insert(id, panel.clone());
         self.dock_area.update(cx, |area, cx| {
@@ -883,7 +877,7 @@ impl Workspace {
         }
     }
 
-    fn remove_explorer(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+    fn remove_explorer(&mut self, id: ExplorerId, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.explorers.get(&id).cloned() {
             self.cancel_prompts_for_owner(
                 PromptOwner::Sftp(id, panel.read(cx).generation()),
@@ -900,7 +894,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(panel) = self.explorers.get(&action.session()).cloned() else {
+        let Some(panel) = self.explorers.get(&action.explorer()).cloned() else {
             return;
         };
         if action
@@ -911,13 +905,13 @@ impl Workspace {
         }
         if matches!(action.command(), ExplorerCommand::CancelTransfer) {
             self.cancel_prompts_for_owner(
-                PromptOwner::Sftp(action.session(), panel.read(cx).generation()),
+                PromptOwner::Sftp(action.explorer(), panel.read(cx).generation()),
                 window,
                 cx,
             );
         }
         if matches!(action.command(), ExplorerCommand::CloseConfirmed) {
-            self.remove_explorer(action.session(), window, cx);
+            self.remove_explorer(action.explorer(), window, cx);
         } else {
             panel.update(cx, |panel, cx| panel.execute(action.command(), window, cx));
         }
@@ -1046,6 +1040,17 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(panel) = self.terminals.get(&action.0).cloned() {
+            open_rename_tab_dialog(panel, window, cx);
+        }
+    }
+
+    fn on_rename_explorer(
+        &mut self,
+        action: &RenameExplorer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.explorers.get(&action.0).cloned() {
             open_rename_tab_dialog(panel, window, cx);
         }
     }
@@ -1191,7 +1196,7 @@ impl Workspace {
         for terminal in terminals {
             terminal.update(cx, |terminal, cx| terminal.disconnect(cx));
         }
-        if let Some(panel) = self.explorers.get(&id).cloned() {
+        for panel in self.explorers_of(id, cx) {
             panel.update(cx, |panel, cx| panel.disconnect(window, cx));
         }
     }
@@ -1284,18 +1289,16 @@ impl Workspace {
             .terminals
             .values()
             .any(|panel| panel.read(cx).session_id() == id)
-            || self.explorers.contains_key(&id);
+            || !self.explorers_of(id, cx).is_empty();
+        let transfers = self
+            .explorers_of(id, cx)
+            .iter()
+            .filter(|panel| panel.read(cx).is_transferring())
+            .count();
         let workspace = cx.entity().downgrade();
         confirm_delete_session(
             &session,
-            (
-                closes_tabs,
-                usize::from(
-                    self.explorers
-                        .get(&id)
-                        .is_some_and(|p| p.read(cx).is_transferring()),
-                ),
-            ),
+            (closes_tabs, transfers),
             Rc::new(move |window, cx| {
                 workspace
                     .update(cx, |this, cx| this.remove_session(id, window, cx))
@@ -1328,7 +1331,8 @@ impl Workspace {
             self.dock_area
                 .update(cx, |area, cx| area.remove_panel(terminal, window, cx));
         }
-        if let Some(explorer) = self.explorers.remove(&id) {
+        for explorer in self.explorers_of(id, cx) {
+            self.explorers.remove(&explorer.read(cx).id());
             self.dock_area
                 .update(cx, |area, cx| area.remove_panel(explorer, window, cx));
         }
@@ -1419,7 +1423,7 @@ impl Workspace {
             self.terminals
                 .values()
                 .any(|panel| panel.read(cx).session_id() == *id)
-                || self.explorers.contains_key(id)
+                || !self.explorers_of(*id, cx).is_empty()
         });
         let workspace = cx.entity().downgrade();
         confirm_delete_group(
@@ -1430,11 +1434,8 @@ impl Workspace {
                 closes_tabs,
                 doomed
                     .iter()
-                    .filter(|id| {
-                        self.explorers
-                            .get(id)
-                            .is_some_and(|p| p.read(cx).is_transferring())
-                    })
+                    .flat_map(|id| self.explorers_of(*id, cx))
+                    .filter(|panel| panel.read(cx).is_transferring())
                     .count(),
             ),
             Rc::new(move |window, cx| {
@@ -1548,7 +1549,7 @@ fn new_terminal_panel(
                     .terminals
                     .values()
                     .any(|panel| panel.read(cx).session_id() == *session_id)
-                    && !this.explorers.contains_key(session_id)
+                    && this.explorers_of(*session_id, cx).is_empty()
                     && this.store.read(cx).active().map(|session| session.id) == Some(*session_id)
                 {
                     this.store
@@ -1639,13 +1640,15 @@ impl Render for AuthenticationPromptForm {
 
 fn new_explorer_panel(
     workspace: &Workspace,
-    id: SessionId,
+    id: ExplorerId,
+    session_id: SessionId,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> (Entity<ExplorerPanel>, Subscription) {
     let panel = cx.new(|cx| {
         ExplorerPanel::new(
             id,
+            session_id,
             workspace.store.clone(),
             workspace.sftp_provider.clone(),
             workspace.local_directory_provider.clone(),
@@ -1659,14 +1662,14 @@ fn new_explorer_panel(
         window,
         |this, _, event: &ExplorerPanelEvent, window, cx| match event {
             ExplorerPanelEvent::Activated(id) => this.active_tab = Some(CenterTab::Explorer(*id)),
-            ExplorerPanelEvent::Closed(id) => {
+            ExplorerPanelEvent::Closed(id, session_id) => {
                 this.explorers.remove(id);
                 if this.active_tab == Some(CenterTab::Explorer(*id)) {
                     this.active_tab = None;
                 }
-                this.refresh_session_connection_state(*id, cx);
+                this.refresh_session_connection_state(*session_id, cx);
             }
-            ExplorerPanelEvent::StateChanged(id) => {
+            ExplorerPanelEvent::StateChanged(id, session_id) => {
                 if let Some(panel) = this.explorers.get(id) {
                     let generation = panel.read(cx).generation();
                     this.prompt_queue.retain(|(owner,_,_)| !matches!(owner,PromptOwner::Sftp(s,g) if s == id && *g != generation));
@@ -1674,11 +1677,11 @@ fn new_explorer_panel(
                         this.cancel_prompts_for_owner(owner,window,cx);
                     }
                 }
-                this.refresh_session_connection_state(*id,cx);
+                this.refresh_session_connection_state(*session_id, cx);
             },
-            ExplorerPanelEvent::PromptRequested(id, generation, prompt) => this.enqueue_prompt(
+            ExplorerPanelEvent::PromptRequested(id, session_id, generation, prompt) => this.enqueue_prompt(
                 PromptOwner::Sftp(*id, *generation),
-                *id,
+                *session_id,
                 prompt.clone(),
                 window,
                 cx,
@@ -1762,6 +1765,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_close_active_tab))
             .on_action(cx.listener(Self::on_close_tabs))
             .on_action(cx.listener(Self::on_rename_terminal))
+            .on_action(cx.listener(Self::on_rename_explorer))
             .on_action(cx.listener(Self::on_copy_session_host))
             .on_action(cx.listener(Self::on_restart_local_terminal))
             .on_action(cx.listener(Self::on_copy_terminal))

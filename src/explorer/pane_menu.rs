@@ -1,12 +1,9 @@
-//! Menus of one file pane: the list's context menu and the toolbar's
-//! bookmark and 新建 menus. Each item dispatches the same `ExplorerCommand`
-//! as the toolbar button with that verb.
+//! Menus of one file pane: the list's and the path label's context menus,
+//! and the toolbar's bookmark and 新建 menus. Each item dispatches the same
+//! `ExplorerCommand` as the toolbar button with that verb.
 
-use super::NewEntryKind;
-use crate::{
-    app::{CatalogIcon, ExplorerAction, ExplorerCommand},
-    session::SessionId,
-};
+use super::{ExplorerId, NewEntryKind};
+use crate::app::{CatalogIcon, ExplorerAction, ExplorerCommand};
 use gpui_kit::component::{Icon, IconName, menu::PopupMenu};
 use gpui_kit::*;
 
@@ -14,7 +11,7 @@ use gpui_kit::*;
 #[derive(Clone, Debug)]
 pub(super) struct PaneMenuState {
     pub remote: bool,
-    pub session: SessionId,
+    pub explorer: ExplorerId,
     /// The rows the item commands act on (the selection).
     pub targets: Vec<String>,
     /// The single selected row is a directory (or a link to one).
@@ -33,7 +30,7 @@ pub(super) struct PaneMenuState {
 
 impl PaneMenuState {
     fn action(&self, command: ExplorerCommand) -> Box<dyn Action> {
-        Box::new(ExplorerAction::new(self.session, command))
+        Box::new(ExplorerAction::new(self.explorer, command))
     }
 }
 
@@ -91,9 +88,45 @@ pub(super) fn directory_menu(
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
+    let create = state.clone();
+    add_bookmark_item(refresh_items(menu, state, window, cx), state)
+        .separator()
+        .submenu("新建", window, cx, move |menu, _, _| {
+            new_menu(menu, &create)
+        })
+}
+
+/// Right-click on the path label: WinSCP's panel menu.
+pub(super) fn path_menu(
+    menu: PopupMenu,
+    state: &PaneMenuState,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let remote = state.remote;
+    add_bookmark_item(refresh_items(menu, state, window, cx), state)
+        .menu_with_icon(
+            "复制路径",
+            Icon::new(IconName::Copy),
+            state.action(ExplorerCommand::CopyPath { remote }),
+        )
+        .separator()
+        .menu_with_icon(
+            "打开目录/书签…",
+            Icon::new(IconName::FolderOpen),
+            state.action(ExplorerCommand::OpenDirectory { remote }),
+        )
+}
+
+/// 前往 ▸ and 刷新, then a separator.
+fn refresh_items(
+    menu: PopupMenu,
+    state: &PaneMenuState,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
     let remote = state.remote;
     let go = state.clone();
-    let create = state.clone();
     menu.submenu("前往", window, cx, move |menu, _, _| {
         menu.menu_with_icon_and_disabled(
             "上级目录",
@@ -133,16 +166,18 @@ pub(super) fn directory_menu(
         state.action(ExplorerCommand::Refresh { remote }),
     )
     .separator()
-    .menu_with_icon_and_disabled(
+}
+
+fn add_bookmark_item(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
+    menu.menu_with_icon_and_disabled(
         "添加路径到书签",
         Icon::new(CatalogIcon::Bookmark),
-        state.action(ExplorerCommand::AddBookmark { remote }),
+        state.action(ExplorerCommand::AddBookmark {
+            remote: state.remote,
+            path: None,
+        }),
         state.bookmarks.contains(&state.path),
     )
-    .separator()
-    .submenu("新建", window, cx, move |menu, _, _| {
-        new_menu(menu, &create)
-    })
 }
 
 /// The toolbar's 新建 menu, also the context menu's 新建 submenu.
@@ -198,7 +233,7 @@ pub(super) fn bookmark_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu
     } else {
         menu.menu_with_disabled(
             "添加路径到书签",
-            state.action(ExplorerCommand::AddBookmark { remote }),
+            state.action(ExplorerCommand::AddBookmark { remote, path: None }),
             state.path.is_empty(),
         )
     }

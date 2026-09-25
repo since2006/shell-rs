@@ -377,6 +377,27 @@ impl SessionDatabase {
         Ok(())
     }
 
+    /// Put one pane's bookmarks in the order of `paths`. Loading groups
+    /// bookmarks by pane, so only the order within this pane matters.
+    pub fn set_bookmark_order(
+        &self,
+        session: SessionId,
+        side: BookmarkSide,
+        paths: &[String],
+    ) -> rusqlite::Result<()> {
+        let transaction = self.connection.unchecked_transaction()?;
+        {
+            let mut update = transaction.prepare(
+                "UPDATE bookmarks SET sort_order = ?4 \
+                 WHERE session_id = ?1 AND side = ?2 AND path = ?3",
+            )?;
+            for (order, path) in (0_i64..).zip(paths) {
+                update.execute(params![to_sql(session.0), side.as_str(), path, order])?;
+            }
+        }
+        transaction.commit()
+    }
+
     /// Record the operating system a probe found on the host. `None` clears
     /// it, which is what a failed probe on a rebuilt host leaves behind.
     pub fn set_host_os(&self, id: SessionId, os: Option<HostOs>) -> rusqlite::Result<()> {
@@ -696,6 +717,27 @@ mod tests {
                 (SessionId(2), BookmarkSide::Remote, "/srv".to_string()),
             ]
         );
+        // Reordering one pane leaves the other panes' order alone, and a
+        // bookmark added afterwards still goes last.
+        db.set_bookmark_order(
+            SessionId(1),
+            BookmarkSide::Remote,
+            &["/etc".into(), "/var/log".into()],
+        )
+        .unwrap();
+        db.insert_bookmark(SessionId(1), BookmarkSide::Remote, "/opt")
+            .unwrap();
+        let remote: Vec<_> = db
+            .load()
+            .unwrap()
+            .bookmarks
+            .into_iter()
+            .filter(|(session, side, _)| *session == SessionId(1) && *side == BookmarkSide::Remote)
+            .map(|(_, _, path)| path)
+            .collect();
+        assert_eq!(remote, ["/etc", "/var/log", "/opt"]);
+        db.remove_bookmark(SessionId(1), BookmarkSide::Remote, "/opt")
+            .unwrap();
         db.remove_bookmark(SessionId(1), BookmarkSide::Remote, "/etc")
             .unwrap();
         db.remove_session(SessionId(2)).unwrap();

@@ -13,7 +13,7 @@ use crate::app::{
     EditSession, OpenExplorer, ReconnectTerminal, RenameTerminal,
 };
 use crate::session::{HostOs, SessionId, SessionStore};
-use crate::shared::{ClosableTabTitle, HostMark, close_tab_items};
+use crate::shared::{ClosableTabTitle, HostMark, RenamableTab, close_tab_items};
 
 use super::{
     LatencyLevel, RemoteTerminalId, SharedRemoteTerminalTransportProvider, TerminalLifecycle,
@@ -131,12 +131,6 @@ impl TerminalPanel {
         self.custom_title
             .clone()
             .unwrap_or_else(|| self.session_name(cx))
-    }
-
-    /// Give the tab its own title, or `None` to follow the session name again.
-    pub fn set_custom_title(&mut self, title: Option<SharedString>, cx: &mut Context<Self>) {
-        self.custom_title = title;
-        cx.notify();
     }
 
     fn tab_menu(&self, cx: &Context<Self>) -> TabMenu {
@@ -356,6 +350,19 @@ struct TabMenu {
     host_is_ip: bool,
     group: Option<WeakEntity<TabGroup>>,
     panel: EntityId,
+}
+
+impl RenamableTab for TerminalPanel {
+    fn default_title(&self, cx: &App) -> SharedString {
+        self.session_name(cx)
+    }
+    fn tab_title(&self, cx: &App) -> SharedString {
+        self.title_text(cx)
+    }
+    fn set_custom_title(&mut self, title: Option<SharedString>, cx: &mut Context<Self>) {
+        self.custom_title = title;
+        cx.notify();
+    }
 }
 
 impl TabMenu {

@@ -774,36 +774,41 @@ fn valid_drop(
     }
 }
 
+/// The menu of one session, wherever it is listed: the session tree and the
+/// start page's recent sessions both build it here, so they cannot drift.
+pub fn session_menu(menu: PopupMenu, id: SessionId) -> PopupMenu {
+    menu.menu_with_icon(
+        "连接",
+        Icon::new(CatalogIcon::Plug),
+        Box::new(ConnectSession(id)),
+    )
+    .menu_with_icon(
+        "打开 SFTP",
+        Icon::new(CatalogIcon::FolderTree),
+        Box::new(OpenExplorer(id)),
+    )
+    .separator()
+    .menu_with_icon(
+        "编辑会话…",
+        Icon::new(CatalogIcon::Pencil),
+        Box::new(EditSession(id)),
+    )
+    .menu_with_icon(
+        "复制",
+        Icon::new(IconName::Copy),
+        Box::new(DuplicateSession(id)),
+    )
+    .separator()
+    .menu_with_icon(
+        "删除",
+        Icon::new(CatalogIcon::Trash),
+        Box::new(DeleteSession(id)),
+    )
+}
+
 fn build_context_menu(node: Option<SessionNode>, menu: PopupMenu) -> PopupMenu {
     match node {
-        Some(SessionNode::Session(id)) => menu
-            .menu_with_icon(
-                "连接",
-                Icon::new(CatalogIcon::Plug),
-                Box::new(ConnectSession(id)),
-            )
-            .menu_with_icon(
-                "打开 SFTP",
-                Icon::new(CatalogIcon::FolderTree),
-                Box::new(OpenExplorer(id)),
-            )
-            .separator()
-            .menu_with_icon(
-                "编辑会话…",
-                Icon::new(CatalogIcon::Pencil),
-                Box::new(EditSession(id)),
-            )
-            .menu_with_icon(
-                "复制",
-                Icon::new(IconName::Copy),
-                Box::new(DuplicateSession(id)),
-            )
-            .separator()
-            .menu_with_icon(
-                "删除",
-                Icon::new(CatalogIcon::Trash),
-                Box::new(DeleteSession(id)),
-            ),
+        Some(SessionNode::Session(id)) => session_menu(menu, id),
         Some(SessionNode::Group(id)) => menu
             .menu_with_icon(
                 "连接组内主机",

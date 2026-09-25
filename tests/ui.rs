@@ -19,6 +19,7 @@ use shellr::app::{
     NewSessionInGroup, OpenExplorer, ReconnectTerminal, RenameGroup, RenameTerminal,
 };
 use shellr::connection::{ConnectionPromptKind, ConnectionTester, LoginTest, TrustCallback};
+use shellr::explorer::ExplorerId;
 use shellr::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
 use shellr::session::{
     AuthKind, ConnectionState, GroupDraft, GroupId, HostOs, SessionDatabase, SessionDraft,
@@ -40,6 +41,8 @@ use shellr::workspace::Workspace;
 const WEB_01: u64 = 1;
 const WEB_02: u64 = 2;
 const DB_01: u64 = 3;
+/// The first SFTP tab a test opens; tab ids count up from 1.
+const SFTP_TAB: u64 = 1;
 const STAGING_API: u64 = 4;
 const DEV_BOX: u64 = 6;
 const INITIAL_WEB_TERMINAL: u64 = 1;
@@ -772,7 +775,7 @@ async fn opening_sftp_updates_connection_state_without_terminal(cx: &mut TestApp
 
     cx.update(|cx| {
         let workspace = workspace.read(cx);
-        assert!(workspace.explorer(id).is_some());
+        assert_eq!(workspace.explorers_of(id, cx).len(), 1);
         assert_eq!(
             workspace.store().read(cx).session(id).unwrap().state,
             shellr::session::ConnectionState::Connected
@@ -1531,17 +1534,17 @@ async fn sftp_button_opens_explorer_and_navigates(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window
             .try_find("remote-path")
-            .is_some_and(|p| p.value() == Some("~"))
+            .is_some_and(|p| p.value() == Some("/home/tester"))
     })
     .await;
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find(("explorer", DB_01)).visible());
-        assert_eq!(window.find("remote-path").value(), Some("~"));
+        assert!(window.find(("explorer", SFTP_TAB)).visible());
+        assert_eq!(window.find("remote-path").value(), Some("/home/tester"));
 
         window
-            .within(("remote-pane", DB_01))
+            .within(("remote-pane", SFTP_TAB))
             .double_click(ElementId::Name("file:..".into()), cx);
     })
     .unwrap();
@@ -1560,7 +1563,9 @@ async fn sftp_button_opens_explorer_and_navigates(cx: &mut TestAppContext) {
 
     cx.update(|cx| {
         let workspace = workspace.read(cx);
-        let explorer = workspace.explorer(SessionId(DB_01)).expect("explorer open");
+        let explorer = workspace
+            .explorer(ExplorerId(SFTP_TAB))
+            .expect("explorer open");
         assert_eq!(explorer.read(cx).remote().read(cx).path(), "/home");
     });
 }
@@ -1788,6 +1793,66 @@ async fn enter_connects_the_selected_recent_session(cx: &mut TestAppContext) {
         window.find("status-connection").label() == Some("已连接 staging-api")
     })
     .await;
+}
+
+/// The start page's row menu is the session tree's menu. Menus are not
+/// driven here, so this dispatches what its items dispatch, from the page:
+/// the page is drawn deferred over the dock, and its actions must still
+/// reach the workspace.
+#[gpui_kit::test]
+async fn recent_session_menu_commands_work_from_the_start_page(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    for terminal in [INITIAL_WEB_TERMINAL, INITIAL_STAGING_TERMINAL] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click(("close-terminal", terminal), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("recent-sessions").focused(), Some(true));
+        window.dispatch_action(Box::new(EditSession(SessionId(STAGING_API))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("session-name").value(), Some("staging-api"));
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // A closed dialog leaves nothing focused; clicking the row focuses the
+    // page again, as a right click would.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("recent-session", WEB_01), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(DeleteSession(SessionId(WEB_01))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("ok", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("recent-session", WEB_01)).is_none());
+        assert!(window.find(("recent-session", STAGING_API)).visible());
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -2770,8 +2835,8 @@ fn both_tabs_of_one_session_stay_closable(cx: &mut TestAppContext) {
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find(("explorer", DB_01)).visible());
-        window.click(("close-explorer", DB_01), cx);
+        assert!(window.find(("explorer", SFTP_TAB)).visible());
+        window.click(("close-explorer", SFTP_TAB), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -2779,7 +2844,7 @@ fn both_tabs_of_one_session_stay_closable(cx: &mut TestAppContext) {
     // The SFTP tab is gone and the terminal tab, now active again, still closes.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find(("close-explorer", DB_01)).is_none());
+        assert!(window.try_find(("close-explorer", SFTP_TAB)).is_none());
         assert!(window.find(("terminal", FIRST_NEW_TERMINAL)).visible());
         window.click(("close-terminal", FIRST_NEW_TERMINAL), cx);
     })
@@ -2798,7 +2863,7 @@ fn both_tabs_of_one_session_stay_closable(cx: &mut TestAppContext) {
 
     cx.update(|cx| {
         let workspace = workspace.read(cx);
-        assert!(workspace.explorer(SessionId(DB_01)).is_none());
+        assert!(workspace.explorer(ExplorerId(SFTP_TAB)).is_none());
         assert!(workspace.terminal(SessionId(DB_01), cx).is_none());
     });
 }
@@ -2937,7 +3002,7 @@ fn batch_close_commands_take_the_tabs_around_the_clicked_one(cx: &mut TestAppCon
     dispatch(cx, Box::new(NewLocalTerminal));
     cx.update(|cx| {
         let workspace = workspace.read(cx);
-        assert!(workspace.explorer(SessionId(WEB_01)).is_some());
+        assert!(workspace.explorer(ExplorerId(SFTP_TAB)).is_some());
         assert!(workspace.local_terminal(LocalTerminalId(1)).is_some());
     });
 
@@ -2948,7 +3013,7 @@ fn batch_close_commands_take_the_tabs_around_the_clicked_one(cx: &mut TestAppCon
     );
     cx.update(|cx| {
         let workspace = workspace.read(cx);
-        assert!(workspace.explorer(SessionId(WEB_01)).is_none());
+        assert!(workspace.explorer(ExplorerId(SFTP_TAB)).is_none());
         assert!(workspace.local_terminal(LocalTerminalId(1)).is_none());
     });
     assert_eq!(
@@ -3327,6 +3392,8 @@ struct FakeSftpProvider {
     downloads: Arc<Mutex<Vec<shellr::sftp::DownloadRequest>>>,
     operations: Arc<Mutex<Vec<shellr::sftp::RemoteOperation>>>,
     events: Arc<Mutex<Vec<async_channel::Sender<SftpEvent>>>>,
+    /// When set, the next connection waits for a message before it is up.
+    hold_connection: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
 }
 impl SftpTransportProvider for FakeSftpProvider {
     fn create(&self, _: &shellr::session::Session) -> Box<dyn SftpTransport> {
@@ -3335,6 +3402,7 @@ impl SftpTransportProvider for FakeSftpProvider {
             downloads: self.downloads.clone(),
             operations: self.operations.clone(),
             events: self.events.clone(),
+            hold: self.hold_connection.lock().unwrap().take(),
         })
     }
 }
@@ -3343,6 +3411,7 @@ struct FakeSftpTransport {
     downloads: Arc<Mutex<Vec<shellr::sftp::DownloadRequest>>>,
     operations: Arc<Mutex<Vec<shellr::sftp::RemoteOperation>>>,
     events: Arc<Mutex<Vec<async_channel::Sender<SftpEvent>>>>,
+    hold: Option<mpsc::Receiver<()>>,
 }
 impl SftpTransport for FakeSftpTransport {
     fn run(
@@ -3352,6 +3421,9 @@ impl SftpTransport for FakeSftpTransport {
     ) -> anyhow::Result<()> {
         use shellr::sftp::{TransferChoice, TransferPhase, TransferProgress};
         self.events.lock().unwrap().push(events.clone());
+        if let Some(hold) = &self.hold {
+            let _ = hold.recv();
+        }
         events.send_blocking(SftpEvent::Connected {
             home: RemotePath::new("/home/tester")?,
         })?;
@@ -3541,9 +3613,9 @@ async fn open_test_explorer(cx: &mut TestAppContext, handle: WindowHandle<Root>)
         window.render_frame(cx);
         window
             .try_find("remote-path")
-            .is_some_and(|p| p.value() == Some("~"))
+            .is_some_and(|p| p.value() == Some("/home/tester"))
             && window
-                .within(("local-pane", DB_01))
+                .within(("local-pane", SFTP_TAB))
                 .try_find("file:文件 甲.txt")
                 .is_some()
     })
@@ -3599,7 +3671,7 @@ fn modified_click(
 fn pane_selection(workspace: &Entity<Workspace>, remote: bool, cx: &App) -> Vec<String> {
     workspace
         .read(cx)
-        .explorer(SessionId(DB_01))
+        .explorer(ExplorerId(SFTP_TAB))
         .unwrap()
         .read(cx)
         .pane(remote)
@@ -3618,7 +3690,7 @@ async fn sftp_multi_selection_keyboard_upload_freezes_paths_and_cancel_resumes(
     // Names sort by code point: 文件 乙 comes before 文件 甲.
     cx.update_window(handle.into(), |_, window, cx| {
         window
-            .within(("local-pane", DB_01))
+            .within(("local-pane", SFTP_TAB))
             .click("file:文件 乙.txt", cx);
     })
     .unwrap();
@@ -3647,7 +3719,7 @@ async fn sftp_multi_selection_keyboard_upload_freezes_paths_and_cancel_resumes(
         assert_eq!(
             workspace
                 .read(cx)
-                .explorer(SessionId(DB_01))
+                .explorer(ExplorerId(SFTP_TAB))
                 .unwrap()
                 .read(cx)
                 .local()
@@ -3686,7 +3758,7 @@ async fn sftp_multi_selection_keyboard_upload_freezes_paths_and_cancel_resumes(
         window.render_frame(cx);
         window.dispatch_action(
             Box::new(ExplorerAction::new(
-                SessionId(DB_01),
+                ExplorerId(SFTP_TAB),
                 ExplorerCommand::Navigate {
                     remote: true,
                     path: "/other".into(),
@@ -3730,7 +3802,7 @@ async fn sftp_native_picker_and_external_drop_share_confirmation(cx: &mut TestAp
         window.render_frame(cx);
         window.dispatch_action(
             Box::new(shellr::app::ExplorerAction::new(
-                SessionId(DB_01),
+                ExplorerId(SFTP_TAB),
                 shellr::app::ExplorerCommand::ChooseFiles,
             )),
             cx,
@@ -3754,10 +3826,12 @@ async fn sftp_native_picker_and_external_drop_share_confirmation(cx: &mut TestAp
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.within(("remote-pane", DB_01)).hover("file:目录", cx);
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .hover("file:目录", cx);
         window.render_frame(cx);
         let position = window
-            .within(("remote-pane", DB_01))
+            .within(("remote-pane", SFTP_TAB))
             .find("file:目录")
             .bounds()
             .center();
@@ -3794,12 +3868,12 @@ async fn sftp_internal_drag_conflict_and_close_confirmation(cx: &mut TestAppCont
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         let from = window
-            .within(("local-pane", DB_01))
+            .within(("local-pane", SFTP_TAB))
             .find("file:文件 甲.txt")
             .bounds()
             .center();
         let to = window
-            .within(("remote-pane", DB_01))
+            .within(("remote-pane", SFTP_TAB))
             .find("file:目录")
             .bounds()
             .center();
@@ -3857,19 +3931,19 @@ async fn sftp_internal_drag_conflict_and_close_confirmation(cx: &mut TestAppCont
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click(("close-explorer", DB_01), cx);
+        window.click(("close-explorer", SFTP_TAB), cx);
     })
     .unwrap();
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find("ok").visible());
-        assert!(workspace.read(cx).explorer(SessionId(DB_01)).is_some());
+        assert!(workspace.read(cx).explorer(ExplorerId(SFTP_TAB)).is_some());
         window.click("ok", cx);
     })
     .unwrap();
     cx.run_until_parked();
-    cx.update(|cx| assert!(workspace.read(cx).explorer(SessionId(DB_01)).is_none()));
+    cx.update(|cx| assert!(workspace.read(cx).explorer(ExplorerId(SFTP_TAB)).is_none()));
 }
 
 #[gpui_kit::test]
@@ -3882,7 +3956,7 @@ async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within(("local-pane", DB_01))
+            .within(("local-pane", SFTP_TAB))
             .click("file:文件 乙.txt", cx);
     })
     .unwrap();
@@ -3893,7 +3967,7 @@ async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
             window
-                .within(("local-pane", DB_01))
+                .within(("local-pane", SFTP_TAB))
                 .click(("col-header", 0usize), cx);
         })
         .unwrap();
@@ -3903,7 +3977,7 @@ async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
         assert_eq!(
             workspace
                 .read(cx)
-                .explorer(SessionId(DB_01))
+                .explorer(ExplorerId(SFTP_TAB))
                 .unwrap()
                 .read(cx)
                 .local()
@@ -3917,7 +3991,7 @@ async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
         window.render_frame(cx);
         modified_click(
             window,
-            ("local-pane", DB_01),
+            ("local-pane", SFTP_TAB),
             "file:目录",
             gpui_kit::Modifiers::secondary_key(),
             cx,
@@ -3935,7 +4009,7 @@ async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
     let last = cx.update(|cx| {
         workspace
             .read(cx)
-            .explorer(SessionId(DB_01))
+            .explorer(ExplorerId(SFTP_TAB))
             .unwrap()
             .read(cx)
             .local()
@@ -3950,7 +4024,7 @@ async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
         window.render_frame(cx);
         modified_click(
             window,
-            ("local-pane", DB_01),
+            ("local-pane", SFTP_TAB),
             &format!("file:{last}"),
             gpui_kit::Modifiers::shift(),
             cx,
@@ -3963,7 +4037,7 @@ async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
         window.render_frame(cx);
         assert_eq!(
             window
-                .within(("local-pane", DB_01))
+                .within(("local-pane", SFTP_TAB))
                 .find("name:文件 甲.txt")
                 .selected(),
             Some(true)
@@ -3973,7 +4047,7 @@ async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within(("local-pane", DB_01))
+            .within(("local-pane", SFTP_TAB))
             .click("file:文件 甲.txt", cx);
         window.press("f5", cx);
     })
@@ -4009,7 +4083,7 @@ async fn sftp_panes_list_winscp_columns_and_open_links_to_directories(cx: &mut T
     cx.update(|cx| {
         let explorer = workspace
             .read(cx)
-            .explorer(SessionId(DB_01))
+            .explorer(ExplorerId(SFTP_TAB))
             .unwrap()
             .read(cx);
         assert_eq!(
@@ -4032,13 +4106,13 @@ async fn sftp_panes_list_winscp_columns_and_open_links_to_directories(cx: &mut T
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within(("remote-pane", DB_01))
+            .within(("remote-pane", SFTP_TAB))
             .double_click("file:链接目录", cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
         window.render_frame(cx);
-        window.find("remote-path").value() == Some("~/链接目录")
+        window.find("remote-path").value() == Some("/home/tester/链接目录")
     })
     .await;
 }
@@ -4058,7 +4132,7 @@ async fn click_remote_tool(
 ) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.within(("remote-pane", DB_01)).click(button, cx);
+        window.within(("remote-pane", SFTP_TAB)).click(button, cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
@@ -4077,7 +4151,7 @@ async fn sftp_toolbar_goes_up_root_home_back_and_forward(cx: &mut TestAppContext
     open_test_explorer(cx, handle).await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        let remote = window.within(("remote-pane", DB_01));
+        let remote = window.within(("remote-pane", SFTP_TAB));
         assert!(!enabled(&remote.find("back")));
         assert!(!enabled(&remote.find("home")), "already home");
         assert!(enabled(&remote.find("up")));
@@ -4086,12 +4160,12 @@ async fn sftp_toolbar_goes_up_root_home_back_and_forward(cx: &mut TestAppContext
     click_remote_tool(cx, handle, "up", "/home").await;
     click_remote_tool(cx, handle, "root", "/").await;
     click_remote_tool(cx, handle, "back", "/home").await;
-    click_remote_tool(cx, handle, "back", "~").await;
+    click_remote_tool(cx, handle, "back", "/home/tester").await;
     click_remote_tool(cx, handle, "forward", "/home").await;
-    click_remote_tool(cx, handle, "home", "~").await;
+    click_remote_tool(cx, handle, "home", "/home/tester").await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        let remote = window.within(("remote-pane", DB_01));
+        let remote = window.within(("remote-pane", SFTP_TAB));
         assert!(!enabled(&remote.find("forward")), "a visit drops forward");
         assert!(enabled(&remote.find("back")));
     })
@@ -4100,7 +4174,7 @@ async fn sftp_toolbar_goes_up_root_home_back_and_forward(cx: &mut TestAppContext
     cx.update_window(handle.into(), |_, window, cx| {
         window.dispatch_action(
             Box::new(ExplorerAction::new(
-                SessionId(DB_01),
+                ExplorerId(SFTP_TAB),
                 ExplorerCommand::Navigate {
                     remote: true,
                     path: "/denied".into(),
@@ -4118,7 +4192,7 @@ async fn sftp_toolbar_goes_up_root_home_back_and_forward(cx: &mut TestAppContext
     cx.update(|cx| {
         let explorer = workspace
             .read(cx)
-            .explorer(SessionId(DB_01))
+            .explorer(ExplorerId(SFTP_TAB))
             .unwrap()
             .read(cx);
         let remote = explorer.remote().read(cx);
@@ -4130,8 +4204,11 @@ async fn sftp_toolbar_goes_up_root_home_back_and_forward(cx: &mut TestAppContext
     cx.update_window(handle.into(), |_, window, cx| {
         window.dispatch_action(
             Box::new(ExplorerAction::new(
-                SessionId(DB_01),
-                ExplorerCommand::AddBookmark { remote: true },
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::AddBookmark {
+                    remote: true,
+                    path: None,
+                },
             )),
             cx,
         );
@@ -4153,7 +4230,7 @@ async fn sftp_toolbar_goes_up_root_home_back_and_forward(cx: &mut TestAppContext
     cx.update_window(handle.into(), |_, window, cx| {
         window.dispatch_action(
             Box::new(ExplorerAction::new(
-                SessionId(DB_01),
+                ExplorerId(SFTP_TAB),
                 ExplorerCommand::RemoveBookmark {
                     remote: true,
                     path: "/home/tester".into(),
@@ -4176,6 +4253,399 @@ async fn sftp_toolbar_goes_up_root_home_back_and_forward(cx: &mut TestAppContext
     });
 }
 
+fn remote_pane_state<T>(
+    workspace: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    read: impl FnOnce(&shellr::explorer::FilePane) -> T,
+) -> T {
+    cx.update(|cx| {
+        read(
+            workspace
+                .read(cx)
+                .explorer(ExplorerId(SFTP_TAB))
+                .unwrap()
+                .read(cx)
+                .remote()
+                .read(cx),
+        )
+    })
+}
+
+#[gpui_kit::test]
+async fn sftp_path_label_opens_ancestors_and_the_open_directory_dialog(cx: &mut TestAppContext) {
+    use shellr::app::{ExplorerAction, ExplorerCommand};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    // Focus events, which track the current pane, only reach an active window.
+    cx.update_window(handle.into(), |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+
+    // Every directory on the way is a part of the label and opens itself.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let mut remote = window.within(("remote-pane", SFTP_TAB));
+        for part in ["path:/", "path:/home", "path:/home/tester"] {
+            assert!(remote.find(part).visible(), "{part}");
+        }
+        // The parts read as one path: `/home/tester/`, no gaps.
+        assert_eq!(
+            remote.find("path:/").bounds().right(),
+            remote.find("path:/home").bounds().left()
+        );
+        remote.click("path:/home", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("remote-path").value() == Some("/home")
+    })
+    .await;
+    assert_eq!(
+        remote_pane_state(&workspace, cx, |pane| pane.back_target()),
+        Some("/home/tester".into())
+    );
+
+    // Clicking the current directory opens 打开目录 on it, selected, so
+    // typing replaces it; Enter opens.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .click("path:/home", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("open-directory-path").value(), Some("/home"));
+        assert!(
+            window.try_find("open-directory-browse").is_none(),
+            "no browsing the server with a local picker"
+        );
+        window.input("/etc", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("remote-path").value() == Some("/etc")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("open-directory-path").is_none());
+    })
+    .unwrap();
+
+    // Double-clicking beside the path opens it too; Escape changes nothing.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .double_click("path-parts", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("open-directory-path").value(), Some("/etc"));
+        window.input("/var", cx);
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("open-directory-path").is_none());
+        assert_eq!(window.find("remote-path").value(), Some("/etc"));
+    })
+    .unwrap();
+
+    // WinSCP's 打开目录 key works from the list.
+    #[cfg(target_os = "macos")]
+    let open_directory = "cmd-o";
+    #[cfg(not(target_os = "macos"))]
+    let open_directory = "ctrl-o";
+    press_on_row(cx, handle, "remote-pane", "目录", open_directory);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("open-directory-path").visible());
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // 复制路径 from the label's menu; the pane used last is the current one.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::CopyPath { remote: true },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("/etc".into())
+    );
+    assert!(remote_pane_state(&workspace, cx, |pane| pane.is_current()));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::FocusPane { remote: false },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(!remote_pane_state(&workspace, cx, |pane| pane.is_current()));
+    cx.update(|cx| {
+        let explorer = workspace.read(cx).explorer(ExplorerId(SFTP_TAB)).unwrap();
+        assert!(explorer.read(cx).local().read(cx).is_current());
+    });
+}
+
+#[gpui_kit::test]
+async fn sftp_bookmark_dialog_adds_orders_removes_and_opens(cx: &mut TestAppContext) {
+    use shellr::session::BookmarkSide;
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let bookmarks = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            workspace
+                .read(cx)
+                .store()
+                .read(cx)
+                .bookmarks(SessionId(DB_01), BookmarkSide::Remote)
+                .to_vec()
+        })
+    };
+
+    // The toolbar's bookmark button opens the dialog on the pane's directory.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .click("bookmarks", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("open-directory-path").value(),
+            Some("/home/tester")
+        );
+        assert!(!enabled(&window.find("bookmark-remove")));
+        window.click("bookmark-add", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(bookmarks(cx), ["/home/tester"]);
+
+    // The bookmark naming the directory is the selected one; a typed
+    // directory is bookmarked as the pane would open it.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("bookmark:/home/tester").selected(), Some(true));
+        assert!(!enabled(&window.find("bookmark-add")), "already bookmarked");
+        window.click("open-directory-path", cx);
+        window.press("cmd-a", cx);
+        window.input("/etc/", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("bookmark-add", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(bookmarks(cx), ["/home/tester", "/etc"]);
+
+    // 上移 moves the selected one; clicking another picks it.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!enabled(&window.find("bookmark-down")));
+        window.click("bookmark-up", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(bookmarks(cx), ["/etc", "/home/tester"]);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("bookmark:/home/tester", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Delete in the list removes it and selects the neighbour.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("open-directory-path").value(),
+            Some("/home/tester")
+        );
+        window.press("delete", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(bookmarks(cx), ["/etc"]);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("open-directory-path").value(), Some("/etc"));
+        assert_eq!(window.find("bookmark:/etc").selected(), Some(true));
+        // Double-clicking a bookmark opens it.
+        window.double_click("bookmark:/etc", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("remote-path").value() == Some("/etc")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("open-directory-path").is_none());
+    })
+    .unwrap();
+
+    // Local directories can be picked with the system dialog.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("local-pane", SFTP_TAB))
+            .click("bookmarks", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-directory-browse", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.simulate_path_prompt_response(|options| {
+        assert!(options.directories && !options.files && !options.multiple);
+        Some(vec!["/picked".into()])
+    });
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("open-directory-path").value(), Some("/picked"));
+        window.click("open-directory-confirm", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("local-path").value() == Some("/picked")
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn sftp_path_label_folds_the_middle_of_a_long_path(cx: &mut TestAppContext) {
+    use shellr::app::{ExplorerAction, ExplorerCommand};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, _) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let deep = "/home/tester/customer-projects/desktop-client/source-tree/user-interface/\
+                file-browser/path-label/implementation";
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::Navigate {
+                    remote: true,
+                    path: deep.into(),
+                },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("remote-path").value() == Some(deep)
+    })
+    .await;
+    // The first frame measures the label; the next one folds to fit it.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.simulate_next_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let label = window.find("remote-path").bounds();
+        let remote = window.within(("remote-pane", SFTP_TAB));
+        assert!(remote.find("path:/").visible(), "the root stays");
+        assert!(
+            remote
+                .find(ElementId::Name(format!("path:{deep}").into()))
+                .visible()
+        );
+        assert!(
+            remote.try_find("path:/home").is_none(),
+            "the middle folds into …"
+        );
+        let parts = remote.find("path-parts").bounds();
+        assert!(parts.right() <= label.right());
+        let last = remote
+            .find(ElementId::Name(format!("path:{deep}").into()))
+            .bounds();
+        assert!(last.right() <= parts.right() + px(1.), "{last:?} {parts:?}");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn sftp_disconnected_remote_pane_offers_to_reconnect(cx: &mut TestAppContext) {
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, _) = open_workspace_with_sftp(cx, provider.clone());
+    open_test_explorer(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("reconnect-sftp").is_none());
+    })
+    .unwrap();
+
+    let events = provider.events.lock().unwrap()[0].clone();
+    events
+        .send_blocking(SftpEvent::Disconnected("连接已断开".into()))
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .try_find("reconnect-sftp")
+            .is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let mut remote = window.within(("remote-pane", SFTP_TAB));
+        assert!(remote.find("directory-error").visible());
+        assert!(!enabled(&remote.find("refresh")));
+        remote.click("reconnect-sftp", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("reconnect-sftp").is_none()
+    })
+    .await;
+}
+
 /// Click a row in one pane, then press a key with the list focused.
 fn press_on_row(
     cx: &mut TestAppContext,
@@ -4187,7 +4657,7 @@ fn press_on_row(
     let row = ElementId::Name(format!("file:{row}").into());
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.within((pane, DB_01)).click(row, cx);
+        window.within((pane, SFTP_TAB)).click(row, cx);
         window.press(key, cx);
     })
     .unwrap();
@@ -4209,7 +4679,7 @@ async fn sftp_file_commands_confirm_validate_and_send_one_operation(cx: &mut Tes
     let idle = |cx: &App| {
         let explorer = workspace
             .read(cx)
-            .explorer(SessionId(DB_01))
+            .explorer(ExplorerId(SFTP_TAB))
             .unwrap()
             .read(cx);
         !explorer.remote().read(cx).is_busy() && !explorer.local().read(cx).is_busy()
@@ -4299,10 +4769,12 @@ async fn sftp_file_commands_confirm_validate_and_send_one_operation(cx: &mut Tes
     // for `dispatch_action`, so click into the list first.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.within(("remote-pane", DB_01)).click("file:目录", cx);
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .click("file:目录", cx);
         window.dispatch_action(
             Box::new(ExplorerAction::new(
-                SessionId(DB_01),
+                ExplorerId(SFTP_TAB),
                 ExplorerCommand::New {
                     remote: true,
                     kind: NewEntryKind::Folder,
@@ -4428,12 +4900,12 @@ async fn sftp_dragging_remote_rows_to_a_local_directory_asks_to_download(cx: &mu
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         let from = window
-            .within(("remote-pane", DB_01))
+            .within(("remote-pane", SFTP_TAB))
             .find("file:文件 乙.txt")
             .bounds()
             .center();
         let to = window
-            .within(("local-pane", DB_01))
+            .within(("local-pane", SFTP_TAB))
             .find("file:目录")
             .bounds()
             .center();
@@ -4452,6 +4924,320 @@ async fn sftp_dragging_remote_rows_to_a_local_directory_asks_to_download(cx: &mu
 }
 
 #[gpui_kit::test]
+async fn the_sftp_tab_shows_the_host_mark_like_its_terminal_tabs(cx: &mut TestAppContext) {
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let mark = ("explorer-tab-os", SFTP_TAB);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(mark).label(), Some("未探测到系统"));
+    })
+    .unwrap();
+    // A terminal of the same session finds the system; the SFTP tab follows.
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().clone();
+        store.update(cx, |store, cx| {
+            store.set_host_os(SessionId(DB_01), Some(HostOs::Ubuntu), cx)
+        });
+    });
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(mark).label(), Some("Ubuntu"));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn the_sftp_tab_can_be_renamed_and_follow_the_session_again(cx: &mut TestAppContext) {
+    use shellr::app::RenameExplorer;
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let tab = ("explorer-tab", SFTP_TAB);
+    let default = cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        format!("{} · SFTP", store.session(SessionId(DB_01)).unwrap().name)
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(tab).label(), Some(default.as_str()));
+        window.dispatch_action(Box::new(RenameExplorer(ExplorerId(SFTP_TAB))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("tab-name").value(), Some(default.as_str()));
+        window.click("tab-name", cx);
+        window.press("cmd-a", cx);
+        window.input("生产库文件", cx);
+        window.click("commit", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("commit").is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(tab).label(), Some("生产库文件"));
+    })
+    .unwrap();
+
+    // Clearing the field returns the tab to its default title.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // A closed dialog leaves nothing focused.
+        window.click("session-search", cx);
+        window.dispatch_action(Box::new(RenameExplorer(ExplorerId(SFTP_TAB))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("tab-name").value(), Some("生产库文件"));
+        window.click("tab-name", cx);
+        window.press("cmd-a", cx);
+        window.press("backspace", cx);
+        window.click("commit", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("commit").is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(tab).label(), Some(default.as_str()));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn sftp_clicking_empty_list_space_makes_that_pane_current_at_once(cx: &mut TestAppContext) {
+    use gpui_kit::{MouseDownEvent, MouseUpEvent};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, _) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    // Focus events only reach an active window.
+    cx.update_window(handle.into(), |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("remote-path").selected(), Some(true));
+        assert_eq!(window.find("local-path").selected(), Some(false));
+        // Below the last row of the local list: only the table takes focus.
+        let table = window
+            .within(("local-pane", SFTP_TAB))
+            .find("table")
+            .bounds();
+        let position = point(table.center().x, table.bottom() - px(8.));
+        window.dispatch_event(
+            MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    // No render of our own: only the frames the click asked for.
+    cx.update_window(handle.into(), |_, window, _| {
+        assert_eq!(window.find("local-path").selected(), Some(true));
+        assert_eq!(window.find("remote-path").selected(), Some(false));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn opening_sftp_again_opens_another_tab_of_its_own(cx: &mut TestAppContext) {
+    use shellr::app::{DisconnectSession, ExplorerAction, ExplorerCommand};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let second = ExplorerId(SFTP_TAB + 1);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(OpenExplorer(SessionId(DB_01))), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(("remote-pane", second.0))
+            .is_some_and(|pane| pane.visible())
+            && window.find("remote-path").value() == Some("/home/tester")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(("explorer-tab", SFTP_TAB)).visible());
+        assert!(window.find(("explorer-tab", second.0)).visible());
+        // Each tab browses on its own.
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                second,
+                ExplorerCommand::Navigate {
+                    remote: true,
+                    path: "/etc".into(),
+                },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("remote-path").value() == Some("/etc")
+    })
+    .await;
+    let paths = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            workspace
+                .read(cx)
+                .explorers_of(SessionId(DB_01), cx)
+                .iter()
+                .map(|panel| panel.read(cx).remote().read(cx).path())
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(paths(cx), ["/home/tester", "/etc"]);
+
+    // Closing one keeps the other, and the session stays connected.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("close-explorer", second.0), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(paths(cx), ["/home/tester"]);
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(
+            store.session(SessionId(DB_01)).unwrap().state,
+            ConnectionState::Connected
+        );
+    });
+
+    // Disconnecting the session disconnects every SFTP tab of it.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(OpenExplorer(SessionId(DB_01))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(DisconnectSession(SessionId(DB_01))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let explorers = workspace.read(cx).explorers_of(SessionId(DB_01), cx);
+        assert_eq!(explorers.len(), 2);
+        assert!(
+            explorers
+                .iter()
+                .all(|panel| panel.read(cx).connection_state() == ConnectionState::Disconnected)
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn sftp_connecting_shows_under_the_list_without_moving_it(cx: &mut TestAppContext) {
+    let (release, hold) = mpsc::channel();
+    let provider = Arc::new(FakeSftpProvider {
+        hold_connection: Arc::new(Mutex::new(Some(hold))),
+        ..Default::default()
+    });
+    let (handle, _) = open_workspace_with_sftp(cx, provider);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(OpenExplorer(SessionId(DB_01))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let table = cx
+        .update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let remote = window.within(("remote-pane", SFTP_TAB));
+            assert_eq!(remote.find("pane-status").label(), Some("正在连接 SFTP…"));
+            remote.find("table").bounds()
+        })
+        .unwrap();
+    release.send(()).unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("remote-path").value() == Some("/home/tester")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let remote = window.within(("remote-pane", SFTP_TAB));
+        assert_eq!(remote.find("table").bounds(), table);
+        assert_ne!(remote.find("pane-status").label(), Some("正在连接 SFTP…"));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn sftp_reading_a_directory_never_moves_the_list(cx: &mut TestAppContext) {
+    use shellr::app::{ExplorerAction, ExplorerCommand};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let list = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .within(("remote-pane", SFTP_TAB))
+                .find("file:目录")
+                .bounds()
+        })
+        .unwrap()
+    };
+    let before = list(cx);
+    // `/slow` never answers, so the load stays in flight.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::Navigate {
+                    remote: true,
+                    path: "/slow".into(),
+                },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(list(cx), before);
+    assert!(!remote_pane_state(&workspace, cx, |pane| pane.is_loading_slowly()));
+    // A slow load says so in the status line under the list.
+    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    assert!(remote_pane_state(&workspace, cx, |pane| pane.is_loading_slowly()));
+    assert_eq!(list(cx), before);
+}
+
+#[gpui_kit::test]
 async fn sftp_discards_stale_directory_replies(cx: &mut TestAppContext) {
     use shellr::app::{ExplorerAction, ExplorerCommand};
     let provider = Arc::new(FakeSftpProvider::default());
@@ -4462,7 +5248,7 @@ async fn sftp_discards_stale_directory_replies(cx: &mut TestAppContext) {
             window.render_frame(cx);
             window.dispatch_action(
                 Box::new(ExplorerAction::new(
-                    SessionId(DB_01),
+                    ExplorerId(SFTP_TAB),
                     ExplorerCommand::Navigate {
                         remote: true,
                         path: path.into(),
@@ -4477,7 +5263,7 @@ async fn sftp_discards_stale_directory_replies(cx: &mut TestAppContext) {
     cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
         workspace
             .read(cx)
-            .explorer(SessionId(DB_01))
+            .explorer(ExplorerId(SFTP_TAB))
             .unwrap()
             .read(cx)
             .remote()
@@ -4496,7 +5282,7 @@ async fn sftp_discards_stale_directory_replies(cx: &mut TestAppContext) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.dispatch_action(
             Box::new(ExplorerAction::new(
-                SessionId(DB_01),
+                ExplorerId(SFTP_TAB),
                 ExplorerCommand::Refresh { remote: true },
             )),
             cx,
@@ -4512,7 +5298,7 @@ async fn sftp_discards_stale_directory_replies(cx: &mut TestAppContext) {
         assert_eq!(
             workspace
                 .read(cx)
-                .explorer(SessionId(DB_01))
+                .explorer(ExplorerId(SFTP_TAB))
                 .unwrap()
                 .read(cx)
                 .remote()
@@ -4542,8 +5328,8 @@ async fn sftp_controls_fit_small_window_in_light_dark_and_zoom(cx: &mut TestAppC
             cx.update_window(handle.into(), |_, window, cx| {
                 window.render_frame(cx);
                 for (pane, transfer) in [("local-pane", "upload"), ("remote-pane", "download")] {
-                    let bounds = window.find((pane, DB_01)).bounds();
-                    let scope = window.within((pane, DB_01));
+                    let bounds = window.find((pane, SFTP_TAB)).bounds();
+                    let scope = window.within((pane, SFTP_TAB));
                     for id in [
                         "path-select",
                         "bookmarks",

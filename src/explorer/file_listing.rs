@@ -1,8 +1,5 @@
 use crate::app::ExplorerDispatch as _;
-use crate::{
-    app::{CatalogIcon, ExplorerAction, ExplorerCommand},
-    session::SessionId,
-};
+use crate::app::{CatalogIcon, ExplorerAction, ExplorerCommand};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, h_flex,
     table::{Column, ColumnSort, TableDelegate, TableState},
@@ -12,7 +9,7 @@ use gpui_kit::*;
 use std::{cell::RefCell, cmp::Ordering, path::PathBuf, rc::Rc};
 
 use super::{
-    ClickMode, FileEntry, FileKind, FilePane, PaneSide, Selection, format_changed,
+    ClickMode, ExplorerId, FileEntry, FileKind, FilePane, PaneSide, Selection, format_changed,
     format_kilobytes, format_rights,
 };
 
@@ -20,7 +17,7 @@ use super::{
 /// rendering never reads another entity.
 #[derive(Clone)]
 pub(super) struct ListingContext {
-    pub session: SessionId,
+    pub explorer: ExplorerId,
     pub path: String,
     pub selection: Rc<Selection>,
     pub transfer_enabled: bool,
@@ -33,7 +30,7 @@ pub(super) struct ListingContext {
 impl Default for ListingContext {
     fn default() -> Self {
         Self {
-            session: SessionId(0),
+            explorer: ExplorerId(0),
             path: String::new(),
             selection: Rc::default(),
             transfer_enabled: false,
@@ -273,7 +270,7 @@ impl TableDelegate for FileListing {
         let (Some(dispatch), Some(pane)) = (context.dispatch.clone(), context.pane.clone()) else {
             return row;
         };
-        let sid = context.session;
+        let sid = context.explorer;
         let remote = self.side == PaneSide::Remote;
         let row = row
             .on_click({

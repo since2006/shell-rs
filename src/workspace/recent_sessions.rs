@@ -1,6 +1,8 @@
+use std::{cell::Cell, rc::Rc};
+
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, button::Button, h_flex, list::ListItem,
-    scroll::ScrollableElement as _, v_flex,
+    menu::ContextMenuExt as _, scroll::ScrollableElement as _, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -8,7 +10,7 @@ use gpui_kit::*;
 use crate::app::{
     CatalogIcon, ConnectSelected, ConnectSession, NewSession, RECENT_SESSIONS_CONTEXT,
 };
-use crate::session::{HostOs, SessionId, SessionStore};
+use crate::session::{HostOs, SessionId, SessionStore, session_menu};
 use crate::shared::HostMark;
 
 /// The center's empty state: shown in place of the tabs while none is open.
@@ -24,6 +26,9 @@ pub struct RecentSessions {
     focus_handle: FocusHandle,
     scroll_handle: ScrollHandle,
     selected: Option<SessionId>,
+    /// The row a right click landed on, for the menu about to open. Blank
+    /// space leaves it empty, and an empty menu does not open.
+    menu_hit: Rc<Cell<Option<SessionId>>>,
     _subscription: Subscription,
 }
 
@@ -46,6 +51,7 @@ impl RecentSessions {
             focus_handle: cx.focus_handle(),
             scroll_handle: ScrollHandle::new(),
             selected: None,
+            menu_hit: Rc::new(Cell::new(None)),
             _subscription: subscription,
         }
     }
@@ -129,6 +135,24 @@ impl RecentSessions {
         }
     }
 
+    /// The rows, with the session menu of the session tree. Like the tree's,
+    /// the menu hangs off the list rather than off each row: capture clears
+    /// the hit before a right-clicked row writes itself back, and the menu
+    /// is built after both.
+    fn render_list(&self, rows: Vec<RecentRow>, cx: &Context<Self>) -> impl IntoElement {
+        let clear_hit = self.menu_hit.clone();
+        let menu_hit = self.menu_hit.clone();
+        v_flex()
+            .id("recent-session-list")
+            .gap_1()
+            .capture_any_mouse_down(move |_, _, _| clear_hit.set(None))
+            .children(rows.into_iter().map(|row| self.render_row(row, cx)))
+            .context_menu(move |menu, _, _| match menu_hit.get() {
+                Some(id) => session_menu(menu, id),
+                None => menu,
+            })
+    }
+
     fn render_row(&self, row: RecentRow, cx: &Context<Self>) -> ListItem {
         let muted = cx.theme().muted_foreground;
         let id = row.id;
@@ -183,6 +207,16 @@ impl RecentSessions {
                         .child("已连接")
                 })
             })
+            // A right click selects the row, as in Finder and Explorer, so
+            // the menu visibly belongs to it.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _, _, cx| {
+                    this.menu_hit.set(Some(id));
+                    this.selected = Some(id);
+                    cx.notify();
+                }),
+            )
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.selected = Some(id);
                 this.focus_handle.focus(window, cx);
@@ -230,11 +264,7 @@ impl Render for RecentSessions {
                         if rows.is_empty() {
                             page.child(self.render_empty(cx))
                         } else {
-                            page.child(
-                                v_flex()
-                                    .gap_1()
-                                    .children(rows.into_iter().map(|row| self.render_row(row, cx))),
-                            )
+                            page.child(self.render_list(rows, cx))
                         }
                     }),
             )

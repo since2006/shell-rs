@@ -6,8 +6,10 @@ mod file_listing;
 mod file_pane;
 mod history;
 mod model;
+mod open_directory_dialog;
 mod pane_menu;
 mod pane_operations;
+mod path_label;
 mod properties_dialog;
 mod selection;
 

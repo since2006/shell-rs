@@ -4,6 +4,11 @@ use crate::sftp::{DirectoryEntry, EntryKind};
 use gpui_kit::SharedString;
 use serde::Deserialize;
 
+/// Stable identity for one SFTP tab. A session can have several, each with
+/// its own connection and transfer batch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+pub struct ExplorerId(pub u64);
+
 /// What the 新建 menu creates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum NewEntryKind {
@@ -147,6 +152,40 @@ impl FileEntry {
             },
             kind => kind.label().to_string(),
         }
+    }
+}
+
+/// A typed directory resolved against a pane: `~` is the home directory, a
+/// relative path is under `current`, and a trailing separator is dropped, so
+/// `/var/log/` and `/var/log` name the same bookmark.
+pub fn expand_path(text: &str, current: &str, home: &str, remote: bool) -> String {
+    let joined = if text == "~" {
+        home.to_string()
+    } else if let Some(rest) = text.strip_prefix("~/") {
+        format!("{}/{rest}", home.trim_end_matches('/'))
+    } else if remote {
+        if text.starts_with('/') {
+            text.to_string()
+        } else {
+            format!("{}/{text}", current.trim_end_matches('/'))
+        }
+    } else {
+        std::path::Path::new(current)
+            .join(text)
+            .to_string_lossy()
+            .into_owned()
+    };
+    if remote {
+        match joined.trim_end_matches('/') {
+            "" => "/".into(),
+            trimmed => trimmed.into(),
+        }
+    } else {
+        std::path::Path::new(&joined)
+            .components()
+            .collect::<std::path::PathBuf>()
+            .to_string_lossy()
+            .into_owned()
     }
 }
 
@@ -338,6 +377,25 @@ mod tests {
             ]
         );
         assert!(path_ancestors("", true).is_empty());
+    }
+
+    #[test]
+    fn typed_paths_resolve_against_the_pane() {
+        let expand = |text| expand_path(text, "/srv/app", "/home/me", true);
+        assert_eq!(expand("~"), "/home/me");
+        assert_eq!(expand("~/logs/"), "/home/me/logs");
+        assert_eq!(expand("releases"), "/srv/app/releases");
+        assert_eq!(expand("/var/log/"), "/var/log");
+        assert_eq!(expand("/"), "/");
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                expand_path("docs/", "/Users/me", "/Users/me", false),
+                "/Users/me/docs"
+            );
+            assert_eq!(expand_path("/tmp", "/Users/me", "/Users/me", false), "/tmp");
+            assert_eq!(expand_path("/", "/Users/me", "/Users/me", false), "/");
+        }
     }
 
     #[test]

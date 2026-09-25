@@ -338,8 +338,7 @@ impl ExplorerPanel {
             .map(|item| item.name.to_string())
             .collect();
         let form = cx.new(|cx| PropertiesForm::new(items, location, remote, window, cx));
-        let (dispatch, sid, generation) =
-            (self.dispatch.clone(), self.session_id(), self.generation());
+        let (dispatch, sid, generation) = (self.dispatch.clone(), self.id(), self.generation());
         let focus = window.focused(cx);
         window.open_dialog(cx, move |dialog, _, _| {
             dialog

@@ -4,7 +4,6 @@ mod engine;
 mod local_pty;
 mod local_terminal_panel;
 mod model;
-mod rename_tab_dialog;
 mod search;
 mod terminal_panel;
 mod terminal_view;
@@ -17,7 +16,6 @@ pub use model::{
     Latency, LatencyLevel, LocalTerminalId, RemoteTerminalId, TerminalLifecycle, TerminalSize,
     TerminalStatus,
 };
-pub use rename_tab_dialog::open_rename_tab_dialog;
 pub use search::{SearchDirection, SearchMark, SearchPosition};
 pub use terminal_panel::{TerminalPanel, TerminalPanelEvent};
 pub(crate) use terminal_view::terminal_key_bindings;

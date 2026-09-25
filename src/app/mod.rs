@@ -140,6 +140,12 @@ fn file_list_key_bindings() -> Vec<KeyBinding> {
             bind("cmd-i", ExplorerCommand::Properties { remote }, context),
             // ⌘H hides the app on macOS; Finder's home is ⌘⇧H.
             bind("cmd-shift-h", ExplorerCommand::Home { remote }, context),
+            // Finder's 前往文件夹.
+            bind(
+                "cmd-shift-g",
+                ExplorerCommand::OpenDirectory { remote },
+                context,
+            ),
         ]);
         #[cfg(not(target_os = "macos"))]
         bindings.push(bind("ctrl-h", ExplorerCommand::Home { remote }, context));
@@ -160,7 +166,7 @@ fn file_list_key_bindings() -> Vec<KeyBinding> {
             // WinSCP's Ctrl+B already toggles the session panel here.
             bind(
                 &format!("{PRIMARY}-d"),
-                ExplorerCommand::AddBookmark { remote },
+                ExplorerCommand::AddBookmark { remote, path: None },
                 context,
             ),
             bind("f2", ExplorerCommand::Rename { remote }, context),
@@ -189,6 +195,12 @@ fn file_list_key_bindings() -> Vec<KeyBinding> {
             bind(
                 &format!("{PRIMARY}-a"),
                 ExplorerCommand::SelectAll { remote },
+                context,
+            ),
+            // WinSCP's 打开目录/书签.
+            bind(
+                &format!("{PRIMARY}-o"),
+                ExplorerCommand::OpenDirectory { remote },
                 context,
             ),
             bind("enter", ExplorerCommand::Open { remote }, context),

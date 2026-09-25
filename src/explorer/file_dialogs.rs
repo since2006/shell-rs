@@ -99,8 +99,7 @@ impl ExplorerPanel {
         } else {
             "项目会移到废纸篓。"
         };
-        let (dispatch, sid, generation) =
-            (self.dispatch.clone(), self.session_id(), self.generation());
+        let (dispatch, sid, generation) = (self.dispatch.clone(), self.id(), self.generation());
         let focus = window.focused(cx);
         window.open_alert_dialog(cx, move |dialog, _, _| {
             dialog
@@ -206,8 +205,7 @@ impl ExplorerPanel {
             label,
             error: None,
         });
-        let (dispatch, sid, generation) =
-            (self.dispatch.clone(), self.session_id(), self.generation());
+        let (dispatch, sid, generation) = (self.dispatch.clone(), self.id(), self.generation());
         let focus = window.focused(cx);
         window.open_dialog(cx, move |dialog, _, _| {
             dialog

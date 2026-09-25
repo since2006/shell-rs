@@ -5,6 +5,7 @@ use gpui_kit::*;
 use serde::Deserialize;
 
 use crate::{
+    explorer::ExplorerId,
     session::{GroupId, NodeDrop, SessionId, SessionNode},
     terminal::{LocalTerminalId, RemoteTerminalId},
 };
@@ -85,6 +86,15 @@ macro_rules! local_terminal_action {
     };
 }
 
+macro_rules! explorer_action {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+        #[action(namespace = shellr, no_json)]
+        pub struct $name(pub ExplorerId);
+    };
+}
+
 macro_rules! remote_terminal_action {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
@@ -103,12 +113,16 @@ session_action!(
     DisconnectSession
 );
 session_action!(
-    /// Open (or activate) the SFTP explorer tab of a session.
+    /// Open a new SFTP tab for a session, like a new terminal connection.
     OpenExplorer
 );
-session_action!(
-    /// Close the SFTP explorer tab of a session.
+explorer_action!(
+    /// Close one SFTP tab.
     CloseExplorer
+);
+explorer_action!(
+    /// Open the dialog that gives one SFTP tab its own title.
+    RenameExplorer
 );
 session_action!(
     /// Open the edit-session dialog for a session.
@@ -187,7 +201,7 @@ local_terminal_action!(
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub enum CenterTab {
     Terminal(RemoteTerminalId),
-    Explorer(SessionId),
+    Explorer(ExplorerId),
     LocalTerminal(LocalTerminalId),
 }
 
@@ -253,6 +267,13 @@ pub enum ExplorerCommand {
     Open {
         remote: bool,
     },
+    /// WinSCP's 打开目录/书签 dialog: type a directory or pick a bookmark.
+    OpenDirectory {
+        remote: bool,
+    },
+    CopyPath {
+        remote: bool,
+    },
     /// Move keyboard focus to a pane's file list.
     FocusPane {
         remote: bool,
@@ -268,12 +289,19 @@ pub enum ExplorerCommand {
     SelectAll {
         remote: bool,
     },
+    /// Bookmark `path`, or the pane's directory when `None`.
     AddBookmark {
         remote: bool,
+        path: Option<String>,
     },
     RemoveBookmark {
         remote: bool,
         path: String,
+    },
+    MoveBookmark {
+        remote: bool,
+        path: String,
+        to: usize,
     },
     /// F5: upload the local selection or download the remote one.
     Transfer {
@@ -345,14 +373,14 @@ pub enum ExplorerCommand {
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = shellr, no_json)]
 pub struct ExplorerAction {
-    session: SessionId,
+    explorer: ExplorerId,
     command: ExplorerCommand,
     generation: Option<u64>,
 }
 impl ExplorerAction {
-    pub fn new(session: SessionId, command: ExplorerCommand) -> Self {
+    pub fn new(explorer: ExplorerId, command: ExplorerCommand) -> Self {
         Self {
-            session,
+            explorer,
             command,
             generation: None,
         }
@@ -364,8 +392,8 @@ impl ExplorerAction {
     pub fn generation(&self) -> Option<u64> {
         self.generation
     }
-    pub fn session(&self) -> SessionId {
-        self.session
+    pub fn explorer(&self) -> ExplorerId {
+        self.explorer
     }
     pub fn command(&self) -> &ExplorerCommand {
         &self.command

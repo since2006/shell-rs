@@ -1,5 +1,6 @@
 use super::{
-    ClickMode, CursorMotion, FileEntry, FileListing, LoadIntent, NavigationHistory, Selection,
+    ClickMode, CursorMotion, ExplorerId, FileEntry, FileListing, LoadIntent, NavigationHistory,
+    Selection,
     file_listing::ListingContext,
     pane_menu::{PaneMenuState, bookmark_menu, directory_menu, item_menu, new_menu},
     path_ancestors,
@@ -10,14 +11,13 @@ use crate::{
         CatalogIcon, ExplorerAction, ExplorerCommand, ExplorerShortcut, LOCAL_FILE_LIST_CONTEXT,
         REMOTE_FILE_LIST_CONTEXT,
     },
-    session::{BookmarkSide, SessionId, SessionStore},
+    session::{BookmarkSide, ConnectionState, SessionId, SessionStore},
     sftp::{DirectoryListing, SharedLocalDirectoryProvider},
 };
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     h_flex,
-    input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, DropdownMenu as _},
     searchable_list::{SearchableGroup, SearchableListItem, SearchableVec},
     select::{Select, SelectEvent, SelectState},
@@ -27,7 +27,14 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use std::{cell::RefCell, path::PathBuf, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    path::PathBuf,
+    rc::Rc,
+};
+
+/// How long a directory load runs before the status line says so.
+const SLOW_LOAD: std::time::Duration = std::time::Duration::from_millis(300);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PaneSide {
@@ -49,7 +56,7 @@ impl PaneSide {
             "remote-pane"
         }
     }
-    fn path_id(self) -> &'static str {
+    pub(super) fn path_id(self) -> &'static str {
         if self == Self::Local {
             "local-path"
         } else {
@@ -118,14 +125,22 @@ impl SearchableListItem for PathChoice {
 type PathChoices = SearchableVec<SearchableGroup<PathChoice>>;
 
 pub struct FilePane {
-    side: PaneSide,
+    pub(super) side: PaneSide,
+    /// The SFTP tab this pane belongs to, which its commands address.
+    explorer: ExplorerId,
+    /// The session whose bookmarks it shows.
     session_id: SessionId,
-    path: String,
+    pub(super) path: String,
     home: String,
     /// Well-known local places for the 目录列表 select; empty for remote.
     places: Vec<(SharedString, String)>,
     table: Entity<TableState<FileListing>>,
-    path_input: Entity<InputState>,
+    /// The path label part under the pointer, by the directory it opens.
+    pub(super) hovered_part: Option<String>,
+    /// The path label's width last frame, which decides what folds.
+    pub(super) label_width: Rc<Cell<Option<Pixels>>>,
+    /// The pane WinSCP calls current: the one used last.
+    pub(super) current: bool,
     path_select: Entity<SelectState<PathChoices>>,
     selection: Selection,
     menu_hit: Rc<RefCell<Option<String>>>,
@@ -135,9 +150,14 @@ pub struct FilePane {
     /// A row to select once the next listing arrives (after create/rename).
     select_after_load: Option<String>,
     request_id: u64,
-    loading: bool,
+    pub(super) loading: bool,
+    /// The load in flight has taken long enough to say so.
+    slow_load: bool,
+    slow_load_timer: Option<Task<()>>,
     error: Option<String>,
-    connected: bool,
+    connection: ConnectionState,
+    /// The remote pane offers 重新连接.
+    can_reconnect: bool,
     transfer_enabled: bool,
     /// A file operation on this pane is running.
     busy: bool,
@@ -150,6 +170,7 @@ impl FilePane {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         side: PaneSide,
+        explorer: ExplorerId,
         session_id: SessionId,
         home: String,
         places: Vec<(SharedString, String)>,
@@ -167,24 +188,8 @@ impl FilePane {
                 .col_selectable(false)
                 .cell_selectable(false)
         });
-        let path_input = cx.new(|cx| InputState::new(window, cx).default_value(&home));
         let path_select = cx.new(|cx| SelectState::new(PathChoices::new(vec![]), None, window, cx));
         let subscriptions = vec![
-            cx.subscribe_in(
-                &path_input,
-                window,
-                |this, state, event: &InputEvent, window, cx| {
-                    if matches!(event, InputEvent::PressEnter { .. }) {
-                        let path = state.read(cx).value().to_string();
-                        let remote = this.is_remote();
-                        this.dispatch_command(
-                            ExplorerCommand::Navigate { remote, path },
-                            window,
-                            cx,
-                        );
-                    }
-                },
-            ),
             cx.subscribe_in(
                 &path_select,
                 window,
@@ -207,12 +212,15 @@ impl FilePane {
         ];
         let mut pane = Self {
             side,
+            explorer,
             session_id,
             path: home.clone(),
             home,
             places,
             table,
-            path_input,
+            hovered_part: None,
+            label_width: Rc::default(),
+            current: side == PaneSide::Remote,
             path_select,
             selection: Selection::default(),
             menu_hit: Rc::default(),
@@ -221,8 +229,15 @@ impl FilePane {
             select_after_load: None,
             request_id: 0,
             loading: false,
+            slow_load: false,
+            slow_load_timer: None,
             error: None,
-            connected: side == PaneSide::Local,
+            connection: if side == PaneSide::Local {
+                ConnectionState::Connected
+            } else {
+                ConnectionState::Connecting
+            },
+            can_reconnect: false,
             transfer_enabled: false,
             busy: false,
             store,
@@ -246,11 +261,19 @@ impl FilePane {
         self.home.clone()
     }
     pub fn is_connected(&self) -> bool {
-        self.connected
+        self.connection == ConnectionState::Connected
     }
-    fn dispatch_command(&self, command: ExplorerCommand, window: &mut Window, cx: &mut App) {
+    pub fn is_current(&self) -> bool {
+        self.current
+    }
+    pub(super) fn dispatch_command(
+        &self,
+        command: ExplorerCommand,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         self.dispatch.dispatch_explorer_action(
-            &ExplorerAction::new(self.session_id, command),
+            &ExplorerAction::new(self.explorer, command),
             window,
             cx,
         );
@@ -340,17 +363,7 @@ impl FilePane {
         }
     }
     pub fn expanded_path(&self, path: &str) -> String {
-        if path == "~" {
-            self.home.clone()
-        } else if let Some(rest) = path.strip_prefix("~/") {
-            format!("{}/{rest}", self.home.trim_end_matches('/'))
-        } else if (self.side == PaneSide::Local && !PathBuf::from(path).is_absolute())
-            || (self.side == PaneSide::Remote && !path.starts_with('/'))
-        {
-            self.child_path_of(path)
-        } else {
-            path.to_string()
-        }
+        super::expand_path(path, &self.path, &self.home, self.is_remote())
     }
     pub fn set_home(&mut self, home: String) {
         if self.home.is_empty() {
@@ -358,10 +371,33 @@ impl FilePane {
         }
         self.home = home;
     }
-    pub fn set_available(&mut self, connected: bool, transfer: bool, cx: &mut Context<Self>) {
-        self.connected = connected;
+    pub fn set_available(
+        &mut self,
+        connection: ConnectionState,
+        transfer: bool,
+        can_reconnect: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.connection = connection;
+        self.can_reconnect = can_reconnect;
         self.transfer_enabled = transfer;
         self.sync_listing(cx);
+        cx.notify();
+    }
+    pub fn set_current(&mut self, current: bool, cx: &mut Context<Self>) {
+        if self.current != current {
+            self.current = current;
+            cx.notify();
+        }
+    }
+    pub(super) fn hover_part(&mut self, path: &str, hovered: bool, cx: &mut Context<Self>) {
+        if hovered {
+            self.hovered_part = Some(path.to_string());
+        } else if self.hovered_part.as_deref() == Some(path) {
+            self.hovered_part = None;
+        } else {
+            return;
+        }
         cx.notify();
     }
     pub fn set_busy(&mut self, busy: bool, cx: &mut Context<Self>) {
@@ -377,7 +413,7 @@ impl FilePane {
     }
     fn sync_listing(&mut self, cx: &mut Context<Self>) {
         let context = ListingContext {
-            session: self.session_id,
+            explorer: self.explorer,
             path: self.path.clone(),
             selection: Rc::new(self.selection.clone()),
             transfer_enabled: self.transfer_enabled,
@@ -473,7 +509,7 @@ impl FilePane {
     pub fn disconnected(&mut self, message: String, cx: &mut Context<Self>) {
         self.request_id += 1;
         self.pending = None;
-        self.loading = false;
+        self.finish_loading();
         self.error = Some(message);
         cx.notify();
     }
@@ -482,8 +518,30 @@ impl FilePane {
         self.pending = Some((self.request_id, intent, self.path.clone()));
         self.loading = true;
         self.error = None;
+        // Most directories arrive at once; saying 正在读取 for those only
+        // flickers, so it waits.
+        let id = self.request_id;
+        self.slow_load = false;
+        self.slow_load_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SLOW_LOAD).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.loading && this.request_id == id {
+                    this.slow_load = true;
+                    cx.notify();
+                }
+            });
+        }));
         cx.notify();
         self.request_id
+    }
+    fn finish_loading(&mut self) {
+        self.loading = false;
+        self.slow_load = false;
+        self.slow_load_timer = None;
+    }
+    /// A load has been running long enough for the status line to say so.
+    pub fn is_loading_slowly(&self) -> bool {
+        self.slow_load
     }
     pub fn apply_listing(
         &mut self,
@@ -495,7 +553,7 @@ impl FilePane {
         if request_id != self.request_id {
             return;
         }
-        self.loading = false;
+        self.finish_loading();
         let pending = self.pending.take();
         match result {
             Ok(listing) => {
@@ -504,6 +562,7 @@ impl FilePane {
                 }
                 if listing.path() != self.path {
                     self.selection.clear();
+                    self.hovered_part = None;
                 }
                 self.path = listing.path().into();
                 self.error = None;
@@ -523,18 +582,6 @@ impl FilePane {
                 if let Some(name) = self.select_after_load.take() {
                     self.select_only(&name, cx);
                 }
-                let display = if self.path == self.home {
-                    "~".into()
-                } else if let Some(rest) = self
-                    .path
-                    .strip_prefix(&format!("{}/", self.home.trim_end_matches('/')))
-                {
-                    format!("~/{rest}")
-                } else {
-                    self.path.clone()
-                };
-                self.path_input
-                    .update(cx, |input, cx| input.set_value(display, window, cx));
                 self.sync_path_select(window, cx);
             }
             Err(error) => {
@@ -602,12 +649,12 @@ impl FilePane {
         }));
     }
     /// What the menus show, read when a menu opens.
-    fn menu_state(&self, cx: &App) -> PaneMenuState {
+    pub(super) fn menu_state(&self, cx: &App) -> PaneMenuState {
         let targets = self.selected_names(cx);
         let entries = self.selected_entries(cx);
         PaneMenuState {
             remote: self.is_remote(),
-            session: self.session_id,
+            explorer: self.explorer,
             opens_directory: entries.len() == 1 && entries[0].is_dir(),
             targets,
             can_go_up: self.parent_path() != self.path,
@@ -616,20 +663,20 @@ impl FilePane {
             can_go_forward: self.history.forward_target().is_some(),
             path: self.path.clone(),
             bookmarks: self.bookmarks(cx),
-            can_modify: self.connected && !self.busy,
+            can_modify: self.is_connected() && !self.busy,
             can_transfer: self.transfer_enabled,
         }
     }
 }
 
 impl Render for FilePane {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let remote = self.is_remote();
-        let sid = self.session_id;
+        let sid = self.explorer;
         let context = self.side.key_context();
         let state = self.menu_state(cx);
         let selected = state.targets.len();
-        let navigable = self.connected;
+        let navigable = self.is_connected();
         // A toolbar button dispatches the same command as its key binding,
         // and its tooltip shows that binding.
         let tool = |id: &'static str, icon: Icon, tip: &'static str, command: ExplorerCommand| {
@@ -679,15 +726,22 @@ impl Render for FilePane {
                         .disabled(!navigable),
                 ),
             )
+            // WinSCP's 打开目录/书签 button; its menu jumps straight to a
+            // bookmark.
             .child({
                 let menu = state.clone();
-                Button::new("bookmarks")
+                DropdownButton::new("bookmarks-menu")
                     .ghost()
                     .small()
-                    .icon(Icon::new(CatalogIcon::Bookmark))
-                    .dropdown_caret(true)
-                    .accessibility_label("书签")
-                    .tooltip("书签")
+                    .button(
+                        tool(
+                            "bookmarks",
+                            Icon::new(CatalogIcon::Bookmark),
+                            "打开目录/书签…",
+                            ExplorerCommand::OpenDirectory { remote },
+                        )
+                        .disabled(!navigable),
+                    )
                     .disabled(!navigable)
                     .dropdown_menu(move |popup, _, _| bookmark_menu(popup, &menu))
             })
@@ -844,34 +898,53 @@ impl Render for FilePane {
             .min_w_0()
             .child(navigation)
             .child(operations)
-            .child(
-                h_flex()
-                    .px_2()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        Input::new(&self.path_input)
-                            .id(self.side.path_id())
-                            .small()
-                            .flex_1()
-                            .min_w_0(),
-                    ),
-            )
-            .when(self.loading, |this| {
-                this.child(h_flex().px_2().py_1().text_sm().child("正在读取目录…"))
-            })
-            .when_some(self.error.clone(), |this, error| {
-                this.child(
-                    div()
-                        .id("directory-error")
-                        .test_support()
-                        .px_2()
-                        .py_1()
-                        .text_sm()
-                        .text_color(cx.theme().danger)
-                        .child(error),
-                )
+            .child(self.render_path_label(window, cx))
+            // Only lasting trouble goes above the list; passing states such
+            // as connecting and reading go in the status line under it, so the
+            // list never jumps.
+            .map(|this| {
+                if self.connection == ConnectionState::Connecting {
+                    this
+                } else if let Some(error) = self.error.clone() {
+                    let dispatch = self.dispatch.clone();
+                    this.child(
+                        h_flex()
+                            .gap_2()
+                            .px_2()
+                            .py_1()
+                            .child(
+                                div()
+                                    .id("directory-error")
+                                    .test_support()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_sm()
+                                    .text_color(cx.theme().danger)
+                                    .child(error),
+                            )
+                            // WinSCP's disconnected panel offers to reconnect.
+                            .when(self.can_reconnect, |this| {
+                                this.child(
+                                    Button::new("reconnect-sftp")
+                                        .ghost()
+                                        .small()
+                                        .label("重新连接")
+                                        .on_click(move |_, window, cx| {
+                                            dispatch.dispatch_explorer_action(
+                                                &ExplorerAction::new(
+                                                    sid,
+                                                    ExplorerCommand::ResumeTransfer,
+                                                ),
+                                                window,
+                                                cx,
+                                            )
+                                        }),
+                                )
+                            }),
+                    )
+                } else {
+                    this
+                }
             })
             .child(
                 div()
@@ -979,19 +1052,30 @@ impl Render for FilePane {
                             .small(),
                     ),
             )
-            .child(
+            .child({
+                // The status line is always there, so connecting and reading
+                // a directory never move the list.
+                let status = if self.connection == ConnectionState::Connecting {
+                    "正在连接 SFTP…".to_string()
+                } else if self.slow_load {
+                    "正在读取目录…".to_string()
+                } else if selected == 0 {
+                    format!("{file_count} 个项目")
+                } else {
+                    format!("{file_count} 个项目 · 已选择 {selected} 项")
+                };
                 h_flex()
+                    .id("pane-status")
+                    .test_support()
+                    .role(Role::Status)
+                    .aria_label(status.clone())
                     .px_2()
                     .py_1()
                     .border_t_1()
                     .border_color(cx.theme().border)
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
-                    .child(if selected == 0 {
-                        format!("{file_count} 个项目")
-                    } else {
-                        format!("{file_count} 个项目 · 已选择 {selected} 项")
-                    }),
-            )
+                    .child(status)
+            })
     }
 }

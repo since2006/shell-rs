@@ -1,8 +1,7 @@
-use super::ExplorerPanel;
+use super::{ExplorerId, ExplorerPanel};
 use crate::app::ExplorerDispatch as _;
 use crate::{
     app::{ExplorerAction, ExplorerCommand},
-    session::SessionId,
     sftp::{TransferAnswer, TransferChoice, TransferDirection, TransferQuestionKind},
 };
 use gpui_kit::component::{
@@ -42,7 +41,7 @@ impl ExplorerPanel {
             error: None,
         });
         let dispatch = self.dispatch.clone();
-        let sid = self.session_id();
+        let sid = self.id();
         let generation = self.generation();
         let focus = window.focused(cx).unwrap_or_else(|| self.focus_handle(cx));
         let owner = cx.entity().downgrade();
@@ -125,7 +124,7 @@ impl ExplorerPanel {
             error: None,
         });
         let dispatch = self.dispatch.clone();
-        let sid = self.session_id();
+        let sid = self.id();
         let generation = self.generation();
         let focus = window.focused(cx).unwrap_or_else(|| self.focus_handle(cx));
         let owner = cx.entity().downgrade();
@@ -194,7 +193,7 @@ impl ExplorerPanel {
         });
         let answered = Rc::new(Cell::new(false));
         let dispatch = self.dispatch.clone();
-        let sid = self.session_id();
+        let sid = self.id();
         let generation = self.generation();
         let focus = window.focused(cx).unwrap_or_else(|| self.focus_handle(cx));
         self.dialog_open = true;
@@ -481,7 +480,7 @@ impl Render for ConflictForm {
 }
 /// Session-scoped close confirmation dispatches through the same workspace handler.
 pub fn confirm_close_transfer(
-    session: SessionId,
+    explorer: ExplorerId,
     generation: u64,
     direction: TransferDirection,
     dispatch: FocusHandle,
@@ -515,7 +514,7 @@ pub fn confirm_close_transfer(
                 let dispatch = dispatch.clone();
                 move |_, window, cx| {
                     dispatch.dispatch_explorer_action(
-                        &ExplorerAction::new(session, ExplorerCommand::CloseConfirmed)
+                        &ExplorerAction::new(explorer, ExplorerCommand::CloseConfirmed)
                             .with_generation(generation),
                         window,
                         cx,
