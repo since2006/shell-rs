@@ -7,8 +7,8 @@ use crate::secrets::{NoSecretStore, SecretRef, SharedSecretStore};
 
 use super::database::now_seconds;
 use super::{
-    AuthKind, BookmarkSide, ConnectionState, GroupDraft, GroupId, HostOs, NodeDrop, Session,
-    SessionDatabase, SessionDraft, SessionGroup, SessionId, SessionNode, StoredData,
+    AuthKind, BookmarkSide, ConnectionState, GroupDraft, GroupId, HostOs, NodeDrop, PublicId,
+    Session, SessionDatabase, SessionDraft, SessionGroup, SessionId, SessionNode, StoredData,
 };
 
 /// The single source of truth for sessions and groups. Created once by the
@@ -292,9 +292,15 @@ impl SessionStore {
         let id = SessionId(self.next_session_id);
         self.next_session_id += 1;
         let mut session = Session::new(id, draft);
+        session.public_id = self.unused_public_id();
         session.sort_order = sort_order;
         self.sessions.push(session);
         id
+    }
+
+    /// A [`PublicId`] no session in the store has yet.
+    fn unused_public_id(&self) -> PublicId {
+        PublicId::generate_unused(|id| self.sessions.iter().any(|s| &s.public_id == id))
     }
 
     /// Replace the editable fields of a session; connection state is kept.
@@ -346,7 +352,9 @@ impl SessionStore {
         let os = session.os;
         let sort_order = session.sort_order;
         let old_group = session.group;
+        let public_id = session.public_id.clone();
         *session = Session::new(id, draft);
+        session.public_id = public_id;
         session.state = state;
         session.os = os;
         session.sort_order = if session.group == old_group {
@@ -409,6 +417,8 @@ impl SessionStore {
         let copy_id = SessionId(self.next_session_id);
         self.next_session_id += 1;
         let mut copy = Session::new(copy_id, draft);
+        // A copy is another session, so a third party must not confuse the two.
+        copy.public_id = self.unused_public_id();
         copy.os = os;
         copy.sort_order = self.sessions[ix].sort_order + 1;
         for session in &mut self.sessions {
@@ -1141,6 +1151,27 @@ mod tests {
             Some("/tmp/id_ed25519")
         );
         assert_eq!(store.sessions()[1].state, ConnectionState::Disconnected);
+        assert_ne!(
+            store.sessions()[1].public_id,
+            store.session(web01).unwrap().public_id
+        );
+    }
+
+    #[test]
+    fn a_public_id_survives_editing_and_is_never_shared() {
+        let mut store = SessionStore::seed();
+        let web01 = store.sessions()[0].id;
+        let before = store.session(web01).unwrap().public_id.clone();
+        let mut draft = store.session(web01).unwrap().draft();
+        draft.name = "web".into();
+        draft.host = "10.0.1.99".into();
+        draft.group = None;
+        assert!(store.update_unnotified(web01, draft));
+        assert_eq!(store.session(web01).unwrap().public_id, before);
+
+        let ids: std::collections::HashSet<_> =
+            store.sessions().iter().map(|s| &s.public_id).collect();
+        assert_eq!(ids.len(), store.sessions().len());
     }
 
     #[test]

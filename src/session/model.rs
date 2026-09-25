@@ -1,4 +1,5 @@
 use gpui_kit::{Rgba, SharedString, rgb};
+use rand::{Rng as _, distr::Alphanumeric};
 use serde::Deserialize;
 
 use crate::secrets::SecretRef;
@@ -6,6 +7,56 @@ use crate::secrets::SecretRef;
 /// Stable identity of a session. Never reused within a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
 pub struct SessionId(pub u64);
+
+/// The identity a session shows outside the app, such as
+/// `Jwg5rHvXCxw89paM`: what 复制 ID copies, so a script or another tool can
+/// name the machine. Random letters and digits, not derived from
+/// [`SessionId`]: that one is an allocator detail that can come back after a
+/// restart, while this one is never reused and stays with its session
+/// through renames and address changes. It names a session; it grants
+/// nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct PublicId(SharedString);
+
+impl PublicId {
+    const LEN: usize = 16;
+
+    /// A new id: 16 characters from 62, about 95 random bits.
+    pub fn generate() -> Self {
+        let id: String = rand::rng()
+            .sample_iter(&Alphanumeric)
+            .take(Self::LEN)
+            .map(char::from)
+            .collect();
+        Self(id.into())
+    }
+
+    /// A new id that `in_use` does not already claim. Sixteen random
+    /// characters practically never collide, but ids must be unique.
+    pub fn generate_unused(in_use: impl Fn(&PublicId) -> bool) -> Self {
+        loop {
+            let id = Self::generate();
+            if !in_use(&id) {
+                return id;
+            }
+        }
+    }
+
+    /// An id read back from the database.
+    pub(crate) fn from_stored(id: String) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for PublicId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
 
 /// Stable identity of a session group (a folder in the session tree).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
@@ -233,6 +284,8 @@ impl ConnectionState {
 #[non_exhaustive]
 pub struct Session {
     pub id: SessionId,
+    /// Set once when the session is created; editing never changes it.
+    pub public_id: PublicId,
     pub name: SharedString,
     pub host: SharedString,
     pub port: u16,
@@ -250,9 +303,12 @@ pub struct Session {
 }
 
 impl Session {
+    /// A session with a fresh [`PublicId`]. The store makes sure it is not
+    /// one another session already has.
     pub fn new(id: SessionId, draft: SessionDraft) -> Self {
         Self {
             id,
+            public_id: PublicId::generate(),
             name: draft.name,
             host: draft.host,
             port: draft.port,
@@ -401,6 +457,17 @@ impl SessionDraft {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_ids_are_sixteen_letters_and_digits() {
+        let id = PublicId::generate();
+        assert_eq!(id.as_str().len(), 16);
+        assert!(id.as_str().chars().all(|c| c.is_ascii_alphanumeric()));
+        assert_ne!(PublicId::generate(), id);
+
+        let taken = [id.clone()];
+        assert_ne!(PublicId::generate_unused(|id| taken.contains(id)), id);
+    }
 
     #[test]
     fn ip_literals_are_told_apart_from_host_names() {

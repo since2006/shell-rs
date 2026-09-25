@@ -14,9 +14,10 @@ use gpui_kit::{
 
 use shellrs::app::{
     CenterTab, ClearTerminal, CloseScope, CloseTabs, CollapseAllGroups, ConnectGroup,
-    ConnectSession, CopySessionHost, DeleteGroup, DeleteSession, DisconnectTerminal, EditSession,
-    ExpandAllGroups, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, NewLocalTerminal,
-    NewSessionInGroup, OpenExplorer, ReconnectTerminal, RenameGroup, RenameTerminal,
+    ConnectSession, CopySessionHost, CopySessionId, DeleteGroup, DeleteSession, DisconnectTerminal,
+    EditSession, ExpandAllGroups, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal,
+    NewLocalTerminal, NewSessionInGroup, OpenExplorer, ReconnectTerminal, RenameGroup,
+    RenameTerminal,
 };
 use shellrs::connection::{ConnectionPromptKind, ConnectionTester, LoginTest, TrustCallback};
 use shellrs::explorer::ExplorerId;
@@ -3243,6 +3244,33 @@ fn copy_session_host_puts_the_host_on_the_clipboard(cx: &mut TestAppContext) {
     assert_eq!(
         cx.read_from_clipboard().and_then(|item| item.text()),
         Some("10.0.9.20".to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn copy_session_id_puts_the_public_id_on_the_clipboard(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let public_id = workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .store()
+            .read(cx)
+            .session(SessionId(STAGING_API))
+            .unwrap()
+            .public_id
+            .to_string()
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(CopySessionId(SessionId(STAGING_API))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    assert_eq!(public_id.len(), 16);
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some(public_id)
     );
 }
 

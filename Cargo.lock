@@ -7415,6 +7415,7 @@ dependencies = [
  "gpui-kit",
  "keyring",
  "portable-pty",
+ "rand 0.9.5",
  "rusqlite",
  "russh",
  "russh-sftp",

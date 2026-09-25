@@ -21,7 +21,7 @@ use gpui_kit::*;
 use crate::app::{
     CenterTab, ClearTerminal, CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseSettings,
     CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectSession, CopySessionHost,
-    CopyTerminal, DeleteGroup, DeleteSession, DisconnectSession, DisconnectTerminal,
+    CopySessionId, CopyTerminal, DeleteGroup, DeleteSession, DisconnectSession, DisconnectTerminal,
     DismissTerminalFind, DuplicateSession, EditSession, ExpandAllGroups, ExplorerAction,
     ExplorerCommand, ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal,
     FocusSearch, MoveSessionNode, NewChildGroup, NewGroup, NewLocalTerminal, NewSession,
@@ -1208,6 +1208,24 @@ impl Workspace {
         window.push_notification(Notification::success(format!("已复制 {host}")), cx);
     }
 
+    fn on_copy_session_id(
+        &mut self,
+        action: &CopySessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(public_id) = self
+            .store
+            .read(cx)
+            .session(action.0)
+            .map(|session| session.public_id.clone())
+        else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(public_id.to_string()));
+        window.push_notification(Notification::success(format!("已复制 ID {public_id}")), cx);
+    }
+
     fn on_restart_local_terminal(
         &mut self,
         action: &RestartLocalTerminal,
@@ -1907,6 +1925,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_rename_terminal))
             .on_action(cx.listener(Self::on_rename_explorer))
             .on_action(cx.listener(Self::on_copy_session_host))
+            .on_action(cx.listener(Self::on_copy_session_id))
             .on_action(cx.listener(Self::on_restart_local_terminal))
             .on_action(cx.listener(Self::on_copy_terminal))
             .on_action(cx.listener(Self::on_paste_terminal))

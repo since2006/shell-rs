@@ -21,6 +21,7 @@ icon_assets!(
         FolderPlus,
         Eraser,
         ClipboardPaste,
+        ClipboardCopy,
         House,
         FolderUp,
         FolderRoot,

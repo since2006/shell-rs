@@ -21,10 +21,10 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CollapseAllGroups, ConnectGroup, ConnectSelected, ConnectSession, DeleteGroup,
-    DeleteSession, DuplicateSession, EditSession, ExpandAllGroups, MoveSessionNode, NewChildGroup,
-    NewGroup, NewSession, NewSessionInGroup, OpenExplorer, OpenSettings, RenameGroup,
-    SESSION_PANEL_CONTEXT,
+    CatalogIcon, CollapseAllGroups, ConnectGroup, ConnectSelected, ConnectSession, CopySessionId,
+    DeleteGroup, DeleteSession, DuplicateSession, EditSession, ExpandAllGroups, MoveSessionNode,
+    NewChildGroup, NewGroup, NewSession, NewSessionInGroup, OpenExplorer, OpenSettings,
+    RenameGroup, SESSION_PANEL_CONTEXT,
 };
 
 use crate::shared::HostMark;
@@ -816,6 +816,12 @@ pub fn session_menu(menu: PopupMenu, id: SessionId) -> PopupMenu {
         "复制",
         Icon::new(IconName::Copy),
         Box::new(DuplicateSession(id)),
+    )
+    .separator()
+    .menu_with_icon(
+        "复制 ID",
+        Icon::new(CatalogIcon::ClipboardCopy),
+        Box::new(CopySessionId(id)),
     )
     .separator()
     .menu_with_icon(

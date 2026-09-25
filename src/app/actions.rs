@@ -145,6 +145,11 @@ session_action!(
     /// clipboard.
     CopySessionHost
 );
+session_action!(
+    /// Copy a session's public id to the clipboard, for another tool to
+    /// name the machine by.
+    CopySessionId
+);
 
 group_action!(
     /// Open a terminal connection for every session in this group's subtree.

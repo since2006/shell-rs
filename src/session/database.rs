@@ -5,13 +5,13 @@
 //! The store keeps memory as the source of truth and mirrors each change
 //! here, so a failed write costs the user persistence, never the edit.
 
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use rusqlite::{Connection, params};
 
 use super::{
-    AuthKind, BookmarkSide, GroupDraft, GroupId, HostOs, Session, SessionDraft, SessionGroup,
-    SessionId,
+    AuthKind, BookmarkSide, GroupDraft, GroupId, HostOs, PublicId, Session, SessionDraft,
+    SessionGroup, SessionId,
 };
 
 /// SQLite's only integer type is `i64`, so the `u64` ids cross the boundary
@@ -26,7 +26,7 @@ fn from_sql(id: i64) -> u64 {
 }
 
 /// Bumped whenever `migrate` gains a step. Stored in `PRAGMA user_version`.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA_V1: &str = "\
 BEGIN;
@@ -92,6 +92,16 @@ CREATE TABLE bookmarks (
 PRAGMA user_version = 6;
 COMMIT;";
 
+/// Each session's [`PublicId`]. `ADD COLUMN` cannot declare `UNIQUE`, so an
+/// index carries it. The sessions already there get their ids from
+/// `fill_missing_public_ids` right after.
+const SCHEMA_V7: &str = "\
+BEGIN;
+ALTER TABLE sessions ADD COLUMN public_id TEXT;
+CREATE UNIQUE INDEX sessions_public_id ON sessions(public_id);
+PRAGMA user_version = 7;
+COMMIT;";
+
 /// Everything one launch reads back from disk.
 pub struct StoredData {
     /// Groups in id order; `parent` and `sort_order` give the visible tree.
@@ -126,6 +136,7 @@ impl SessionDatabase {
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.execute_batch("PRAGMA journal_mode = WAL;")?;
         migrate(&mut connection)?;
+        fill_missing_public_ids(&mut connection)?;
         Ok(Self { connection })
     }
 
@@ -150,8 +161,8 @@ impl SessionDatabase {
         let sessions = self
             .connection
             .prepare(
-                "SELECT id, name, host, port, username, auth, group_id, key_path, os, sort_order \
-                 FROM sessions ORDER BY id",
+                "SELECT id, name, host, port, username, auth, group_id, key_path, os, sort_order, \
+                 public_id FROM sessions ORDER BY id",
             )?
             .query_map([], |row| {
                 let id: i64 = row.get(0)?;
@@ -177,6 +188,7 @@ impl SessionDatabase {
                 );
                 session.os = os.as_deref().and_then(HostOs::from_stored);
                 session.sort_order = row.get(9)?;
+                session.public_id = PublicId::from_stored(row.get(10)?);
                 Ok(session)
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -273,8 +285,8 @@ impl SessionDatabase {
 
     pub fn insert_session(&self, session: &Session) -> rusqlite::Result<()> {
         self.connection.execute(
-            "INSERT INTO sessions (id, name, host, port, username, auth, group_id, key_path, os, sort_order) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO sessions (id, name, host, port, username, auth, group_id, key_path, os, sort_order, public_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 to_sql(session.id.0),
                 session.name.as_ref(),
@@ -286,6 +298,7 @@ impl SessionDatabase {
                 session.key_path.as_deref(),
                 session.os.map(HostOs::as_str),
                 session.sort_order,
+                session.public_id.as_str(),
             ],
         )?;
         Ok(())
@@ -293,7 +306,7 @@ impl SessionDatabase {
 
     /// Rewrites the editable fields. `last_connected_at` and `os` are left
     /// alone: they are written by `touch_connected` and `set_host_os`, and
-    /// neither is part of the session form.
+    /// neither is part of the session form. `public_id` never changes.
     pub fn update_session(&self, session: &Session) -> rusqlite::Result<()> {
         self.connection.execute(
             "UPDATE sessions SET name = ?2, host = ?3, port = ?4, username = ?5, \
@@ -442,7 +455,37 @@ fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
     if version < 6 {
         connection.execute_batch(SCHEMA_V6)?;
     }
+    if version < 7 {
+        connection.execute_batch(SCHEMA_V7)?;
+    }
     Ok(())
+}
+
+/// Give every session without a [`PublicId`] one: those from before schema
+/// v7, and any row added by hand with `sqlite3`. Runs at every open; once
+/// every session has an id it is one query that finds nothing.
+fn fill_missing_public_ids(connection: &mut Connection) -> rusqlite::Result<()> {
+    let missing = connection
+        .prepare("SELECT id FROM sessions WHERE public_id IS NULL")?
+        .query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let mut taken = connection
+        .prepare("SELECT public_id FROM sessions WHERE public_id IS NOT NULL")?
+        .query_map([], |row| row.get::<_, String>(0).map(PublicId::from_stored))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
+    let transaction = connection.transaction()?;
+    {
+        let mut update = transaction.prepare("UPDATE sessions SET public_id = ?2 WHERE id = ?1")?;
+        for id in missing {
+            let public_id = PublicId::generate_unused(|candidate| taken.contains(candidate));
+            update.execute(params![id, public_id.as_str()])?;
+            taken.insert(public_id);
+        }
+    }
+    transaction.commit()
 }
 
 /// Seconds since the Unix epoch, for `touch_connected`.
@@ -657,6 +700,78 @@ mod tests {
         assert_eq!(data.sessions[0].auth, AuthKind::Auto);
         assert_eq!(data.sessions[0].key_path, None);
         assert_eq!(data.sessions[0].os, None, "老库里的会话还没探测过");
+    }
+
+    #[test]
+    fn sessions_from_before_v7_get_distinct_public_ids_that_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        let connection = Connection::open(&path).unwrap();
+        for step in [
+            SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
+        ] {
+            connection.execute_batch(step).unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO sessions (id, name, host, port, username, auth) \
+             VALUES (1, 'web', 'example.test', 22, 'root', 'auto'), \
+                    (2, 'db', 'example.test', 22, 'root', 'auto')",
+                [],
+            )
+            .unwrap();
+
+        let ids = |data: StoredData| -> Vec<PublicId> {
+            data.sessions.into_iter().map(|s| s.public_id).collect()
+        };
+        let first = ids(SessionDatabase::prepare(connection)
+            .unwrap()
+            .load()
+            .unwrap());
+        assert_eq!(first.len(), 2);
+        assert_ne!(first[0], first[1]);
+        assert!(first.iter().all(|id| id.as_str().len() == 16));
+        // Assigned once, not again at every open.
+        assert_eq!(
+            ids(SessionDatabase::open(&path).unwrap().load().unwrap()),
+            first
+        );
+    }
+
+    #[test]
+    fn a_public_id_is_saved_and_kept_through_updates() {
+        let db = SessionDatabase::in_memory().unwrap();
+        let session = session(1, "web-01", None);
+        db.insert_session(&session).unwrap();
+        assert_eq!(db.load().unwrap().sessions[0].public_id, session.public_id);
+
+        let mut renamed = session.clone();
+        renamed.name = "web".into();
+        renamed.public_id = PublicId::generate();
+        db.update_session(&renamed).unwrap();
+        assert_eq!(db.load().unwrap().sessions[0].public_id, session.public_id);
+
+        // Two sessions can never share one.
+        let mut twin = Session::new(SessionId(2), session.draft());
+        twin.public_id = session.public_id.clone();
+        assert!(db.insert_session(&twin).is_err());
+    }
+
+    #[test]
+    fn a_session_added_by_hand_gets_a_public_id_at_the_next_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        SessionDatabase::open(&path)
+            .unwrap()
+            .connection
+            .execute(
+                "INSERT INTO sessions (id, name, host, port, username, auth) \
+             VALUES (1, 'web', 'example.test', 22, 'root', 'auto')",
+                [],
+            )
+            .unwrap();
+        let data = SessionDatabase::open(&path).unwrap().load().unwrap();
+        assert_eq!(data.sessions[0].public_id.as_str().len(), 16);
     }
 
     #[test]
