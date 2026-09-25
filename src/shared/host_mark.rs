@@ -19,6 +19,7 @@ pub struct HostMark {
     name: SharedString,
     os: Option<HostOs>,
     size: Size,
+    tooltip: bool,
 }
 
 impl HostMark {
@@ -32,7 +33,15 @@ impl HostMark {
             name: name.into(),
             os,
             size: Size::Medium,
+            tooltip: true,
         }
+    }
+
+    /// No tooltip of its own, for a row that shows one for the whole row, as
+    /// the session tree does, so two tooltips never stack.
+    pub fn without_tooltip(mut self) -> Self {
+        self.tooltip = false;
+        self
     }
 }
 
@@ -94,7 +103,9 @@ impl RenderOnce for HostMark {
             .id(self.id)
             .test_support()
             .aria_label(description)
-            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            .when(self.tooltip, |badge| {
+                badge.tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            })
             .flex_shrink_0()
             .map(|badge| {
                 if compact {

@@ -3248,6 +3248,81 @@ fn copy_session_host_puts_the_host_on_the_clipboard(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn hovering_a_session_row_shows_its_address_beside_the_row(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    let row = ("session-row", WEB_01);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.hover(row, cx);
+    })
+    .unwrap();
+    // Tooltips wait half a second before they open.
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let tooltip = window.find("session-tooltip");
+        assert_eq!(tooltip.label(), Some("root@10.0.1.12:22"));
+        // Beside the row, so it never covers the rows below.
+        let row_bounds = window.find(row).bounds();
+        assert!(tooltip.bounds().left() >= row_bounds.right());
+        assert!((tooltip.bounds().center().y - row_bounds.center().y).abs() < px(2.));
+        // A click puts it away.
+        window.click(row, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("session-tooltip").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_row_tooltip_follows_the_pointer_down_the_list(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    let move_to = |cx: &mut TestAppContext, id: u64| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let row = window.find(("session-row", id)).bounds();
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseMove(MouseMoveEvent {
+                    position: point(row.left() + px(40.), row.center().y),
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }),
+                cx,
+            );
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.executor().advance_clock(Duration::from_millis(1000));
+        cx.run_until_parked();
+    };
+    let tooltip = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find("session-tooltip")
+                .and_then(|tooltip| tooltip.label().map(str::to_string))
+        })
+        .unwrap()
+    };
+
+    cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    move_to(cx, WEB_01);
+    assert_eq!(tooltip(cx).as_deref(), Some("root@10.0.1.12:22"));
+    // Down the list the next row hears of the pointer before this one lets
+    // go of it; the tooltip must survive that and move with the pointer.
+    move_to(cx, WEB_02);
+    assert_eq!(tooltip(cx).as_deref(), Some("root@10.0.1.13:22"));
+    move_to(cx, WEB_01);
+    assert_eq!(tooltip(cx).as_deref(), Some("root@10.0.1.12:22"));
+}
+
+#[gpui_kit::test]
 fn copy_session_id_puts_the_public_id_on_the_clipboard(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let public_id = workspace.read_with(cx, |workspace, cx| {

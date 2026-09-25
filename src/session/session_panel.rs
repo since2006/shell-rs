@@ -2,9 +2,13 @@ use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
     rc::Rc,
+    time::Duration,
 };
 
-use gpui_kit::base::Tree as BaseTree;
+use gpui_kit::base::animation::{EffectTransition, ease_in_out_cubic, ease_out_cubic};
+use gpui_kit::base::{
+    Placement, TooltipOverlay, TooltipRequest, TooltipTransition, Tree as BaseTree,
+};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -14,6 +18,7 @@ use gpui_kit::component::{
     list::ListItem,
     menu::{ContextMenuExt as _, PopupMenu},
     scroll::ScrollableElement as _,
+    tooltip::Tooltip,
     tree::{TreeEntry, TreeEvent, TreeState},
     v_flex,
 };
@@ -54,6 +59,11 @@ pub struct SessionPanel {
     /// builder, both of which run outside this entity.
     right_clicked: Rc<Cell<Option<SessionNode>>>,
     drop_target: Rc<Cell<Option<(SessionNode, NodeDrop)>>>,
+    /// Session rows' tooltips, which open beside the row rather than under
+    /// the pointer so they never cover the rows below.
+    row_tooltip: Entity<TooltipOverlay>,
+    /// The row the tooltip was last opened for. See `render_row`.
+    row_tooltip_owner: Rc<Cell<Option<SessionId>>>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -128,6 +138,8 @@ impl SessionPanel {
             known_sessions,
             right_clicked: Rc::new(Cell::new(None)),
             drop_target: Rc::new(Cell::new(None)),
+            row_tooltip: cx.new(|_| TooltipOverlay::new().render_with(animate_row_tooltip)),
+            row_tooltip_owner: Rc::new(Cell::new(None)),
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
@@ -404,6 +416,14 @@ impl Render for SessionPanel {
                 .filter_map(|session| session.os.map(|os| (session.id, os)))
                 .collect(),
         );
+        let addresses: Rc<HashMap<SessionId, SharedString>> = Rc::new(
+            self.store
+                .read(cx)
+                .sessions()
+                .iter()
+                .map(|session| (session.id, session.address().into()))
+                .collect(),
+        );
         let group_parents: Rc<HashMap<GroupId, Option<GroupId>>> = Rc::new(
             self.store
                 .read(cx)
@@ -428,6 +448,9 @@ impl Render for SessionPanel {
             right_clicked: clicked_row,
             drop_target,
             can_reorder,
+            addresses,
+            tooltip: self.row_tooltip.clone(),
+            tooltip_owner: self.row_tooltip_owner.clone(),
         });
         let tree_scroll = self.tree_state.read(cx).scroll_handle().clone();
 
@@ -519,6 +542,7 @@ impl Render for SessionPanel {
                     })
                     .context_menu(move |menu, _, _| build_context_menu(clicked_menu.get(), menu)),
             )
+            .child(self.row_tooltip.clone())
             .child(
                 // Pinned under the tree, where desktop apps keep settings.
                 h_flex()
@@ -557,6 +581,67 @@ struct RowInteractions {
     right_clicked: Rc<Cell<Option<SessionNode>>>,
     drop_target: Rc<Cell<Option<(SessionNode, NodeDrop)>>>,
     can_reorder: bool,
+    /// `user@host:port` of every session, for the row tooltips.
+    addresses: Rc<HashMap<SessionId, SharedString>>,
+    tooltip: Entity<TooltipOverlay>,
+    tooltip_owner: Rc<Cell<Option<SessionId>>>,
+}
+
+/// A session row's tooltip: where the session logs in, as `user@host:port`.
+///
+/// Drawn in the theme's inverse, dark on the light theme and light on the
+/// dark one, so it stands out against the sidebar and the terminal in both.
+/// Only this tooltip: gpui-kit's others share the popover colour with menus.
+fn session_tooltip(address: SharedString) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+    move |window, cx| {
+        let address = address.clone();
+        let (background, foreground) = (cx.theme().foreground, cx.theme().background);
+        Tooltip::element(move |_, _| {
+            div()
+                .id("session-tooltip")
+                .test_support()
+                .aria_label(address.clone())
+                .child(address.clone())
+        })
+        .bg(background)
+        .border_color(background)
+        .text_color(foreground)
+        .build(window, cx)
+    }
+}
+
+/// The row tooltip's motion, after gpui-kit's own tooltips: it eases out of
+/// the row when it first opens, then follows the pointer from row to row.
+fn animate_row_tooltip(
+    view: AnyView,
+    transition: TooltipTransition,
+    _: &mut Window,
+    _: &mut App,
+) -> AnyElement {
+    let tooltip = div().child(view);
+    match transition {
+        TooltipTransition::Enter { epoch } => EffectTransition::new(Duration::from_millis(150))
+            .ease(ease_out_cubic)
+            .slide_x(px(-4.), px(0.))
+            .fade(0., 1.)
+            .apply(
+                tooltip,
+                ElementId::NamedInteger("session-tooltip-enter".into(), epoch as u64),
+            )
+            .into_any_element(),
+        TooltipTransition::Switch {
+            epoch,
+            previous,
+            current,
+        } => EffectTransition::new(Duration::from_millis(200))
+            .ease(ease_in_out_cubic)
+            .slide_y(previous.center().y - current.center().y, px(0.))
+            .apply(
+                tooltip,
+                ElementId::NamedInteger("session-tooltip-move".into(), epoch as u64),
+            )
+            .into_any_element(),
+    }
 }
 
 /// Count hosts in each group, including hosts in nested child groups.
@@ -589,6 +674,9 @@ fn render_row(
         right_clicked,
         drop_target,
         can_reorder,
+        addresses,
+        tooltip,
+        tooltip_owner,
     } = interactions;
     let item = entry.item();
     let node = SessionNode::parse(&item.id);
@@ -611,6 +699,7 @@ fn render_row(
                 host_os.get(&id).copied(),
             )
             .small()
+            .without_tooltip()
             .into_any_element(),
             ("session-row", id.0).into(),
         ),
@@ -650,6 +739,51 @@ fn render_row(
                 if event.click_count() == 2 {
                     window.dispatch_action(Box::new(ConnectSession(id)), cx);
                 }
+            })
+        })
+        .when_some(session_id, |row, id| {
+            let content = Rc::new(session_tooltip(
+                addresses.get(&id).cloned().unwrap_or_default(),
+            ));
+            let bounds = Rc::new(Cell::new(Bounds::default()));
+            let (bounds_for_prepaint, show, hide) =
+                (bounds.clone(), tooltip.clone(), tooltip.clone());
+            let (owner, owner_for_click) = (tooltip_owner.clone(), tooltip_owner.clone());
+            // Measures the row for the tooltip. The insets matter: ListItem's
+            // content box is not `relative`, so without them the canvas would
+            // land below the content instead of over it.
+            row.child(
+                canvas(
+                    move |row_bounds, _, _| bounds_for_prepaint.set(row_bounds),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+            .on_hover(move |hovered, window, cx| {
+                // Not while a row is being dragged over the others.
+                if *hovered && !cx.has_active_drag() {
+                    owner.set(Some(id));
+                    let content = content.clone();
+                    let request =
+                        TooltipRequest::new(bounds.get(), move |window, cx| content(window, cx))
+                            .placement(Placement::Right);
+                    show.update(cx, |overlay, cx| overlay.request_show(request, window, cx));
+                } else if owner.get() == Some(id) {
+                    // Only the row showing the tooltip may put it away. Going
+                    // down the list, the next row reports the pointer arriving
+                    // before this one reports it leaving, and this row's hide
+                    // would cancel the tooltip the next row just asked for.
+                    owner.set(None);
+                    show.update(cx, |overlay, cx| overlay.request_hide(window, cx));
+                }
+            })
+            // Out of the way of the menu, the click and the drag.
+            .on_any_mouse_down(move |_, _, cx| {
+                owner_for_click.set(None);
+                hide.update(cx, |overlay, cx| overlay.hide(cx));
             })
         })
         .when_some(node, |row, node| {
