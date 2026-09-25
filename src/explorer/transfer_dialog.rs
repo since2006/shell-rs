@@ -5,18 +5,24 @@ use crate::{
     sftp::{TransferAnswer, TransferChoice, TransferDirection, TransferQuestionKind},
 };
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
     dialog::{DialogAction, DialogClose, DialogFooter},
     form::{Field, Form},
     h_flex,
     input::{Input, InputState},
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use std::{cell::Cell, path::PathBuf, rc::Rc};
+use std::{
+    cell::Cell,
+    collections::HashMap,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
 impl ExplorerPanel {
     pub(super) fn open_upload(
@@ -34,8 +40,13 @@ impl ExplorerPanel {
             return;
         }
         let target_input = cx.new(|cx| InputState::new(window, cx).default_value(&target));
+        let sources = self.transfer_sources(
+            false,
+            paths.iter().map(|path| path.to_string_lossy().into_owned()),
+            cx,
+        );
         let form = cx.new(|_| UploadForm {
-            paths: paths.clone(),
+            sources,
             target: target_input.clone(),
             endpoint: self.endpoint().into(),
             error: None,
@@ -117,8 +128,9 @@ impl ExplorerPanel {
             return;
         }
         let target_input = cx.new(|cx| InputState::new(window, cx).default_value(&target));
+        let sources = self.transfer_sources(true, paths.iter().cloned(), cx);
         let form = cx.new(|_| DownloadForm {
-            paths: paths.clone(),
+            sources,
             target: target_input,
             endpoint: self.endpoint().into(),
             error: None,
@@ -183,6 +195,35 @@ impl ExplorerPanel {
                 })
         });
     }
+    /// What a transfer dialog lists for `paths`. Folders are told from
+    /// files by the pane that lists them; a local path it does not list,
+    /// dropped from elsewhere, is looked at on disk.
+    fn transfer_sources(
+        &self,
+        remote: bool,
+        paths: impl Iterator<Item = String>,
+        cx: &App,
+    ) -> TransferSources {
+        let pane = self.pane(remote).read(cx);
+        let listed: HashMap<String, bool> = pane
+            .entries(cx)
+            .iter()
+            .filter(|entry| !entry.is_parent())
+            .map(|entry| (pane.child_path_of(&entry.name), entry.is_dir()))
+            .collect();
+        TransferSources::new(
+            paths
+                .map(|path| {
+                    let is_dir = listed
+                        .get(&path)
+                        .copied()
+                        .unwrap_or_else(|| !remote && Path::new(&path).is_dir());
+                    SourceItem::new(path, remote, is_dir)
+                })
+                .collect(),
+        )
+    }
+
     pub(super) fn open_question(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(question) = self.question.clone() else {
             return;
@@ -333,8 +374,148 @@ impl ExplorerPanel {
         });
     }
 }
+/// What an upload or download is about: the folder its items are in, once,
+/// then each item by name on a line of its own. Whole paths wrapped at a `/`
+/// and one item read as two.
+struct TransferSources {
+    /// Shared by every item, as it is for a pane's selection.
+    folder: Option<String>,
+    items: Vec<SourceItem>,
+}
+
+struct SourceItem {
+    path: String,
+    folder: String,
+    name: String,
+    is_dir: bool,
+}
+
+impl SourceItem {
+    fn new(path: String, remote: bool, is_dir: bool) -> Self {
+        let (folder, name) = if remote {
+            match path.rsplit_once('/') {
+                Some(("", name)) => ("/".to_string(), name.to_string()),
+                Some((folder, name)) => (folder.to_string(), name.to_string()),
+                None => (String::new(), path.clone()),
+            }
+        } else {
+            let local = Path::new(&path);
+            (
+                local
+                    .parent()
+                    .map(|folder| folder.display().to_string())
+                    .unwrap_or_default(),
+                local
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.clone()),
+            )
+        };
+        Self {
+            path,
+            folder,
+            name,
+            is_dir,
+        }
+    }
+}
+
+impl TransferSources {
+    fn new(items: Vec<SourceItem>) -> Self {
+        let folder = items
+            .first()
+            .map(|first| first.folder.clone())
+            .filter(|folder| items.iter().all(|item| item.folder == *folder));
+        Self { folder, items }
+    }
+
+    /// `2 个文件`, `1 个文件夹`, or `3 个项目（1 个文件夹、2 个文件）`.
+    fn count(&self) -> String {
+        let folders = self.items.iter().filter(|item| item.is_dir).count();
+        match (folders, self.items.len() - folders) {
+            (0, files) => format!("{files} 个文件"),
+            (folders, 0) => format!("{folders} 个文件夹"),
+            (folders, files) => {
+                format!(
+                    "{} 个项目（{folders} 个文件夹、{files} 个文件）",
+                    folders + files
+                )
+            }
+        }
+    }
+
+    fn render(&self, id: &'static str, cx: &App) -> impl IntoElement + use<> {
+        let muted = cx.theme().muted_foreground;
+        let shared_folder = self.folder.is_some();
+        v_flex()
+            .gap_1()
+            .when_some(self.folder.clone(), |this, folder| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(format!("位于 {folder}")),
+                )
+            })
+            .child(
+                v_flex()
+                    .id(id)
+                    .max_h_32()
+                    .overflow_y_scroll()
+                    .py_1()
+                    .rounded(cx.theme().radius)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .children(self.items.iter().map(|item| {
+                        let path = item.path.clone();
+                        h_flex()
+                            .id(ElementId::Name(format!("source:{}", item.path).into()))
+                            .test_support()
+                            .aria_label(item.name.clone())
+                            .gap_2()
+                            .px_2()
+                            .py_0p5()
+                            .text_sm()
+                            .child(
+                                Icon::new(if item.is_dir {
+                                    IconName::Folder
+                                } else {
+                                    IconName::File
+                                })
+                                .small()
+                                .text_color(muted),
+                            )
+                            .child(div().min_w_0().child(item.name.clone()))
+                            // Items from different folders say which.
+                            .when(!shared_folder, |this| {
+                                this.child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_xs()
+                                        .text_color(muted)
+                                        .child(item.folder.clone()),
+                                )
+                            })
+                            .tooltip(move |window, cx| Tooltip::new(path.clone()).build(window, cx))
+                    })),
+            )
+    }
+}
+
+/// The dialog's first line: what goes where.
+fn summary(text: String) -> impl IntoElement {
+    div()
+        .id("transfer-summary")
+        .test_support()
+        .aria_label(text.clone())
+        .text_sm()
+        .child(text)
+}
+
 struct UploadForm {
-    paths: Vec<PathBuf>,
+    sources: TransferSources,
     target: Entity<InputState>,
     endpoint: String,
     error: Option<String>,
@@ -343,23 +524,12 @@ impl Render for UploadForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_3()
-            .child(div().text_sm().child(format!(
-                "上传 {} 个项目到 {}",
-                self.paths.len(),
+            .child(summary(format!(
+                "上传 {}到 {}",
+                self.sources.count(),
                 self.endpoint
             )))
-            .child(
-                div()
-                    .id("upload-source-list")
-                    .max_h_32()
-                    .overflow_y_scroll()
-                    .text_sm()
-                    .children(
-                        self.paths
-                            .iter()
-                            .map(|p| div().child(p.display().to_string())),
-                    ),
-            )
+            .child(self.sources.render("upload-source-list", cx))
             .child(
                 Form::new().child(
                     Field::new()
@@ -380,7 +550,7 @@ impl Render for UploadForm {
     }
 }
 struct DownloadForm {
-    paths: Vec<String>,
+    sources: TransferSources,
     target: Entity<InputState>,
     endpoint: String,
     error: Option<String>,
@@ -413,19 +583,12 @@ impl Render for DownloadForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_3()
-            .child(div().text_sm().child(format!(
-                "从 {} 下载 {} 个项目",
+            .child(summary(format!(
+                "从 {} 下载 {}",
                 self.endpoint,
-                self.paths.len()
+                self.sources.count()
             )))
-            .child(
-                div()
-                    .id("download-source-list")
-                    .max_h_32()
-                    .overflow_y_scroll()
-                    .text_sm()
-                    .children(self.paths.iter().map(|p| div().child(p.clone()))),
-            )
+            .child(self.sources.render("download-source-list", cx))
             .child(
                 Form::new().child(
                     Field::new().label("下载到").required(true).child(
@@ -523,4 +686,47 @@ pub fn confirm_close_transfer(
                 }
             })
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SourceItem, TransferSources};
+
+    fn sources(items: &[(&str, bool, bool)]) -> TransferSources {
+        TransferSources::new(
+            items
+                .iter()
+                .map(|&(path, remote, is_dir)| SourceItem::new(path.into(), remote, is_dir))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn a_selection_is_listed_by_name_under_its_folder_once() {
+        let local = sources(&[
+            (
+                "/Users/me/Downloads/OpenWebStart_macos-aarch64_1_14_0.dmg",
+                false,
+                false,
+            ),
+            ("/Users/me/Downloads/db_dump 2.sql", false, false),
+        ]);
+        assert_eq!(local.folder.as_deref(), Some("/Users/me/Downloads"));
+        let names: Vec<&str> = local.items.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["OpenWebStart_macos-aarch64_1_14_0.dmg", "db_dump 2.sql"]
+        );
+        assert_eq!(local.count(), "2 个文件");
+
+        let remote = sources(&[("/srv/app", true, true), ("/etc/hosts", true, false)]);
+        assert_eq!(remote.folder, None);
+        assert_eq!(remote.items[0].folder, "/srv");
+        assert_eq!(remote.count(), "2 个项目（1 个文件夹、1 个文件）");
+
+        let root = sources(&[("/boot", true, true)]);
+        assert_eq!(root.folder.as_deref(), Some("/"));
+        assert_eq!(root.items[0].name, "boot");
+        assert_eq!(root.count(), "1 个文件夹");
+    }
 }

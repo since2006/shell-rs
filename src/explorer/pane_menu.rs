@@ -2,8 +2,8 @@
 //! and the toolbar's bookmark and 新建 menus. Each item dispatches the same
 //! `ExplorerCommand` as the toolbar button with that verb.
 
-use super::{ExplorerId, NewEntryKind};
-use crate::app::{CatalogIcon, ExplorerAction, ExplorerCommand};
+use super::{ExplorerId, FileSizeFormat, NewEntryKind};
+use crate::app::{CatalogIcon, ExplorerAction, ExplorerCommand, SetFileSizeFormat};
 use gpui_kit::component::{Icon, IconName, menu::PopupMenu};
 use gpui_kit::*;
 
@@ -181,6 +181,20 @@ fn add_bookmark_item(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
 }
 
 /// The toolbar's 新建 menu, also the context menu's 新建 submenu.
+/// The 大小 column title's menu: WinSCP's 文件大小显示为, with the format in
+/// use checked. The choice holds for every SFTP tab and is saved.
+pub(super) fn size_format_menu(menu: PopupMenu, current: FileSizeFormat) -> PopupMenu {
+    FileSizeFormat::ALL
+        .into_iter()
+        .fold(menu.label("文件大小显示为"), |menu, format| {
+            menu.menu_with_check(
+                format.label(),
+                format == current,
+                Box::new(SetFileSizeFormat(format)),
+            )
+        })
+}
+
 pub(super) fn new_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
     let remote = state.remote;
     menu.menu_with_icon_and_disabled(

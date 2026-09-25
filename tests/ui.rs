@@ -4253,6 +4253,29 @@ async fn sftp_multi_selection_keyboard_upload_freezes_paths_and_cancel_resumes(
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find("upload-confirm").visible());
+        // Counted by kind, and each item on a line of its own by name, so a
+        // long path cannot pass for two items.
+        assert!(
+            window
+                .find("transfer-summary")
+                .label()
+                .unwrap()
+                .starts_with("上传 4 个项目（2 个文件夹、2 个文件）到 ")
+        );
+        let source = |path: &str| {
+            window
+                .find(ElementId::Name(format!("source:{path}").into()))
+                .label()
+                .map(str::to_string)
+        };
+        assert_eq!(
+            source("/local/tester/文件 甲.txt").as_deref(),
+            Some("文件 甲.txt")
+        );
+        assert_eq!(
+            source("/local/tester/链接目录").as_deref(),
+            Some("链接目录")
+        );
         window.click("upload-target", cx);
         window.press("cmd-a", cx);
         window.input("/固定目标", cx);
@@ -4269,6 +4292,21 @@ async fn sftp_multi_selection_keyboard_upload_freezes_paths_and_cancel_resumes(
         "/固定目标"
     );
     assert_eq!(provider.requests.lock().unwrap()[0].sources().len(), 4);
+    // 详情 lists items as they end. None has yet, and the list says so
+    // rather than opening empty; a second click closes it.
+    for open in [true, false] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("transfer-details", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.try_find("transfer-detail-empty").is_some(), open);
+        })
+        .unwrap();
+    }
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.dispatch_action(
@@ -4630,6 +4668,56 @@ async fn sftp_panes_list_winscp_columns_and_open_links_to_directories(cx: &mut T
         window.find("remote-path").value() == Some("/home/tester/链接目录")
     })
     .await;
+}
+
+/// The 大小 column shows whole kilobytes, as WinSCP does, until its title's
+/// menu picks another format, which then holds for both panes and is saved.
+/// The menu itself is not driven; the test dispatches what its items do.
+#[gpui_kit::test]
+async fn sftp_size_column_shows_kilobytes_until_another_format_is_chosen(cx: &mut TestAppContext) {
+    use shellrs::app::SetFileSizeFormat;
+    use shellrs::explorer::FileSizeFormat;
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let size = |cx: &mut TestAppContext, name: &str| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .within(("remote-pane", SFTP_TAB))
+                .find(ElementId::Name(format!("size:{name}").into()))
+                .label()
+                .map(str::to_string)
+        })
+        .unwrap()
+    };
+    let saved = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .file_size_format
+        })
+    };
+    // 12 bytes, rounded up.
+    assert_eq!(size(cx, "文件 甲.txt").as_deref(), Some("1 KB"));
+    assert_eq!(saved(cx), FileSizeFormat::Kilobytes);
+
+    for (format, shown) in [
+        (FileSizeFormat::Bytes, "12 B"),
+        (FileSizeFormat::Short, "12 B"),
+        (FileSizeFormat::Kilobytes, "1 KB"),
+    ] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.dispatch_action(Box::new(SetFileSizeFormat(format)), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(size(cx, "文件 甲.txt").as_deref(), Some(shown));
+        assert_eq!(saved(cx), format);
+    }
 }
 
 /// Whether a button accepts input. gpui-base does not report `disabled` for

@@ -1,5 +1,5 @@
 use super::{
-    EntryKind, FileMetadata, RemotePath, SftpEvent, TransferChoice, TransferPhase,
+    EntryKind, FileMetadata, RemotePath, SftpEvent, TransferChoice, TransferDetail, TransferPhase,
     TransferProgress, TransferQuestionKind, UploadRequest,
     client::RemoteFs,
     control::{TargetGuard, TransferControl},
@@ -198,7 +198,7 @@ impl UploadBatch {
                     self.progress.succeeded += 1;
                     self.progress
                         .details
-                        .push(format!("已上传：{}", item.target));
+                        .push(TransferDetail::done(item.target.to_string()));
                     if item.metadata.kind() == EntryKind::File {
                         self.completed_bytes =
                             self.completed_bytes.saturating_add(item.metadata.size());
@@ -208,7 +208,7 @@ impl UploadBatch {
                     self.progress.skipped += 1;
                     self.progress
                         .details
-                        .push(format!("已跳过：{}", item.target));
+                        .push(TransferDetail::skipped(item.target.to_string()));
                 }
                 Err(error)
                     if error.is::<super::control::Cancelled>()
@@ -251,9 +251,10 @@ impl UploadBatch {
                         continue;
                     }
                     self.progress.failed += 1;
-                    self.progress
-                        .details
-                        .push(format!("失败：{}：{error:#}", item.target));
+                    self.progress.details.push(TransferDetail::failed(
+                        item.target.to_string(),
+                        format!("{error:#}"),
+                    ));
                     if item.metadata.kind() == EntryKind::Directory {
                         self.blocked_directories.push(item.target.clone());
                     }

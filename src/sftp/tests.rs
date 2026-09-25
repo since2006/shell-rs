@@ -729,7 +729,9 @@ fn directory_permission_error_is_reported_as_failure() {
         run(&mut batch, &remote, &answers.control).await.unwrap();
         assert_eq!(batch.progress.failed(), 1);
         assert_eq!(batch.progress.succeeded(), 0);
-        assert!(batch.progress.details()[0].contains("permission denied"));
+        let detail = &batch.progress.details()[0];
+        assert_eq!(detail.outcome(), TransferOutcome::Failed);
+        assert!(detail.reason().unwrap().contains("permission denied"));
     });
 }
 

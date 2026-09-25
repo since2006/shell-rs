@@ -1,8 +1,8 @@
 //! Directory row snapshots and display formatting.
 
 use crate::sftp::{DirectoryEntry, EntryKind};
-use gpui_kit::SharedString;
-use serde::Deserialize;
+use gpui_kit::{Global, SharedString};
+use serde::{Deserialize, Serialize};
 
 /// Stable identity for one SFTP tab. A session can have several, each with
 /// its own connection and transfer batch.
@@ -233,38 +233,94 @@ pub fn path_ancestors(path: &str, remote: bool) -> Vec<(String, String)> {
     chain
 }
 
-/// Human-readable size: `12 B`, `348 KB`, `1.2 MB`.
+/// How the 大小 column shows sizes: WinSCP's 文件大小显示为, chosen from the
+/// column title's menu and kept in the settings. A global, set from the
+/// settings, because the explorer does not depend on them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileSizeFormat {
+    /// Every byte: `4,105,175,040 B`.
+    Bytes,
+    /// Whole kilobytes, the way Explorer and WinSCP show them by default:
+    /// `4,008,960 KB`. One unit down the column, so the length of a number
+    /// is its magnitude, and fine enough to compare both sides of a copy.
+    #[default]
+    Kilobytes,
+    /// The unit that suits each size: `3.8 GB`.
+    Short,
+}
+
+impl Global for FileSizeFormat {}
+
+impl FileSizeFormat {
+    /// In the order the menu lists them.
+    pub const ALL: [FileSizeFormat; 3] = [
+        FileSizeFormat::Bytes,
+        FileSizeFormat::Kilobytes,
+        FileSizeFormat::Short,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FileSizeFormat::Bytes => "字节",
+            FileSizeFormat::Kilobytes => "千字节（KB）",
+            FileSizeFormat::Short => "简短格式（B、KB、MB、GB）",
+        }
+    }
+
+    pub fn format(self, bytes: u64) -> String {
+        match self {
+            FileSizeFormat::Bytes => format!("{} B", group_thousands(bytes)),
+            // Rounded up, so only an empty file shows 0 KB.
+            FileSizeFormat::Kilobytes => format!("{} KB", group_thousands(bytes.div_ceil(1024))),
+            FileSizeFormat::Short => format_size(bytes),
+        }
+    }
+}
+
+/// `4105175040` as `4,105,175,040`.
+fn group_thousands(number: u64) -> String {
+    let digits = number.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+/// Human-readable size in the smallest unit that keeps the number under
+/// 1024: `12 B`, `1.5 KB`, `348 KB`, `1.2 MB`. One decimal below 100,
+/// whole numbers from there. The progress bar and 属性 use it, and the 大小
+/// column in its short format.
 pub fn format_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     if bytes < 1024 {
         return format!("{bytes} B");
     }
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if value >= 100.0 {
-        format!("{value:.0} {}", UNITS[unit])
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
-}
-
-/// The 大小 column, as WinSCP and Explorer show it: whole kilobytes rounded
-/// up, with thousands separators (`4,008,960 KB`).
-pub fn format_kilobytes(bytes: u64) -> String {
-    let kilobytes = bytes.div_ceil(1024).to_string();
-    let mut grouped = String::with_capacity(kilobytes.len() + kilobytes.len() / 3 + 3);
-    for (index, digit) in kilobytes.chars().enumerate() {
-        if index > 0 && (kilobytes.len() - index).is_multiple_of(3) {
-            grouped.push(',');
+    let mut value = bytes as f64 / 1024.0;
+    let mut unit = 1;
+    loop {
+        // As it will be printed, so rounding up to 1024 moves to the next
+        // unit and rounding up to 100 drops the decimal.
+        let shown = if value < 99.95 {
+            (value * 10.0).round() / 10.0
+        } else {
+            value.round()
+        };
+        if shown >= 1024.0 && unit < UNITS.len() - 1 {
+            value /= 1024.0;
+            unit += 1;
+            continue;
         }
-        grouped.push(digit);
+        return if shown < 100.0 {
+            format!("{shown:.1} {}", UNITS[unit])
+        } else {
+            format!("{shown:.0} {}", UNITS[unit])
+        };
     }
-    grouped.push_str(" KB");
-    grouped
 }
 
 /// The 修改时间 column in local time: `2026/4/22 12:44:53`.
@@ -305,20 +361,44 @@ mod tests {
 
     #[test]
     fn format_size_units() {
+        assert_eq!(format_size(0), "0 B");
         assert_eq!(format_size(12), "12 B");
+        assert_eq!(format_size(1023), "1023 B");
+        assert_eq!(format_size(1024), "1.0 KB");
+        assert_eq!(format_size(1536), "1.5 KB");
         assert_eq!(format_size(348 * 1024), "348 KB");
         assert_eq!(format_size(1_258_291), "1.2 MB");
-        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(4_105_175_040), "3.8 GB");
+        assert_eq!(format_size(3 * 1024u64.pow(4)), "3.0 TB");
     }
 
     #[test]
-    fn kilobytes_round_up_and_group_thousands() {
-        assert_eq!(format_kilobytes(0), "0 KB");
-        assert_eq!(format_kilobytes(1), "1 KB");
-        assert_eq!(format_kilobytes(1024), "1 KB");
-        assert_eq!(format_kilobytes(137_216), "134 KB");
-        assert_eq!(format_kilobytes(999 * 1024 + 1), "1,000 KB");
-        assert_eq!(format_kilobytes(4_105_175_040), "4,008,960 KB");
+    fn the_size_column_shows_bytes_whole_kilobytes_or_short_sizes() {
+        let [bytes, kilobytes, short] = FileSizeFormat::ALL;
+        assert_eq!(FileSizeFormat::default(), kilobytes);
+
+        assert_eq!(bytes.format(0), "0 B");
+        assert_eq!(bytes.format(999), "999 B");
+        assert_eq!(bytes.format(4_105_175_040), "4,105,175,040 B");
+
+        assert_eq!(kilobytes.format(0), "0 KB");
+        assert_eq!(kilobytes.format(1), "1 KB");
+        assert_eq!(kilobytes.format(1024), "1 KB");
+        assert_eq!(kilobytes.format(137_216), "134 KB");
+        assert_eq!(kilobytes.format(999 * 1024 + 1), "1,000 KB");
+        assert_eq!(kilobytes.format(4_105_175_040), "4,008,960 KB");
+
+        assert_eq!(short.format(4_105_175_040), "3.8 GB");
+    }
+
+    #[test]
+    fn a_size_that_rounds_up_is_shown_as_it_rounds() {
+        // 99.96 KB would read "100.0 KB".
+        assert_eq!(format_size(102_359), "100 KB");
+        assert_eq!(format_size(102_297), "99.9 KB");
+        // 1023.6 KB would read "1024 KB".
+        assert_eq!(format_size(1_048_166), "1.0 MB");
+        assert_eq!(format_size(1_047_961), "1023 KB");
     }
 
     #[test]

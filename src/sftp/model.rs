@@ -325,7 +325,57 @@ pub struct TransferProgress {
     pub(crate) skipped: usize,
     pub(crate) failed: usize,
     pub(crate) bytes_per_second: u64,
-    pub(crate) details: Vec<String>,
+    pub(crate) details: Vec<TransferDetail>,
+}
+
+/// How one item of a transfer ended, for 详情.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransferDetail {
+    outcome: TransferOutcome,
+    /// Where the item went; empty when the batch failed before any item.
+    path: String,
+    /// Why it failed.
+    reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferOutcome {
+    Done,
+    Skipped,
+    Failed,
+}
+
+impl TransferDetail {
+    pub fn done(path: impl Into<String>) -> Self {
+        Self {
+            outcome: TransferOutcome::Done,
+            path: path.into(),
+            reason: None,
+        }
+    }
+    pub fn skipped(path: impl Into<String>) -> Self {
+        Self {
+            outcome: TransferOutcome::Skipped,
+            path: path.into(),
+            reason: None,
+        }
+    }
+    pub fn failed(path: impl Into<String>, reason: impl Into<String>) -> Self {
+        Self {
+            outcome: TransferOutcome::Failed,
+            path: path.into(),
+            reason: Some(reason.into()),
+        }
+    }
+    pub fn outcome(&self) -> TransferOutcome {
+        self.outcome
+    }
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
 }
 impl Default for TransferProgress {
     fn default() -> Self {
@@ -385,7 +435,8 @@ impl TransferProgress {
     pub fn bytes_per_second(&self) -> u64 {
         self.bytes_per_second
     }
-    pub fn details(&self) -> &[String] {
+    /// The items that have ended, oldest first.
+    pub fn details(&self) -> &[TransferDetail] {
         &self.details
     }
     pub fn is_active(&self) -> bool {

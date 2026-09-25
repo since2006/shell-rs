@@ -32,7 +32,8 @@ icon_assets!(
         SquarePen,
         Settings,
         Palette,
-        SquareTerminal
+        SquareTerminal,
+        CircleMinus
     ]
 );
 

@@ -2,6 +2,7 @@ use gpui_kit::WindowAppearance;
 use gpui_kit::component::ThemeMode;
 use serde::{Deserialize, Serialize};
 
+use crate::explorer::FileSizeFormat;
 use crate::terminal::{DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, LINE_HEIGHT_RANGE};
 
 /// Everything the settings page changes. Each field falls back to its
@@ -14,6 +15,9 @@ pub struct AppSettings {
     pub appearance: Appearance,
     pub terminal_font: TerminalFontSettings,
     pub external_cli: ExternalCliSettings,
+    /// The SFTP 大小 column, switched from the column title's menu rather
+    /// than the settings page, as in WinSCP.
+    pub file_size_format: FileSizeFormat,
 }
 
 /// 外部 CLI.
@@ -220,6 +224,10 @@ mod tests {
         assert_eq!(settings.language, InterfaceLanguage::default());
         let settings: AppSettings = serde_json::from_str(r#"{"later":1}"#).unwrap();
         assert_eq!(settings, AppSettings::default());
+        assert_eq!(settings.file_size_format, FileSizeFormat::Kilobytes);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"file_size_format":"short"}"#).unwrap();
+        assert_eq!(settings.file_size_format, FileSizeFormat::Short);
     }
 
     #[test]

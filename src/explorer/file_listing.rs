@@ -9,8 +9,8 @@ use gpui_kit::*;
 use std::{cell::RefCell, cmp::Ordering, path::PathBuf, rc::Rc};
 
 use super::{
-    ClickMode, ExplorerId, FileEntry, FileKind, FilePane, PaneSide, Selection, format_changed,
-    format_kilobytes, format_rights,
+    ClickMode, ExplorerId, FileEntry, FileKind, FilePane, FileSizeFormat, PaneSide, Selection,
+    format_changed, format_rights,
 };
 
 /// What the row closures need from the pane, pushed in by `FilePane` so
@@ -23,8 +23,17 @@ pub(super) struct ListingContext {
     pub transfer_enabled: bool,
     pub dispatch: Option<FocusHandle>,
     pub pane: Option<WeakEntity<FilePane>>,
-    /// The row under the last right-click, read by the list's context menu.
-    pub menu_hit: Rc<RefCell<Option<String>>>,
+    /// What the last right-click landed on, read by the list's context menu.
+    pub menu_hit: Rc<RefCell<Option<MenuHit>>>,
+}
+
+/// Where a right-click in the list landed, when not on empty space.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum MenuHit {
+    /// A file or folder, by name.
+    Item(String),
+    /// A column title, by the column's key.
+    Column(SharedString),
 }
 
 impl Default for ListingContext {
@@ -168,7 +177,8 @@ impl TableDelegate for FileListing {
     }
 
     /// `Column::text_right` is not applied by `DataTable`, so the size
-    /// column aligns itself.
+    /// column aligns itself. A right-click on a title is recorded for the
+    /// list's menu, which offers the size formats on 大小's, as WinSCP does.
     fn render_th(
         &mut self,
         col_ix: usize,
@@ -176,9 +186,16 @@ impl TableDelegate for FileListing {
         _: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let column = &self.columns[col_ix];
+        let key = column.key.clone();
+        let menu_hit = self.context.menu_hit.clone();
         h_flex()
+            .id(ElementId::Name(format!("column:{key}").into()))
+            .test_support()
             .size_full()
-            .when(column.key.as_ref() == "size", |this| this.justify_end())
+            .when(key.as_ref() == "size", |this| this.justify_end())
+            .on_mouse_down(MouseButton::Right, move |_, _, _| {
+                *menu_hit.borrow_mut() = Some(MenuHit::Column(key.clone()));
+            })
             .child(column.name.clone())
     }
 
@@ -206,13 +223,22 @@ impl TableDelegate for FileListing {
                 )
                 .child(entry.name.clone())
                 .into_any_element(),
-            "size" => h_flex()
-                .w_full()
-                .justify_end()
-                .when(!entry.is_dir(), |this| {
-                    this.child(format_kilobytes(entry.size))
-                })
-                .into_any_element(),
+            "size" => {
+                let size = (!entry.is_dir()).then(|| {
+                    cx.try_global::<FileSizeFormat>()
+                        .copied()
+                        .unwrap_or_default()
+                        .format(entry.size)
+                });
+                h_flex()
+                    .id(ElementId::Name(format!("size:{}", entry.name).into()))
+                    .test_support()
+                    .aria_label(size.clone().unwrap_or_default())
+                    .w_full()
+                    .justify_end()
+                    .children(size)
+                    .into_any_element()
+            }
             "type" => entry.type_label().into_any_element(),
             "modified" => if parent {
                 String::new()
@@ -304,7 +330,7 @@ impl TableDelegate for FileListing {
                     if let Some(hit) = &hit {
                         let _ = pane.update(cx, |pane, cx| pane.select_for_menu(hit, cx));
                     }
-                    *menu_hit.borrow_mut() = hit;
+                    *menu_hit.borrow_mut() = hit.map(MenuHit::Item);
                 }
             });
         if entry.is_parent() {

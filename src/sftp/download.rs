@@ -6,7 +6,7 @@
 
 use super::{
     DownloadRequest, EntryKind, FileMetadata, RemotePath, SftpEvent, TransferChoice,
-    TransferDirection, TransferPhase, TransferProgress, TransferQuestionKind,
+    TransferDetail, TransferDirection, TransferPhase, TransferProgress, TransferQuestionKind,
     client::RemoteFs,
     control::{Cancelled, TargetGuard, TransferControl},
     journal::{DownloadJournal, DownloadRecord, partial_path},
@@ -250,7 +250,7 @@ impl DownloadBatch {
                     self.progress.succeeded += 1;
                     self.progress
                         .details
-                        .push(format!("已下载：{}", item.target.display()));
+                        .push(TransferDetail::done(item.target.display().to_string()));
                     if item.metadata.kind() == EntryKind::File {
                         self.completed_bytes =
                             self.completed_bytes.saturating_add(item.metadata.size());
@@ -260,7 +260,7 @@ impl DownloadBatch {
                     self.progress.skipped += 1;
                     self.progress
                         .details
-                        .push(format!("已跳过：{}", item.target.display()));
+                        .push(TransferDetail::skipped(item.target.display().to_string()));
                     if item.metadata.kind() == EntryKind::Directory {
                         self.blocked_directories.push(item.target.clone());
                     }
@@ -309,9 +309,10 @@ impl DownloadBatch {
                         continue;
                     }
                     self.progress.failed += 1;
-                    self.progress
-                        .details
-                        .push(format!("失败：{}：{error:#}", item.target.display()));
+                    self.progress.details.push(TransferDetail::failed(
+                        item.target.display().to_string(),
+                        format!("{error:#}"),
+                    ));
                     if item.metadata.kind() == EntryKind::Directory {
                         self.blocked_directories.push(item.target.clone());
                     }

@@ -1,8 +1,10 @@
 use super::{
-    ClickMode, CursorMotion, ExplorerId, FileEntry, FileListing, LoadIntent, NavigationHistory,
-    Selection,
-    file_listing::ListingContext,
-    pane_menu::{PaneMenuState, bookmark_menu, directory_menu, item_menu, new_menu},
+    ClickMode, CursorMotion, ExplorerId, FileEntry, FileListing, FileSizeFormat, LoadIntent,
+    NavigationHistory, Selection,
+    file_listing::{ListingContext, MenuHit},
+    pane_menu::{
+        PaneMenuState, bookmark_menu, directory_menu, item_menu, new_menu, size_format_menu,
+    },
     path_ancestors,
 };
 use crate::app::ExplorerDispatch as _;
@@ -143,7 +145,7 @@ pub struct FilePane {
     pub(super) current: bool,
     path_select: Entity<SelectState<PathChoices>>,
     selection: Selection,
-    menu_hit: Rc<RefCell<Option<String>>>,
+    menu_hit: Rc<RefCell<Option<MenuHit>>>,
     history: NavigationHistory,
     /// The load in flight, why it started, and where it started from.
     pending: Option<(u64, LoadIntent, String)>,
@@ -312,8 +314,12 @@ impl FilePane {
     pub fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.table.read(cx).focus_handle(cx)
     }
+    /// The file or folder under the last right-click, if that was one.
     pub fn menu_hit(&self) -> Option<String> {
-        self.menu_hit.borrow().clone()
+        match &*self.menu_hit.borrow() {
+            Some(MenuHit::Item(name)) => Some(name.clone()),
+            _ => None,
+        }
     }
     pub fn bookmarks(&self, cx: &App) -> Vec<String> {
         self.store
@@ -952,8 +958,9 @@ impl Render for FilePane {
                     .flex_1()
                     .min_h_0()
                     .key_context(context)
-                    // The row's right-click handler records the hit after
-                    // this capture-phase reset, so empty space finds none.
+                    // The right-click handlers of rows and column titles
+                    // record the hit after this capture-phase reset, so empty
+                    // space finds none.
                     .capture_any_mouse_down({
                         let menu_hit = menu_hit.clone();
                         move |event, _, _| {
@@ -1032,17 +1039,26 @@ impl Render for FilePane {
                             },
                         )
                     })
-                    // One menu for rows and empty space, on the container:
-                    // see `SessionPanel` for why menus stay off virtual rows.
+                    // One menu for rows, column titles and empty space, on the
+                    // container: see `SessionPanel` for why menus stay off
+                    // virtual rows. Two menus would also both open, since a
+                    // menu does not stop the click reaching the one around it.
                     .context_menu(move |menu, window, cx| {
                         let Some(state) = pane.upgrade().map(|pane| pane.read(cx).menu_state(cx))
                         else {
                             return menu;
                         };
-                        if menu_hit.borrow().is_some() {
-                            item_menu(menu, &state)
-                        } else {
-                            directory_menu(menu, &state, window, cx)
+                        let hit = menu_hit.borrow().clone();
+                        match hit {
+                            Some(MenuHit::Item(_)) => item_menu(menu, &state),
+                            Some(MenuHit::Column(key)) if key.as_ref() == "size" => {
+                                let current = cx.try_global::<FileSizeFormat>().copied();
+                                size_format_menu(menu, current.unwrap_or_default())
+                            }
+                            // Other titles have nothing to offer; an empty
+                            // menu does not open.
+                            Some(MenuHit::Column(_)) => menu,
+                            None => directory_menu(menu, &state, window, cx),
                         }
                     })
                     .child(

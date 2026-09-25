@@ -1,12 +1,13 @@
 use gpui_kit::component::{ActiveTheme as _, Theme};
 use gpui_kit::*;
 
+use crate::explorer::FileSizeFormat;
 use crate::terminal::{TerminalFont, is_font_installed};
 
 use super::AppSettings;
 
-/// Bring the window in line with the settings: the theme, the locale and
-/// the terminal font. Does nothing where they already agree, so it can run
+/// Bring the window in line with the settings: the theme, the locale, the
+/// terminal font and the SFTP size format. Does nothing where they already agree, so it can run
 /// on every settings change and every change of the system appearance.
 pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     let mode = settings.appearance.theme_mode(window.appearance());
@@ -36,6 +37,11 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     };
     if cx.try_global::<TerminalFont>() != Some(&font) {
         cx.set_global(font);
+        window.refresh();
+    }
+
+    if cx.try_global::<FileSizeFormat>() != Some(&settings.file_size_format) {
+        cx.set_global(settings.file_size_format);
         window.refresh();
     }
 }

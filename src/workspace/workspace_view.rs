@@ -28,7 +28,7 @@ use crate::app::{
     NewChildGroup, NewGroup, NewLocalTerminal, NewSession, NewSessionInGroup, OpenExplorer,
     OpenSettings, PasteTerminal, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill,
     RemoveCliCommand, RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal,
-    ToggleSessionPanel, ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
+    SetFileSizeFormat, ToggleSessionPanel, ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::cli::{CliIntegration, CliServer, CliTarget, IntegrationPaths, SshCliBackend};
 use crate::connection::SharedConnectionTester;
@@ -1795,6 +1795,19 @@ impl Workspace {
         });
     }
 
+    /// Saved like any setting; applying it redraws every SFTP tab.
+    fn on_set_file_size_format(
+        &mut self,
+        action: &SetFileSizeFormat,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let format = action.0;
+        self.settings.update(cx, |settings, cx| {
+            settings.update(|settings| settings.file_size_format = format, cx)
+        });
+    }
+
     fn on_focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
         if !self.dock_area.read(cx).is_dock_open(DockPlacement::Left) {
             self.dock_area.update(cx, |area, cx| {
@@ -2080,6 +2093,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_install_cli_command))
             .on_action(cx.listener(Self::on_remove_cli_command))
             .on_action(cx.listener(Self::on_install_agent_skill))
+            .on_action(cx.listener(Self::on_set_file_size_format))
             .on_action(cx.listener(Self::on_remove_agent_skill))
             .on_action(cx.listener(Self::on_refresh_cli_integration))
             .on_action(cx.listener(Self::on_copy_agent_skill))

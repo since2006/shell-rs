@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::{
     cli::AgentKind,
-    explorer::ExplorerId,
+    explorer::{ExplorerId, FileSizeFormat},
     session::{GroupId, NodeDrop, SessionId, SessionNode},
     terminal::{LocalTerminalId, RemoteTerminalId},
 };
@@ -224,6 +224,11 @@ pub struct InstallAgentSkill(pub AgentKind);
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
 #[action(namespace = shellrs, no_json)]
 pub struct RemoveAgentSkill(pub AgentKind);
+
+/// Show the SFTP 大小 column in another format, from its title's menu.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = shellrs, no_json)]
+pub struct SetFileSizeFormat(pub FileSizeFormat);
 
 /// One tab of the center area, by the identity of what it shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]

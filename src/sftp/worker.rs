@@ -1,6 +1,6 @@
 use super::{
     EntryKind, RemotePath, SftpCommand, SftpEvent, SftpTransport, SftpTransportProvider,
-    TransferDirection, TransferPhase, TransferProgress,
+    TransferDetail, TransferDirection, TransferPhase, TransferProgress,
     client::RemoteFs as _,
     client::{SftpClient, is_network_error},
     control::{Cancelled, TransferControl},
@@ -399,7 +399,7 @@ impl SshSftpTransport {
                         .send(SftpEvent::Progress(TransferProgress {
                             direction,
                             phase: TransferPhase::Stopped,
-                            details: vec![error.to_string()],
+                            details: vec![TransferDetail::failed("", error.to_string())],
                             ..Default::default()
                         }))
                         .await?;

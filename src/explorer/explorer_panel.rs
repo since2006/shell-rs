@@ -9,13 +9,13 @@ use crate::{
     session::{BookmarkSide, ConnectionState, SessionId, SessionStore},
     sftp::{
         DownloadRequest, RemotePath, SftpCommand, SftpEvent, SharedLocalDirectoryProvider,
-        SharedSftpTransportProvider, TransferDirection, TransferPhase, TransferProgress,
-        TransferQuestion, UploadRequest,
+        SharedSftpTransportProvider, TransferDirection, TransferOutcome, TransferPhase,
+        TransferProgress, TransferQuestion, UploadRequest,
     },
     shared::{ClosableTabTitle, HostMark, RenamableTab, close_tab_items},
 };
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     h_flex,
@@ -899,11 +899,19 @@ impl Render for ExplorerPanel {
                                         ExplorerCommand::DiscardTransfer,
                                     ))
                                 })
-                                .child(command_button(
-                                    "transfer-details",
-                                    "详情".into(),
-                                    ExplorerCommand::ToggleDetails,
-                                )),
+                                .child(
+                                    command_button(
+                                        "transfer-details",
+                                        "详情".into(),
+                                        ExplorerCommand::ToggleDetails,
+                                    )
+                                    .icon(Icon::new(if self.details {
+                                        IconName::ChevronDown
+                                    } else {
+                                        IconName::ChevronUp
+                                    }))
+                                    .selected(self.details),
+                                ),
                         )
                         .child(
                             div()
@@ -932,21 +940,65 @@ impl Render for ExplorerPanel {
                                 )),
                         )
                         .when(self.details, |this| {
-                            this.child(
-                                div()
-                                    .id("transfer-detail-list")
-                                    .max_h_32()
-                                    .overflow_y_scroll()
-                                    .text_xs()
-                                    .children(
-                                        progress
-                                            .details()
-                                            .iter()
-                                            .map(|detail| div().child(detail.clone())),
-                                    ),
-                            )
+                            this.child(transfer_details(progress, cx))
                         }),
                 )
             })
     }
+}
+
+/// 详情: how each item of the transfer ended, the latest on top so it is in
+/// view without scrolling. Items are listed as they end, so until the first
+/// one does, the list says so rather than opening empty.
+fn transfer_details(progress: &TransferProgress, cx: &App) -> impl IntoElement + use<> {
+    let theme = cx.theme();
+    let (muted, success, danger) = (theme.muted_foreground, theme.success, theme.danger);
+    let verb = progress.direction().verb();
+    v_flex()
+        .id("transfer-detail-list")
+        .test_support()
+        .max_h_32()
+        .overflow_y_scroll()
+        .py_1()
+        .rounded(theme.radius)
+        .border_1()
+        .border_color(theme.border)
+        .text_xs()
+        .when(progress.details().is_empty(), |this| {
+            this.child(
+                div()
+                    .id("transfer-detail-empty")
+                    .test_support()
+                    .px_2()
+                    .py_0p5()
+                    .text_color(muted)
+                    .child(format!("还没有{verb}完的项目，每完成一项会列在这里")),
+            )
+        })
+        .children(progress.details().iter().rev().map(|detail| {
+            let (icon, color, outcome) = match detail.outcome() {
+                TransferOutcome::Done => (Icon::new(IconName::CircleCheck), success, "完成"),
+                TransferOutcome::Skipped => (Icon::new(CatalogIcon::CircleMinus), muted, "已跳过"),
+                TransferOutcome::Failed => (Icon::new(IconName::CircleX), danger, "失败"),
+            };
+            h_flex()
+                .id(ElementId::Name(
+                    format!("transfer-detail:{}", detail.path()).into(),
+                ))
+                .test_support()
+                .aria_label(format!("{outcome} {}", detail.path()))
+                .items_start()
+                .gap_2()
+                .px_2()
+                .py_0p5()
+                .child(icon.xsmall().text_color(color))
+                .child(
+                    v_flex()
+                        .min_w_0()
+                        .child(detail.path().to_string())
+                        .when_some(detail.reason(), |this, reason| {
+                            this.child(div().text_color(danger).child(reason.to_string()))
+                        }),
+                )
+        }))
 }
