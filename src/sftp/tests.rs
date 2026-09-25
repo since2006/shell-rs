@@ -1590,6 +1590,7 @@ fn an_scp_upload_takes_the_destination_name_and_keeps_the_execute_bits() {
     });
 }
 
+#[cfg(unix)]
 async fn batch_to(
     source: &Path,
     destination: &str,

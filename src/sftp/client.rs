@@ -94,7 +94,8 @@ impl SftpClient {
             fsync,
         })
     }
-    #[cfg(test)]
+    /// Only the Unix tests have a local `sftp-server` to talk to.
+    #[cfg(all(test, unix))]
     pub(super) async fn local_test_server(
         directory: &std::path::Path,
     ) -> Result<(Self, tokio::process::Child)> {
