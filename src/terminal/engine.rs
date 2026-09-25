@@ -549,7 +549,7 @@ impl TerminalRuntime {
         let parser_term = term.clone();
         let parser_ui_events = ui_events.clone();
         thread::Builder::new()
-            .name("shellr-terminal-parser".into())
+            .name("shellrs-terminal-parser".into())
             .spawn(move || {
                 let mut processor = Processor::new();
                 while let Ok(event) = transport_receiver.recv_blocking() {
@@ -619,7 +619,7 @@ impl TerminalRuntime {
             .expect("terminal parser thread");
 
         thread::Builder::new()
-            .name("shellr-terminal-transport".into())
+            .name("shellrs-terminal-transport".into())
             .spawn(move || {
                 if let Err(error) = transport.run(size, command_receiver, transport_events.clone())
                 {

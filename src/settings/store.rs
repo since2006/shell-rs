@@ -139,7 +139,7 @@ mod tests {
     fn a_change_is_written_and_read_back() {
         let dir = tempfile::tempdir().unwrap();
         // The data directory may not exist yet.
-        let path = dir.path().join("shellr").join("settings.json");
+        let path = dir.path().join("shellrs").join("settings.json");
         let (mut store, _) = SettingsStore::load(path.clone());
         let written = store.update_unnotified(|settings| {
             settings.appearance = Appearance::Dark;

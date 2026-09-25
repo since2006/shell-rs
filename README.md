@@ -1,4 +1,4 @@
-# shellr
+# ShellRS
 
 基于 GPUI Kit 的中文 SSH 会话管理工具，提供持久化会话与分组、本地终端、SSH 多终端和对标 WinSCP 的 SFTP 双栏浏览器。
 
@@ -131,7 +131,7 @@
 
 ## 断点续传和替换
 
-文件先写入 `<目标文件名>.filepart`。写入请求采用有界流水线，收到每个写入确认并关闭成功后才发布正式文件；服务器支持时先调用 `fsync@openssh.com`。支持 `posix-rename@openssh.com` 的服务器使用原子替换；其他服务器先将旧文件移到 `.shellr-<UUID>.backup`，再发布新文件，此兼容路径不保证原子性。发布响应丢失时根据受管理临时路径、阶段、类型和大小恢复，无法安全判断则保留恢复文件并报告。
+文件先写入 `<目标文件名>.filepart`。写入请求采用有界流水线，收到每个写入确认并关闭成功后才发布正式文件；服务器支持时先调用 `fsync@openssh.com`。支持 `posix-rename@openssh.com` 的服务器使用原子替换；其他服务器先将旧文件移到 `.shellrs-<UUID>.backup`，再发布新文件，此兼容路径不保证原子性。发布响应丢失时根据受管理临时路径、阶段、类型和大小恢复，无法安全判断则保留恢复文件并报告。
 
 续传记录保存在应用数据目录的 `upload-resume/`，采用版本化 JSON 和原子写入，不写入密码、口令或私钥，不改变会话数据库结构。记录用于绑定端点、主机指纹、来源、目标和安全替换阶段。续传方式与 WinSCP 相同：读取远端 `.filepart` 的当前大小，在本地文件中跳过相同长度并继续传输；使用者需确保来源仍是同一版本。上传过程不会为了校验而回读远端文件内容。
 
@@ -156,7 +156,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-数据目录默认是系统应用数据目录中的 `shellr`，可通过 `SHELLR_DATA_DIR` 覆盖。会话保存在 `shellr.db`，主机信任记录保存在该目录的 `known_hosts`，凭据使用系统钥匙串。
+数据目录默认是系统应用数据目录中的 `shellrs`，可通过 `SHELLRS_DATA_DIR` 覆盖。会话保存在 `shellrs.db`，主机信任记录保存在该目录的 `known_hosts`，凭据使用系统钥匙串（服务名 `shellrs`）。
 
 `src/sftp/tests.rs` 使用临时目录与故障注入覆盖上传和下载的文件内容、空目录、链接、覆盖、权限、取消、源文件变化、乱序与短读、续传及替换各阶段恢复，以及删除、重命名、新建和递归改权限不跟随链接。Unix 协议测试使用本机 OpenSSH `sftp-server`（macOS `/usr/libexec/sftp-server`，Linux `/usr/lib/openssh/sftp-server`）；工作线程测试仅监听 `127.0.0.1` 的随机端口，使用测试凭据。限制本地套接字的沙箱会跳过该部分，需要在允许回环套接字的环境运行。
 

@@ -24,7 +24,7 @@ pub fn render_title_bar(sessions_visible: bool, target: &FocusHandle, cx: &App) 
                 div()
                     .text_sm()
                     .font_weight(FontWeight::MEDIUM)
-                    .child("shellr"),
+                    .child("ShellRS"),
             ),
         )
         .child(

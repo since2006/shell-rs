@@ -1,6 +1,6 @@
 //! 系统钥匙串（macOS Keychain Services / Windows 凭据管理器 / Secret Service）。
 //!
-//! shellr 的秘密只存在这里。数据库里永远不出现密码或口令，`session/database.rs`
+//! ShellRS 的秘密只存在这里。数据库里永远不出现密码或口令，`session/database.rs`
 //! 的 `schema_never_contains_secret_columns` 守着这条不变量。
 
 mod keychain;
@@ -16,7 +16,7 @@ pub use keychain::KeychainSecretStore;
 pub use memory::{InMemorySecretStore, NoSecretStore};
 
 /// 钥匙串里的服务名，所有条目共用。改了会让已保存的秘密全部失联。
-pub const SERVICE: &str = "shellr";
+pub const SERVICE: &str = "shellrs";
 
 /// 一条秘密的身份。
 ///

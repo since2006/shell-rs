@@ -11,7 +11,7 @@ use crate::{
 };
 
 gpui_kit::actions!(
-    shellr,
+    shellrs,
     [
         /// Open the new-session dialog for a session at the root of the tree.
         NewSession,
@@ -67,7 +67,7 @@ macro_rules! session_action {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
         #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-        #[action(namespace = shellr, no_json)]
+        #[action(namespace = shellrs, no_json)]
         pub struct $name(pub SessionId);
     };
 }
@@ -76,7 +76,7 @@ macro_rules! group_action {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
         #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-        #[action(namespace = shellr, no_json)]
+        #[action(namespace = shellrs, no_json)]
         pub struct $name(pub GroupId);
     };
 }
@@ -85,7 +85,7 @@ macro_rules! local_terminal_action {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
         #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-        #[action(namespace = shellr, no_json)]
+        #[action(namespace = shellrs, no_json)]
         pub struct $name(pub LocalTerminalId);
     };
 }
@@ -94,7 +94,7 @@ macro_rules! explorer_action {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
         #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-        #[action(namespace = shellr, no_json)]
+        #[action(namespace = shellrs, no_json)]
         pub struct $name(pub ExplorerId);
     };
 }
@@ -103,7 +103,7 @@ macro_rules! remote_terminal_action {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
         #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-        #[action(namespace = shellr, no_json)]
+        #[action(namespace = shellrs, no_json)]
         pub struct $name(pub RemoteTerminalId);
     };
 }
@@ -157,7 +157,7 @@ group_action!(
 
 /// Move a session-tree row by dropping it beside a peer or into a group.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-#[action(namespace = shellr, no_json)]
+#[action(namespace = shellrs, no_json)]
 pub struct MoveSessionNode {
     pub source: SessionNode,
     pub destination: NodeDrop,
@@ -237,7 +237,7 @@ impl CloseScope {
 /// Close several tabs of the tab bar that holds `tab`, each through its own
 /// close path.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-#[action(namespace = shellr, no_json)]
+#[action(namespace = shellrs, no_json)]
 pub struct CloseTabs {
     pub tab: CenterTab,
     pub scope: CloseScope,
@@ -377,7 +377,7 @@ pub enum ExplorerCommand {
     CloseConfirmed,
 }
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-#[action(namespace = shellr, no_json)]
+#[action(namespace = shellrs, no_json)]
 pub struct ExplorerAction {
     explorer: ExplorerId,
     command: ExplorerCommand,
@@ -408,7 +408,7 @@ impl ExplorerAction {
 /// A file-list key binding. The binding carries the pane side, and the
 /// workspace sends it to the explorer that holds focus.
 #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-#[action(namespace = shellr, no_json)]
+#[action(namespace = shellrs, no_json)]
 pub struct ExplorerShortcut(pub ExplorerCommand);
 
 /// UI entities dispatch after their update has finished so Workspace can read

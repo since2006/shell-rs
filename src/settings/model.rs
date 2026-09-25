@@ -80,7 +80,7 @@ pub trait Choice: Copy + PartialEq + 'static {
     }
 }
 
-/// 界面语言. Only gpui-kit's own strings follow it for now; shellr's copy is
+/// 界面语言. Only gpui-kit's own strings follow it for now; ShellRS's copy is
 /// still Chinese until it is translated.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InterfaceLanguage {

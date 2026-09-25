@@ -44,7 +44,7 @@ impl TerminalTransport for LocalPtyTransport {
             .unwrap_or_else(CommandBuilder::new_default_prog);
         command.env("TERM", "xterm-256color");
         command.env("COLORTERM", "truecolor");
-        command.env("TERM_PROGRAM", "shellr");
+        command.env("TERM_PROGRAM", "ShellRS");
 
         let mut child = pair
             .slave
@@ -57,7 +57,7 @@ impl TerminalTransport for LocalPtyTransport {
 
         let output_events = events.clone();
         let reader_thread = thread::Builder::new()
-            .name("shellr-pty-reader".into())
+            .name("shellrs-pty-reader".into())
             .spawn(move || {
                 let mut buffer = [0_u8; 8192];
                 loop {

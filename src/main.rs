@@ -1,27 +1,27 @@
 use gpui_kit::component::{Root, WindowExt as _, notification::Notification};
 use gpui_kit::*;
 
-use shellr::session::{SessionDatabase, SessionStore};
-use shellr::settings::SettingsStore;
+use shellrs::session::{SessionDatabase, SessionStore};
+use shellrs::settings::SettingsStore;
 
 fn main() {
     gpui_kit::application()
-        .with_assets(shellr::app::AppAssets)
+        .with_assets(shellrs::app::AppAssets)
         .run(|cx| {
-            shellr::init(cx);
+            shellrs::init(cx);
             cx.activate(true);
 
-            let options = shellr::workspace::window_options(cx);
+            let options = shellrs::workspace::window_options(cx);
             cx.spawn(async move |cx| {
                 cx.open_window(options, |window, cx| {
                     window.activate_window();
-                    window.set_window_title("shellr");
+                    window.set_window_title("ShellRS");
                     let (store, problem) = open_store();
                     let store = cx.new(|_| store);
                     let (settings, settings_problem) = open_settings();
                     let settings = cx.new(|_| settings);
-                    let workspace =
-                        cx.new(|cx| shellr::workspace::Workspace::new(store, settings, window, cx));
+                    let workspace = cx
+                        .new(|cx| shellrs::workspace::Workspace::new(store, settings, window, cx));
                     for problem in [problem, settings_problem].into_iter().flatten() {
                         window.push_notification(Notification::error(problem), cx);
                     }
@@ -41,11 +41,11 @@ fn main() {
 /// live. A machine without one still runs; the session form says so and
 /// disables its password field.
 fn open_store() -> (SessionStore, Option<SharedString>) {
-    let secrets = shellr::secrets::system_secret_store();
+    let secrets = shellrs::secrets::system_secret_store();
     match load_store() {
         Ok(store) => (store.with_secrets(secrets), None),
         Err(error) => {
-            eprintln!("shellr: 无法打开本地数据库：{error}");
+            eprintln!("shellrs: 无法打开本地数据库：{error}");
             (
                 SessionStore::empty().with_secrets(secrets),
                 Some(format!("无法打开本地数据库，本次运行的改动不会被保存：{error}").into()),
@@ -57,7 +57,7 @@ fn open_store() -> (SessionStore, Option<SharedString>) {
 /// Load the settings file. Without a data directory the settings still
 /// work, only for this run; the returned message says so.
 fn open_settings() -> (SettingsStore, Option<SharedString>) {
-    match shellr::app::settings_path() {
+    match shellrs::app::settings_path() {
         Ok(path) => SettingsStore::load(path),
         Err(error) => (
             SettingsStore::in_memory(),
@@ -67,6 +67,6 @@ fn open_settings() -> (SettingsStore, Option<SharedString>) {
 }
 
 fn load_store() -> anyhow::Result<SessionStore> {
-    let path = shellr::app::database_path()?;
+    let path = shellrs::app::database_path()?;
     Ok(SessionStore::load(SessionDatabase::open(&path)?)?)
 }

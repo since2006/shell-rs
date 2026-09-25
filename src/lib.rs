@@ -1,4 +1,4 @@
-//! shellr: an SSH session manager with real SSH and local terminals.
+//! ShellRS: an SSH session manager with real SSH and local terminals.
 //!
 //! Modules are organized by capability so they can become crates later:
 //! `session` (会话管理), `terminal` (终端), `explorer` (SFTP 文件浏览),

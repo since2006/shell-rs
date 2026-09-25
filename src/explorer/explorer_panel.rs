@@ -128,7 +128,7 @@ impl ExplorerPanel {
         let transport = provider.create(&session);
         let failed = sender.clone();
         if let Err(error) = std::thread::Builder::new()
-            .name("shellr-sftp".into())
+            .name("shellrs-sftp".into())
             .spawn(move || {
                 if let Err(error) = transport.run(receiver, sender.clone()) {
                     let _ = sender.send_blocking(SftpEvent::Disconnected(error.to_string()));

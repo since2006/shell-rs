@@ -56,7 +56,7 @@ use super::{
     title_bar::render_title_bar,
 };
 
-const DOCK_ID: &str = "shellr-dock";
+const DOCK_ID: &str = "shellrs-dock";
 const DOCK_VERSION: usize = 1;
 /// Interface zoom bounds for the base font, in pixels (the theme's unit).
 const FONT_SIZE_MIN: f32 = 12.;

@@ -58,7 +58,7 @@ pub enum TerminalTransportEvent {
     Failed(String),
 }
 
-/// One running transport. Implementations may block because shellr always
+/// One running transport. Implementations may block because ShellRS always
 /// invokes this method on a dedicated worker thread.
 pub trait TerminalTransport: Send + 'static {
     fn run(

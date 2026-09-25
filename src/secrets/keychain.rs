@@ -85,7 +85,7 @@ mod tests {
     fn the_system_keychain_round_trips() {
         let store = KeychainSecretStore::new();
         assert!(store.is_available(), "这台机器上没有可用的系统钥匙串");
-        let secret = SecretRef::password("shellr-test", "invalid.example", 22);
+        let secret = SecretRef::password("shellrs-test", "invalid.example", 22);
 
         store.delete(&secret).unwrap();
         assert!(store.get(&secret).unwrap().is_none());

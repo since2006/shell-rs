@@ -345,7 +345,7 @@ impl SessionForm {
         let (result_tx, result_rx) = std::sync::mpsc::channel();
         let tester = self.tester.clone();
         let spawned = std::thread::Builder::new()
-            .name("shellr-connection-test".into())
+            .name("shellrs-connection-test".into())
             .spawn(move || {
                 // Nobody left to answer (the form closed) reads as "no".
                 let trust: TrustCallback = Box::new(move |prompt| {
@@ -519,7 +519,7 @@ impl Render for SessionForm {
             .unwrap_or_default();
         let keychain = self.secrets.is_available();
         let secret_note = if keychain {
-            "密码保存在系统钥匙串，不会写入 shellr 的数据库。"
+            "密码保存在系统钥匙串，不会写入 ShellRS 的数据库。"
         } else {
             "系统钥匙串不可用，这台机器上无法保存密码，每次连接都会询问。"
         };

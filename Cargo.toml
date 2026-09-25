@@ -1,5 +1,5 @@
 [package]
-name = "shellr"
+name = "shellrs"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -34,7 +34,7 @@ gpui-kit = { version = "0.6.1", features = ["test-support"] }
 tempfile = "3"
 
 # Optimize the rendering stack in debug builds (per gpui-kit's installation
-# guide); shellr itself stays unoptimized and debuggable.
+# guide); shellrs itself stays unoptimized and debuggable.
 [profile.dev.package]
 gpui-pre = { opt-level = 3 }
 gpui-pre-platform = { opt-level = 3 }

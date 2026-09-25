@@ -2,9 +2,9 @@
 
 ## 项目是什么
 
-shellr 是一个类似 Xshell / WinSCP 的 SSH 会话管理工具，基于 `gpui-kit` 0.6.1（GPUI + gpui-base + gpui-component）。界面文案用中文，标识符用英文。
+ShellRS（crate 与二进制都叫 `shellrs`）是一个类似 Xshell / WinSCP 的 SSH 会话管理工具，基于 `gpui-kit` 0.6.1（GPUI + gpui-base + gpui-component）。界面文案用中文，标识符用英文。
 
-会话和分组是**真实持久化**的，存在一个 SQLite 文件里（`~/Library/Application Support/shellr/shellr.db`，`SHELLR_DATA_DIR` 可覆盖目录）。本地终端（`portable-pty` + `alacritty_terminal`）和 SSH 远程连接（`russh`）也都是真的。密码与私钥口令存在系统钥匙串里（`keyring`），**数据库里永远不出现秘密**。SFTP 双栏浏览与上传也已接入真实文件系统，支持断点续传；下载、目录同步和传输队列尚未实现。详见 `README.md`。
+会话和分组是**真实持久化**的，存在一个 SQLite 文件里（`~/Library/Application Support/shellrs/shellrs.db`，`SHELLRS_DATA_DIR` 可覆盖目录）。本地终端（`portable-pty` + `alacritty_terminal`）和 SSH 远程连接（`russh`）也都是真的。密码与私钥口令存在系统钥匙串里（`keyring`），**数据库里永远不出现秘密**。SFTP 双栏浏览与上传也已接入真实文件系统，支持断点续传；下载、目录同步和传输队列尚未实现。详见 `README.md`。
 
 已确认的产品决定：WinSCP 式双栏文件浏览器是每个会话独立的「SFTP」Dock 标签页；暂不做传输队列和 Dock 布局持久化；首次启动是空库，不预置任何分组或会话；分组支持任意层级嵌套，会话也可以不属于任何分组（渲染在树的根层级）；删除分组会连同其子分组和里面的会话一起删，删除前确认并写明数量。
 
@@ -22,8 +22,8 @@ cargo test --test ui new_session -- --nocapture   # 按名称片段跑单个 UI 
 cargo clippy --all-targets -- -D warnings   # 必须无警告
 cargo fmt --check
 
-sqlite3 ~/Library/Application\ Support/shellr/shellr.db '.schema'   # 查落盘结果
-security find-generic-password -s shellr -a "password:<user>@<host>:<port>"   # 查钥匙串条目
+sqlite3 ~/Library/Application\ Support/shellrs/shellrs.db '.schema'   # 查落盘结果
+security find-generic-password -s shellrs -a "password:<user>@<host>:<port>"   # 查钥匙串条目
 cargo test -- --ignored                     # 会读写真实钥匙串的测试，默认跳过
 ```
 
@@ -35,7 +35,7 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 
 单个二进制 crate，带 `src/lib.rs`，这样 `tests/ui.rs` 能驱动生产环境的 `Workspace`。模块按能力划分，将来可拆成独立 crate；功能模块不得依赖 `workspace`（窗口壳），也不得触碰彼此的内部实现。
 
-- `app/` — `actions.rs` 定义全部用户命令（`gpui_kit::actions!` 单元动作 + 携带 `SessionId` / `GroupId` 的 `session_action!` / `group_action!` 动作）；`paths.rs` 解析数据目录（`SHELLR_DATA_DIR` → `dirs::data_dir()/shellr`）与数据库路径；`mod.rs` 绑定快捷键、初始化 gpui-kit 并 `set_locale("zh-CN")`；`assets.rs` 用 `icon_assets!` 把额外的 Lucide 图标并入默认图标包——额外图标用 `CatalogIcon::*`，默认包用 `IconName::*`；`OS_ICONS` 另外嵌入 `assets/icons/os/*.svg`（各操作系统的真实 logo，取自 Simple Icons，CC0；Windows 那个是自己画的四格，Simple Icons 已下架），用 `Icon::default().path(os.icon_path())` 渲染。
+- `app/` — `actions.rs` 定义全部用户命令（`gpui_kit::actions!` 单元动作 + 携带 `SessionId` / `GroupId` 的 `session_action!` / `group_action!` 动作）；`paths.rs` 解析数据目录（`SHELLRS_DATA_DIR` → `dirs::data_dir()/shellrs`）与数据库路径；`mod.rs` 绑定快捷键、初始化 gpui-kit 并 `set_locale("zh-CN")`；`assets.rs` 用 `icon_assets!` 把额外的 Lucide 图标并入默认图标包——额外图标用 `CatalogIcon::*`，默认包用 `IconName::*`；`OS_ICONS` 另外嵌入 `assets/icons/os/*.svg`（各操作系统的真实 logo，取自 Simple Icons，CC0；Windows 那个是自己画的四格，Simple Icons 已下架），用 `Icon::default().path(os.icon_path())` 渲染。
 - `session/` — `model.rs`（Session / SessionGroup / SessionDraft / GroupDraft / `HostOs`；`Session.group` 与 `SessionGroup.parent` 都是 `Option<GroupId>`，`Session.os` 是 `Option<HostOs>`）、`database.rs`（`SessionDatabase`：rusqlite 连接、`PRAGMA user_version` 迁移、行与模型的映射）、`store.rs`（`SessionStore` 实体，**内存是唯一事实来源**，写穿到数据库）、`outline.rs`（纯函数：store → `TreeItem`，递归铺开嵌套分组；节点 id 形如 `g:<id>` / `s:<id>`；`group_options` 给表单提供按全路径标注的分组列表）、`session_panel.rs`（左侧 Dock 面板：搜索 + 树 + 右键菜单）、`session_dialog.rs`、`group_dialog.rs`（`GroupForm`、`open_group_dialog`、`confirm_delete_group`）。
 - `terminal/` — 本地终端是真的：`transport.rs`（字节流传输的 trait）、`local_pty.rs`（`portable-pty` 实现，跑在专用线程上）、`engine.rs`（驱动 `alacritty_terminal`，解析线程 + 16ms UI 轮询批量刷新）、`terminal_view.rs`（网格渲染、选区、输入编码）、`local_terminal_panel.rs`（⌘T 开的本地标签页）、`model.rs`。远程会话的传输在 `ssh/`，中间区的标签页是 `terminal_panel.rs`。共享 prompt 协议位于 `connection.rs`，`transport.rs` 通过 `TerminalPrompt` / `TerminalPromptKind` / `TerminalSecret` 重导出保持兼容。
 - `ssh/` — `probe.rs`（探测远端系统的命令与纯解析函数，外加驱动两步探测的 `HostOsProbe` 状态机）、`transport.rs`：真实的 russh 客户端。known_hosts 校验写 `<data_dir>/known_hosts`（**不碰** `~/.ssh/known_hosts`），认证链是 agent → publickey → password → keyboard-interactive。密码和私钥口令先查 `secrets`，查不到或被服务器拒绝才走 prompt 弹框；被拒绝时**不删**钥匙串条目，只在弹框说明里讲清原因。

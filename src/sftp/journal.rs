@@ -68,7 +68,7 @@ impl ResumeRecord {
             source_metadata: None,
             link_target: None,
             temporary,
-            backup: parent.join(&format!(".shellr-{id}.backup"))?,
+            backup: parent.join(&format!(".shellrs-{id}.backup"))?,
             target,
             original,
             phase: PublishPhase::Writing,
@@ -110,7 +110,7 @@ impl ResumeRecord {
 
 fn managed_uuid_path(path: &RemotePath, target: &RemotePath, suffix: &str) -> bool {
     let name = path.as_str().rsplit('/').next().unwrap_or_default();
-    name.strip_prefix(".shellr-")
+    name.strip_prefix(".shellrs-")
         .and_then(|value| value.strip_suffix(suffix))
         .and_then(|value| uuid::Uuid::parse_str(value).ok())
         .is_some()

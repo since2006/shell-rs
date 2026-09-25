@@ -12,31 +12,31 @@ use gpui_kit::{
     MouseMoveEvent, TestAppContext, WindowHandle, point, px, size,
 };
 
-use shellr::app::{
+use shellrs::app::{
     CenterTab, ClearTerminal, CloseScope, CloseTabs, CollapseAllGroups, ConnectGroup,
     ConnectSession, CopySessionHost, DeleteGroup, DeleteSession, DisconnectTerminal, EditSession,
     ExpandAllGroups, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, NewLocalTerminal,
     NewSessionInGroup, OpenExplorer, ReconnectTerminal, RenameGroup, RenameTerminal,
 };
-use shellr::connection::{ConnectionPromptKind, ConnectionTester, LoginTest, TrustCallback};
-use shellr::explorer::ExplorerId;
-use shellr::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
-use shellr::session::{
+use shellrs::connection::{ConnectionPromptKind, ConnectionTester, LoginTest, TrustCallback};
+use shellrs::explorer::ExplorerId;
+use shellrs::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
+use shellrs::session::{
     AuthKind, ConnectionState, GroupDraft, GroupId, HostOs, SessionDatabase, SessionDraft,
     SessionId, SessionStore,
 };
-use shellr::settings::{Appearance, InterfaceLanguage, SettingsStore};
-use shellr::sftp::{
+use shellrs::settings::{Appearance, InterfaceLanguage, SettingsStore};
+use shellrs::sftp::{
     DirectoryEntry, DirectoryListing, EntryKind, FileMetadata, LocalDirectoryProvider, RemotePath,
     SftpCommand, SftpEvent, SftpTransport, SftpTransportProvider, UploadRequest,
 };
-use shellr::terminal::{
+use shellrs::terminal::{
     FixedRemoteTerminalTransportProvider, Latency, LocalTerminalId, RemoteTerminalId, TerminalFont,
     TerminalLifecycle, TerminalPrompt, TerminalPromptField, TerminalPromptKind,
     TerminalPromptReply, TerminalSize, TerminalTransport, TerminalTransportCommand,
     TerminalTransportEvent, TerminalTransportFactory,
 };
-use shellr::workspace::Workspace;
+use shellrs::workspace::Workspace;
 
 /// Seeded session ids, in insertion order (see `SessionStore::seed`).
 const WEB_01: u64 = 1;
@@ -72,7 +72,7 @@ fn open_workspace_with_tester(
     store: SessionStore,
     tester: Arc<FakeConnectionTester>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
-    cx.update(shellr::init);
+    cx.update(shellrs::init);
     let mut workspace = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
         let store = cx.new(|_| store);
@@ -325,7 +325,7 @@ fn open_workspace_with_factory(
     cx: &mut TestAppContext,
     factory: Arc<FakeTerminalFactory>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
-    cx.update(shellr::init);
+    cx.update(shellrs::init);
     let mut workspace = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
         let store = cx.new(|_| SessionStore::seed());
@@ -356,7 +356,7 @@ fn open_workspace_with_remote_factory(
     store: SessionStore,
     factory: Arc<dyn TerminalTransportFactory>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
-    cx.update(shellr::init);
+    cx.update(shellrs::init);
     let mut workspace = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
         let store = cx.new(|_| store);
@@ -782,7 +782,7 @@ async fn opening_sftp_updates_connection_state_without_terminal(cx: &mut TestApp
         assert_eq!(workspace.explorers_of(id, cx).len(), 1);
         assert_eq!(
             workspace.store().read(cx).session(id).unwrap().state,
-            shellr::session::ConnectionState::Connected
+            shellrs::session::ConnectionState::Connected
         );
     });
 }
@@ -1194,7 +1194,7 @@ fn search_filters_the_tree(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn group_expansion_survives_reopening_the_database(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("shellr.db");
+    let path = dir.path().join("shellrs.db");
     let database = SessionDatabase::open(&path).unwrap();
     let seed = SessionStore::seed();
     for group in seed.groups() {
@@ -1260,7 +1260,7 @@ fn group_expansion_survives_reopening_the_database(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn expand_and_collapse_all_groups_include_nested_groups_and_persist(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("shellr.db");
+    let path = dir.path().join("shellrs.db");
     let database = SessionDatabase::open(&path).unwrap();
     let mut seed = SessionStore::seed();
     let nested =
@@ -1480,7 +1480,7 @@ fn dragging_a_host_to_blank_tree_space_moves_it_to_the_root(cx: &mut TestAppCont
 #[gpui_kit::test]
 fn dragged_order_survives_reopening_the_database(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("shellr.db");
+    let path = dir.path().join("shellrs.db");
     let database = SessionDatabase::open(&path).unwrap();
     let seed = SessionStore::seed();
     for group in seed.groups() {
@@ -2987,7 +2987,7 @@ async fn deleting_a_group_removes_its_sessions_and_closes_their_tabs(cx: &mut Te
 #[gpui_kit::test]
 async fn groups_and_sessions_are_read_back_from_the_database(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("temp dir");
-    let path = directory.path().join("shellr.db");
+    let path = directory.path().join("shellrs.db");
     let store = SessionStore::load(SessionDatabase::open(&path).expect("database opened"))
         .expect("store loaded");
     // A first launch starts with nothing at all.
@@ -3660,14 +3660,14 @@ async fn the_start_page_marks_recent_hosts_with_their_operating_system(cx: &mut 
 #[derive(Default)]
 struct FakeSftpProvider {
     requests: Arc<Mutex<Vec<UploadRequest>>>,
-    downloads: Arc<Mutex<Vec<shellr::sftp::DownloadRequest>>>,
-    operations: Arc<Mutex<Vec<shellr::sftp::RemoteOperation>>>,
+    downloads: Arc<Mutex<Vec<shellrs::sftp::DownloadRequest>>>,
+    operations: Arc<Mutex<Vec<shellrs::sftp::RemoteOperation>>>,
     events: Arc<Mutex<Vec<async_channel::Sender<SftpEvent>>>>,
     /// When set, the next connection waits for a message before it is up.
     hold_connection: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
 }
 impl SftpTransportProvider for FakeSftpProvider {
-    fn create(&self, _: &shellr::session::Session) -> Box<dyn SftpTransport> {
+    fn create(&self, _: &shellrs::session::Session) -> Box<dyn SftpTransport> {
         Box::new(FakeSftpTransport {
             requests: self.requests.clone(),
             downloads: self.downloads.clone(),
@@ -3679,8 +3679,8 @@ impl SftpTransportProvider for FakeSftpProvider {
 }
 struct FakeSftpTransport {
     requests: Arc<Mutex<Vec<UploadRequest>>>,
-    downloads: Arc<Mutex<Vec<shellr::sftp::DownloadRequest>>>,
-    operations: Arc<Mutex<Vec<shellr::sftp::RemoteOperation>>>,
+    downloads: Arc<Mutex<Vec<shellrs::sftp::DownloadRequest>>>,
+    operations: Arc<Mutex<Vec<shellrs::sftp::RemoteOperation>>>,
     events: Arc<Mutex<Vec<async_channel::Sender<SftpEvent>>>>,
     hold: Option<mpsc::Receiver<()>>,
 }
@@ -3690,7 +3690,7 @@ impl SftpTransport for FakeSftpTransport {
         commands: async_channel::Receiver<SftpCommand>,
         events: async_channel::Sender<SftpEvent>,
     ) -> anyhow::Result<()> {
-        use shellr::sftp::{TransferChoice, TransferPhase, TransferProgress};
+        use shellrs::sftp::{TransferChoice, TransferPhase, TransferProgress};
         self.events.lock().unwrap().push(events.clone());
         if let Some(hold) = &self.hold {
             let _ = hold.recv();
@@ -3730,7 +3730,7 @@ impl SftpTransport for FakeSftpTransport {
                     self.downloads.lock().unwrap().push(request);
                     events.send_blocking(SftpEvent::Progress(
                         TransferProgress::new(TransferPhase::Transferring)
-                            .with_direction(shellr::sftp::TransferDirection::Download),
+                            .with_direction(shellrs::sftp::TransferDirection::Download),
                     ))?;
                 }
                 SftpCommand::Upload(request) => {
@@ -3797,7 +3797,7 @@ impl LocalDirectoryProvider for FakeLocalDirectory {
     fn set_permissions(
         &self,
         paths: &[std::path::PathBuf],
-        edit: shellr::sftp::PermissionEdit,
+        edit: shellrs::sftp::PermissionEdit,
         recursive: bool,
         add_x_to_dirs: bool,
     ) -> anyhow::Result<()> {
@@ -3847,7 +3847,7 @@ fn open_workspace_with_services(
     provider: Arc<FakeSftpProvider>,
     local: FakeLocalDirectory,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
-    cx.update(shellr::init);
+    cx.update(shellrs::init);
     // Dialogs slide in over real time; small targets such as checkboxes
     // would move between the frame that locates them and the click.
     cx.update(|cx| cx.set_reduce_motion(true));
@@ -3955,7 +3955,7 @@ fn pane_selection(workspace: &Entity<Workspace>, remote: bool, cx: &App) -> Vec<
 async fn sftp_multi_selection_keyboard_upload_freezes_paths_and_cancel_resumes(
     cx: &mut TestAppContext,
 ) {
-    use shellr::app::{ExplorerAction, ExplorerCommand};
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, workspace) = open_workspace_with_sftp(cx, provider.clone());
     open_test_explorer(cx, handle).await;
@@ -4073,9 +4073,9 @@ async fn sftp_native_picker_and_external_drop_share_confirmation(cx: &mut TestAp
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.dispatch_action(
-            Box::new(shellr::app::ExplorerAction::new(
+            Box::new(shellrs::app::ExplorerAction::new(
                 ExplorerId(SFTP_TAB),
-                shellr::app::ExplorerCommand::ChooseFiles,
+                shellrs::app::ExplorerCommand::ChooseFiles,
             )),
             cx,
         );
@@ -4133,7 +4133,7 @@ async fn sftp_native_picker_and_external_drop_share_confirmation(cx: &mut TestAp
 
 #[gpui_kit::test]
 async fn sftp_internal_drag_conflict_and_close_confirmation(cx: &mut TestAppContext) {
-    use shellr::sftp::{TransferQuestion, TransferQuestionKind};
+    use shellrs::sftp::{TransferQuestion, TransferQuestionKind};
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, workspace) = open_workspace_with_sftp(cx, provider.clone());
     open_test_explorer(cx, handle).await;
@@ -4348,7 +4348,7 @@ async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
 
 #[gpui_kit::test]
 async fn sftp_panes_list_winscp_columns_and_open_links_to_directories(cx: &mut TestAppContext) {
-    use shellr::explorer::FileKind;
+    use shellrs::explorer::FileKind;
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, workspace) = open_workspace_with_sftp(cx, provider);
     open_test_explorer(cx, handle).await;
@@ -4416,8 +4416,8 @@ async fn click_remote_tool(
 
 #[gpui_kit::test]
 async fn sftp_toolbar_goes_up_root_home_back_and_forward(cx: &mut TestAppContext) {
-    use shellr::app::{ExplorerAction, ExplorerCommand};
-    use shellr::session::BookmarkSide;
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
+    use shellrs::session::BookmarkSide;
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, workspace) = open_workspace_with_sftp(cx, provider);
     open_test_explorer(cx, handle).await;
@@ -4528,7 +4528,7 @@ async fn sftp_toolbar_goes_up_root_home_back_and_forward(cx: &mut TestAppContext
 fn remote_pane_state<T>(
     workspace: &Entity<Workspace>,
     cx: &mut TestAppContext,
-    read: impl FnOnce(&shellr::explorer::FilePane) -> T,
+    read: impl FnOnce(&shellrs::explorer::FilePane) -> T,
 ) -> T {
     cx.update(|cx| {
         read(
@@ -4545,7 +4545,7 @@ fn remote_pane_state<T>(
 
 #[gpui_kit::test]
 async fn sftp_path_label_opens_ancestors_and_the_open_directory_dialog(cx: &mut TestAppContext) {
-    use shellr::app::{ExplorerAction, ExplorerCommand};
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, workspace) = open_workspace_with_sftp(cx, provider);
     open_test_explorer(cx, handle).await;
@@ -4686,7 +4686,7 @@ async fn sftp_path_label_opens_ancestors_and_the_open_directory_dialog(cx: &mut 
 
 #[gpui_kit::test]
 async fn sftp_bookmark_dialog_adds_orders_removes_and_opens(cx: &mut TestAppContext) {
-    use shellr::session::BookmarkSide;
+    use shellrs::session::BookmarkSide;
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, workspace) = open_workspace_with_sftp(cx, provider);
     open_test_explorer(cx, handle).await;
@@ -4825,7 +4825,7 @@ async fn sftp_bookmark_dialog_adds_orders_removes_and_opens(cx: &mut TestAppCont
 
 #[gpui_kit::test]
 async fn sftp_path_label_folds_the_middle_of_a_long_path(cx: &mut TestAppContext) {
-    use shellr::app::{ExplorerAction, ExplorerCommand};
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, _) = open_workspace_with_sftp(cx, provider);
     open_test_explorer(cx, handle).await;
@@ -4938,9 +4938,9 @@ fn press_on_row(
 
 #[gpui_kit::test]
 async fn sftp_file_commands_confirm_validate_and_send_one_operation(cx: &mut TestAppContext) {
-    use shellr::app::{ExplorerAction, ExplorerCommand};
-    use shellr::explorer::NewEntryKind;
-    use shellr::sftp::{PermissionEdit, RemoteOperation};
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
+    use shellrs::explorer::NewEntryKind;
+    use shellrs::sftp::{PermissionEdit, RemoteOperation};
     let provider = Arc::new(FakeSftpProvider::default());
     let local = FakeLocalDirectory::default();
     let (handle, workspace) = open_workspace_with_services(cx, provider.clone(), local.clone());
@@ -5223,7 +5223,7 @@ async fn the_sftp_tab_shows_the_host_mark_like_its_terminal_tabs(cx: &mut TestAp
 
 #[gpui_kit::test]
 async fn the_sftp_tab_can_be_renamed_and_follow_the_session_again(cx: &mut TestAppContext) {
-    use shellr::app::RenameExplorer;
+    use shellrs::app::RenameExplorer;
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, workspace) = open_workspace_with_sftp(cx, provider);
     open_test_explorer(cx, handle).await;
@@ -5342,7 +5342,7 @@ async fn sftp_clicking_empty_list_space_makes_that_pane_current_at_once(cx: &mut
 
 #[gpui_kit::test]
 async fn opening_sftp_again_opens_another_tab_of_its_own(cx: &mut TestAppContext) {
-    use shellr::app::{DisconnectSession, ExplorerAction, ExplorerCommand};
+    use shellrs::app::{DisconnectSession, ExplorerAction, ExplorerCommand};
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, workspace) = open_workspace_with_sftp(cx, provider);
     open_test_explorer(cx, handle).await;
@@ -5470,7 +5470,7 @@ async fn sftp_connecting_shows_under_the_list_without_moving_it(cx: &mut TestApp
 
 #[gpui_kit::test]
 async fn sftp_reading_a_directory_never_moves_the_list(cx: &mut TestAppContext) {
-    use shellr::app::{ExplorerAction, ExplorerCommand};
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, workspace) = open_workspace_with_sftp(cx, provider);
     open_test_explorer(cx, handle).await;
@@ -5511,7 +5511,7 @@ async fn sftp_reading_a_directory_never_moves_the_list(cx: &mut TestAppContext) 
 
 #[gpui_kit::test]
 async fn sftp_discards_stale_directory_replies(cx: &mut TestAppContext) {
-    use shellr::app::{ExplorerAction, ExplorerCommand};
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, workspace) = open_workspace_with_sftp(cx, provider.clone());
     open_test_explorer(cx, handle).await;

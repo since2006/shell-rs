@@ -766,7 +766,7 @@ fn paths_and_journals_reject_unsafe_identity() {
                 .validate("endpoint", "changed key", &source, &record.target)
                 .is_err()
         );
-        record.temporary = RemotePath::new("/other/.shellr-evil.filepart").unwrap();
+        record.temporary = RemotePath::new("/other/.shellrs-evil.filepart").unwrap();
         assert!(
             record
                 .validate("endpoint", "key", &source, &record.target)

@@ -27,7 +27,7 @@ pub fn parse_probe(output: &str) -> Option<HostOs> {
         "OpenBSD" => Some(HostOs::OpenBsd),
         "NetBSD" => Some(HostOs::NetBsd),
         // A Linux box with no `/etc/os-release`, or one shipping an id no
-        // build of shellr knows, still gets the generic mark.
+        // build of ShellRS knows, still gets the generic mark.
         "Linux" => Some(distribution(output).unwrap_or(HostOs::Linux)),
         _ => None,
     }
@@ -42,7 +42,7 @@ pub fn parse_windows_probe(output: &str) -> Option<HostOs> {
 ///
 /// `ID_LIKE` is the fallback for derivatives, so Linux Mint shows Ubuntu and
 /// Pop!_OS shows Debian rather than a bare penguin. It only applies when `ID`
-/// itself is unknown, so a distribution shellr does know is never mistaken for
+/// itself is unknown, so a distribution ShellRS does know is never mistaken for
 /// its parent.
 fn distribution(output: &str) -> Option<HostOs> {
     let mut like = None;

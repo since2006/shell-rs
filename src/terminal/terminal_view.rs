@@ -53,7 +53,7 @@ struct FindBar {
     _subscription: Subscription,
 }
 
-gpui_kit::actions!(shellr_terminal, [SendTab, SendBackTab]);
+gpui_kit::actions!(shellrs_terminal, [SendTab, SendBackTab]);
 
 pub(crate) fn terminal_key_bindings() -> [KeyBinding; 2] {
     [

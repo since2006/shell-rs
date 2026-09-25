@@ -86,7 +86,7 @@ impl TerminalTransport for SshTerminalTransport {
         let stop = Arc::new(AtomicBool::new(false));
         let bridge_stop = stop.clone();
         let bridge = thread::Builder::new()
-            .name("shellr-ssh-command-bridge".into())
+            .name("shellrs-ssh-command-bridge".into())
             .spawn(move || {
                 while !bridge_stop.load(Ordering::Acquire) {
                     match commands.recv_timeout(Duration::from_millis(20)) {
@@ -220,7 +220,7 @@ impl SshTerminalTransport {
                             let _ = channel.close().await;
                             let _ = handle.disconnect(
                                 russh::Disconnect::ByApplication,
-                                "shellr closed the terminal",
+                                "ShellRS closed the terminal",
                                 "zh-CN",
                             ).await;
                         }).await;

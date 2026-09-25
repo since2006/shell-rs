@@ -575,7 +575,7 @@ mod tests {
     #[test]
     fn reopening_the_same_file_keeps_the_data() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("shellr.db");
+        let path = dir.path().join("shellrs.db");
         {
             let db = SessionDatabase::open(&path).unwrap();
             db.insert_group(&group(1, "生产", None)).unwrap();
@@ -592,7 +592,7 @@ mod tests {
     #[test]
     fn tree_order_and_parent_survive_reopening() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("shellr.db");
+        let path = dir.path().join("shellrs.db");
         {
             let db = SessionDatabase::open(&path).unwrap();
             db.insert_group(&group(1, "生产", None)).unwrap();
