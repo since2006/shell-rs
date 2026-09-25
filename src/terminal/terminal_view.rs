@@ -28,8 +28,8 @@ use crate::session::HostOs;
 use super::search::SearchMark;
 use super::{
     Latency, SearchDirection, SharedTerminalTransportFactory, TerminalEngine, TerminalEngineEvent,
-    TerminalLifecycle, TerminalPrompt, TerminalPromptReply, TerminalSize, TerminalSnapshot,
-    TerminalStatus,
+    TerminalFont, TerminalLifecycle, TerminalPrompt, TerminalPromptReply, TerminalSize,
+    TerminalSnapshot, TerminalStatus,
 };
 
 pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";
@@ -769,14 +769,15 @@ impl Render for TerminalView {
             requested_size: self.requested_size,
         };
 
+        let font = TerminalFont::current(cx);
         let terminal = div()
             .id(self.element_id.clone())
             .test_support()
             .key_context(TERMINAL_KEY_CONTEXT)
             .track_focus(&self.focus_handle)
             .size_full()
-            .font_family(cx.theme().mono_font_family.clone())
-            .text_size(cx.theme().mono_font_size)
+            .font_family(font.family(cx))
+            .text_size(font.size)
             .aria_label(self.aria_label.clone())
             .on_action(cx.listener(|this, _: &SendTab, _, cx| {
                 this.send_user_input(vec![b'\t'], cx);
@@ -977,9 +978,7 @@ impl Element for TerminalElement {
             .shape_line("M".into(), font_size, &[measure_run], None)
             .width()
             .max(px(1.));
-        let line_height = window
-            .pixel_snap(cx.theme().semantic_tokens().typography.mono_md.line_height)
-            .max(px(1.));
+        let line_height = TerminalFont::current(cx).row_height(window);
         let columns = ((bounds.size.width / cell_width).floor() as usize).max(2);
         let rows = ((bounds.size.height / line_height).floor() as usize).max(1);
         let requested_size = TerminalSize::new(

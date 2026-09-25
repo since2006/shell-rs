@@ -1,6 +1,7 @@
 //! 终端: shared terminal emulation, transports and Dock panels.
 
 mod engine;
+mod font;
 mod local_pty;
 mod local_terminal_panel;
 mod model;
@@ -10,6 +11,10 @@ mod terminal_view;
 mod transport;
 
 pub use engine::{TerminalCell, TerminalEngine, TerminalEngineEvent, TerminalSnapshot};
+pub use font::{
+    DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalFont,
+    TerminalFontPreview, is_font_installed, monospace_font_families,
+};
 pub use local_pty::LocalPtyTransportFactory;
 pub use local_terminal_panel::{LocalTerminalPanel, LocalTerminalPanelEvent};
 pub use model::{

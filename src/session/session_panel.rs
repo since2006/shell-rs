@@ -7,7 +7,7 @@ use std::{
 use gpui_kit::base::Tree as BaseTree;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
-    button::Button,
+    button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelControl, PanelEvent},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -23,7 +23,8 @@ use gpui_kit::*;
 use crate::app::{
     CatalogIcon, CollapseAllGroups, ConnectGroup, ConnectSelected, ConnectSession, DeleteGroup,
     DeleteSession, DuplicateSession, EditSession, ExpandAllGroups, MoveSessionNode, NewChildGroup,
-    NewGroup, NewSession, NewSessionInGroup, OpenExplorer, RenameGroup, SESSION_PANEL_CONTEXT,
+    NewGroup, NewSession, NewSessionInGroup, OpenExplorer, OpenSettings, RenameGroup,
+    SESSION_PANEL_CONTEXT,
 };
 
 use crate::shared::HostMark;
@@ -517,6 +518,24 @@ impl Render for SessionPanel {
                         )
                     })
                     .context_menu(move |menu, _, _| build_context_menu(clicked_menu.get(), menu)),
+            )
+            .child(
+                // Pinned under the tree, where desktop apps keep settings.
+                h_flex()
+                    .p_2()
+                    .border_t_1()
+                    .border_color(cx.theme().sidebar_border)
+                    .child(
+                        Button::new("open-settings")
+                            .ghost()
+                            .small()
+                            .icon(Icon::new(CatalogIcon::Settings))
+                            .label("设置")
+                            .tooltip_with_action("打开设置", &OpenSettings, None)
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(OpenSettings), cx)
+                            }),
+                    ),
             )
     }
 }

@@ -25,6 +25,13 @@ pub fn database_path() -> std::io::Result<PathBuf> {
     Ok(dir.join("shellr.db"))
 }
 
+/// The interface settings, a small JSON file beside the database.
+pub fn settings_path() -> std::io::Result<PathBuf> {
+    let dir = data_dir();
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join("settings.json"))
+}
+
 /// shellr's private host-key trust store. It deliberately does not read or
 /// modify OpenSSH's `~/.ssh/known_hosts`.
 pub fn known_hosts_path() -> std::io::Result<PathBuf> {

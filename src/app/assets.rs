@@ -28,7 +28,9 @@ icon_assets!(
         FileSymlink,
         FilePlus,
         Bookmark,
-        SquarePen
+        SquarePen,
+        Settings,
+        Palette
     ]
 );
 

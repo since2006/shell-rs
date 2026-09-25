@@ -6,7 +6,7 @@ mod paths;
 
 pub use actions::*;
 pub use assets::{AppAssets, CatalogIcon};
-pub use paths::{data_dir, database_path, known_hosts_path};
+pub use paths::{data_dir, database_path, known_hosts_path, settings_path};
 
 use gpui_kit::component::{Theme, dock::ToggleZoom};
 use gpui_kit::*;
@@ -64,6 +64,7 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(&primary("k"), FocusSearch, None),
         KeyBinding::new(&primary("t"), NewLocalTerminal, None),
         KeyBinding::new(&primary("w"), CloseActiveTab, None),
+        KeyBinding::new(&primary(","), OpenSettings, None),
         KeyBinding::new(&primary("="), ZoomIn, None),
         KeyBinding::new(&primary("-"), ZoomOut, None),
         KeyBinding::new(&primary("0"), ZoomReset, None),

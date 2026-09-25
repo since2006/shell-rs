@@ -25,12 +25,13 @@ use shellr::session::{
     AuthKind, ConnectionState, GroupDraft, GroupId, HostOs, SessionDatabase, SessionDraft,
     SessionId, SessionStore,
 };
+use shellr::settings::{Appearance, InterfaceLanguage, SettingsStore};
 use shellr::sftp::{
     DirectoryEntry, DirectoryListing, EntryKind, FileMetadata, LocalDirectoryProvider, RemotePath,
     SftpCommand, SftpEvent, SftpTransport, SftpTransportProvider, UploadRequest,
 };
 use shellr::terminal::{
-    FixedRemoteTerminalTransportProvider, Latency, LocalTerminalId, RemoteTerminalId,
+    FixedRemoteTerminalTransportProvider, Latency, LocalTerminalId, RemoteTerminalId, TerminalFont,
     TerminalLifecycle, TerminalPrompt, TerminalPromptField, TerminalPromptKind,
     TerminalPromptReply, TerminalSize, TerminalTransport, TerminalTransportCommand,
     TerminalTransportEvent, TerminalTransportFactory,
@@ -81,6 +82,7 @@ fn open_workspace_with_tester(
         let view = cx.new(|cx| {
             Workspace::new_with_services(
                 store,
+                cx.new(|_| SettingsStore::in_memory()),
                 remote,
                 Arc::new(FakeTerminalFactory::default()),
                 Arc::new(FakeSftpProvider::default()),
@@ -333,6 +335,7 @@ fn open_workspace_with_factory(
         let view = cx.new(|cx| {
             Workspace::new_with_services(
                 store,
+                cx.new(|_| SettingsStore::in_memory()),
                 remote,
                 factory.clone(),
                 Arc::new(FakeSftpProvider::default()),
@@ -361,6 +364,7 @@ fn open_workspace_with_remote_factory(
         let view = cx.new(|cx| {
             Workspace::new_with_services(
                 store,
+                cx.new(|_| SettingsStore::in_memory()),
                 remote,
                 Arc::new(FakeTerminalFactory::default()),
                 Arc::new(FakeSftpProvider::default()),
@@ -1856,6 +1860,167 @@ async fn recent_session_menu_commands_work_from_the_start_page(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
+fn settings_open_from_the_session_list_as_one_tab(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("settings").visible());
+        assert_eq!(window.find("settings").focused(), Some(true));
+        assert_eq!(window.find("settings-tab").label(), Some("设置"));
+        // Two columns: the first category, 外观, is shown until another is
+        // picked. `Settings` names its category rows by position.
+        assert_eq!(appearance_dropdown(window, 0).as_deref(), Some("简体中文"));
+        assert!(window.try_find("terminal-font-preview").is_none());
+        window.within("settings").click("0-1", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // 终端 is the second.
+        assert!(window.find("terminal-font-preview").visible());
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(("terminal", INITIAL_WEB_TERMINAL)).visible());
+        assert!(window.try_find("settings").is_none());
+        // Opening settings again brings the same tab forward.
+        #[cfg(target_os = "macos")]
+        window.press("cmd-,", cx);
+        #[cfg(not(target_os = "macos"))]
+        window.press("ctrl-,", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("settings").visible());
+        assert_eq!(window.find("settings").focused(), Some(true));
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let settings = workspace.read(cx).settings_tab().expect("settings open");
+        let group = settings.read(cx).tab_group().unwrap().upgrade().unwrap();
+        // The two session terminals and a single settings tab.
+        assert_eq!(group.read(cx).panels().len(), 3);
+    });
+
+    // Opening it while it is displayed changes nothing.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("settings").visible());
+        assert_eq!(window.find("settings").focused(), Some(true));
+        // ⌘W closes it like any other tab.
+        window.press("cmd-w", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("settings-tab").is_none());
+        assert!(window.try_find("settings").is_none());
+    })
+    .unwrap();
+    cx.update(|cx| assert!(workspace.read(cx).settings_tab().is_none()));
+}
+
+/// The label of one dropdown in the 外观 page's 常规 group. `Settings` names
+/// its groups, items and dropdown buttons by position.
+fn appearance_dropdown(window: &mut gpui_kit::Window, item: usize) -> Option<String> {
+    window
+        .within("settings")
+        .within("group-0")
+        .within(format!("item-{item}"))
+        .find("btn")
+        .label()
+        .map(str::to_string)
+}
+
+/// Menus are not driven here: a dropdown's item writes the settings store,
+/// so the test writes it the same way and checks what follows.
+#[gpui_kit::test]
+fn the_appearance_setting_drives_the_theme_and_the_title_bar_switch(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // 外观 is the first category.
+        window.within("settings").click("0-0", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(appearance_dropdown(window, 0).as_deref(), Some("简体中文"));
+        assert_eq!(appearance_dropdown(window, 1).as_deref(), Some("跟随系统"));
+    })
+    .unwrap();
+
+    cx.update(|cx| {
+        settings.update(cx, |settings, cx| {
+            settings.update(|settings| settings.appearance = Appearance::Dark, cx)
+        })
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let theme = cx.theme();
+        assert!(theme.is_dark());
+        // Applied like the title bar switch always did it.
+        assert_eq!(theme.list_hover, theme.tokens.list_hover.color);
+        assert!(theme.list_hover.a > 0.9);
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(appearance_dropdown(window, 1).as_deref(), Some("深色"));
+        // The title bar's switch picks the other appearance outright.
+        window.click("theme-toggle", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        assert!(!cx.theme().is_dark());
+        let chosen = settings.read(cx).settings();
+        assert_eq!(chosen.appearance, Appearance::Light);
+        assert_eq!(chosen.language, InterfaceLanguage::SimplifiedChinese);
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(appearance_dropdown(window, 1).as_deref(), Some("浅色"));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
 
@@ -2312,6 +2477,112 @@ async fn open_running_local_terminal(
     })
     .await;
     (handle, workspace)
+}
+
+/// The row height the fake shell was last told about.
+fn last_cell_height(factory: &FakeTerminalFactory) -> Option<u16> {
+    factory
+        .resizes
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .last()
+        .map(TerminalSize::cell_height)
+}
+
+/// Menus are not driven here: the settings page's fields write the settings
+/// store, so the test writes it the same way.
+#[gpui_kit::test]
+async fn the_terminal_font_setting_reaches_open_terminals_and_the_preview(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+
+    // The defaults keep the 20 px rows terminals had before the setting.
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        last_cell_height(&factory) == Some(20)
+    })
+    .await;
+
+    cx.update(|cx| {
+        settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| {
+                    settings.terminal_font.size = 16.;
+                    settings.terminal_font.line_height = 1.5;
+                },
+                cx,
+            )
+        })
+    });
+    // The open terminal takes the new rows at once.
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        last_cell_height(&factory) == Some(24)
+    })
+    .await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // 终端 is the second category.
+        window.within("settings").click("0-1", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let default_family = cx.update(|cx| cx.theme().mono_font_family.to_string());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let field = |window: &mut gpui_kit::Window, item: usize| {
+            window
+                .within("settings")
+                .within("group-0")
+                .within(format!("item-{item}"))
+                .find("btn")
+                .label()
+                .map(str::to_string)
+        };
+        assert_eq!(field(window, 0), Some(format!("{default_family}（默认）")));
+        assert_eq!(field(window, 1).as_deref(), Some("16"));
+        assert_eq!(
+            window.find("terminal-font-preview").label(),
+            Some(format!("{default_family} 16 px，行高 1.5").as_str())
+        );
+    })
+    .unwrap();
+
+    // A family that is not installed, say from a file copied from another
+    // machine, gives way to the default instead of a wrong font.
+    cx.update(|cx| {
+        settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| settings.terminal_font.family = Some("没有这个字体".into()),
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(cx.global::<TerminalFont>().family, None);
+        assert_eq!(
+            settings.read(cx).settings().terminal_font.family.as_deref(),
+            Some("没有这个字体")
+        );
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("terminal-font-preview").label(),
+            Some(format!("{default_family} 16 px，行高 1.5").as_str())
+        );
+    })
+    .unwrap();
 }
 
 fn local_screen(workspace: &Entity<Workspace>, cx: &App) -> String {
@@ -3589,6 +3860,7 @@ fn open_workspace_with_services(
         let view = cx.new(|cx| {
             Workspace::new_with_services(
                 store,
+                cx.new(|_| SettingsStore::in_memory()),
                 remote,
                 Arc::new(FakeTerminalFactory::default()),
                 provider,

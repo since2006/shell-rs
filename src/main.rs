@@ -2,6 +2,7 @@ use gpui_kit::component::{Root, WindowExt as _, notification::Notification};
 use gpui_kit::*;
 
 use shellr::session::{SessionDatabase, SessionStore};
+use shellr::settings::SettingsStore;
 
 fn main() {
     gpui_kit::application()
@@ -17,9 +18,11 @@ fn main() {
                     window.set_window_title("shellr");
                     let (store, problem) = open_store();
                     let store = cx.new(|_| store);
+                    let (settings, settings_problem) = open_settings();
+                    let settings = cx.new(|_| settings);
                     let workspace =
-                        cx.new(|cx| shellr::workspace::Workspace::new(store, window, cx));
-                    if let Some(problem) = problem {
+                        cx.new(|cx| shellr::workspace::Workspace::new(store, settings, window, cx));
+                    for problem in [problem, settings_problem].into_iter().flatten() {
                         window.push_notification(Notification::error(problem), cx);
                     }
                     cx.new(|cx| Root::new(workspace, window, cx))
@@ -48,6 +51,18 @@ fn open_store() -> (SessionStore, Option<SharedString>) {
                 Some(format!("无法打开本地数据库，本次运行的改动不会被保存：{error}").into()),
             )
         }
+    }
+}
+
+/// Load the settings file. Without a data directory the settings still
+/// work, only for this run; the returned message says so.
+fn open_settings() -> (SettingsStore, Option<SharedString>) {
+    match shellr::app::settings_path() {
+        Ok(path) => SettingsStore::load(path),
+        Err(error) => (
+            SettingsStore::in_memory(),
+            Some(format!("无法保存设置，本次运行的改动不会被保存：{error}").into()),
+        ),
     }
 }
 

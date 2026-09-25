@@ -16,6 +16,7 @@ portable-pty = "0.9"
 russh = "0.63"
 russh-sftp = "=3.0.0"
 serde_json = "1"
+sys-locale = "0.3"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"

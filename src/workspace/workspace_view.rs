@@ -6,7 +6,7 @@ use std::{
 };
 
 use gpui_kit::component::{
-    ActiveTheme as _, Root, Sizable as _, Theme, ThemeMode, TitleBar, WindowExt as _,
+    ActiveTheme as _, Root, Sizable as _, Theme, TitleBar, WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter},
     dock::{DockArea, DockEvent, DockLayout, DockPlacement, PanelId, TabGroup, panel_handle},
@@ -19,20 +19,24 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CenterTab, ClearTerminal, CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseTabs,
-    CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectSession, CopySessionHost, CopyTerminal,
-    DeleteGroup, DeleteSession, DisconnectSession, DisconnectTerminal, DismissTerminalFind,
-    DuplicateSession, EditSession, ExpandAllGroups, ExplorerAction, ExplorerCommand,
-    ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch,
-    MoveSessionNode, NewChildGroup, NewGroup, NewLocalTerminal, NewSession, NewSessionInGroup,
-    OpenExplorer, PasteTerminal, ReconnectTerminal, RenameExplorer, RenameGroup, RenameTerminal,
-    RestartLocalTerminal, ToggleSessionPanel, ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
+    CenterTab, ClearTerminal, CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseSettings,
+    CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectSession, CopySessionHost,
+    CopyTerminal, DeleteGroup, DeleteSession, DisconnectSession, DisconnectTerminal,
+    DismissTerminalFind, DuplicateSession, EditSession, ExpandAllGroups, ExplorerAction,
+    ExplorerCommand, ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal,
+    FocusSearch, MoveSessionNode, NewChildGroup, NewGroup, NewLocalTerminal, NewSession,
+    NewSessionInGroup, OpenExplorer, OpenSettings, PasteTerminal, ReconnectTerminal,
+    RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal, ToggleSessionPanel,
+    ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::connection::SharedConnectionTester;
 use crate::explorer::{ExplorerId, ExplorerPanel, ExplorerPanelEvent, confirm_close_transfer};
 use crate::session::{
     ConnectionState, GroupId, SessionId, SessionPanel, SessionStore, SessionStoreEvent,
     confirm_delete_group, confirm_delete_session, open_group_dialog, open_session_dialog,
+};
+use crate::settings::{
+    Appearance, SettingsPanel, SettingsPanelEvent, SettingsStore, SettingsStoreEvent,
 };
 use crate::sftp::{
     SharedLocalDirectoryProvider, SharedSftpTransportProvider, SshSftpTransportProvider,
@@ -100,6 +104,10 @@ pub struct Workspace {
     /// SFTP tabs; a session can have several, like terminals.
     explorers: HashMap<ExplorerId, Entity<ExplorerPanel>>,
     local_terminals: HashMap<LocalTerminalId, Entity<LocalTerminalPanel>>,
+    /// The settings tab, while it is open. There is only ever one.
+    settings_tab: Option<Entity<SettingsPanel>>,
+    /// What the settings tab edits; the workspace applies it to the window.
+    settings: Entity<SettingsStore>,
     local_terminal_factory: SharedTerminalTransportFactory,
     remote_terminal_provider: SharedRemoteTerminalTransportProvider,
     sftp_provider: SharedSftpTransportProvider,
@@ -121,13 +129,26 @@ pub struct Workspace {
 
 impl Workspace {
     /// `store` is built by `main` from the database on disk, and by the UI
-    /// tests from `SessionStore::seed`.
-    pub fn new(store: Entity<SessionStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::new_with_local_terminal_factory(store, Arc::new(LocalPtyTransportFactory), window, cx)
+    /// tests from `SessionStore::seed`; `settings` likewise from the settings
+    /// file, or kept in memory.
+    pub fn new(
+        store: Entity<SessionStore>,
+        settings: Entity<SettingsStore>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with_local_terminal_factory(
+            store,
+            settings,
+            Arc::new(LocalPtyTransportFactory),
+            window,
+            cx,
+        )
     }
 
     pub fn new_with_local_terminal_factory(
         store: Entity<SessionStore>,
+        settings: Entity<SettingsStore>,
         local_terminal_factory: SharedTerminalTransportFactory,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -147,6 +168,7 @@ impl Workspace {
         ));
         Self::new_with_services(
             store,
+            settings,
             remote,
             local_terminal_factory,
             sftp,
@@ -161,6 +183,7 @@ impl Workspace {
     /// touch the network, while production uses the SSH provider above.
     pub fn new_with_transport_providers(
         store: Entity<SessionStore>,
+        settings: Entity<SettingsStore>,
         remote_terminal_provider: SharedRemoteTerminalTransportProvider,
         local_terminal_factory: SharedTerminalTransportFactory,
         window: &mut Window,
@@ -178,6 +201,7 @@ impl Workspace {
         ));
         Self::new_with_services(
             store,
+            settings,
             remote_terminal_provider,
             local_terminal_factory,
             sftp,
@@ -194,6 +218,7 @@ impl Workspace {
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_services(
         store: Entity<SessionStore>,
+        settings: Entity<SettingsStore>,
         remote_terminal_provider: SharedRemoteTerminalTransportProvider,
         local_terminal_factory: SharedTerminalTransportFactory,
         sftp_provider: SharedSftpTransportProvider,
@@ -218,6 +243,8 @@ impl Workspace {
         // dialog's focus trap from taking focus.
         let panel_focus = session_panel.read(cx).focus_handle(cx);
         window.focus(&panel_focus, cx);
+        // Before the first frame, so a dark theme never starts out light.
+        crate::settings::apply(settings.read(cx).settings(), window, cx);
 
         let mut subscriptions = vec![
             cx.observe(&store, |_, _, cx| cx.notify()),
@@ -249,6 +276,22 @@ impl Workspace {
                     }
                 },
             ),
+            cx.observe_in(&settings, window, |_, settings, window, cx| {
+                crate::settings::apply(settings.read(cx).settings(), window, cx);
+            }),
+            cx.subscribe_in(
+                &settings,
+                window,
+                |_, _, event: &SettingsStoreEvent, window, cx| match event {
+                    SettingsStoreEvent::PersistFailed(message) => {
+                        window.push_notification(Notification::error(message.clone()), cx);
+                    }
+                },
+            ),
+            // 跟随系统 follows the system appearance as it changes.
+            cx.observe_window_appearance(window, |this, window, cx| {
+                crate::settings::apply(this.settings.read(cx).settings(), window, cx);
+            }),
             cx.subscribe_in(
                 &dock_area,
                 window,
@@ -316,6 +359,8 @@ impl Workspace {
             terminals,
             explorers: HashMap::new(),
             local_terminals: HashMap::new(),
+            settings_tab: None,
+            settings,
             local_terminal_factory,
             remote_terminal_provider,
             sftp_provider,
@@ -375,6 +420,14 @@ impl Workspace {
 
     pub fn local_terminal(&self, id: LocalTerminalId) -> Option<&Entity<LocalTerminalPanel>> {
         self.local_terminals.get(&id)
+    }
+
+    pub fn settings_tab(&self) -> Option<&Entity<SettingsPanel>> {
+        self.settings_tab.as_ref()
+    }
+
+    pub fn settings(&self) -> &Entity<SettingsStore> {
+        &self.settings
     }
 
     /// Keep the start page and focus in step with the center: once its last
@@ -838,6 +891,77 @@ impl Workspace {
         });
     }
 
+    /// Open the settings tab, or bring the open one forward: settings are
+    /// one place, not one tab per visit.
+    fn on_open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(panel) = self.settings_tab.clone() {
+            let group = panel.read(cx).tab_group();
+            self.activate_tab(group, panel.entity_id(), window, cx);
+            // Already displayed, the group reports nothing, so the panel
+            // takes the focus itself.
+            panel.update(cx, |panel, cx| panel.show(window, cx));
+            return;
+        }
+        let store = self.settings.clone();
+        let panel = cx.new(|cx| SettingsPanel::new(store, cx));
+        let subscription = cx.subscribe(&panel, |this, _, event: &SettingsPanelEvent, cx| {
+            match event {
+                SettingsPanelEvent::Activated => {
+                    this.store
+                        .update(cx, |store, cx| store.set_active(None, cx));
+                    this.active_tab = Some(CenterTab::Settings);
+                }
+                SettingsPanelEvent::Closed => {
+                    this.settings_tab = None;
+                    if this.active_tab == Some(CenterTab::Settings) {
+                        this.active_tab = None;
+                    }
+                }
+            }
+            cx.notify();
+        });
+        self._subscriptions.push(subscription);
+        self.settings_tab = Some(panel.clone());
+        self.dock_area.update(cx, |area, cx| {
+            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+        });
+    }
+
+    fn on_close_settings(
+        &mut self,
+        _: &CloseSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.settings_tab.clone() {
+            self.dock_area
+                .update(cx, |area, cx| area.remove_panel(panel, window, cx));
+        }
+    }
+
+    /// Display one tab of a tab group, found by its panel's entity.
+    fn activate_tab(
+        &self,
+        group: Option<WeakEntity<TabGroup>>,
+        panel: EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(group) = group.and_then(|group| group.upgrade()) else {
+            return;
+        };
+        group.update(cx, |group, cx| {
+            let target = PanelId::from(panel);
+            if let Some(ix) = group
+                .panels()
+                .iter()
+                .position(|panel| panel.panel_id(cx) == target)
+            {
+                group.select_tab(ix, window, cx);
+            }
+        });
+    }
+
     /// Close a session's terminal tab. Goes through the dock area rather
     /// than the tab group: the group refuses to close the last tab of the
     /// center, and here every tab is closable.
@@ -966,6 +1090,7 @@ impl Workspace {
             CenterTab::LocalTerminal(id) => {
                 self.on_close_local_terminal(&CloseLocalTerminal(id), window, cx)
             }
+            CenterTab::Settings => self.on_close_settings(&CloseSettings, window, cx),
         }
     }
 
@@ -982,6 +1107,10 @@ impl Workspace {
             }
             CenterTab::LocalTerminal(id) => {
                 let panel = self.local_terminals.get(&id)?;
+                (panel.read(cx).tab_group(), panel.entity_id())
+            }
+            CenterTab::Settings => {
+                let panel = self.settings_tab.as_ref()?;
                 (panel.read(cx).tab_group(), panel.entity_id())
             }
         };
@@ -1006,6 +1135,12 @@ impl Workspace {
                     .iter()
                     .find(|(_, entity)| is(entity.entity_id()))
                     .map(|(id, _)| CenterTab::LocalTerminal(*id))
+            })
+            .or_else(|| {
+                self.settings_tab
+                    .as_ref()
+                    .filter(|panel| is(panel.entity_id()))
+                    .map(|_| CenterTab::Settings)
             })
     }
 
@@ -1091,7 +1226,7 @@ impl Workspace {
             CenterTab::LocalTerminal(id) => {
                 Some(self.local_terminals.get(&id)?.read(cx).terminal().clone())
             }
-            CenterTab::Explorer(_) => None,
+            CenterTab::Explorer(_) | CenterTab::Settings => None,
         }
     }
 
@@ -1471,14 +1606,17 @@ impl Workspace {
         cx.notify();
     }
 
-    fn on_toggle_theme(&mut self, _: &ToggleTheme, window: &mut Window, cx: &mut Context<Self>) {
-        let mode = if cx.theme().is_dark() {
-            ThemeMode::Light
+    /// The title bar's quick switch: it picks 应用外观 outright, leaving
+    /// 跟随系统 if that was chosen, and the settings observer applies it.
+    fn on_toggle_theme(&mut self, _: &ToggleTheme, _: &mut Window, cx: &mut Context<Self>) {
+        let appearance = if cx.theme().is_dark() {
+            Appearance::Light
         } else {
-            ThemeMode::Dark
+            Appearance::Dark
         };
-        Theme::change(mode, Some(window), cx);
-        crate::app::deepen_list_hover(cx);
+        self.settings.update(cx, |settings, cx| {
+            settings.update(|settings| settings.appearance = appearance, cx)
+        });
     }
 
     fn on_focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
@@ -1762,6 +1900,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_close_terminal))
             .on_action(cx.listener(Self::on_close_explorer))
             .on_action(cx.listener(Self::on_close_local_terminal))
+            .on_action(cx.listener(Self::on_open_settings))
+            .on_action(cx.listener(Self::on_close_settings))
             .on_action(cx.listener(Self::on_close_active_tab))
             .on_action(cx.listener(Self::on_close_tabs))
             .on_action(cx.listener(Self::on_rename_terminal))

@@ -48,6 +48,10 @@ gpui_kit::actions!(
         CollapseAllGroups,
         /// Close the center tab displayed most recently (the one ⌘W acts on).
         CloseActiveTab,
+        /// Open the settings tab, or bring it forward if it is already open.
+        OpenSettings,
+        /// Close the settings tab.
+        CloseSettings,
         /// Increase the application base font (interface zoom).
         ZoomIn,
         /// Decrease the application base font (interface zoom).
@@ -203,6 +207,8 @@ pub enum CenterTab {
     Terminal(RemoteTerminalId),
     Explorer(ExplorerId),
     LocalTerminal(LocalTerminalId),
+    /// There is at most one settings tab.
+    Settings,
 }
 
 /// Which tabs of a tab bar a batch close takes, relative to one tab.
