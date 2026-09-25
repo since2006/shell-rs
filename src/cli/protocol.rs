@@ -14,7 +14,8 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Bumped when a request or reply changes shape. The command and the app
-/// are the same program, so they differ only while an older copy still runs.
+/// come from the same build, so they differ only while an older copy still
+/// runs, or on Windows while the copy on the PATH has not been updated.
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// Frames larger than this are refused, so a confused peer cannot make the

@@ -15,6 +15,8 @@ use super::protocol::{
 };
 use super::server::{CliBackend, CliServer, CliTarget};
 use super::{Cli, Command};
+use super::{ConsoleText, normalize_command};
+use crate::app::cli_endpoint;
 use crate::session::{AuthKind, GroupId, Session, SessionDraft, SessionId};
 use crate::ssh::ExecStream;
 
@@ -99,7 +101,7 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("cli.sock");
+    let socket = cli_endpoint(dir.path());
     let backend = Arc::new(FakeBackend::default());
     let server = CliServer::start(socket.clone(), backend.clone()).unwrap();
     let web = session(1, "web-01", "10.0.1.12");
@@ -121,6 +123,15 @@ fn fixture() -> Fixture {
 /// Run one request the way the command does; its exit code, stdout and
 /// stderr.
 fn run(socket: &Path, request: Request, json: bool) -> (i32, String, Vec<u8>) {
+    run_on(socket, request, json, false)
+}
+
+fn run_on(
+    socket: &Path,
+    request: Request,
+    json: bool,
+    stderr_is_terminal: bool,
+) -> (i32, String, Vec<u8>) {
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
     let code = client::run(
         socket,
@@ -129,10 +140,15 @@ fn run(socket: &Path, request: Request, json: bool) -> (i32, String, Vec<u8>) {
             stdout: &mut stdout,
             stderr: &mut stderr,
             json,
-            stderr_is_terminal: false,
+            stderr_is_terminal,
         },
     );
     (code, String::from_utf8(stdout).unwrap(), stderr)
+}
+
+/// A local path the app accepts: absolute on this system.
+fn local(name: &str) -> PathBuf {
+    std::env::temp_dir().join(name)
 }
 
 fn id(session: &Session) -> String {
@@ -284,7 +300,7 @@ fn with_the_switch_off_nothing_reaches_the_backend() {
 fn without_the_app_the_command_says_it_is_not_running() {
     let dir = tempfile::tempdir().unwrap();
     let (code, _, stderr) = run(
-        &dir.path().join("cli.sock"),
+        &cli_endpoint(dir.path()),
         Request::List { query: None },
         true,
     );
@@ -317,7 +333,7 @@ fn a_transfer_reports_its_summary_and_exits_1_when_items_failed() {
         &fixture.socket,
         Request::Upload {
             session: id(&fixture.web),
-            source: "/tmp/dist".into(),
+            source: local("dist"),
             destination: "~/dist".into(),
         },
         true,
@@ -328,7 +344,32 @@ fn a_transfer_reports_its_summary_and_exits_1_when_items_failed() {
     assert_eq!(summary.failures, ["无法上传：permission denied"]);
     assert_eq!(
         fixture.backend.calls.lock().unwrap().as_slice(),
-        ["upload web-01 /tmp/dist ~/dist"]
+        [format!("upload web-01 {} ~/dist", local("dist").display())]
+    );
+}
+
+#[test]
+fn progress_is_rewritten_in_place_without_escape_sequences() {
+    let fixture = fixture();
+    let (code, _, stderr) = run_on(
+        &fixture.socket,
+        Request::Upload {
+            session: id(&fixture.web),
+            source: local("dist"),
+            destination: "~/dist".into(),
+        },
+        false,
+        true,
+    );
+    assert_eq!(code, 1);
+    let stderr = String::from_utf8(stderr).unwrap();
+    // Shown, then blanked with spaces before the failures are listed; the
+    // old Windows console would print an escape sequence as it is.
+    let line = "1/2 个文件，10 B / 20 B";
+    let blank = " ".repeat(unicode_width::UnicodeWidthStr::width(line));
+    assert_eq!(
+        stderr,
+        format!("\r{line}\r{blank}\r无法上传：permission denied\n")
     );
 }
 
@@ -352,9 +393,19 @@ fn the_socket_belongs_to_one_app_at_a_time_and_goes_with_it() {
 
     let socket = fixture.socket.clone();
     drop(fixture.server);
-    assert!(!socket.exists());
-    // A socket left behind by a crash is taken over.
-    std::fs::write(&socket, "").unwrap();
+    let (code, _, stderr) = run(&socket, Request::List { query: None }, true);
+    assert_eq!(code, 255);
+    assert!(
+        String::from_utf8(stderr)
+            .unwrap()
+            .starts_with("shellrs: [not_running]")
+    );
+    #[cfg(unix)]
+    {
+        assert!(!socket.exists());
+        // A socket left behind by a crash is taken over.
+        std::fs::write(&socket, "").unwrap();
+    }
     let restarted = CliServer::start(socket.clone(), Arc::new(FakeBackend::default()));
     assert!(restarted.is_ok());
 }
@@ -379,4 +430,48 @@ fn exec_takes_its_command_as_one_argument_or_from_stdin() {
     assert!(parse(&["shellrs", "exec", "ID", "ls", "--stdin"]).is_err());
     // Split words are a mistake, not a longer command.
     assert!(parse(&["shellrs", "exec", "ID", "ls", "-la"]).is_err());
+}
+
+#[test]
+fn a_command_reaches_the_remote_shell_with_unix_line_ends() {
+    assert_eq!(
+        normalize_command("\u{feff}cd /srv\r\nls -l\r\n"),
+        "cd /srv\nls -l\n"
+    );
+    assert_eq!(normalize_command("printf 'a\\r\\n'"), "printf 'a\\r\\n'");
+    assert_eq!(normalize_command("uname -a"), "uname -a");
+}
+
+/// What a Windows console gets for `bytes` written in the given pieces.
+fn console_text(pieces: &[&[u8]]) -> String {
+    let mut text = ConsoleText {
+        inner: Vec::new(),
+        lossy: true,
+        pending: Vec::new(),
+    };
+    for piece in pieces {
+        io::Write::write_all(&mut text, piece).unwrap();
+    }
+    text.finish().unwrap();
+    String::from_utf8(text.inner).unwrap()
+}
+
+#[test]
+fn a_windows_console_gets_text_even_from_bytes_that_are_not_utf8() {
+    let word = "生产".as_bytes();
+    // A character cut in two by the frames it came in.
+    assert_eq!(console_text(&[&word[..2], &word[2..]]), "生产");
+    // GBK for 中, and a stray byte.
+    assert_eq!(
+        console_text(&[b"a\xd6\xd0b", b"\xff"]),
+        "a\u{fffd}\u{fffd}b\u{fffd}"
+    );
+    // Cut off for good at the end.
+    assert_eq!(console_text(&[b"ok", &word[..1]]), "ok\u{fffd}");
+
+    // Anywhere but a Windows console, bytes are passed on as they are.
+    let mut raw = ConsoleText::new(Vec::new(), cfg!(not(windows)));
+    io::Write::write_all(&mut raw, b"\xff\xd6").unwrap();
+    raw.finish().unwrap();
+    assert_eq!(raw.inner, b"\xff\xd6");
 }

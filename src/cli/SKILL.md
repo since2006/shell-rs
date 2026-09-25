@@ -39,6 +39,26 @@ shellrs download <session-id> /var/log/nginx ./logs/nginx
 shellrs download <session-id> /tmp/app.tar.gz ./latest.tar.gz
 ```
 
+## Windows
+
+The same commands work in PowerShell, cmd, and Git Bash. Local paths may be Windows paths (`.\dist`, `C:\Users\me\app.tar.gz`); remote paths are still POSIX paths.
+
+In PowerShell, pass multi-line commands and commands containing quotes through stdin with a here-string instead of a heredoc. Windows PowerShell 5.1 breaks double quotes inside arguments, so do not rely on them there:
+
+```powershell
+@'
+<command>
+'@ | shellrs exec <session-id> --stdin
+```
+
+Before running `shellrs` in PowerShell, make it read and write UTF-8, or non-ASCII text (such as Chinese session names and remote output) turns into `?` or mojibake:
+
+```powershell
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
+```
+
+The exit code is in `$LASTEXITCODE`.
+
 ## Rules
 
 - Do not ask the user for SSH passwords, private keys, or passphrases. ShellRS holds those credentials.
@@ -57,3 +77,4 @@ Errors are printed to stderr with a code in brackets, such as `[not_enabled]`. E
 - `session_not_found`: run `shellrs list` again and use an `id` from its output.
 - `host_key_unknown`, `missing_credential`: ShellRS has not connected to this host yet, or has no saved password. Ask the user to connect to the session once in ShellRS and save the password.
 - `host_key_changed`: the server's host key changed. Tell the user; do not try to work around it.
+- `connect_failed` saying there is no permission to connect to ShellRS: the agent's sandbox blocks local inter-process communication. Ask the user to allow it, or run the command outside the sandbox.

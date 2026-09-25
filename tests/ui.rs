@@ -2035,6 +2035,7 @@ fn agent_skills_install_where_each_agent_looks_and_come_off_again(cx: &mut TestA
         home: root.path().join("home"),
         bin_link: root.path().join("bin").join("shellrs"),
         exe,
+        user_path: None,
     };
     let codex = paths.skill_file(AgentKind::Codex);
     workspace.update(cx, |workspace, cx| {

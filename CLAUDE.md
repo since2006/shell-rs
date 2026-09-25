@@ -21,6 +21,7 @@ cargo test                                  # 单元测试（模块内）+ tests
 cargo test --lib                            # 只跑单元测试
 cargo test --test ui                        # 只跑 UI 集成测试
 cargo test --test ui new_session -- --nocapture   # 按名称片段跑单个 UI 测试
+cargo test --test cli_bin                   # 以子进程运行 shellrs-cli 的端到端测试（Windows CI 也跑）
 cargo clippy --all-targets -- -D warnings   # 必须无警告
 cargo fmt --check
 
@@ -48,11 +49,12 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 - `workspace/` — `workspace_view.rs` 持有 `SessionStore`、`DockArea`、按会话登记的面板注册表，以及**全部动作处理器**；`title_bar.rs`、`status_bar.rs`、`recent_sessions.rs`（中间区没有标签页时显示的「最近连接」开始页，**不是** Dock 面板；行的右键菜单就是会话树里会话的那个菜单，两处都调用 `session::session_menu`，不许分叉）、`dock_skin.rs`（`WorkspaceDockSkin`：包一层 `DockSkin`，中间区为空时用 `deferred` 把开始页画在空的中间区之上；工作区在 `DockEvent::LayoutChanged` 时同步「中间区是否为空」并在刚变空时把焦点移到开始页）。
 - `settings/` — 设置。`model.rs`（`AppSettings`：`InterfaceLanguage` 界面语言、`Appearance` 应用外观、`TerminalFontSettings` 终端字体；两者实现 `Choice`，`key` 是写进文件的值，`label` 是下拉里的文字；`InterfaceLanguage::locale` / `Appearance::theme_mode` 是解析「跟随系统」的纯函数）、`store.rs`（`SettingsStore`，写 `<data_dir>/settings.json`，见下面「设置写穿到 JSON」）、`apply.rs`（`apply`：把设置落到窗口上——`Theme::change` 加 `deepen_list_hover`、`set_locale`、终端字体的全局量，一致时什么也不做）、`settings_panel.rs`（「设置」标签页 `SettingsPanel`）。标签页用 gpui-kit 的 `Settings` 组件分两栏，左边是分类（`CATEGORIES`：外观、终端、外部 CLI，带搜索），右边是所选分类的设置分组。`Settings` 会把没有分组的页整页丢掉（连左栏的条目一起），所以只加有设置项的分类。下拉用 `choice_field` 生成：读写都经过 `SettingsStore`，带默认值，所以页头的「重置全部」可用。`Settings` 的选中分类、搜索词和左栏宽度存在 keyed element state 里，标签页切走不渲染时会丢，切回来回到第一个分类。它是中间区的单例标签（工作区的 `settings_tab: Option<..>`，`CenterTab::Settings`）：`OpenSettings`（会话面板底部的「设置」按钮、⌘, / Ctrl+,）已打开时只把它切到前台并聚焦，不另开一个；标签菜单只有关闭一族。
 - `cli/` — 外部 CLI：给 AI Agent 用的 `shellrs` 命令，以及它在应用里的服务端。
-  - `mod.rs`：clap 命令（`list` / `exec` / `upload` / `download`）与 `main`。`main.rs` 一开头看参数：去掉 macOS 的 `-psn_*` 之后还有参数就走 CLI、直接 `process::exit`，不初始化 GPUI；没参数才起图形界面。
+  - `mod.rs`：clap 命令（`list` / `exec` / `upload` / `download`）与 `main`。`main.rs` 一开头看参数：去掉 macOS 的 `-psn_*` 之后还有参数就走 CLI、直接 `process::exit`，不初始化 GPUI；没参数才起图形界面。Windows 的发布版是 GUI 子系统（`windows_subsystem = "windows"`，不弹黑框），没有控制台可写，所以这条分派在 Windows 发布版里关掉，命令改由单独的控制台程序 `src/bin/shellrs-cli.rs`（`shellrs-cli.exe`，各平台都构建，`default-run` 仍是 `shellrs`）承担。`main` 在 Windows 控制台上把 stdout / stderr 包进 `ConsoleText`（非法 UTF-8 换成 U+FFFD，被拆开的字符先攒着），命令文本经 `normalize_command` 去掉 BOM、CRLF 换成 LF（PowerShell 往管道里写的就是这样）。
   - `protocol.rs`：套接字上的帧：1 字节类型（`J` JSON / `1` stdout / `2` stderr）+ 4 字节大端长度 + 载荷，一条连接一个请求；`ErrorCode` 是给 Agent 判断用的稳定英文码。
-  - `client.rs`：命令这一端，连 `app::cli_socket_path()`（`<data_dir>/cli.sock`，所以 `SHELLRS_DATA_DIR` 同样适用），把回复写到 stdout / stderr 并给出退出码（exec 为远程退出码，出错 255，传输有失败项 1）。
+  - `client.rs`：命令这一端，连 `app::cli_socket_path()`（即 `app::cli_endpoint(data_dir)`：Unix 上是 `<data_dir>/cli.sock`，Windows 上是 `\\.\pipe\shellrs-cli-<小写的数据目录绝对路径的 sha256 前 16 位>`，所以 `SHELLRS_DATA_DIR` 同样适用），把回复写到 stdout / stderr 并给出退出码（exec 为远程退出码，出错 255，传输有失败项 1）。`connect` 按平台实现，读帧循环 `talk` 共用。进度行用 `\r` 加补空格覆盖，不用 `\x1b[2K`（老 conhost 不认）。
+  - `pipe_windows.rs`：Windows 命名管道的 Win32 调用（`windows-sys`）：带 DACL 的实例、`ConnectNamedPipe`、客户端的打开与属主校验。
   - `server.rs`：`CliServer` 与可注入的 `CliBackend` trait；`backend.rs` 是真实实现 `SshCliBackend`（exec 走 `ssh::run_command`，传输走 `sftp_provider`）。
-  - `install.rs`：把 `shellrs` 链接进 PATH、Agent skill 的安装 / 更新 / 移除，纯文件系统操作，路径全来自 `IntegrationPaths`；`SKILL.md` 是 skill 正文（`include_str!`）。`integration.rs`：设置页用的状态实体 `CliIntegration`。
+  - `install.rs`：把 `shellrs` 放进 PATH（macOS / Linux 是符号链接）、Agent skill 的安装 / 更新 / 移除，纯文件系统操作，路径全来自 `IntegrationPaths`；`SKILL.md` 是 skill 正文（`include_str!`）。`install_windows.rs`：Windows 的做法（复制 + 用户 PATH），`cfg(any(windows, test))`，所以在 Mac 上也跑它的测试。`integration.rs`：设置页用的状态实体 `CliIntegration`。
 - `shared/` — 多个功能共用的展示片段（`ClosableTabTitle`、`HostMark`、`close_tab_items`，以及远程终端和 SFTP 标签共用的「重命名标签」对话框 `open_rename_tab_dialog`，面板实现 `RenamableTab` 即可接入）。
 
 关键流程与不变量：
@@ -76,6 +78,13 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 - **外部 CLI 经由正在运行的应用执行。** 命令本身不读钥匙串、不开数据库，只把请求交给应用：所以不会多弹钥匙串授权框，也不会和「内存说了算」、内存里分配 id 冲突。
   - **服务端**：生产路径 `Workspace::new` 用终端同一个 `SshConnector`（共享 known_hosts 锁）和 SFTP 同一个 provider 启动 `CliServer`；`new_with_services`（UI 测试）不启服务，测试绝不监听真实套接字。工作区在 store / 设置变化时 `sync_cli_server`：会话快照（`CliTarget::all`，带分组全路径）和「启用外部 CLI」开关。
   - **一直监听，按开关拒绝**：开关关着时回 `not_enabled`，Agent 才分得清「没运行」和「没开」。套接字 `0600`，每个连接再用 `peer_cred` 核对 uid。残留的套接字文件：连得上说明另一个实例在跑（启动失败并弹通知），连不上就删掉接管。
+  - **Windows 用命名管道，两端互相确认。** 管道名是整机的命名空间，不在用户自己的目录里，所以：
+    - 服务端每个实例都带 DACL `D:P(A;;GA;;;<当前用户 SID>)` 和 `PIPE_REJECT_REMOTE_CLIENTS`，第一个实例带 `FILE_FLAG_FIRST_PIPE_INSTANCE`（名字已被占用就启动失败，报 `AddrInUse`）。DACL 在创建时原子生效，所以不像 Unix 那样再查对方的身份（查进程属主会误伤以管理员身份运行的 Agent）。
+    - 客户端用 `SECURITY_IDENTIFICATION` 打开（抢注者不能冒充当前用户），发请求之前用 `GetSecurityInfo` 确认管道属主是当前用户或 BUILTIN\Administrators（提权运行的 ShellRS 建出来的属主是后者），否则拒绝。
+    - 用同步的 Win32 管道，不用 tokio 的：请求线程要阻塞的 `File`，而 tokio 的管道是 overlapped 句柄，拿去做同步 IO 时 std 会中止进程。
+    - 监听线程先建好下一个实例再把已连接的交给请求线程，否则那一刻来的客户端会看到「没运行」。请求线程结束时直接关句柄，**不要** `DisconnectNamedPipe`（会丢掉客户端还没读的数据）也不要 `FlushFileBuffers`（客户端挂住时会一直阻塞）。停止时置标志、反复以客户端身份连一下唤醒 `ConnectNamedPipe`，直到线程结束。
+  - **Windows 的 PATH 是副本加用户 PATH。** `IntegrationPaths::system()` 在 Windows 上：`exe` 是 `shellrs.exe` 旁边的 `shellrs-cli.exe`，`bin_link` 是 `%LOCALAPPDATA%\ShellRS\bin\shellrs.exe`（副本，不是链接），`user_path` 是 `UserPath::Registry`（`HKCU\Environment\Path`，写回 `REG_EXPAND_SZ` 后广播 `WM_SETTINGCHANGE`；只有之后启动的程序看得到）。副本按长度加修改时间判断是否本版（安装时用 `set_modified` 把时间设成源文件的）。正在运行的副本不能覆盖但能改名，所以安装、移除都先把旧的改名成 `shellrs.exe.<uuid>.old` 再尽量删掉。生产环境启动时 `CliIntegration::update_outdated` 在后台更新旧副本，否则 Agent 会一直碰到 `version_mismatch`。测试一律 `user_path: None` 或 `UserPath::File`，绝不碰注册表。开发时 `cargo run` 只构建 `shellrs`，要 `cargo build` 才有 `shellrs-cli.exe`，否则设置页显示找不到。
+  - **Windows 只在 CI 上编译和测试**（`.github/workflows/windows.yml`：clippy 全 crate、`cargo test --lib cli::`、`cargo test --test cli_bin`），本机没有 Windows 工具链；改 `pipe_windows.rs`、`install_windows.rs` 的 Windows 部分和 `cfg(windows)` 代码后要看 CI。
   - **每个请求一个线程**，后端方法都是阻塞的；SSH 句柄绑在创建它的 runtime 上，所以 `ssh::run_command` 和 SFTP 工作线程各自建 current-thread runtime。
   - **exec 不许挂住**：`SshPrompts` 非交互；陌生主机在 events 回调里直接返回 `false`（`ask` 没人回答会永远等下去，因为超时不计提示时间），缺凭据由 `MissingCredential` 失败。`exec(true)` 后立刻 `eof()`，远程没有 stdin；读循环读到 `Close` / `None` 为止，退出码可能在 EOF 之后才到。输出回调写失败（Agent 断开）就放弃命令、断开连接。
   - **传输无人值守**：`SshCliBackend::transfer` 先等 `Connected` 再发请求；连接前的 `Prompt` 一律回 `Cancel` 并按提示种类给出错误码；`Question` 按固定策略回答（冲突覆盖并勾选全部、续传一律重新开始、出错跳过并记为失败）；以 `Idle` 为结束。请求用 `UploadRequest::scp` / `DownloadRequest::scp`：worker 连上后按 scp 规则解析目标（`scp_remote_target` / `scp_local_target`，目标目录必须存在，远程还要 `stat` 确认，因为有的服务器 realpath 不存在的路径也成功），并让新建文件保留源文件的权限位（上传整套 `0o777`，下载只补可执行位）；SFTP 标签的请求不受影响。批次准备失败时 worker 也发 `Idle`。

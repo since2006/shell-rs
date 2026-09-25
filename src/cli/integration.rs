@@ -2,6 +2,7 @@ use gpui_kit::*;
 
 use super::install::{
     AgentKind, BinaryStatus, IntegrationPaths, SkillStatus, binary_status, skill_status,
+    update_outdated_binary,
 };
 
 /// What the settings page shows about the `shellrs` command and the agent
@@ -67,6 +68,17 @@ impl CliIntegration {
 
     /// Look at the file system again, off the main thread.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.check(false, cx);
+    }
+
+    /// Bring a copy of the command left by an older build up to this one,
+    /// then look again. A copy that old answers every request with
+    /// `version_mismatch`. Quietly: if it fails, the page offers 更新.
+    pub fn update_outdated(&mut self, cx: &mut Context<Self>) {
+        self.check(true, cx);
+    }
+
+    fn check(&mut self, update: bool, cx: &mut Context<Self>) {
         let Some(paths) = self.paths.clone() else {
             self._check = None;
             cx.notify();
@@ -74,7 +86,12 @@ impl CliIntegration {
         };
         self._check = Some(cx.spawn(async move |this, cx| {
             let status = cx
-                .background_spawn(async move { IntegrationStatus::read(&paths) })
+                .background_spawn(async move {
+                    if update {
+                        let _ = update_outdated_binary(&paths);
+                    }
+                    IntegrationStatus::read(&paths)
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.status = Some(status);

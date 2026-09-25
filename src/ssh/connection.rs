@@ -9,7 +9,6 @@ use crate::{
 use anyhow::{Context as _, Result, anyhow, bail};
 use russh::keys::{
     HashAlg, PrivateKeyWithHashAlg, PublicKey,
-    agent::client::AgentClient,
     known_hosts::{known_host_keys_path, learn_known_hosts_path},
     load_secret_key, parse_public_key_base64,
 };
@@ -566,6 +565,8 @@ where
 {
     #[cfg(unix)]
     {
+        use russh::keys::agent::client::AgentClient;
+
         let Ok(mut agent) = AgentClient::connect_env().await else {
             return Ok(None);
         };

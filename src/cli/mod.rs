@@ -6,7 +6,11 @@
 mod backend;
 mod client;
 mod install;
+#[cfg(any(windows, test))]
+mod install_windows;
 mod integration;
+#[cfg(windows)]
+mod pipe_windows;
 mod protocol;
 mod server;
 #[cfg(test)]
@@ -14,7 +18,7 @@ mod tests;
 
 use std::{
     ffi::OsString,
-    io::{IsTerminal as _, Read as _},
+    io::{self, IsTerminal as _, Read as _, Write},
     path::PathBuf,
 };
 
@@ -23,8 +27,9 @@ use clap::{Parser, Subcommand};
 pub use backend::SshCliBackend;
 pub use client::{Console, FAILURE_EXIT, PARTIAL_EXIT};
 pub use install::{
-    AgentKind, BinaryStatus, IntegrationPaths, SKILL, SkillStatus, binary_status, install_binary,
-    install_skill, remove_binary, remove_skill, skill_status,
+    AgentKind, BinaryStatus, IntegrationPaths, SKILL, SkillStatus, UserPath, binary_status,
+    install_binary, install_skill, remove_binary, remove_skill, skill_status,
+    update_outdated_binary,
 };
 pub use integration::{CliIntegration, IntegrationStatus};
 pub use protocol::{CliError, ErrorCode, Request, SessionInfo, TransferCounters, TransferSummary};
@@ -118,20 +123,24 @@ pub fn main(args: Vec<OsString>) -> i32 {
             return error.exit_code();
         }
     };
-    let (mut stdout, mut stderr) = (std::io::stdout(), std::io::stderr());
+    let (stdout, stderr) = (io::stdout(), io::stderr());
     let json = !stdout.is_terminal();
     let stderr_is_terminal = stderr.is_terminal();
+    let mut stdout = ConsoleText::new(stdout, !json);
+    let mut stderr = ConsoleText::new(stderr, stderr_is_terminal);
     let mut console = Console {
         stdout: &mut stdout,
         stderr: &mut stderr,
         json,
         stderr_is_terminal,
     };
-    let request = match request(cli.command, &mut console) {
-        Ok(request) => request,
-        Err(code) => return code,
+    let code = match request(cli.command, &mut console) {
+        Ok(request) => client::run(&crate::app::cli_socket_path(), request, &mut console),
+        Err(code) => code,
     };
-    client::run(&crate::app::cli_socket_path(), request, &mut console)
+    let _ = stdout.finish();
+    let _ = stderr.finish();
+    code
 }
 
 /// The request a command line asks for, or the exit code of why it
@@ -154,6 +163,7 @@ fn request(command: Command, console: &mut Console) -> Result<Request, i32> {
             } else {
                 command.unwrap_or_default()
             };
+            let command = normalize_command(&command);
             if command.trim().is_empty() {
                 return Err(console.error(ErrorCode::BadRequest, "命令不能为空"));
             }
@@ -191,6 +201,16 @@ fn request(command: Command, console: &mut Console) -> Result<Request, i32> {
     })
 }
 
+/// A command as the remote shell should see it. PowerShell ends every line
+/// it pipes to a program with CRLF, and a POSIX shell would take the CR as
+/// part of the command; a BOM would be the start of the first word.
+fn normalize_command(command: &str) -> String {
+    command
+        .strip_prefix('\u{feff}')
+        .unwrap_or(command)
+        .replace("\r\n", "\n")
+}
+
 /// The app runs in another directory, so local paths travel absolute.
 fn absolute(path: PathBuf, console: &mut Console) -> Result<PathBuf, i32> {
     std::path::absolute(&path).map_err(|error| {
@@ -199,6 +219,75 @@ fn absolute(path: PathBuf, console: &mut Console) -> Result<PathBuf, i32> {
             &format!("无法解析路径 {}：{error}", path.display()),
         )
     })
+}
+
+/// Standard output or error, made safe for a Windows console: remote output
+/// may not be UTF-8 (a GBK server, a binary file), and the Windows console
+/// refuses bytes that are not. Invalid bytes become U+FFFD there; a
+/// character split across two writes is held until its second half comes.
+/// Anywhere else, bytes pass through untouched.
+struct ConsoleText<W: Write> {
+    inner: W,
+    lossy: bool,
+    /// The start of a character whose rest has not been written yet.
+    pending: Vec<u8>,
+}
+
+impl<W: Write> ConsoleText<W> {
+    fn new(inner: W, is_terminal: bool) -> Self {
+        Self {
+            inner,
+            lossy: cfg!(windows) && is_terminal,
+            pending: Vec::new(),
+        }
+    }
+
+    /// Write out a character cut off at the very end, and flush.
+    fn finish(&mut self) -> io::Result<()> {
+        if !self.pending.is_empty() {
+            self.pending.clear();
+            self.inner.write_all("\u{fffd}".as_bytes())?;
+        }
+        self.inner.flush()
+    }
+}
+
+impl<W: Write> Write for ConsoleText<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if !self.lossy {
+            return self.inner.write(bytes);
+        }
+        self.pending.extend_from_slice(bytes);
+        let mut text = String::new();
+        let mut rest: &[u8] = &self.pending;
+        while !rest.is_empty() {
+            match std::str::from_utf8(rest) {
+                Ok(valid) => {
+                    text.push_str(valid);
+                    rest = &[];
+                }
+                Err(error) => {
+                    let (valid, after) = rest.split_at(error.valid_up_to());
+                    text.push_str(&String::from_utf8_lossy(valid));
+                    match error.error_len() {
+                        Some(invalid) => {
+                            text.push('\u{fffd}');
+                            rest = &after[invalid..];
+                        }
+                        // The rest of the character is still to come.
+                        None => break,
+                    }
+                }
+            }
+        }
+        self.pending = rest.to_vec();
+        self.inner.write_all(text.as_bytes())?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// Whether the process was started as the command rather than the app:

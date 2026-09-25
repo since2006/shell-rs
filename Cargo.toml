@@ -4,6 +4,19 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 description = "SSH session manager with local terminal support"
+default-run = "shellrs"
+
+# The app. On macOS and Linux it doubles as the `shellrs` command when
+# started with arguments.
+[[bin]]
+name = "shellrs"
+path = "src/main.rs"
+
+# The `shellrs` command on its own, as a console program: Windows needs it,
+# because the app is a GUI program there and has no console to print to.
+[[bin]]
+name = "shellrs-cli"
+path = "src/bin/shellrs-cli.rs"
 
 [dependencies]
 gpui-kit = "0.6.1"
@@ -29,6 +42,18 @@ unicode-width = "0.2"
 zeroize = "1"
 keyring = "4"
 trash = "5"
+
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6"
+windows-sys = { version = "0.61", features = [
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["process", "test-util"] }

@@ -12,6 +12,7 @@ use std::{
     thread::JoinHandle,
 };
 
+#[cfg(unix)]
 use tokio::sync::watch;
 
 use super::protocol::{
@@ -132,28 +133,23 @@ struct Shared {
 /// running" and can tell the user which of the two to fix.
 pub struct CliServer {
     shared: Arc<Shared>,
-    socket: PathBuf,
-    shutdown: watch::Sender<bool>,
-    listener: Option<JoinHandle<()>>,
+    _listener: Listener,
 }
 
 impl CliServer {
-    /// Take over `socket`, which must not be another running ShellRS's.
-    /// Only the user running the app can connect: the socket is theirs
-    /// alone, and every caller's user id is checked again.
-    pub fn start(socket: PathBuf, backend: Arc<dyn CliBackend>) -> io::Result<Self> {
+    /// Take over `endpoint` (from [`crate::app::cli_endpoint`]), which must
+    /// not be another running ShellRS's. Only the user running the app can
+    /// connect.
+    pub fn start(endpoint: PathBuf, backend: Arc<dyn CliBackend>) -> io::Result<Self> {
         let shared = Arc::new(Shared {
             enabled: AtomicBool::new(false),
             targets: RwLock::new(Vec::new()),
             backend,
         });
-        let (shutdown, stop) = watch::channel(false);
-        let listener = listen(&socket, shared.clone(), stop)?;
+        let listener = listen(endpoint, shared.clone())?;
         Ok(Self {
             shared,
-            socket,
-            shutdown,
-            listener: Some(listener),
+            _listener: listener,
         })
     }
 
@@ -170,44 +166,50 @@ impl CliServer {
     }
 }
 
-impl Drop for CliServer {
+/// The listening thread, stopped when dropped. On Unix, the socket file
+/// goes with it.
+#[cfg(unix)]
+struct Listener {
+    socket: PathBuf,
+    shutdown: watch::Sender<bool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+#[cfg(unix)]
+impl Drop for Listener {
     fn drop(&mut self) {
         self.shutdown.send_replace(true);
-        if let Some(listener) = self.listener.take() {
-            let _ = listener.join();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
         }
         let _ = std::fs::remove_file(&self.socket);
     }
 }
 
+/// The socket is the user's alone, and every caller's user id is checked
+/// again.
 #[cfg(unix)]
-fn listen(
-    socket: &Path,
-    shared: Arc<Shared>,
-    mut stop: watch::Receiver<bool>,
-) -> io::Result<JoinHandle<()>> {
+fn listen(socket: PathBuf, shared: Arc<Shared>) -> io::Result<Listener> {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
     use std::os::unix::net::{UnixListener, UnixStream};
 
-    if std::fs::symlink_metadata(socket).is_ok() {
-        if UnixStream::connect(socket).is_ok() {
-            return Err(io::Error::new(
-                io::ErrorKind::AddrInUse,
-                "另一个 ShellRS 已在提供外部 CLI",
-            ));
+    if std::fs::symlink_metadata(&socket).is_ok() {
+        if UnixStream::connect(&socket).is_ok() {
+            return Err(another_app());
         }
         // Left behind by a ShellRS that did not get to clean up.
-        std::fs::remove_file(socket)?;
+        std::fs::remove_file(&socket)?;
     }
     if let Some(dir) = socket.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let listener = UnixListener::bind(socket)?;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
-    let owner = std::fs::metadata(socket)?.uid();
+    let listener = UnixListener::bind(&socket)?;
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+    let owner = std::fs::metadata(&socket)?.uid();
     listener.set_nonblocking(true)?;
 
-    std::thread::Builder::new()
+    let (shutdown, mut stop) = watch::channel(false);
+    let thread = std::thread::Builder::new()
         .name("shellrs-cli".into())
         .spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
@@ -231,15 +233,12 @@ fn listen(
                     }
                 }
             });
-        })
-}
-
-#[cfg(not(unix))]
-fn listen(_: &Path, _: Arc<Shared>, _: watch::Receiver<bool>) -> io::Result<JoinHandle<()>> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "此系统暂不支持外部 CLI",
-    ))
+        })?;
+    Ok(Listener {
+        socket,
+        shutdown,
+        thread: Some(thread),
+    })
 }
 
 /// Hand a connection from the same user to a thread of its own.
@@ -269,6 +268,120 @@ fn accept(stream: tokio::net::UnixStream, owner: u32, shared: &Arc<Shared>) {
         });
 }
 
+/// The listening thread, stopped when dropped.
+#[cfg(windows)]
+struct Listener {
+    pipe: PathBuf,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+impl Drop for Listener {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        // The thread waits in ConnectNamedPipe; a caller wakes it. Until it
+        // has gone: between two pipe instances there is nothing to connect
+        // to, so one knock may not be heard.
+        while !thread.is_finished() {
+            let _ = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&self.pipe);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = thread.join();
+    }
+}
+
+/// A named pipe only the current user can open, and only from this
+/// machine. Its name is the machine's, not a file of the user's, so it is
+/// created as the first instance: if anyone already holds it, the server
+/// does not start.
+#[cfg(windows)]
+fn listen(pipe: PathBuf, shared: Arc<Shared>) -> io::Result<Listener> {
+    use super::pipe_windows;
+
+    let first = pipe_windows::create_instance(&pipe, true).map_err(|error| {
+        if pipe_windows::is_taken(&error) {
+            another_app()
+        } else {
+            error
+        }
+    })?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread = std::thread::Builder::new()
+        .name("shellrs-cli".into())
+        .spawn({
+            let (pipe, stop) = (pipe.clone(), stop.clone());
+            move || {
+                let mut waiting = first;
+                loop {
+                    let connected = pipe_windows::wait_for_client(&waiting);
+                    if stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    // The next instance first, so a caller arriving now
+                    // finds the pipe busy rather than gone.
+                    let next = loop {
+                        match pipe_windows::create_instance(&pipe, false) {
+                            Ok(next) => break Some(next),
+                            Err(_) if !stop.load(Ordering::Acquire) => {
+                                std::thread::sleep(std::time::Duration::from_millis(100))
+                            }
+                            Err(_) => break None,
+                        }
+                    };
+                    let Some(next) = next else {
+                        break;
+                    };
+                    let current = std::mem::replace(&mut waiting, next);
+                    // Otherwise the caller came and went already.
+                    if connected.is_ok() {
+                        answer(std::fs::File::from(current), &shared);
+                    }
+                }
+            }
+        })?;
+    Ok(Listener {
+        pipe,
+        stop,
+        thread: Some(thread),
+    })
+}
+
+/// Answer a connected caller on a thread of its own. Closing the pipe
+/// afterwards keeps what the caller has not read yet: only
+/// `DisconnectNamedPipe` would throw it away.
+#[cfg(windows)]
+fn answer(pipe: std::fs::File, shared: &Arc<Shared>) {
+    let shared = shared.clone();
+    let _ = std::thread::Builder::new()
+        .name("shellrs-cli-request".into())
+        .spawn(move || {
+            // A caller that hangs up mid-answer is no one's problem.
+            let _ = serve(&mut BufReader::new(&pipe), &mut &pipe, &shared);
+        });
+}
+
+#[cfg(not(any(unix, windows)))]
+struct Listener;
+
+#[cfg(not(any(unix, windows)))]
+fn listen(_: PathBuf, _: Arc<Shared>) -> io::Result<Listener> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "此系统暂不支持外部 CLI",
+    ))
+}
+
+fn another_app() -> io::Error {
+    io::Error::new(io::ErrorKind::AddrInUse, "另一个 ShellRS 已在提供外部 CLI")
+}
+
 /// Read one request and answer it.
 fn serve(
     reader: &mut impl io::Read,
@@ -292,7 +405,8 @@ fn serve(
             writer,
             CliError::new(
                 ErrorCode::VersionMismatch,
-                "shellrs 命令与正在运行的 ShellRS 版本不同：请重新启动 ShellRS",
+                "shellrs 命令与正在运行的 ShellRS 版本不同：\
+                 请重新启动 ShellRS，或在 设置 → 外部 CLI 中更新 CLI",
             ),
         );
     }

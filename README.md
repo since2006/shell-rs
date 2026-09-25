@@ -19,12 +19,16 @@
 
 ## 外部 CLI
 
-`shellrs` 命令让 Codex、Claude Code、OpenCode 等 AI Agent 用 ShellRS 里已保存的会话执行远程命令、传输文件。命令本身不接触密码和私钥，也不读数据库：它把请求通过本机套接字（数据目录下的 `cli.sock`）交给正在运行的 ShellRS，由 ShellRS 用保存的配置和钥匙串去连接。
+`shellrs` 命令让 Codex、Claude Code、OpenCode 等 AI Agent 用 ShellRS 里已保存的会话执行远程命令、传输文件。命令本身不接触密码和私钥，也不读数据库：它把请求交给正在运行的 ShellRS，由 ShellRS 用保存的配置和钥匙串去连接。请求走本机的进程间通信：macOS、Linux 上是数据目录下的套接字 `cli.sock`，Windows 上是命名管道 `\\.\pipe\shellrs-cli-<数据目录的散列>`。
 
 在 设置 → 外部 CLI 中：
 
-- **启用外部 CLI**：默认关闭。关闭时 ShellRS 仍在监听，但拒绝所有请求，命令会提示去这里打开。开启后，本机当前用户下的任何程序都能这样使用已保存的会话；套接字只对当前用户可读写，连接时还会核对对方的用户身份。
-- **CLI 二进制**：把 `shellrs` 链接进 PATH。macOS 上是 `/usr/local/bin/shellrs`，目录不可写时弹系统授权框；Linux 上是 `~/.local/bin/shellrs`。「移除」只删除指向 shellrs 的链接，同名的其他文件不会被改动。
+- **启用外部 CLI**：默认关闭。关闭时 ShellRS 仍在监听，但拒绝所有请求，命令会提示去这里打开。开启后，本机当前用户下的任何程序都能这样使用已保存的会话。套接字只对当前用户可读写，连接时还会核对对方的用户身份；Windows 的管道同样只允许当前用户、只接受本机连接，命令在发请求之前还会确认管道属于当前用户（或管理员），防止别人抢注同名管道。
+- **CLI 二进制**：把 `shellrs` 放进 PATH。
+  - macOS：链接到 `/usr/local/bin/shellrs`，目录不可写时弹系统授权框。
+  - Linux：链接到 `~/.local/bin/shellrs`。
+  - macOS、Linux 上「移除」只删除指向 shellrs 的链接，同名的其他文件不会被改动。
+  - Windows：图形程序没有控制台，命令是单独的控制台程序 `shellrs-cli.exe`（与 `shellrs.exe` 放在一起）。「安装」把它复制成 `%LOCALAPPDATA%\ShellRS\bin\shellrs.exe`，并把这个文件夹加入当前用户的 PATH（不需要管理员），重新打开的终端和 Agent 才能找到它。ShellRS 升级后启动时会自动更新这份副本；更新不了时显示「更新」。副本正被使用时也能更新。「移除」删掉副本并把文件夹移出 PATH。
 - **Agent Skills**：把教 Agent 使用 `shellrs` 的 skill 写到通用目录（`~/.agents/skills`）或 Codex、Claude Code、OpenCode 各自的 skills 目录；内容和当前版本不同时显示「更新」。「复制 skills」把 skill 全文复制到剪贴板。
 
 命令（`shellrs --help` 查看完整说明）：
@@ -40,7 +44,7 @@ shellrs download <ID> <远程路径> <本地路径>
 - `exec` 每次临时建立连接，执行完即断开。远程命令没有标准输入，退出码就是远程命令的退出码；被信号终止时是 128 加信号编号。
 - 上传和下载沿用 SFTP 标签的传输引擎（递归、`.filepart`、断线重连），目标路径按 scp 的规则：目标是已存在的目录就放进去并保留原名，否则目标就是副本自己的路径，其父目录必须存在。已存在的文件直接覆盖；新建的文件保留源文件的可执行权限。`~` 表示登录目录。
 - 失败时在标准错误输出 `shellrs: [错误码] 说明`，退出码 255。错误码有 `not_running`（ShellRS 未运行）、`not_enabled`（未启用外部 CLI）、`session_not_found`、`host_key_unknown`（还没在 ShellRS 里连过这台主机）、`host_key_changed`、`missing_credential`（没有保存密码或口令）、`connect_failed`、`transfer_failed`、`bad_request`、`version_mismatch`。CLI 不弹任何询问：陌生主机、缺少密码都直接失败，请先在 ShellRS 里连接一次。传输完成但有项目失败时退出码为 1。
-- 目前只支持 macOS 和 Linux。
+- 支持 macOS、Linux 和 Windows。Windows 的 PowerShell 里，多行或带引号的命令用 here-string 经 `--stdin` 传入（`@'…'@ | shellrs exec <ID> --stdin`）；输出有中文时先执行 `$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()`。命令文本会去掉开头的 BOM、把 CRLF 换成 LF，远程 shell 不会看到多余的回车符。
 
 ## 标签页
 

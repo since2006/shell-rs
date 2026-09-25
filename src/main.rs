@@ -1,3 +1,7 @@
+// A release build on Windows is a GUI program, so opening it does not bring
+// up a console window as well. Debug builds keep theirs for the logs.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use gpui_kit::component::{Root, WindowExt as _, notification::Notification};
 use gpui_kit::*;
 
@@ -5,7 +9,10 @@ use shellrs::session::{SessionDatabase, SessionStore};
 use shellrs::settings::SettingsStore;
 
 fn main() {
-    // `shellrs list`, `shellrs exec …`: the command, not the app.
+    // `shellrs list`, `shellrs exec …`: the command, not the app. Not in a
+    // Windows release build, which has nowhere to print: there the command
+    // is `shellrs-cli.exe`, which 设置 → 外部 CLI puts on the PATH.
+    #[cfg(any(not(windows), debug_assertions))]
     if let Some(args) = shellrs::cli::command_line_arguments() {
         std::process::exit(shellrs::cli::main(args));
     }

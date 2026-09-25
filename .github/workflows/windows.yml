@@ -1,0 +1,27 @@
+# The Windows build, which the Macs this is developed on cannot compile:
+# the whole crate through clippy, and the external CLI's tests, including
+# the named pipe between two processes.
+name: windows
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  cli:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml picks the toolchain; this installs it with the
+      # components it lists before the cache key is computed.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      # In case aws-lc-sys wants to assemble rather than use its prebuilt
+      # objects.
+      - uses: ilammy/setup-nasm@v1
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --lib cli::
+      - run: cargo test --test cli_bin

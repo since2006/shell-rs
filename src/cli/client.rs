@@ -37,15 +37,17 @@ impl Console<'_> {
     }
 }
 
-/// Send `request` to the app listening at `socket` and print the answer;
+/// Send `request` to the app listening at `endpoint` and print the answer;
 /// the exit code.
-pub fn run(socket: &Path, request: Request, console: &mut Console) -> i32 {
-    match exchange(socket, request, console) {
+pub fn run(endpoint: &Path, request: Request, console: &mut Console) -> i32 {
+    let result = connect(endpoint).and_then(|stream| talk(&stream, request, console));
+    match result {
         Ok(code) => code,
         Err(Failure::NotRunning) => console.error(
             ErrorCode::NotRunning,
             "ShellRS 未运行：请先打开 ShellRS，并在 设置 → 外部 CLI 中打开「启用外部 CLI」",
         ),
+        Err(Failure::Refused(message)) => console.error(ErrorCode::ConnectFailed, message),
         Err(Failure::Broken(error)) => console.error(
             ErrorCode::ConnectFailed,
             &format!("与 ShellRS 的连接意外中断：{error}"),
@@ -55,6 +57,8 @@ pub fn run(socket: &Path, request: Request, console: &mut Console) -> i32 {
 
 enum Failure {
     NotRunning,
+    /// Not allowed to talk to the app, or not willing to.
+    Refused(&'static str),
     Broken(io::Error),
 }
 
@@ -64,31 +68,59 @@ impl From<io::Error> for Failure {
     }
 }
 
-#[cfg(unix)]
-fn exchange(socket: &Path, request: Request, console: &mut Console) -> Result<i32, Failure> {
-    use std::os::unix::net::UnixStream;
+/// What a sandbox that forbids local connections looks like.
+const NO_PERMISSION: &str =
+    "没有权限连接 ShellRS：Agent 可能运行在沙箱中，需要允许它访问本机的进程间通信";
 
-    let stream = match UnixStream::connect(socket) {
-        Ok(stream) => stream,
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-            ) =>
-        {
-            return Err(Failure::NotRunning);
-        }
-        Err(error) => return Err(error.into()),
-    };
+#[cfg(unix)]
+fn connect(socket: &Path) -> Result<std::os::unix::net::UnixStream, Failure> {
+    std::os::unix::net::UnixStream::connect(socket).map_err(|error| match error.kind() {
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => Failure::NotRunning,
+        io::ErrorKind::PermissionDenied => Failure::Refused(NO_PERMISSION),
+        _ => error.into(),
+    })
+}
+
+/// Open the app's pipe, and make sure it is the app's before saying
+/// anything: the name is the machine's, so someone else could hold it.
+#[cfg(windows)]
+fn connect(pipe: &Path) -> Result<std::fs::File, Failure> {
+    use super::pipe_windows;
+
+    let pipe = pipe_windows::open(pipe).map_err(|error| match error.kind() {
+        io::ErrorKind::NotFound => Failure::NotRunning,
+        io::ErrorKind::PermissionDenied => Failure::Refused(NO_PERMISSION),
+        _ => error.into(),
+    })?;
+    if !pipe_windows::owned_by_current_user(&pipe)? {
+        return Err(Failure::Refused(
+            "外部 CLI 的管道不属于当前用户，已拒绝连接",
+        ));
+    }
+    Ok(pipe)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn connect(_: &Path) -> Result<std::fs::File, Failure> {
+    Err(Failure::Refused("此系统暂不支持外部 CLI"))
+}
+
+/// Send the request and print the replies until the last one.
+fn talk<S>(stream: S, request: Request, console: &mut Console) -> Result<i32, Failure>
+where
+    S: Copy + io::Read + Write,
+{
+    let mut writer = stream;
     write_json(
-        &mut &stream,
+        &mut writer,
         &Envelope {
             version: PROTOCOL_VERSION,
             request,
         },
     )?;
-    let mut reader = BufReader::new(&stream);
-    let mut progress_shown = false;
+    let mut reader = BufReader::new(stream);
+    // The progress line on screen, to be blanked before anything else.
+    let mut progress = ProgressLine::default();
     loop {
         let Some((kind, payload)) = read_frame(&mut reader)? else {
             return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
@@ -104,16 +136,13 @@ fn exchange(socket: &Path, request: Request, console: &mut Console) -> Result<i3
             }
             FrameKind::Json => {
                 let reply: Reply = parse_json(&payload)?;
-                if progress_shown && !matches!(reply, Reply::Progress(_)) {
-                    // Off the progress line before anything else is said.
-                    let _ = write!(console.stderr, "\r\x1b[2K");
+                if !matches!(reply, Reply::Progress(_)) {
+                    progress.clear(console.stderr);
                 }
                 match reply {
                     Reply::Progress(counters) => {
                         if console.stderr_is_terminal {
-                            let _ = write!(console.stderr, "\r\x1b[2K{}", progress_line(counters));
-                            let _ = console.stderr.flush();
-                            progress_shown = true;
+                            progress.show(console.stderr, &progress_line(counters));
                         }
                     }
                     Reply::Sessions { sessions } => {
@@ -129,9 +158,35 @@ fn exchange(socket: &Path, request: Request, console: &mut Console) -> Result<i3
     }
 }
 
-#[cfg(not(unix))]
-fn exchange(_: &Path, _: Request, console: &mut Console) -> Result<i32, Failure> {
-    Ok(console.error(ErrorCode::BadRequest, "此系统暂不支持外部 CLI"))
+/// A line rewritten in place with a carriage return. Shorter text is
+/// padded with spaces rather than cleared with an escape sequence, which
+/// the older Windows console does not understand.
+#[derive(Default)]
+struct ProgressLine {
+    /// Columns the line on screen takes up.
+    width: usize,
+}
+
+impl ProgressLine {
+    fn show(&mut self, out: &mut dyn Write, text: &str) {
+        let width = text.width();
+        let padding = self.width.saturating_sub(width);
+        let _ = write!(out, "\r{text}{}", " ".repeat(padding));
+        if padding > 0 {
+            // Back to the end of the text.
+            let _ = write!(out, "\r{text}");
+        }
+        let _ = out.flush();
+        self.width = width;
+    }
+
+    fn clear(&mut self, out: &mut dyn Write) {
+        if self.width > 0 {
+            let _ = write!(out, "\r{}\r", " ".repeat(self.width));
+            let _ = out.flush();
+            self.width = 0;
+        }
+    }
 }
 
 fn print_sessions(sessions: &[SessionInfo], console: &mut Console) -> io::Result<()> {

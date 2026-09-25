@@ -340,7 +340,12 @@ fn external_cli_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
             )]),
         SettingGroup::new()
             .title("CLI 二进制")
-            .description("把 shellrs 命令加入 PATH，方便在终端和 Agent 中直接调用。")
+            .description(if cfg!(windows) {
+                "把 shellrs 命令加入当前用户的 PATH，方便在终端和 Agent 中直接调用。\
+                 重新打开的终端和 Agent 才能找到它。"
+            } else {
+                "把 shellrs 命令加入 PATH，方便在终端和 Agent 中直接调用。"
+            })
             .items([binary_item(bin_link, status.clone())]),
         SettingGroup::new()
             .title("Agent Skills")
@@ -386,6 +391,21 @@ fn binary_item(bin_link: Option<String>, status: Option<IntegrationStatus>) -> S
                     }
                     None => format!("{path} 已被其他程序占用"),
                 }),
+                None,
+            ),
+            (Some(path), Some(BinaryStatus::Outdated)) => (
+                RowStatus::Warning(format!("已安装旧版本（{path}）")),
+                Some(("更新", true)),
+            ),
+            (Some(path), Some(BinaryStatus::NotOnPath)) => (
+                RowStatus::Warning(format!("{path} 所在的文件夹不在 PATH 中")),
+                Some(("安装", true)),
+            ),
+            (Some(_), Some(BinaryStatus::Unavailable)) => (
+                RowStatus::Warning(
+                    "找不到 shellrs-cli.exe：它应在 ShellRS 程序旁边（开发时请先 cargo build）"
+                        .into(),
+                ),
                 None,
             ),
         };

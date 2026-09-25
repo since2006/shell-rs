@@ -187,7 +187,8 @@ impl Workspace {
             cx,
         );
         this.cli_integration.update(cx, |integration, cx| {
-            integration.set_paths(IntegrationPaths::system(), cx)
+            integration.set_paths(IntegrationPaths::system(), cx);
+            integration.update_outdated(cx);
         });
         match CliServer::start(
             crate::app::cli_socket_path(),

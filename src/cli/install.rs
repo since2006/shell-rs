@@ -3,10 +3,9 @@
 //! thread. Every path comes from [`IntegrationPaths`], so tests point it at
 //! a temporary directory instead of the user's home.
 
-use std::{
-    fs, io,
-    path::{Path, PathBuf},
-};
+#[cfg(not(windows))]
+use std::path::Path;
+use std::{fs, io, path::PathBuf};
 
 use serde::Deserialize;
 
@@ -63,13 +62,14 @@ impl AgentKind {
         }
     }
 
-    /// The agent's skills directory, relative to the home directory.
-    fn skills_dir(self) -> &'static str {
+    /// The agent's skills directory, relative to the home directory, one
+    /// name at a time so Windows shows it with its own separators.
+    fn skills_dir(self) -> &'static [&'static str] {
         match self {
-            AgentKind::Generic => ".agents/skills",
-            AgentKind::Codex => ".codex/skills",
-            AgentKind::ClaudeCode => ".claude/skills",
-            AgentKind::OpenCode => ".config/opencode/skills",
+            AgentKind::Generic => &[".agents", "skills"],
+            AgentKind::Codex => &[".codex", "skills"],
+            AgentKind::ClaudeCode => &[".claude", "skills"],
+            AgentKind::OpenCode => &[".config", "opencode", "skills"],
         }
     }
 }
@@ -79,23 +79,51 @@ impl AgentKind {
 pub struct IntegrationPaths {
     /// Holds the agents' skill directories.
     pub home: PathBuf,
-    /// The link that puts `shellrs` on the PATH.
+    /// What puts `shellrs` on the PATH: a link to [`Self::exe`] on macOS
+    /// and Linux, a copy of it on Windows.
     pub bin_link: PathBuf,
-    /// The program the link points at: this one.
+    /// The command itself: this program on macOS and Linux, the
+    /// `shellrs-cli.exe` beside it on Windows.
     pub exe: PathBuf,
+    /// Windows: the PATH that [`Self::bin_link`]'s folder is put on. `None`
+    /// leaves every PATH alone; tests use it, and macOS and Linux install
+    /// into a folder that is on the PATH already.
+    pub user_path: Option<UserPath>,
+}
+
+/// A PATH the command's folder can be added to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UserPath {
+    /// The user's `Path` in the registry, which consoles opened from now on
+    /// start with.
+    Registry,
+    /// A file holding the value, so tests leave the registry alone.
+    File(PathBuf),
 }
 
 impl IntegrationPaths {
     /// The real locations, or `None` where the command cannot be installed.
     /// macOS gets `/usr/local/bin`, which is on every PATH and may need an
     /// administrator; Linux gets `~/.local/bin`, which needs nobody.
+    /// Windows gets a folder of ShellRS's own, added to the user's PATH.
     pub fn system() -> Option<Self> {
         let home = dirs::home_dir()?;
         let exe = std::env::current_exe().ok()?;
-        let bin_link = if cfg!(target_os = "macos") {
-            PathBuf::from("/usr/local/bin").join(COMMAND_NAME)
+        let (bin_link, exe, user_path) = if cfg!(target_os = "macos") {
+            (
+                PathBuf::from("/usr/local/bin").join(COMMAND_NAME),
+                exe,
+                None,
+            )
         } else if cfg!(unix) {
-            home.join(".local/bin").join(COMMAND_NAME)
+            (home.join(".local/bin").join(COMMAND_NAME), exe, None)
+        } else if cfg!(windows) {
+            let bin = dirs::data_local_dir()?.join("ShellRS").join("bin");
+            (
+                bin.join(format!("{COMMAND_NAME}.exe")),
+                exe.with_file_name("shellrs-cli.exe"),
+                Some(UserPath::Registry),
+            )
         } else {
             return None;
         };
@@ -103,21 +131,21 @@ impl IntegrationPaths {
             home,
             bin_link,
             exe,
+            user_path,
         })
     }
 
     pub fn skill_file(&self, agent: AgentKind) -> PathBuf {
-        self.home
-            .join(agent.skills_dir())
-            .join(COMMAND_NAME)
-            .join(SKILL_FILE)
+        let mut file = self.home.clone();
+        file.extend(agent.skills_dir());
+        file.join(COMMAND_NAME).join(SKILL_FILE)
     }
 }
 
 /// What is at [`IntegrationPaths::bin_link`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BinaryStatus {
-    /// A link to this program.
+    /// A link to this program, or on Windows a current copy on the PATH.
     Installed,
     Missing,
     /// A link to another copy of `shellrs`, or to something no longer
@@ -130,9 +158,52 @@ pub enum BinaryStatus {
     Occupied {
         target: Option<PathBuf>,
     },
+    /// Windows: a copy from another build. Installing updates it.
+    Outdated,
+    /// Windows: the copy is there but its folder is not on the PATH.
+    NotOnPath,
+    /// Windows: there is no `shellrs-cli.exe` beside the app to install.
+    Unavailable,
 }
 
 pub fn binary_status(paths: &IntegrationPaths) -> BinaryStatus {
+    #[cfg(windows)]
+    return super::install_windows::binary_status(paths);
+    #[cfg(not(windows))]
+    link_status(paths)
+}
+
+/// Put `shellrs` on the PATH. Where the directory is not writable, macOS
+/// asks for an administrator the way other apps install their command; the
+/// user can cancel that.
+pub fn install_binary(paths: &IntegrationPaths) -> io::Result<()> {
+    #[cfg(windows)]
+    return super::install_windows::install_binary(paths);
+    #[cfg(not(windows))]
+    install_link(paths)
+}
+
+/// Take `shellrs` off the PATH, but only ours: someone else's file of the
+/// same name stays.
+pub fn remove_binary(paths: &IntegrationPaths) -> io::Result<()> {
+    #[cfg(windows)]
+    return super::install_windows::remove_binary(paths);
+    #[cfg(not(windows))]
+    remove_link(paths)
+}
+
+/// Bring an installed command up to this build, when it is a copy from
+/// another one; whether it was. A link always leads to the program it
+/// points at, so this is Windows's alone.
+pub fn update_outdated_binary(paths: &IntegrationPaths) -> io::Result<bool> {
+    if binary_status(paths) != BinaryStatus::Outdated {
+        return Ok(false);
+    }
+    install_binary(paths).map(|()| true)
+}
+
+#[cfg(not(windows))]
+fn link_status(paths: &IntegrationPaths) -> BinaryStatus {
     let link = &paths.bin_link;
     let Ok(metadata) = fs::symlink_metadata(link) else {
         return BinaryStatus::Missing;
@@ -154,15 +225,15 @@ pub fn binary_status(paths: &IntegrationPaths) -> BinaryStatus {
 }
 
 /// Whether a link target is a `shellrs` binary, this build or another.
+#[cfg(not(windows))]
 fn is_ours(target: &Path) -> bool {
     target.file_name().is_some_and(|name| name == COMMAND_NAME)
 }
 
-/// Link `shellrs` to this program. Where the directory is not writable,
-/// macOS asks for an administrator the way other apps install their
-/// command; the user can cancel that.
-pub fn install_binary(paths: &IntegrationPaths) -> io::Result<()> {
-    if let BinaryStatus::Occupied { .. } = binary_status(paths) {
+/// Link `shellrs` to this program.
+#[cfg(not(windows))]
+fn install_link(paths: &IntegrationPaths) -> io::Result<()> {
+    if let BinaryStatus::Occupied { .. } = link_status(paths) {
         return Err(occupied(&paths.bin_link));
     }
     match link_binary(paths) {
@@ -176,6 +247,7 @@ pub fn install_binary(paths: &IntegrationPaths) -> io::Result<()> {
     }
 }
 
+#[cfg(not(windows))]
 fn link_binary(paths: &IntegrationPaths) -> io::Result<()> {
     if let Some(dir) = paths.bin_link.parent() {
         fs::create_dir_all(dir)?;
@@ -193,23 +265,22 @@ fn link_binary(paths: &IntegrationPaths) -> io::Result<()> {
     ))
 }
 
-/// Remove the link, but only a link to `shellrs`; someone else's file of
-/// the same name stays.
-pub fn remove_binary(paths: &IntegrationPaths) -> io::Result<()> {
-    match binary_status(paths) {
+/// Remove the link, but only a link to `shellrs`.
+#[cfg(not(windows))]
+fn remove_link(paths: &IntegrationPaths) -> io::Result<()> {
+    match link_status(paths) {
         BinaryStatus::Missing => Ok(()),
         BinaryStatus::Occupied { .. } => Err(occupied(&paths.bin_link)),
-        BinaryStatus::Installed | BinaryStatus::Stale { .. } => {
-            match fs::remove_file(&paths.bin_link) {
-                Err(error) if needs_administrator(&error) => {
-                    run_as_administrator(&format!("rm -f {}", shell_quote(&paths.bin_link)))
-                }
-                result => result,
+        _ => match fs::remove_file(&paths.bin_link) {
+            Err(error) if needs_administrator(&error) => {
+                run_as_administrator(&format!("rm -f {}", shell_quote(&paths.bin_link)))
             }
-        }
+            result => result,
+        },
     }
 }
 
+#[cfg(not(windows))]
 fn occupied(link: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::AlreadyExists,
@@ -217,12 +288,14 @@ fn occupied(link: &Path) -> io::Error {
     )
 }
 
+#[cfg(not(windows))]
 fn needs_administrator(error: &io::Error) -> bool {
     cfg!(target_os = "macos") && error.kind() == io::ErrorKind::PermissionDenied
 }
 
 /// Run a shell command as an administrator through the system's own
 /// password prompt.
+#[cfg(not(windows))]
 fn run_as_administrator(command: &str) -> io::Result<()> {
     let output = std::process::Command::new("osascript")
         .arg("-e")
@@ -241,12 +314,14 @@ fn run_as_administrator(command: &str) -> io::Result<()> {
 
 /// `command` as an AppleScript `do shell script` with administrator
 /// privileges: a string literal, so backslashes and quotes are escaped.
+#[cfg(not(windows))]
 fn administrator_script(command: &str) -> String {
     let literal = command.replace('\\', "\\\\").replace('"', "\\\"");
     format!("do shell script \"{literal}\" with administrator privileges")
 }
 
 /// A path as one single-quoted shell word.
+#[cfg(not(windows))]
 fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
 }
@@ -309,6 +384,7 @@ mod tests {
             home: root.join("home"),
             bin_link: root.join("bin").join("shellrs"),
             exe,
+            user_path: None,
         }
     }
 
@@ -319,11 +395,18 @@ mod tests {
         let home = &paths.home;
         assert_eq!(
             paths.skill_file(AgentKind::Generic),
-            home.join(".agents/skills/shellrs/SKILL.md")
+            home.join(".agents")
+                .join("skills")
+                .join("shellrs")
+                .join("SKILL.md")
         );
         assert_eq!(
             paths.skill_file(AgentKind::OpenCode),
-            home.join(".config/opencode/skills/shellrs/SKILL.md")
+            home.join(".config")
+                .join("opencode")
+                .join("skills")
+                .join("shellrs")
+                .join("SKILL.md")
         );
     }
 
@@ -343,12 +426,17 @@ mod tests {
         install_skill(&paths, agent).unwrap();
         assert_eq!(skill_status(&paths, agent), SkillStatus::Installed);
 
-        let other = paths.home.join(".claude/skills/other/SKILL.md");
+        let other = paths
+            .home
+            .join(".claude")
+            .join("skills")
+            .join("other")
+            .join("SKILL.md");
         fs::create_dir_all(other.parent().unwrap()).unwrap();
         fs::write(&other, "someone else's").unwrap();
         remove_skill(&paths, agent).unwrap();
         assert_eq!(skill_status(&paths, agent), SkillStatus::Missing);
-        assert!(!paths.home.join(".claude/skills/shellrs").exists());
+        assert!(!paths.skill_file(agent).parent().unwrap().exists());
         assert!(other.exists());
         // Removing what is not there is not an error.
         remove_skill(&paths, agent).unwrap();
@@ -412,6 +500,7 @@ mod tests {
         assert_eq!(fs::read_to_string(&paths.bin_link).unwrap(), "script");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn administrator_commands_survive_spaces_and_quotes() {
         assert_eq!(
