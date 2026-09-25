@@ -1,14 +1,22 @@
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
+    button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     group_box::GroupBoxVariant,
+    h_flex,
     menu::PopupMenu,
+    separator::Separator,
     setting::{NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::{CatalogIcon, CenterTab, CloseSettings};
+use crate::app::{
+    CatalogIcon, CenterTab, CloseSettings, CopyAgentSkill, InstallAgentSkill, InstallCliCommand,
+    RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand,
+};
+use crate::cli::{AgentKind, BinaryStatus, CliIntegration, IntegrationStatus, SkillStatus};
 use crate::shared::{ClosableTabTitle, close_tab_items};
 use crate::terminal::{
     FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalFontPreview, is_font_installed,
@@ -32,18 +40,27 @@ pub enum SettingsPanelEvent {
 /// changes.
 pub struct SettingsPanel {
     store: Entity<SettingsStore>,
+    /// What of the external CLI is installed, for 外部 CLI.
+    integration: Entity<CliIntegration>,
     /// The monospace families to choose the terminal font from; empty until
     /// the scan in the background comes back.
     font_families: &'static [SharedString],
     focus_handle: FocusHandle,
     tab_group: Option<WeakEntity<TabGroup>>,
-    _subscription: Subscription,
+    _subscriptions: [Subscription; 2],
     _font_scan: Task<()>,
 }
 
 impl SettingsPanel {
-    pub fn new(store: Entity<SettingsStore>, cx: &mut Context<Self>) -> Self {
-        let subscription = cx.observe(&store, |_, _, cx| cx.notify());
+    pub fn new(
+        store: Entity<SettingsStore>,
+        integration: Entity<CliIntegration>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let subscriptions = [
+            cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.observe(&integration, |_, _, cx| cx.notify()),
+        ];
         // Loading every family takes a moment the first time; the process
         // keeps the answer, so later tabs have it at once.
         let text_system = cx.text_system().clone();
@@ -58,10 +75,11 @@ impl SettingsPanel {
         });
         Self {
             store,
+            integration,
             font_families: &[],
             focus_handle: cx.focus_handle(),
             tab_group: None,
-            _subscription: subscription,
+            _subscriptions: subscriptions,
             _font_scan: font_scan,
         }
     }
@@ -173,7 +191,7 @@ struct Category {
 type CategoryGroups = fn(&SettingsPanel, &App) -> Vec<SettingGroup>;
 
 /// The categories, in the order the left column lists them.
-const CATEGORIES: [Category; 2] = [
+const CATEGORIES: [Category; 3] = [
     Category {
         title: "外观",
         icon: CatalogIcon::Palette,
@@ -183,6 +201,11 @@ const CATEGORIES: [Category; 2] = [
         title: "终端",
         icon: CatalogIcon::Terminal,
         groups: terminal_groups,
+    },
+    Category {
+        title: "外部 CLI",
+        icon: CatalogIcon::SquareTerminal,
+        groups: external_cli_groups,
     },
 ];
 
@@ -279,6 +302,272 @@ fn terminal_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
             .keywords(["预览", "字体", "字号", "行高"]),
         ]),
     ]
+}
+
+/// 外部 CLI: whether the `shellrs` command may use the saved sessions, the
+/// command itself, and the skill that teaches agents to use it.
+fn external_cli_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
+    let (reader, writer) = (panel.store.clone(), panel.store.clone());
+    let integration = panel.integration.read(cx);
+    let installable = integration.paths().is_some();
+    let status = integration.status().cloned();
+    let paths = integration.paths().cloned();
+    let (bin_link, skill_files) = match &paths {
+        Some(paths) => (
+            Some(paths.bin_link.display().to_string()),
+            Some(AgentKind::ALL.map(|agent| paths.skill_file(agent).display().to_string())),
+        ),
+        None => (None, None),
+    };
+    vec![
+        SettingGroup::new()
+            .title("访问控制")
+            .items([SettingItem::new(
+                "启用外部 CLI",
+                SettingField::switch(
+                    move |cx| reader.read(cx).settings().external_cli.enabled,
+                    move |enabled, cx| {
+                        writer.update(cx, |store, cx| {
+                            store.update(|settings| settings.external_cli.enabled = enabled, cx)
+                        });
+                    },
+                )
+                .default_value(false),
+            )
+            .description(
+                "开启后，本机当前用户下的程序（如 AI Agent）可以通过 shellrs 命令，\
+             用已保存的会话执行命令、传输文件，无需知道密码。",
+            )]),
+        SettingGroup::new()
+            .title("CLI 二进制")
+            .description("把 shellrs 命令加入 PATH，方便在终端和 Agent 中直接调用。")
+            .items([binary_item(bin_link, status.clone())]),
+        SettingGroup::new()
+            .title("Agent Skills")
+            .description(
+                "安装 shellrs skill，让外部 Agent 在连接服务器、执行远程命令和传输文件时\
+                 使用 shellrs CLI。可安装到通用目录或指定 Agent 的专用目录。",
+            )
+            .items([
+                skill_actions_item(installable),
+                skills_item(skill_files, status),
+            ]),
+    ]
+}
+
+/// Where the `shellrs` command stands, with the one thing to do about it.
+fn binary_item(bin_link: Option<String>, status: Option<IntegrationStatus>) -> SettingItem {
+    SettingItem::render(move |_, _, cx| {
+        let binary = status.as_ref().map(|status| &status.binary);
+        let (line, action) = match (&bin_link, binary) {
+            (None, _) => (
+                RowStatus::Plain("此系统暂不支持安装 shellrs 命令".into()),
+                None,
+            ),
+            (Some(_), None) => (RowStatus::Plain("正在检查…".into()), None),
+            (Some(path), Some(BinaryStatus::Installed)) => {
+                (RowStatus::Installed(path.clone()), Some(("移除", false)))
+            }
+            (Some(path), Some(BinaryStatus::Missing)) => (
+                RowStatus::Plain(format!("未安装（{path}）")),
+                Some(("安装", true)),
+            ),
+            (Some(path), Some(BinaryStatus::Stale { target })) => (
+                RowStatus::Warning(format!(
+                    "{path} 指向 {}，已失效或不是这个 ShellRS",
+                    target.display()
+                )),
+                Some(("重新安装", true)),
+            ),
+            (Some(path), Some(BinaryStatus::Occupied { target })) => (
+                RowStatus::Warning(match target {
+                    Some(target) => {
+                        format!("{path} 已被其他程序占用（指向 {}）", target.display())
+                    }
+                    None => format!("{path} 已被其他程序占用"),
+                }),
+                None,
+            ),
+        };
+        h_flex()
+            .w_full()
+            .justify_between()
+            .items_center()
+            .gap_3()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .min_w_0()
+                    .child(div().text_sm().child("状态："))
+                    .child(line.render("cli-binary-status", cx)),
+            )
+            .children(action.map(|(label, install)| {
+                row_button("cli-binary", label, install).on_click(move |_, window, cx| {
+                    if install {
+                        window.dispatch_action(Box::new(InstallCliCommand), cx);
+                    } else {
+                        window.dispatch_action(Box::new(RemoveCliCommand), cx);
+                    }
+                })
+            }))
+    })
+    .keywords(["CLI", "PATH", "shellrs", "命令", "安装"])
+}
+
+/// 检查状态 and 复制 skills, above the agents.
+fn skill_actions_item(installable: bool) -> SettingItem {
+    SettingItem::render(move |_, _, _| {
+        h_flex()
+            .gap_2()
+            .child(
+                Button::new("check-cli-integration")
+                    .outline()
+                    .small()
+                    .icon(Icon::new(CatalogIcon::RefreshCw))
+                    .label("检查状态")
+                    .disabled(!installable)
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(RefreshCliIntegration), cx)
+                    }),
+            )
+            .child(
+                Button::new("copy-agent-skill")
+                    .outline()
+                    .small()
+                    .icon(Icon::new(IconName::Copy))
+                    .label("复制 skills")
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(CopyAgentSkill), cx)),
+            )
+    })
+    .keywords(["skill", "Agent", "检查", "复制"])
+}
+
+/// One row per agent, each with where its skill goes and whether it is
+/// there.
+fn skills_item(files: Option<[String; 4]>, status: Option<IntegrationStatus>) -> SettingItem {
+    SettingItem::render(move |_, _, cx| {
+        v_flex()
+            .w_full()
+            .gap_3()
+            .children(AgentKind::ALL.iter().enumerate().map(|(ix, agent)| {
+                let file = files.as_ref().map(|files| files[ix].clone());
+                let skill = status.as_ref().map(|status| status.skill(*agent));
+                v_flex()
+                    .gap_3()
+                    .when(ix > 0, |row| row.child(Separator::horizontal()))
+                    .child(skill_row(*agent, file, skill, cx))
+            }))
+    })
+    .keywords(["skill", "Agent", "Codex", "Claude", "OpenCode"])
+}
+
+fn skill_row(
+    agent: AgentKind,
+    file: Option<String>,
+    status: Option<SkillStatus>,
+    cx: &App,
+) -> impl IntoElement {
+    let (line, action) = match (&file, status) {
+        (None, _) => (RowStatus::Plain("此系统暂不支持安装".into()), None),
+        (Some(_), None) => (RowStatus::Plain("正在检查…".into()), None),
+        (Some(file), Some(SkillStatus::Installed)) => {
+            (RowStatus::Installed(file.clone()), Some(("移除", false)))
+        }
+        (Some(file), Some(SkillStatus::Missing)) => (
+            RowStatus::Plain(format!("未安装（{file}）")),
+            Some(("安装", true)),
+        ),
+        (Some(file), Some(SkillStatus::Outdated)) => (
+            RowStatus::Warning(format!("已安装旧版本（{file}）")),
+            Some(("更新", true)),
+        ),
+    };
+    h_flex()
+        .w_full()
+        .justify_between()
+        .items_center()
+        .gap_3()
+        .child(
+            v_flex()
+                .gap_1()
+                .min_w_0()
+                .child(div().text_sm().child(agent.label()))
+                .children(agent.description().map(|description| {
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(description)
+                }))
+                .child(line.render(
+                    SharedString::from(format!("skill-status-{}", agent.key())),
+                    cx,
+                )),
+        )
+        .children(action.map(|(label, install)| {
+            row_button(
+                SharedString::from(format!("skill-{}", agent.key())),
+                label,
+                install,
+            )
+            .on_click(move |_, window, cx| {
+                if install {
+                    window.dispatch_action(Box::new(InstallAgentSkill(agent)), cx);
+                } else {
+                    window.dispatch_action(Box::new(RemoveAgentSkill(agent)), cx);
+                }
+            })
+        }))
+}
+
+/// Installing is the step the row asks for, so it is the primary button;
+/// removing is not.
+fn row_button(id: impl Into<ElementId>, label: &'static str, install: bool) -> Button {
+    let button = Button::new(id).small().label(label);
+    if install {
+        button.primary()
+    } else {
+        button.outline()
+    }
+}
+
+/// The line under a row's name that says where things stand.
+enum RowStatus {
+    /// ✓ 已安装于 the path, in the success colour.
+    Installed(String),
+    Plain(String),
+    Warning(String),
+}
+
+impl RowStatus {
+    /// With `id` and what it says as its label, for tests.
+    fn render(self, id: impl Into<ElementId>, cx: &App) -> AnyElement {
+        let line = div().id(id).test_support().text_sm();
+        match self {
+            RowStatus::Installed(path) => line
+                .aria_label(format!("已安装于 {path}"))
+                .text_color(cx.theme().success)
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(Icon::new(IconName::Check).small())
+                        .child("已安装于")
+                        .child(
+                            div()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(path),
+                        ),
+                ),
+            RowStatus::Plain(text) => line
+                .aria_label(text.clone())
+                .text_color(cx.theme().muted_foreground)
+                .child(text),
+            RowStatus::Warning(text) => line
+                .aria_label(text.clone())
+                .text_color(cx.theme().warning)
+                .child(text),
+        }
+        .into_any_element()
+    }
 }
 
 /// The terminal font family: the monospace families found so far, with the

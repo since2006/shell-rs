@@ -32,6 +32,12 @@ pub fn settings_path() -> std::io::Result<PathBuf> {
     Ok(dir.join("settings.json"))
 }
 
+/// Where the running app listens for the `shellrs` command. The command
+/// and the app both ask here, so both follow `SHELLRS_DATA_DIR`.
+pub fn cli_socket_path() -> PathBuf {
+    data_dir().join("cli.sock")
+}
+
 /// ShellRS's private host-key trust store. It deliberately does not read or
 /// modify OpenSSH's `~/.ssh/known_hosts`.
 pub fn known_hosts_path() -> std::io::Result<PathBuf> {

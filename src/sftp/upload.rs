@@ -38,6 +38,9 @@ pub(crate) struct UploadBatch {
     sent_bytes: u64,
     completed_bytes: u64,
     last_progress: Instant,
+    /// A new remote file takes the local file's permission bits, as scp
+    /// gives them; otherwise the server's defaults apply.
+    preserve_mode: bool,
 }
 impl UploadBatch {
     pub async fn scan(
@@ -72,10 +75,13 @@ impl UploadBatch {
         }
         let mut stack = Vec::new();
         for source in roots.into_iter().rev() {
-            let name = source
-                .file_name()
-                .and_then(|n| n.to_str())
-                .ok_or_else(|| anyhow!("来源文件名不是有效的 UTF-8"))?;
+            let name = match request.target_name() {
+                Some(name) => name,
+                None => source
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| anyhow!("来源文件名不是有效的 UTF-8"))?,
+            };
             let target = request.destination().join(name)?;
             stack.push((source, target));
         }
@@ -144,6 +150,7 @@ impl UploadBatch {
             sent_bytes: 0,
             completed_bytes: 0,
             last_progress: Instant::now(),
+            preserve_mode: request.is_scp(),
         })
     }
     pub fn verify_host(&self, fingerprint: &str) -> Result<()> {
@@ -513,11 +520,22 @@ impl UploadBatch {
                 }
             }
             control
-                .run(fs.attributes(
-                    &handle,
-                    u32::try_from(source_metadata.modified_ns / 1_000_000_000).ok(),
-                    record.original.as_ref().and_then(FileMetadata::permissions),
-                ))
+                .run(
+                    fs.attributes(
+                        &handle,
+                        u32::try_from(source_metadata.modified_ns / 1_000_000_000).ok(),
+                        record
+                            .original
+                            .as_ref()
+                            .and_then(FileMetadata::permissions)
+                            .or_else(|| {
+                                self.preserve_mode
+                                    .then(|| item.metadata.permissions())
+                                    .flatten()
+                                    .map(|mode| mode & 0o777)
+                            }),
+                    ),
+                )
                 .await?;
             control.run(fs.sync(&handle)).await?;
             Ok(())

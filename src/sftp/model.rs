@@ -153,6 +153,8 @@ impl DirectoryListing {
 pub struct UploadRequest {
     sources: Vec<PathBuf>,
     destination: RemotePath,
+    scp: bool,
+    target_name: Option<String>,
 }
 impl UploadRequest {
     pub fn new(sources: Vec<PathBuf>, destination: RemotePath) -> Result<Self> {
@@ -162,13 +164,74 @@ impl UploadRequest {
         Ok(Self {
             sources,
             destination,
+            scp: false,
+            target_name: None,
         })
+    }
+    /// One source copied the way scp copies it, for the external CLI:
+    /// `destination` is the copy's own path unless it is an existing
+    /// directory, and a new file keeps the source's permission bits.
+    pub fn scp(source: PathBuf, destination: RemotePath) -> Self {
+        Self {
+            sources: vec![source],
+            destination,
+            scp: true,
+            target_name: None,
+        }
     }
     pub fn sources(&self) -> &[PathBuf] {
         &self.sources
     }
     pub fn destination(&self) -> &RemotePath {
         &self.destination
+    }
+    pub fn is_scp(&self) -> bool {
+        self.scp
+    }
+    /// The name the source is copied under, once an scp destination is
+    /// resolved; `None` keeps the source's own.
+    pub fn target_name(&self) -> Option<&str> {
+        self.target_name.as_deref()
+    }
+    /// Copy into `directory`, under `name` or the source's own name.
+    pub(crate) fn resolved(mut self, directory: RemotePath, name: Option<String>) -> Self {
+        self.destination = directory;
+        self.target_name = name;
+        self
+    }
+}
+
+/// Where scp puts a copy: into `destination` when it is an existing
+/// directory, otherwise at `destination` itself. Returns the directory the
+/// copy goes into and the name it takes there, `None` for the source's own.
+pub(crate) fn scp_remote_target(
+    destination: &RemotePath,
+    is_directory: bool,
+) -> (RemotePath, Option<String>) {
+    let name = destination
+        .as_str()
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next();
+    match name {
+        Some(name) if !is_directory && !name.is_empty() => {
+            (destination.parent(), Some(name.to_string()))
+        }
+        _ => (destination.clone(), None),
+    }
+}
+
+/// [`scp_remote_target`] for a local destination.
+pub(crate) fn scp_local_target(
+    destination: &Path,
+    is_directory: bool,
+) -> (PathBuf, Option<String>) {
+    match (destination.parent(), destination.file_name()) {
+        (Some(parent), Some(name)) if !is_directory => (
+            parent.to_path_buf(),
+            Some(name.to_string_lossy().into_owned()),
+        ),
+        _ => (destination.to_path_buf(), None),
     }
 }
 /// Which way one transfer batch moves files.
@@ -192,6 +255,8 @@ impl TransferDirection {
 pub struct DownloadRequest {
     sources: Vec<RemotePath>,
     destination: PathBuf,
+    scp: bool,
+    target_name: Option<String>,
 }
 impl DownloadRequest {
     pub fn new(sources: Vec<RemotePath>, destination: PathBuf) -> Result<Self> {
@@ -204,6 +269,20 @@ impl DownloadRequest {
         Ok(Self {
             sources,
             destination,
+            scp: false,
+            target_name: None,
+        })
+    }
+    /// One source copied the way scp copies it; see [`UploadRequest::scp`].
+    pub fn scp(source: RemotePath, destination: PathBuf) -> Result<Self> {
+        if !destination.is_absolute() {
+            bail!("下载目标必须是绝对路径");
+        }
+        Ok(Self {
+            sources: vec![source],
+            destination,
+            scp: true,
+            target_name: None,
         })
     }
     pub fn sources(&self) -> &[RemotePath] {
@@ -211,6 +290,18 @@ impl DownloadRequest {
     }
     pub fn destination(&self) -> &Path {
         &self.destination
+    }
+    pub fn is_scp(&self) -> bool {
+        self.scp
+    }
+    /// See [`UploadRequest::target_name`].
+    pub fn target_name(&self) -> Option<&str> {
+        self.target_name.as_deref()
+    }
+    pub(crate) fn resolved(mut self, directory: PathBuf, name: Option<String>) -> Self {
+        self.destination = directory;
+        self.target_name = name;
+        self
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

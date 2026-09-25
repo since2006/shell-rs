@@ -151,6 +151,12 @@ fn describe_test_failure(error: &anyhow::Error, host_trust: HostTrust) -> String
     if host_trust.declined {
         return "未信任该主机的密钥".into();
     }
+    describe_login_error(error)
+}
+
+/// Why a login failed, from the error alone: a credential that was
+/// missing, the network's own answer, or whatever the error says.
+pub(super) fn describe_login_error(error: &anyhow::Error) -> String {
     for cause in error.chain() {
         if let Some(need) = cause.downcast_ref::<MissingCredential>() {
             return need.to_string();

@@ -1,10 +1,12 @@
 use super::{
-    RemotePath, SftpCommand, SftpEvent, SftpTransport, SftpTransportProvider, TransferDirection,
-    TransferPhase, TransferProgress,
+    EntryKind, RemotePath, SftpCommand, SftpEvent, SftpTransport, SftpTransportProvider,
+    TransferDirection, TransferPhase, TransferProgress,
+    client::RemoteFs as _,
     client::{SftpClient, is_network_error},
     control::{Cancelled, TransferControl},
     download::DownloadBatch,
     journal::{DownloadJournal, Journal},
+    model::{scp_local_target, scp_remote_target},
     operations,
     upload::UploadBatch,
 };
@@ -12,7 +14,7 @@ use crate::{
     session::Session,
     ssh::{SshConnectionConfig, SshConnector, SshPrompts},
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_channel::{Receiver, Sender};
 use std::{
     path::PathBuf,
@@ -292,10 +294,35 @@ impl SshSftpTransport {
                     events
                         .send(SftpEvent::Progress(TransferProgress::default()))
                         .await?;
-                    let target = control
-                        .run(connected.canonicalize(request.destination()))
-                        .await?;
-                    let request = super::UploadRequest::new(request.sources().to_vec(), target)?;
+                    let request = if request.is_scp() {
+                        let destination = request.destination();
+                        let is_directory = destination.is_root()
+                            || control
+                                .run(connected.stat(destination))
+                                .await?
+                                .is_some_and(|metadata| metadata.kind() == EntryKind::Directory);
+                        let (directory, name) = scp_remote_target(destination, is_directory);
+                        // Some servers resolve a path that is not there, so
+                        // ask whether it is a directory too.
+                        let missing = || anyhow!("远程目录 {directory} 不存在");
+                        let resolved = control
+                            .run(connected.canonicalize(&directory))
+                            .await
+                            .map_err(|_| missing())?;
+                        if !control
+                            .run(connected.stat(&resolved))
+                            .await?
+                            .is_some_and(|metadata| metadata.kind() == EntryKind::Directory)
+                        {
+                            return Err(missing());
+                        }
+                        request.clone().resolved(resolved, name)
+                    } else {
+                        let target = control
+                            .run(connected.canonicalize(request.destination()))
+                            .await?;
+                        super::UploadRequest::new(request.sources().to_vec(), target)?
+                    };
                     batch = Some(TransferBatch::Upload(
                         control
                             .run(UploadBatch::scan(
@@ -310,6 +337,22 @@ impl SshSftpTransport {
                 }
                 if let SftpCommand::Download(request) = &operation {
                     batch = None;
+                    let request = &if request.is_scp() {
+                        let destination = request.destination();
+                        let is_directory = tokio::fs::metadata(destination)
+                            .await
+                            .is_ok_and(|metadata| metadata.is_dir());
+                        let (directory, name) = scp_local_target(destination, is_directory);
+                        if !tokio::fs::metadata(&directory)
+                            .await
+                            .is_ok_and(|metadata| metadata.is_dir())
+                        {
+                            anyhow::bail!("本地目录 {} 不存在", directory.display());
+                        }
+                        request.clone().resolved(directory, name)
+                    } else {
+                        request.clone()
+                    };
                     events
                         .send(SftpEvent::Progress(TransferProgress {
                             direction: TransferDirection::Download,
@@ -361,6 +404,8 @@ impl SshSftpTransport {
                         }))
                         .await?;
                 }
+                // Done, as far as whoever sent the batch is concerned.
+                events.send(SftpEvent::Idle).await?;
                 busy.store(false, Ordering::Release);
                 continue;
             }

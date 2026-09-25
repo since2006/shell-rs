@@ -6,6 +6,7 @@
 //! `app` (动作、快捷键、资源).
 
 pub mod app;
+pub mod cli;
 pub mod connection;
 pub mod explorer;
 pub mod secrets;

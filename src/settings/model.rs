@@ -13,6 +13,16 @@ pub struct AppSettings {
     pub language: InterfaceLanguage,
     pub appearance: Appearance,
     pub terminal_font: TerminalFontSettings,
+    pub external_cli: ExternalCliSettings,
+}
+
+/// 外部 CLI.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExternalCliSettings {
+    /// Whether the `shellrs` command may use the saved sessions. Off until
+    /// the user turns it on.
+    pub enabled: bool,
 }
 
 impl AppSettings {

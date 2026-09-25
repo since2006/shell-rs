@@ -1523,3 +1523,151 @@ fn openssh_protocol_downloads_lists_owners_and_changes_files_without_following_l
         process.wait().await.unwrap();
     });
 }
+
+#[test]
+fn scp_puts_a_copy_inside_a_directory_or_at_the_path_itself() {
+    use super::model::{scp_local_target, scp_remote_target};
+    let path = |path: &str| RemotePath::new(path).unwrap();
+    assert_eq!(
+        scp_remote_target(&path("/tmp/dist"), true),
+        (path("/tmp/dist"), None)
+    );
+    assert_eq!(
+        scp_remote_target(&path("/tmp/release.tar.gz"), false),
+        (path("/tmp"), Some("release.tar.gz".into()))
+    );
+    // Relative to the login directory, not to the root.
+    assert_eq!(
+        scp_remote_target(&path("./app"), false),
+        (path("."), Some("app".into()))
+    );
+    assert_eq!(scp_remote_target(&path("/"), true), (path("/"), None));
+
+    assert_eq!(
+        scp_local_target(Path::new("/work/logs"), true),
+        (Path::new("/work/logs").to_path_buf(), None)
+    );
+    assert_eq!(
+        scp_local_target(Path::new("/work/latest.tar.gz"), false),
+        (
+            Path::new("/work").to_path_buf(),
+            Some("latest.tar.gz".into())
+        )
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_scp_upload_takes_the_destination_name_and_keeps_the_execute_bits() {
+    use std::os::unix::fs::PermissionsExt as _;
+    runtime().block_on(async {
+        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let source = tmp.path().join("build.sh");
+        std::fs::write(&source, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let remote = Remote::new(true);
+
+        let request = UploadRequest::scp(source.clone(), remote_path("/dest/deploy.sh"))
+            .resolved(remote_path("/dest"), Some("deploy.sh".into()));
+        let answers = Answers::new(vec![]);
+        let mut batch = UploadBatch::scan(
+            &request,
+            "test@remote",
+            "host-key",
+            Journal::new(tmp.path().join("journal")),
+            &answers.control,
+        )
+        .await
+        .unwrap();
+        run(&mut batch, &remote, &answers.control).await.unwrap();
+        assert_eq!(remote.bytes("/dest/deploy.sh"), b"#!/bin/sh\n");
+        assert_eq!(remote.mode("/dest/deploy.sh"), 0o755);
+
+        // The SFTP tab's uploads leave new files to the server's defaults.
+        let mut plain = batch_to(&source, "/plain", tmp.path(), &answers.control).await;
+        run(&mut plain, &remote, &answers.control).await.unwrap();
+        assert_eq!(remote.mode("/plain/build.sh"), 0o644);
+    });
+}
+
+async fn batch_to(
+    source: &Path,
+    destination: &str,
+    tmp: &Path,
+    control: &TransferControl,
+) -> UploadBatch {
+    let request = UploadRequest::new(vec![source.into()], remote_path(destination)).unwrap();
+    UploadBatch::scan(
+        &request,
+        "test@remote",
+        "host-key",
+        Journal::new(tmp.join("plain-journal")),
+        control,
+    )
+    .await
+    .unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn an_scp_download_takes_the_destination_name_and_keeps_the_execute_bits() {
+    use std::os::unix::fs::PermissionsExt as _;
+    runtime().block_on(async {
+        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let out = tmp.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        let remote = Remote::new(true);
+        remote.file("/srv/run.sh", b"#!/bin/sh\n");
+        remote
+            .nodes
+            .borrow_mut()
+            .get_mut("/srv/run.sh")
+            .unwrap()
+            .metadata = FileMetadata::new(EntryKind::File, 10, Some(100), Some(0o755));
+
+        let answers = Answers::new(vec![]);
+        let request = DownloadRequest::scp(remote_path("/srv/run.sh"), out.join("start.sh"))
+            .unwrap()
+            .resolved(out.clone(), Some("start.sh".into()));
+        let mut batch = DownloadBatch::scan(
+            &request,
+            "test@remote",
+            "host-key",
+            DownloadJournal::new(tmp.path().join("journal")),
+            &remote,
+            &answers.control,
+        )
+        .await
+        .unwrap();
+        run_download(&mut batch, &remote, &answers.control)
+            .await
+            .unwrap();
+        let copy = out.join("start.sh");
+        assert_eq!(std::fs::read(&copy).unwrap(), b"#!/bin/sh\n");
+        assert_ne!(
+            std::fs::metadata(&copy).unwrap().permissions().mode() & 0o100,
+            0
+        );
+        assert!(!out.join("run.sh").exists());
+
+        // The SFTP tab's downloads keep this machine's defaults.
+        let plain = tmp.path().join("plain");
+        std::fs::create_dir(&plain).unwrap();
+        let mut batch = download_batch(
+            &["/srv/run.sh"],
+            &plain,
+            DownloadJournal::new(tmp.path().join("plain-journal")),
+            &remote,
+            &answers.control,
+        )
+        .await;
+        run_download(&mut batch, &remote, &answers.control)
+            .await
+            .unwrap();
+        let mode = std::fs::metadata(plain.join("run.sh"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o111, 0);
+    });
+}

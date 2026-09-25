@@ -338,6 +338,9 @@ mod tests {
     use std::{path::Path, sync::Mutex};
 
     const TEST_PASSWORD: &str = "test-password";
+    /// What the external CLI's `exec` runs in these tests: output on both
+    /// streams, then an exit status that arrives after the EOF.
+    const CLI_COMMAND: &str = "printf out; printf err >&2; exit 3";
 
     #[derive(Default)]
     struct ServerState {
@@ -504,6 +507,15 @@ mod tests {
                 .execs
                 .push(String::from_utf8_lossy(command).into_owned());
             session.channel_success(channel)?;
+            if command == CLI_COMMAND.as_bytes() {
+                session.data(channel, b"out".to_vec())?;
+                session.extended_data(channel, 1, b"err".to_vec())?;
+                // After the EOF, which servers are free to do.
+                session.eof(channel)?;
+                session.exit_status_request(channel, 3)?;
+                session.close(channel)?;
+                return Ok(());
+            }
             if let Some(reply) = (self.probe_reply)(&String::from_utf8_lossy(command)) {
                 session.data(channel, reply.as_bytes().to_vec())?;
             }
@@ -934,6 +946,122 @@ mod tests {
 
     fn login_request(port: u16) -> crate::connection::LoginTest {
         crate::connection::LoginTest::new("127.0.0.1", port, "tester", AuthKind::Password)
+    }
+
+    /// The CLI's `exec` against the test server, on a thread of its own so
+    /// a login that waits instead of failing shows up as a timeout.
+    fn run_cli_command(
+        session: &Session,
+        known_hosts: &Path,
+        keychain: Arc<InMemorySecretStore>,
+    ) -> (
+        Result<crate::ssh::ExecExit, crate::ssh::ExecError>,
+        Vec<u8>,
+        Vec<u8>,
+    ) {
+        let connector = SshConnector::new(known_hosts, keychain);
+        let config = SshConnectionConfig::from(session);
+        let (done_tx, done_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+            let result =
+                crate::ssh::run_command(&connector, &config, CLI_COMMAND, &mut |stream, bytes| {
+                    match stream {
+                        crate::ssh::ExecStream::Stdout => stdout.extend_from_slice(bytes),
+                        crate::ssh::ExecStream::Stderr => stderr.extend_from_slice(bytes),
+                    }
+                    Ok(())
+                });
+            let _ = done_tx.send((result, stdout, stderr));
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("exec waited instead of finishing")
+    }
+
+    /// Trust the test server's key the way a first connection in the app
+    /// does.
+    fn trust_server(port: u16, known_hosts: &Path) {
+        let (result, _) = test_login(
+            login_request(port).with_password(TEST_PASSWORD),
+            known_hosts,
+            Arc::new(InMemorySecretStore::default()),
+            true,
+        );
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn exec_passes_on_both_outputs_and_the_exit_code_after_eof() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        trust_server(server.port, &known_hosts);
+        let session = password_session(server.port);
+        let keychain = Arc::new(InMemorySecretStore::default());
+        keychain
+            .set(&session.password_secret(), TEST_PASSWORD)
+            .unwrap();
+
+        let (result, stdout, stderr) = run_cli_command(&session, &known_hosts, keychain);
+        assert_eq!(result, Ok(crate::ssh::ExecExit::Code(3)));
+        assert_eq!(stdout, b"out");
+        assert_eq!(stderr, b"err");
+        assert!(
+            server
+                .state
+                .lock()
+                .unwrap()
+                .execs
+                .contains(&CLI_COMMAND.to_string())
+        );
+    }
+
+    #[test]
+    fn exec_fails_at_once_on_a_host_not_trusted_yet() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        let session = password_session(server.port);
+        let keychain = Arc::new(InMemorySecretStore::default());
+        keychain
+            .set(&session.password_secret(), TEST_PASSWORD)
+            .unwrap();
+
+        let (result, stdout, _) = run_cli_command(&session, &known_hosts, keychain);
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, crate::ssh::ExecErrorKind::HostKeyUnknown);
+        assert!(error.message.contains("请先在 ShellRS 中连接一次"));
+        assert!(stdout.is_empty());
+        // Nothing was trusted on the user's behalf.
+        assert!(!known_hosts.exists());
+    }
+
+    #[test]
+    fn exec_without_a_saved_password_says_what_is_missing() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        trust_server(server.port, &known_hosts);
+        let session = password_session(server.port);
+
+        let (result, _, _) = run_cli_command(
+            &session,
+            &known_hosts,
+            Arc::new(InMemorySecretStore::default()),
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, crate::ssh::ExecErrorKind::MissingCredential);
+        assert!(error.message.contains("没有保存密码"));
     }
 
     #[test]

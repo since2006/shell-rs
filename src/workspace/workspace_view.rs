@@ -20,15 +20,17 @@ use gpui_kit::*;
 
 use crate::app::{
     CenterTab, ClearTerminal, CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseSettings,
-    CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectSession, CopySessionHost,
-    CopySessionId, CopyTerminal, DeleteGroup, DeleteSession, DisconnectSession, DisconnectTerminal,
-    DismissTerminalFind, DuplicateSession, EditSession, ExpandAllGroups, ExplorerAction,
-    ExplorerCommand, ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal,
-    FocusSearch, MoveSessionNode, NewChildGroup, NewGroup, NewLocalTerminal, NewSession,
-    NewSessionInGroup, OpenExplorer, OpenSettings, PasteTerminal, ReconnectTerminal,
-    RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal, ToggleSessionPanel,
-    ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
+    CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectSession, CopyAgentSkill,
+    CopySessionHost, CopySessionId, CopyTerminal, DeleteGroup, DeleteSession, DisconnectSession,
+    DisconnectTerminal, DismissTerminalFind, DuplicateSession, EditSession, ExpandAllGroups,
+    ExplorerAction, ExplorerCommand, ExplorerShortcut, FindInTerminal, FindNextInTerminal,
+    FindPreviousInTerminal, FocusSearch, InstallAgentSkill, InstallCliCommand, MoveSessionNode,
+    NewChildGroup, NewGroup, NewLocalTerminal, NewSession, NewSessionInGroup, OpenExplorer,
+    OpenSettings, PasteTerminal, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill,
+    RemoveCliCommand, RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal,
+    ToggleSessionPanel, ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
 };
+use crate::cli::{CliIntegration, CliServer, CliTarget, IntegrationPaths, SshCliBackend};
 use crate::connection::SharedConnectionTester;
 use crate::explorer::{ExplorerId, ExplorerPanel, ExplorerPanelEvent, confirm_close_transfer};
 use crate::session::{
@@ -108,6 +110,13 @@ pub struct Workspace {
     settings_tab: Option<Entity<SettingsPanel>>,
     /// What the settings tab edits; the workspace applies it to the window.
     settings: Entity<SettingsStore>,
+    /// Where the `shellrs` command and the agent skills go, and whether
+    /// they are there. No paths in UI tests, so nothing reaches the home
+    /// directory unless a test hands it a temporary one.
+    cli_integration: Entity<CliIntegration>,
+    /// Answers the `shellrs` command. Production only: UI tests never
+    /// listen on the real socket.
+    cli_server: Option<CliServer>,
     local_terminal_factory: SharedTerminalTransportFactory,
     remote_terminal_provider: SharedRemoteTerminalTransportProvider,
     sftp_provider: SharedSftpTransportProvider,
@@ -161,22 +170,46 @@ impl Workspace {
             connector.clone(),
         ));
         let tester = Arc::new(crate::ssh::SshConnectionTester::new(connector.clone()));
-        let sftp = Arc::new(SshSftpTransportProvider::new(
-            connector,
+        let sftp: SharedSftpTransportProvider = Arc::new(SshSftpTransportProvider::new(
+            connector.clone(),
             crate::app::data_dir().join("upload-resume"),
             crate::app::data_dir().join("download-resume"),
         ));
-        Self::new_with_services(
+        let mut this = Self::new_with_services(
             store,
             settings,
             remote,
             local_terminal_factory,
-            sftp,
+            sftp.clone(),
             Arc::new(SystemLocalDirectoryProvider),
             tester,
             window,
             cx,
-        )
+        );
+        this.cli_integration.update(cx, |integration, cx| {
+            integration.set_paths(IntegrationPaths::system(), cx)
+        });
+        match CliServer::start(
+            crate::app::cli_socket_path(),
+            Arc::new(SshCliBackend::new(connector, sftp)),
+        ) {
+            Ok(server) => this.cli_server = Some(server),
+            Err(error) => window.push_notification(
+                Notification::error(error.to_string()).title("外部 CLI 无法启动"),
+                cx,
+            ),
+        }
+        this.sync_cli_server(cx);
+        this
+    }
+
+    /// Tell the CLI server what it may use: whether 启用外部 CLI is on, and
+    /// the sessions as they are now.
+    fn sync_cli_server(&self, cx: &App) {
+        if let Some(server) = &self.cli_server {
+            server.set_enabled(self.settings.read(cx).settings().external_cli.enabled);
+            server.set_targets(CliTarget::all(self.store.read(cx)));
+        }
     }
 
     /// Fully injectable constructor used by UI tests: remote sessions never
@@ -247,7 +280,10 @@ impl Workspace {
         crate::settings::apply(settings.read(cx).settings(), window, cx);
 
         let mut subscriptions = vec![
-            cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.observe(&store, |this, _, cx| {
+                this.sync_cli_server(cx);
+                cx.notify()
+            }),
             cx.subscribe_in(
                 &store,
                 window,
@@ -276,8 +312,9 @@ impl Workspace {
                     }
                 },
             ),
-            cx.observe_in(&settings, window, |_, settings, window, cx| {
+            cx.observe_in(&settings, window, |this, settings, window, cx| {
                 crate::settings::apply(settings.read(cx).settings(), window, cx);
+                this.sync_cli_server(cx);
             }),
             cx.subscribe_in(
                 &settings,
@@ -361,6 +398,8 @@ impl Workspace {
             local_terminals: HashMap::new(),
             settings_tab: None,
             settings,
+            cli_integration: cx.new(|_| CliIntegration::new(None)),
+            cli_server: None,
             local_terminal_factory,
             remote_terminal_provider,
             sftp_provider,
@@ -428,6 +467,11 @@ impl Workspace {
 
     pub fn settings(&self) -> &Entity<SettingsStore> {
         &self.settings
+    }
+
+    /// Tests hand it a temporary home and bin directory.
+    pub fn cli_integration(&self) -> &Entity<CliIntegration> {
+        &self.cli_integration
     }
 
     /// Keep the start page and focus in step with the center: once its last
@@ -903,7 +947,10 @@ impl Workspace {
             return;
         }
         let store = self.settings.clone();
-        let panel = cx.new(|cx| SettingsPanel::new(store, cx));
+        let integration = self.cli_integration.clone();
+        // Something may have been installed or removed since last time.
+        integration.update(cx, |integration, cx| integration.refresh(cx));
+        let panel = cx.new(|cx| SettingsPanel::new(store, integration, cx));
         let subscription = cx.subscribe(&panel, |this, _, event: &SettingsPanelEvent, cx| {
             match event {
                 SettingsPanelEvent::Activated => {
@@ -925,6 +972,116 @@ impl Workspace {
         self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
         });
+    }
+
+    fn on_install_cli_command(
+        &mut self,
+        _: &InstallCliCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.change_cli_integration(
+            "无法安装 shellrs 命令",
+            crate::cli::install_binary,
+            window,
+            cx,
+        );
+    }
+
+    fn on_remove_cli_command(
+        &mut self,
+        _: &RemoveCliCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.change_cli_integration(
+            "无法移除 shellrs 命令",
+            crate::cli::remove_binary,
+            window,
+            cx,
+        );
+    }
+
+    fn on_install_agent_skill(
+        &mut self,
+        action: &InstallAgentSkill,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let agent = action.0;
+        self.change_cli_integration(
+            "无法安装 skill",
+            move |paths| crate::cli::install_skill(paths, agent),
+            window,
+            cx,
+        );
+    }
+
+    fn on_remove_agent_skill(
+        &mut self,
+        action: &RemoveAgentSkill,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let agent = action.0;
+        self.change_cli_integration(
+            "无法移除 skill",
+            move |paths| crate::cli::remove_skill(paths, agent),
+            window,
+            cx,
+        );
+    }
+
+    fn on_refresh_cli_integration(
+        &mut self,
+        _: &RefreshCliIntegration,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cli_integration
+            .update(cx, |integration, cx| integration.refresh(cx));
+    }
+
+    fn on_copy_agent_skill(
+        &mut self,
+        _: &CopyAgentSkill,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.write_to_clipboard(ClipboardItem::new_string(crate::cli::SKILL.to_string()));
+        window.push_notification(Notification::success("已复制 shellrs skill"), cx);
+    }
+
+    /// Install or remove part of the external CLI off the main thread, then
+    /// look again at what is there. Installing the command can wait on the
+    /// system's administrator prompt.
+    fn change_cli_integration(
+        &mut self,
+        failure: &'static str,
+        change: impl FnOnce(&IntegrationPaths) -> std::io::Result<()> + Send + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let integration = self.cli_integration.clone();
+        let Some(paths) = integration.read(cx).paths().cloned() else {
+            return;
+        };
+        cx.spawn_in(window, async move |_, cx| {
+            let result = cx.background_spawn(async move { change(&paths) }).await;
+            let _ = cx.update(|window, cx| {
+                match result {
+                    // The user closed the administrator prompt.
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(error) => window.push_notification(
+                        Notification::error(error.to_string()).title(failure),
+                        cx,
+                    ),
+                    Ok(()) => {}
+                }
+                integration.update(cx, |integration, cx| integration.refresh(cx));
+            });
+        })
+        .detach();
     }
 
     fn on_close_settings(
@@ -1919,6 +2076,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_close_explorer))
             .on_action(cx.listener(Self::on_close_local_terminal))
             .on_action(cx.listener(Self::on_open_settings))
+            .on_action(cx.listener(Self::on_install_cli_command))
+            .on_action(cx.listener(Self::on_remove_cli_command))
+            .on_action(cx.listener(Self::on_install_agent_skill))
+            .on_action(cx.listener(Self::on_remove_agent_skill))
+            .on_action(cx.listener(Self::on_refresh_cli_integration))
+            .on_action(cx.listener(Self::on_copy_agent_skill))
             .on_action(cx.listener(Self::on_close_settings))
             .on_action(cx.listener(Self::on_close_active_tab))
             .on_action(cx.listener(Self::on_close_tabs))

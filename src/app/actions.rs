@@ -5,6 +5,7 @@ use gpui_kit::*;
 use serde::Deserialize;
 
 use crate::{
+    cli::AgentKind,
     explorer::ExplorerId,
     session::{GroupId, NodeDrop, SessionId, SessionNode},
     terminal::{LocalTerminalId, RemoteTerminalId},
@@ -60,6 +61,14 @@ gpui_kit::actions!(
         ZoomReset,
         /// Quit the application.
         Quit,
+        /// Put the `shellrs` command on the PATH.
+        InstallCliCommand,
+        /// Take the `shellrs` command off the PATH.
+        RemoveCliCommand,
+        /// Look again at what of the external CLI is installed.
+        RefreshCliIntegration,
+        /// Copy the agent skill's text to the clipboard.
+        CopyAgentSkill,
     ]
 );
 
@@ -205,6 +214,16 @@ local_terminal_action!(
     /// Restart a local terminal with a fresh emulator and PTY.
     RestartLocalTerminal
 );
+
+/// Install (or update) the agent skill for one agent.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = shellrs, no_json)]
+pub struct InstallAgentSkill(pub AgentKind);
+
+/// Remove the agent skill of one agent.
+#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[action(namespace = shellrs, no_json)]
+pub struct RemoveAgentSkill(pub AgentKind);
 
 /// One tab of the center area, by the identity of what it shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]

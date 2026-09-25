@@ -16,9 +16,10 @@ use shellrs::app::{
     CenterTab, ClearTerminal, CloseScope, CloseTabs, CollapseAllGroups, ConnectGroup,
     ConnectSession, CopySessionHost, CopySessionId, DeleteGroup, DeleteSession, DisconnectTerminal,
     EditSession, ExpandAllGroups, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal,
-    NewLocalTerminal, NewSessionInGroup, OpenExplorer, ReconnectTerminal, RenameGroup,
-    RenameTerminal,
+    InstallCliCommand, NewLocalTerminal, NewSessionInGroup, OpenExplorer, ReconnectTerminal,
+    RemoveAgentSkill, RenameGroup, RenameTerminal,
 };
+use shellrs::cli::{AgentKind, IntegrationPaths};
 use shellrs::connection::{ConnectionPromptKind, ConnectionTester, LoginTest, TrustCallback};
 use shellrs::explorer::ExplorerId;
 use shellrs::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
@@ -1948,6 +1949,144 @@ fn settings_open_from_the_session_list_as_one_tab(cx: &mut TestAppContext) {
 
 /// The label of one dropdown in the 外观 page's 常规 group. `Settings` names
 /// its groups, items and dropdown buttons by position.
+/// Open the settings tab on 外部 CLI, the third category.
+fn open_external_cli_settings(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("settings").click("0-2", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn the_external_cli_switch_is_off_until_turned_on(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let enabled = |cx: &mut TestAppContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .settings()
+                .read(cx)
+                .settings()
+                .external_cli
+                .enabled
+        })
+    };
+    open_external_cli_settings(cx, handle);
+    assert!(!enabled(cx));
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // 访问控制 › 启用外部 CLI.
+        let switch = window
+            .within("settings")
+            .within("group-0")
+            .within("item-0")
+            .find("check");
+        assert_eq!(switch.checked(), Some(false));
+        window
+            .within("settings")
+            .within("group-0")
+            .within("item-0")
+            .click("check", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(enabled(cx));
+}
+
+#[gpui_kit::test]
+fn without_a_home_to_install_into_the_external_cli_offers_nothing(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    open_external_cli_settings(cx, handle);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("skill-status-codex").label(),
+            Some("此系统暂不支持安装")
+        );
+        assert!(window.try_find("skill-codex").is_none());
+        assert!(window.try_find("cli-binary").is_none());
+        // Copying the skill needs no home directory.
+        window.click("copy-agent-skill", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some(shellrs::cli::SKILL.to_string())
+    );
+}
+
+#[gpui_kit::test]
+fn agent_skills_install_where_each_agent_looks_and_come_off_again(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let root = tempfile::tempdir().unwrap();
+    let exe = root.path().join("app").join("shellrs");
+    std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+    std::fs::write(&exe, "binary").unwrap();
+    let paths = IntegrationPaths {
+        home: root.path().join("home"),
+        bin_link: root.path().join("bin").join("shellrs"),
+        exe,
+    };
+    let codex = paths.skill_file(AgentKind::Codex);
+    workspace.update(cx, |workspace, cx| {
+        workspace.cli_integration().update(cx, |integration, cx| {
+            integration.set_paths(Some(paths.clone()), cx)
+        })
+    });
+    open_external_cli_settings(cx, handle);
+
+    let status = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.find(id).label().map(str::to_string)
+        })
+        .unwrap()
+    };
+    assert_eq!(
+        status(cx, "skill-status-codex").as_deref(),
+        Some(format!("未安装（{}）", codex.display()).as_str())
+    );
+
+    // The row's button dispatches the install.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("skill-codex", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        std::fs::read_to_string(&codex).unwrap(),
+        shellrs::cli::SKILL
+    );
+    assert_eq!(
+        status(cx, "skill-status-codex").as_deref(),
+        Some(format!("已安装于 {}", codex.display()).as_str())
+    );
+    // Only Codex's.
+    assert!(!paths.skill_file(AgentKind::ClaudeCode).exists());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(RemoveAgentSkill(AgentKind::Codex)), cx);
+        window.dispatch_action(Box::new(InstallCliCommand), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(!codex.exists());
+    assert_eq!(
+        status(cx, "cli-binary-status").as_deref(),
+        Some(format!("已安装于 {}", paths.bin_link.display()).as_str())
+    );
+}
+
 fn appearance_dropdown(window: &mut gpui_kit::Window, item: usize) -> Option<String> {
     window
         .within("settings")

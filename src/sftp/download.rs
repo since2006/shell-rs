@@ -45,6 +45,9 @@ pub(crate) struct DownloadBatch {
     received_bytes: u64,
     completed_bytes: u64,
     last_progress: Instant,
+    /// A new local file takes the remote file's execute bits, as scp keeps
+    /// them; otherwise it gets this machine's defaults.
+    preserve_mode: bool,
 }
 
 /// A name that cannot be created on this machine gets a clear error instead
@@ -95,8 +98,8 @@ impl DownloadBatch {
         }
         let mut stack = Vec::new();
         for source in roots.into_iter().rev() {
-            let target =
-                local_name(remote_name(&source)).map(|name| request.destination().join(name));
+            let name = request.target_name().unwrap_or(remote_name(&source));
+            let target = local_name(name).map(|name| request.destination().join(name));
             stack.push((source, target, None));
         }
         let mut items = Vec::new();
@@ -194,6 +197,7 @@ impl DownloadBatch {
             received_bytes: 0,
             completed_bytes: 0,
             last_progress: Instant::now(),
+            preserve_mode: request.is_scp(),
         })
     }
 
@@ -486,7 +490,14 @@ impl DownloadBatch {
         {
             return Ok(false);
         }
-        publish(&temporary, &item.target, current.as_ref(), &item.metadata).await?;
+        publish(
+            &temporary,
+            &item.target,
+            current.as_ref(),
+            &item.metadata,
+            self.preserve_mode,
+        )
+        .await?;
         self.journal.remove(&record).await?;
         Ok(true)
     }
@@ -622,6 +633,7 @@ async fn publish(
     target: &Path,
     replaced: Option<&std::fs::Metadata>,
     metadata: &FileMetadata,
+    preserve_mode: bool,
 ) -> Result<()> {
     let file = tokio::fs::OpenOptions::new()
         .write(true)
@@ -636,10 +648,32 @@ async fn publish(
         && replaced.is_file()
     {
         file.set_permissions(replaced.permissions())?;
+    } else if preserve_mode && let Some(source) = metadata.permissions() {
+        keep_execute_bits(&file, source)?;
     }
     file.sync_all()?;
     drop(file);
     tokio::fs::rename(temporary, target).await?;
+    Ok(())
+}
+
+/// Give `file` the execute bits `source` has, for the classes that can
+/// already read it; this machine's defaults decide the rest.
+#[cfg(unix)]
+fn keep_execute_bits(file: &std::fs::File, source: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut permissions = file.metadata()?.permissions();
+    let mode = permissions.mode();
+    let execute = source & 0o111 & ((mode & 0o444) >> 2);
+    if execute != 0 {
+        permissions.set_mode(mode | execute);
+        file.set_permissions(permissions)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn keep_execute_bits(_: &std::fs::File, _: u32) -> Result<()> {
     Ok(())
 }
 

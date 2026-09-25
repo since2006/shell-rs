@@ -6,6 +6,8 @@ mod settings_panel;
 mod store;
 
 pub use apply::apply;
-pub use model::{AppSettings, Appearance, Choice, InterfaceLanguage, TerminalFontSettings};
+pub use model::{
+    AppSettings, Appearance, Choice, ExternalCliSettings, InterfaceLanguage, TerminalFontSettings,
+};
 pub use settings_panel::{SettingsPanel, SettingsPanelEvent};
 pub use store::{SettingsStore, SettingsStoreEvent};

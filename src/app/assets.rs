@@ -31,7 +31,8 @@ icon_assets!(
         Bookmark,
         SquarePen,
         Settings,
-        Palette
+        Palette,
+        SquareTerminal
     ]
 );
 

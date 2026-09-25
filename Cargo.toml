@@ -10,6 +10,7 @@ gpui-kit = "0.6.1"
 alacritty_terminal = "0.26"
 anyhow = "1"
 async-channel = "2"
+clap = { version = "4", features = ["derive"] }
 dirs = "6"
 futures = "0.3"
 portable-pty = "0.9"
@@ -23,7 +24,7 @@ uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
-tokio = { version = "1", features = ["fs", "io-util", "net", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 unicode-width = "0.2"
 zeroize = "1"
 keyring = "4"

@@ -457,3 +457,74 @@ fn worker_downloads_and_resumes_after_an_interrupted_read() {
         assert!(!out.join("文件.bin.filepart").exists());
     });
 }
+
+/// Run one batch to its end, answering nothing.
+async fn transfer(worker: &Worker, command: SftpCommand) -> TransferProgress {
+    worker.commands.send(command).await.unwrap();
+    let mut last = None;
+    loop {
+        match next(worker).await {
+            SftpEvent::Progress(progress) => last = Some(progress),
+            SftpEvent::Question(question) => panic!("unexpected question: {question:?}"),
+            SftpEvent::Idle => return last.expect("no progress before idle"),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn scp_style_transfers_land_where_scp_would_put_them() {
+    runtime().block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote");
+        std::fs::create_dir_all(remote.join("sub")).unwrap();
+        let Some(server) = server(remote.clone(), 0, false).await else {
+            return;
+        };
+        let worker = worker(server.port, temp.path());
+        let home = loop {
+            match next(&worker).await {
+                SftpEvent::Connected { home } => break home,
+                SftpEvent::Disconnected(e) => panic!("connect failed: {e}"),
+                _ => {}
+            }
+        };
+        let source = temp.path().join("local.txt");
+        std::fs::write(&source, b"payload").unwrap();
+
+        // Not there yet: the destination is the copy's own name.
+        let request = UploadRequest::scp(source.clone(), home.join("renamed.txt").unwrap());
+        let done = transfer(&worker, SftpCommand::Upload(request)).await;
+        assert_eq!(done.phase(), TransferPhase::Completed);
+        assert_eq!(
+            std::fs::read(remote.join("renamed.txt")).unwrap(),
+            b"payload"
+        );
+
+        // An existing directory: the copy goes inside, under its own name.
+        let request = UploadRequest::scp(source, home.join("sub").unwrap());
+        let done = transfer(&worker, SftpCommand::Upload(request)).await;
+        assert_eq!(done.phase(), TransferPhase::Completed);
+        assert_eq!(
+            std::fs::read(remote.join("sub/local.txt")).unwrap(),
+            b"payload"
+        );
+
+        // And back, under a new local name.
+        let back = temp.path().join("back.txt");
+        let request =
+            DownloadRequest::scp(home.join("renamed.txt").unwrap(), back.clone()).unwrap();
+        let done = transfer(&worker, SftpCommand::Download(request)).await;
+        assert_eq!(done.phase(), TransferPhase::Completed);
+        assert_eq!(std::fs::read(&back).unwrap(), b"payload");
+
+        // A parent that is not there is an error, not a guess.
+        let request = UploadRequest::scp(
+            temp.path().join("back.txt"),
+            home.join("missing").unwrap().join("x.txt").unwrap(),
+        );
+        let done = transfer(&worker, SftpCommand::Upload(request)).await;
+        assert_ne!(done.phase(), TransferPhase::Completed);
+        assert!(!remote.join("missing").exists());
+    });
+}

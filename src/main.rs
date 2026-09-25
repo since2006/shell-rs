@@ -5,6 +5,10 @@ use shellrs::session::{SessionDatabase, SessionStore};
 use shellrs::settings::SettingsStore;
 
 fn main() {
+    // `shellrs list`, `shellrs exec …`: the command, not the app.
+    if let Some(args) = shellrs::cli::command_line_arguments() {
+        std::process::exit(shellrs::cli::main(args));
+    }
     gpui_kit::application()
         .with_assets(shellrs::app::AppAssets)
         .run(|cx| {
