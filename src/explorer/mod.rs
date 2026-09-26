@@ -15,10 +15,10 @@ mod queue_panel;
 mod selection;
 mod transfer_queue;
 
-pub use explorer_panel::{ExplorerPanel, ExplorerPanelEvent};
+pub use explorer_panel::{ExplorerPanel, ExplorerPanelEvent, ExplorerStatus};
 pub use file_dialogs::validate_entry_name;
 pub use file_listing::FileListing;
-pub use file_pane::{FilePane, PaneSide};
+pub use file_pane::{FilePane, FilePaneEvent, PaneSide};
 pub use history::{LoadIntent, NavigationHistory};
 pub use model::*;
 pub use properties_dialog::PermissionDraft;

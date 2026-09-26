@@ -403,6 +403,9 @@ pub enum ExplorerCommand {
     CancelTransfer,
     /// Go on with the stopped batch at the head of the queue, or reconnect.
     ResumeTransfer,
+    /// 重新连接, as on a terminal tab: a fresh SFTP connection, dropping the
+    /// current one first. Not while a batch runs or waits stopped.
+    Reconnect,
     /// Throw away the stopped head's progress; the queue moves on.
     DiscardTransfer,
     /// Select a row of the transfer queue, by its id.

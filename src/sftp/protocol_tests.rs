@@ -24,14 +24,20 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 struct TestServer {
     directory: PathBuf,
     connections: Arc<AtomicUsize>,
+    ended: Arc<AtomicUsize>,
     shells: Arc<AtomicUsize>,
     interrupts: Arc<AtomicUsize>,
+    hangup: Arc<tokio::sync::Notify>,
     unsupported: bool,
 }
 struct Handler {
     directory: PathBuf,
+    /// Counts connections that have ended, as this drops with its own.
+    ended: Arc<AtomicUsize>,
     shells: Arc<AtomicUsize>,
     interrupts: Arc<AtomicUsize>,
+    /// Ends an SFTP session while nothing is asked of it.
+    hangup: Arc<tokio::sync::Notify>,
     unsupported: bool,
     channels: HashMap<ChannelId, russh::Channel<server::Msg>>,
 }
@@ -41,11 +47,18 @@ impl server::Server for TestServer {
         self.connections.fetch_add(1, Ordering::SeqCst);
         Handler {
             directory: self.directory.clone(),
+            ended: self.ended.clone(),
             shells: self.shells.clone(),
             interrupts: self.interrupts.clone(),
+            hangup: self.hangup.clone(),
             unsupported: self.unsupported,
             channels: HashMap::new(),
         }
+    }
+}
+impl Drop for Handler {
+    fn drop(&mut self) {
+        self.ended.fetch_add(1, Ordering::SeqCst);
     }
 }
 impl server::Handler for Handler {
@@ -95,6 +108,7 @@ impl server::Handler for Handler {
         let stream = self.channels.remove(&channel).unwrap().into_stream();
         let directory = self.directory.clone();
         let interrupts = self.interrupts.clone();
+        let hangup = self.hangup.clone();
         tokio::spawn(async move {
             let executable = if cfg!(target_os = "macos") {
                 "/usr/libexec/sftp-server"
@@ -139,7 +153,11 @@ impl server::Handler for Handler {
                     input.flush().await?;
                 }
             };
-            tokio::select! { _ = forward=>{}, _=tokio::io::copy(&mut output,&mut writer)=>{} }
+            tokio::select! {
+                _ = forward => {}
+                _ = tokio::io::copy(&mut output, &mut writer) => {}
+                _ = hangup.notified() => {}
+            }
             child.kill().await.ok();
             child.wait().await.ok();
         });
@@ -149,8 +167,10 @@ impl server::Handler for Handler {
 struct Running {
     port: u16,
     connections: Arc<AtomicUsize>,
+    ended: Arc<AtomicUsize>,
     shells: Arc<AtomicUsize>,
     interrupts: Arc<AtomicUsize>,
+    hangup: Arc<tokio::sync::Notify>,
     task: tokio::task::JoinHandle<()>,
 }
 impl Drop for Running {
@@ -169,13 +189,17 @@ async fn server(directory: PathBuf, interrupts: usize, unsupported: bool) -> Opt
     };
     let port = listener.local_addr().unwrap().port();
     let connections = Arc::new(AtomicUsize::new(0));
+    let ended = Arc::new(AtomicUsize::new(0));
     let shells = Arc::new(AtomicUsize::new(0));
     let interrupts = Arc::new(AtomicUsize::new(interrupts));
+    let hangup = Arc::new(tokio::sync::Notify::new());
     let mut server = TestServer {
         directory,
         connections: connections.clone(),
+        ended: ended.clone(),
         shells: shells.clone(),
         interrupts: interrupts.clone(),
+        hangup: hangup.clone(),
         unsupported,
     };
     let key = russh::keys::PrivateKey::random(
@@ -196,8 +220,10 @@ async fn server(directory: PathBuf, interrupts: usize, unsupported: bool) -> Opt
     Some(Running {
         port,
         connections,
+        ended,
         shells,
         interrupts,
+        hangup,
         task,
     })
 }
@@ -326,6 +352,56 @@ fn worker_uses_sftp_without_shell_and_reconnects_after_interrupted_write() {
         assert_eq!(server.connections.load(Ordering::SeqCst), 2);
         assert_eq!(server.shells.load(Ordering::SeqCst), 0);
         assert_eq!(std::fs::read(remote.join("文件.bin")).unwrap(), data);
+    });
+}
+
+/// A connection that drops while nothing is asked of it is reported at
+/// once, as a terminal's is, not at the next request; 继续 connects again.
+#[test]
+fn an_idle_connection_that_drops_is_reported_without_a_request() {
+    runtime().block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let Some(server) = server(temp.path().into(), 0, false).await else {
+            return;
+        };
+        let worker = worker(server.port, temp.path());
+        loop {
+            match next(&worker).await {
+                SftpEvent::Connected { .. } => break,
+                SftpEvent::Disconnected(e) => panic!("connect failed: {e}"),
+                _ => {}
+            }
+        }
+        server.hangup.notify_one();
+        loop {
+            match next(&worker).await {
+                SftpEvent::Disconnected(reason) => {
+                    assert_eq!(reason, "SFTP 连接中断，请重新连接");
+                    break;
+                }
+                SftpEvent::Connected { .. } => panic!("still connected"),
+                _ => {}
+            }
+        }
+        worker.commands.send(SftpCommand::Resume).await.unwrap();
+        loop {
+            match next(&worker).await {
+                SftpEvent::Connected { .. } => break,
+                SftpEvent::Disconnected(e) => panic!("reconnect failed: {e}"),
+                _ => {}
+            }
+        }
+        assert_eq!(server.connections.load(Ordering::SeqCst), 2);
+
+        // Watching an idle connection must not keep one open after 断开.
+        worker.commands.send(SftpCommand::Disconnect).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while server.ended.load(Ordering::SeqCst) < 2 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the connection stayed open after 断开");
     });
 }
 

@@ -2006,6 +2006,11 @@ fn new_explorer_panel(
                 }
                 this.refresh_session_connection_state(*session_id, cx);
             },
+            ExplorerPanelEvent::StatusChanged(id) => {
+                if this.active_tab == Some(CenterTab::Explorer(*id)) {
+                    cx.notify();
+                }
+            }
             ExplorerPanelEvent::PromptRequested(id, session_id, generation, prompt) => this.enqueue_prompt(
                 PromptOwner::Sftp(*id, *generation),
                 *session_id,
@@ -2057,6 +2062,16 @@ impl Render for Workspace {
                 .get(&id)
                 .map(|panel| WorkspaceStatus::local(panel.read(cx).status(cx)))
                 .unwrap_or_else(|| WorkspaceStatus::session(active)),
+            // An SFTP tab tells its own connection, not the session's, and
+            // what went wrong in it.
+            Some(CenterTab::Explorer(id)) => match self.explorers.get(&id) {
+                Some(panel) => {
+                    let panel = panel.read(cx);
+                    let session = self.store.read(cx).session(panel.session_id()).cloned();
+                    WorkspaceStatus::explorer(session, panel.status(cx))
+                }
+                None => WorkspaceStatus::session(active),
+            },
             _ => WorkspaceStatus::session(active),
         };
         let sessions_visible = self.dock_area.read(cx).is_dock_open(DockPlacement::Left);

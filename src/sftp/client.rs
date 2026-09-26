@@ -6,7 +6,15 @@ use russh_sftp::{
     client::{RawSftpSession, error::Error},
     protocol::{FileAttributes, OpenFlags, Packet, StatusCode},
 };
-use std::sync::Arc;
+use std::{
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    sync::watch,
+};
 
 /// Small protocol seam, also implemented by deterministic fault-injection tests.
 pub(crate) trait RemoteFs {
@@ -45,6 +53,8 @@ pub(crate) trait RemoteFs {
 pub(crate) struct SftpClient {
     raw: RawSftpSession,
     _ssh: Option<SshHandle>,
+    /// Turns true once the server side of the SFTP stream has ended.
+    closed: watch::Receiver<bool>,
     fingerprint: String,
     atomic_replace: bool,
     fsync: bool,
@@ -59,21 +69,20 @@ impl SftpClient {
         tokio::time::timeout(std::time::Duration::from_secs(15), async {
             let channel = ssh.channel_open_session().await?;
             channel.request_subsystem(true, "sftp").await?;
-            Self::initialize(
-                RawSftpSession::new(channel.into_stream()),
-                Some(ssh),
-                fingerprint,
-            )
-            .await
+            Self::initialize(channel.into_stream(), Some(ssh), fingerprint).await
         })
         .await
         .map_err(|_| anyhow!("启动 SFTP 超时"))?
     }
-    async fn initialize(
-        raw: RawSftpSession,
-        ssh: Option<SshHandle>,
-        fingerprint: String,
-    ) -> Result<Self> {
+    async fn initialize<S>(stream: S, ssh: Option<SshHandle>, fingerprint: String) -> Result<Self>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let (closed_tx, closed) = watch::channel(false);
+        let raw = RawSftpSession::new(WatchedStream {
+            inner: stream,
+            closed: closed_tx,
+        });
         let version = raw.init().await?;
         if version.version != 3 {
             bail!("服务器未提供 SFTP v3");
@@ -89,6 +98,7 @@ impl SftpClient {
         Ok(Self {
             raw,
             _ssh: ssh,
+            closed,
             fingerprint,
             atomic_replace,
             fsync,
@@ -111,12 +121,21 @@ impl SftpClient {
             .kill_on_drop(true)
             .spawn()?;
         let stream = tokio::io::join(child.stdout.take().unwrap(), child.stdin.take().unwrap());
-        let client =
-            Self::initialize(RawSftpSession::new(stream), None, "local-test-key".into()).await?;
+        let client = Self::initialize(stream, None, "local-test-key".into()).await?;
         Ok((client, child))
     }
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
+    }
+    /// Resolves once the server side of the SFTP session has gone, which
+    /// russh-sftp otherwise only tells the next request. It does not hold on
+    /// to the client, so dropping the client still closes the connection.
+    pub fn closed(&self) -> impl Future<Output = ()> + Send + 'static {
+        let mut closed = self.closed.clone();
+        async move {
+            // An error means the stream itself is gone: closed too.
+            let _ = closed.wait_for(|closed| *closed).await;
+        }
     }
     pub async fn canonicalize(&self, path: &RemotePath) -> Result<RemotePath> {
         let response = self.raw.realpath(path.as_str()).await?;
@@ -361,6 +380,52 @@ fn metadata(attrs: &FileAttributes) -> FileMetadata {
         attrs.permissions,
     )
 }
+/// The SFTP stream, telling when the server side has ended. russh ends it
+/// when the channel or the whole SSH connection closes, including when
+/// keepalives go unanswered after the network drops; russh-sftp keeps that
+/// to itself until the next request fails. Watching it lets an idle SFTP tab
+/// notice at the same moment a terminal on the same host does.
+struct WatchedStream<S> {
+    inner: S,
+    closed: watch::Sender<bool>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for WatchedStream<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let wanted = buf.remaining() > 0;
+        let before = buf.filled().len();
+        let poll = Pin::new(&mut this.inner).poll_read(cx, buf);
+        // Nothing read into room for something is the end of the stream.
+        if let Poll::Ready(result) = &poll
+            && (result.is_err() || (wanted && buf.filled().len() == before))
+        {
+            this.closed.send_replace(true);
+        }
+        poll
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for WatchedStream<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
 pub(crate) fn is_network_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         if cause.downcast_ref::<russh::Error>().is_some_and(|e| {
@@ -390,8 +455,12 @@ pub(crate) fn is_network_error(error: &anyhow::Error) -> bool {
             .downcast_ref::<Error>()
             .is_some_and(|error| match error {
                 Error::IO(_) | Error::Timeout => true,
+                // `session closed`: the SSH channel under the SFTP session is
+                // gone, as when the network drops; russh-sftp says so before
+                // sending anything more.
                 Error::UnexpectedBehavior(message) => {
                     message == "sender dropped"
+                        || message == "session closed"
                         || message.contains("SendError")
                         || message.contains("RecvError")
                 }
@@ -462,5 +531,19 @@ mod longname_tests {
             parse_longname("xrwxr-xr-x 1 root root 1 Jan 1 12:00 x"),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod network_error_tests {
+    use super::{Error, is_network_error};
+
+    #[test]
+    fn a_closed_session_is_a_lost_connection() {
+        let closed = anyhow::Error::new(Error::UnexpectedBehavior("session closed".into()))
+            .context("无法读取目录");
+        assert!(is_network_error(&closed));
+        let other = anyhow::Error::new(Error::UnexpectedBehavior("bad packet".into()));
+        assert!(!is_network_error(&other));
     }
 }

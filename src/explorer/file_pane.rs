@@ -51,6 +51,12 @@ struct Marquee {
     base: Option<Selection>,
 }
 
+/// What changed in a pane that its tab passes on.
+pub enum FilePaneEvent {
+    /// The pane's `problem` appeared, changed or went away.
+    ProblemChanged,
+}
+
 /// What a drag from outside a name carries: only whose it is. GPUI tells
 /// every listener for the type about every drag of it, so the other pane,
 /// and other SFTP tabs, must leave this one alone.
@@ -189,10 +195,10 @@ pub struct FilePane {
     /// The load in flight has taken long enough to say so.
     slow_load: bool,
     slow_load_timer: Option<Task<()>>,
+    /// What went wrong reading this pane's directory, or why the remote
+    /// side dropped: the window's status line shows it, see `problem`.
     error: Option<String>,
     connection: ConnectionState,
-    /// The remote pane offers 重新连接.
-    can_reconnect: bool,
     transfer_enabled: bool,
     /// A file operation on this pane is running.
     busy: bool,
@@ -275,7 +281,6 @@ impl FilePane {
             } else {
                 ConnectionState::Connecting
             },
-            can_reconnect: false,
             transfer_enabled: false,
             busy: false,
             store,
@@ -417,11 +422,9 @@ impl FilePane {
         &mut self,
         connection: ConnectionState,
         transfer: bool,
-        can_reconnect: bool,
         cx: &mut Context<Self>,
     ) {
         self.connection = connection;
-        self.can_reconnect = can_reconnect;
         self.transfer_enabled = transfer;
         self.sync_listing(cx);
         cx.notify();
@@ -626,6 +629,33 @@ impl FilePane {
         }
     }
 
+    /// The status line under the list: connecting, reading or the item
+    /// count. It is always there, so none of these move the list. What went
+    /// wrong goes to the window's status line instead, see `problem`.
+    fn render_status(&self, file_count: usize, selected: usize, cx: &App) -> impl IntoElement {
+        let status = if self.connection == ConnectionState::Connecting {
+            "正在连接 SFTP…".to_string()
+        } else if self.slow_load {
+            "正在读取目录…".to_string()
+        } else if selected == 0 {
+            format!("{file_count} 个项目")
+        } else {
+            format!("{file_count} 个项目 · 已选择 {selected} 项")
+        };
+        h_flex()
+            .id("pane-status")
+            .test_support()
+            .role(Role::Status)
+            .aria_label(status.clone())
+            .px_2()
+            .py_1()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(status)
+    }
+
     fn end_marquee(&mut self, cx: &mut Context<Self>) {
         if self.marquee.take().is_some() {
             cx.notify();
@@ -696,14 +726,25 @@ impl FilePane {
         self.request_id += 1;
         self.pending = None;
         self.finish_loading();
-        self.error = Some(message);
+        self.set_error(Some(message), cx);
         cx.notify();
+    }
+    /// What went wrong reading the directory, or why the remote side
+    /// dropped, until the next load clears it.
+    pub fn problem(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+    fn set_error(&mut self, error: Option<String>, cx: &mut Context<Self>) {
+        if self.error != error {
+            self.error = error;
+            cx.emit(FilePaneEvent::ProblemChanged);
+        }
     }
     pub fn begin_load(&mut self, intent: LoadIntent, cx: &mut Context<Self>) -> u64 {
         self.request_id += 1;
         self.pending = Some((self.request_id, intent, self.path.clone()));
         self.loading = true;
-        self.error = None;
+        self.set_error(None, cx);
         // Most directories arrive at once; saying 正在读取 for those only
         // flickers, so it waits.
         let id = self.request_id;
@@ -751,7 +792,7 @@ impl FilePane {
                     self.hovered_part = None;
                 }
                 self.path = listing.path().into();
-                self.error = None;
+                self.set_error(None, cx);
                 let mut rows: Vec<_> = listing
                     .entries()
                     .iter()
@@ -772,7 +813,7 @@ impl FilePane {
             }
             Err(error) => {
                 self.select_after_load = None;
-                self.error = Some(error);
+                self.set_error(Some(error), cx);
             }
         }
         cx.notify();
@@ -855,6 +896,7 @@ impl FilePane {
     }
 }
 
+impl EventEmitter<FilePaneEvent> for FilePane {}
 impl Render for FilePane {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let remote = self.is_remote();
@@ -1085,53 +1127,6 @@ impl Render for FilePane {
             .child(navigation)
             .child(operations)
             .child(self.render_path_label(window, cx))
-            // Only lasting trouble goes above the list; passing states such
-            // as connecting and reading go in the status line under it, so the
-            // list never jumps.
-            .map(|this| {
-                if self.connection == ConnectionState::Connecting {
-                    this
-                } else if let Some(error) = self.error.clone() {
-                    let dispatch = self.dispatch.clone();
-                    this.child(
-                        h_flex()
-                            .gap_2()
-                            .px_2()
-                            .py_1()
-                            .child(
-                                div()
-                                    .id("directory-error")
-                                    .test_support()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_sm()
-                                    .text_color(cx.theme().danger)
-                                    .child(error),
-                            )
-                            // WinSCP's disconnected panel offers to reconnect.
-                            .when(self.can_reconnect, |this| {
-                                this.child(
-                                    Button::new("reconnect-sftp")
-                                        .ghost()
-                                        .small()
-                                        .label("重新连接")
-                                        .on_click(move |_, window, cx| {
-                                            dispatch.dispatch_explorer_action(
-                                                &ExplorerAction::new(
-                                                    sid,
-                                                    ExplorerCommand::ResumeTransfer,
-                                                ),
-                                                window,
-                                                cx,
-                                            )
-                                        }),
-                                )
-                            }),
-                    )
-                } else {
-                    this
-                }
-            })
             .child(
                 div()
                     .id(("file-list", u64::from(remote)))
@@ -1330,30 +1325,6 @@ impl Render for FilePane {
                     })
                     .children(self.marquee_rectangle(cx)),
             )
-            .child({
-                // The status line is always there, so connecting and reading
-                // a directory never move the list.
-                let status = if self.connection == ConnectionState::Connecting {
-                    "正在连接 SFTP…".to_string()
-                } else if self.slow_load {
-                    "正在读取目录…".to_string()
-                } else if selected == 0 {
-                    format!("{file_count} 个项目")
-                } else {
-                    format!("{file_count} 个项目 · 已选择 {selected} 项")
-                };
-                h_flex()
-                    .id("pane-status")
-                    .test_support()
-                    .role(Role::Status)
-                    .aria_label(status.clone())
-                    .px_2()
-                    .py_1()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(status)
-            })
+            .child(self.render_status(file_count, selected, cx))
     }
 }

@@ -3908,6 +3908,8 @@ struct FakeSftpProvider {
     events: Arc<Mutex<Vec<async_channel::Sender<SftpEvent>>>>,
     /// When set, the next connection waits for a message before it is up.
     hold_connection: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
+    /// Connections made again on 重新连接 (a bare 继续).
+    reconnects: Arc<Mutex<usize>>,
 }
 impl SftpTransportProvider for FakeSftpProvider {
     fn create(&self, _: &shellrs::session::Session) -> Box<dyn SftpTransport> {
@@ -3917,6 +3919,7 @@ impl SftpTransportProvider for FakeSftpProvider {
             operations: self.operations.clone(),
             events: self.events.clone(),
             hold: self.hold_connection.lock().unwrap().take(),
+            reconnects: self.reconnects.clone(),
         })
     }
 }
@@ -3926,6 +3929,7 @@ struct FakeSftpTransport {
     operations: Arc<Mutex<Vec<shellrs::sftp::RemoteOperation>>>,
     events: Arc<Mutex<Vec<async_channel::Sender<SftpEvent>>>>,
     hold: Option<mpsc::Receiver<()>>,
+    reconnects: Arc<Mutex<usize>>,
 }
 impl SftpTransport for FakeSftpTransport {
     fn run(
@@ -3941,6 +3945,9 @@ impl SftpTransport for FakeSftpTransport {
         events.send_blocking(SftpEvent::Connected {
             home: RemotePath::new("/home/tester")?,
         })?;
+        // As in the real engine, 继续 goes on with a stopped batch, and with
+        // none it only reconnects.
+        let mut stopped = false;
         while let Ok(command) = commands.recv_blocking() {
             match command {
                 SftpCommand::List { request_id, path } => {
@@ -3983,23 +3990,34 @@ impl SftpTransport for FakeSftpTransport {
                 // The real engine says Idle once a batch stops or ends,
                 // which is when the queue may move on.
                 SftpCommand::Cancel => {
+                    stopped = true;
                     events.send_blocking(SftpEvent::Progress(TransferProgress::new(
                         TransferPhase::Stopped,
                     )))?;
                     events.send_blocking(SftpEvent::Idle)?;
                 }
                 SftpCommand::Discard => {
+                    stopped = false;
                     events.send_blocking(SftpEvent::Progress(TransferProgress::new(
                         TransferPhase::Completed,
                     )))?;
                     events.send_blocking(SftpEvent::Idle)?;
                 }
-                SftpCommand::Resume => {
+                SftpCommand::Resume if stopped => {
+                    stopped = false;
                     events.send_blocking(SftpEvent::Progress(TransferProgress::new(
                         TransferPhase::Transferring,
                     )))?;
                 }
+                SftpCommand::Resume => {
+                    *self.reconnects.lock().unwrap() += 1;
+                    events.send_blocking(SftpEvent::Connected {
+                        home: RemotePath::new("/home/tester")?,
+                    })?;
+                    events.send_blocking(SftpEvent::Idle)?;
+                }
                 SftpCommand::Answer { answer, .. } => {
+                    stopped = answer.choice() == TransferChoice::Cancel;
                     events.send_blocking(SftpEvent::Progress(TransferProgress::new(
                         if answer.choice() == TransferChoice::Cancel {
                             TransferPhase::Stopped
@@ -4933,9 +4951,10 @@ async fn sftp_toolbar_goes_up_root_home_back_and_forward(cx: &mut TestAppContext
         );
     })
     .unwrap();
+    // In red at the window's bottom left, where the connection shows.
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
         window.render_frame(cx);
-        window.try_find("directory-error").is_some()
+        window.find("status-connection").label() == Some("权限不足")
     })
     .await;
     cx.update(|cx| {
@@ -5357,42 +5376,96 @@ async fn sftp_path_label_folds_the_middle_of_a_long_path(cx: &mut TestAppContext
     .unwrap();
 }
 
+/// An SFTP tab has a terminal tab's buttons: 打开 SFTP opens another tab of
+/// the session, and 重新连接 connects again, from a dropped connection or a
+/// live one. Its connection, and why it dropped, show in red at the window's
+/// bottom left, so the list is never pushed around.
 #[gpui_kit::test]
-async fn sftp_disconnected_remote_pane_offers_to_reconnect(cx: &mut TestAppContext) {
+async fn sftp_tab_reconnects_from_its_tab_bar_and_reports_at_the_bottom_left(
+    cx: &mut TestAppContext,
+) {
     let provider = Arc::new(FakeSftpProvider::default());
-    let (handle, _) = open_workspace_with_sftp(cx, provider.clone());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider.clone());
     open_test_explorer(cx, handle).await;
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find("reconnect-sftp").is_none());
-    })
-    .unwrap();
+    let reconnect = ("reconnect-sftp", SFTP_TAB);
+    let status_is = |expected: &'static str| {
+        move |window: &mut gpui_kit::Window, cx: &mut App| {
+            window.render_frame(cx);
+            window.find("status-connection").label() == Some(expected)
+        }
+    };
+    let table = cx
+        .update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("status-connection").label(),
+                Some("已连接 db-01")
+            );
+            window
+                .within(("remote-pane", SFTP_TAB))
+                .find("table")
+                .bounds()
+        })
+        .unwrap();
 
+    // Dropped: the reason goes to the window's status line.
     let events = provider.events.lock().unwrap()[0].clone();
     events
         .send_blocking(SftpEvent::Disconnected("连接已断开".into()))
         .unwrap();
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
-        window.render_frame(cx);
-        window
-            .within(("remote-pane", SFTP_TAB))
-            .try_find("reconnect-sftp")
-            .is_some()
-    })
+    cx.wait_for(
+        handle.into(),
+        Duration::from_secs(2),
+        status_is("未连接 db-01：连接已断开"),
+    )
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        let mut remote = window.within(("remote-pane", SFTP_TAB));
-        assert!(remote.find("directory-error").visible());
+        let remote = window.within(("remote-pane", SFTP_TAB));
+        assert_eq!(remote.find("table").bounds(), table);
         assert!(!enabled(&remote.find("refresh")));
-        remote.click("reconnect-sftp", cx);
+        assert_ne!(remote.find("pane-status").label(), Some("连接已断开"));
+        window.click(reconnect, cx);
     })
     .unwrap();
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+    cx.wait_for(
+        handle.into(),
+        Duration::from_secs(2),
+        status_is("已连接 db-01"),
+    )
+    .await;
+    assert_eq!(*provider.reconnects.lock().unwrap(), 1);
+
+    // Connected, it drops the connection and makes a new one.
+    cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.try_find("reconnect-sftp").is_none()
+        window.click(reconnect, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        *provider.reconnects.lock().unwrap() == 2
     })
     .await;
+    cx.wait_for(
+        handle.into(),
+        Duration::from_secs(2),
+        status_is("已连接 db-01"),
+    )
+    .await;
+
+    // 打开 SFTP opens another tab of the same session.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("open-sftp", SFTP_TAB), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            workspace.read(cx).explorers_of(SessionId(DB_01), cx).len(),
+            2
+        )
+    });
 }
 
 /// Click a row in one pane, then press a key with the list focused.

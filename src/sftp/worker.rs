@@ -261,7 +261,33 @@ impl SshSftpTransport {
         }
         let mut stop = shutdown.clone();
         while !*stop.borrow() {
-            let operation = tokio::select! { operation = operations.recv() => match operation { Ok(operation) => operation, Err(_) => break }, _ = stop.changed() => break };
+            // Weakly: a client dropped on 断开 must still close its connection.
+            let watched = client
+                .read()
+                .await
+                .as_ref()
+                .map(|connected| (Arc::downgrade(connected), connected.closed()));
+            let (watched, closed) = watched.unzip();
+            let operation = tokio::select! {
+                operation = operations.recv() => match operation {
+                    Ok(operation) => operation,
+                    Err(_) => break,
+                },
+                _ = stop.changed() => break,
+                // An idle connection that drops says so at once, as a
+                // terminal on the same host does, not at the next request.
+                _ = async {
+                    match closed {
+                        Some(closed) => closed.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if let Some(connected) = watched.and_then(|weak| weak.upgrade()) {
+                        forget(&client, &connected, &events).await;
+                    }
+                    continue;
+                }
+            };
             if client.read().await.is_none() {
                 match control
                     .run(self.connect(prompts.clone(), &events, &shutdown, &client))
@@ -514,17 +540,25 @@ impl SshSftpTransport {
     }
 }
 
-/// A request failed because the connection broke: forget that client (unless
-/// a newer one already replaced it) and tell the panel once.
+/// A request failed: if the connection broke, `forget` it.
 async fn drop_broken(
     shared: &RwLock<Option<Arc<SftpClient>>>,
     connected: &Arc<SftpClient>,
     events: &Sender<SftpEvent>,
     error: &anyhow::Error,
 ) {
-    if !is_network_error(error) {
-        return;
+    if is_network_error(error) {
+        forget(shared, connected, events).await;
     }
+}
+
+/// The connection is gone: forget that client (unless a newer one already
+/// replaced it) and tell the panel once.
+async fn forget(
+    shared: &RwLock<Option<Arc<SftpClient>>>,
+    connected: &Arc<SftpClient>,
+    events: &Sender<SftpEvent>,
+) {
     let mut current = shared.write().await;
     if current.as_ref().is_some_and(|c| Arc::ptr_eq(c, connected)) {
         *current = None;

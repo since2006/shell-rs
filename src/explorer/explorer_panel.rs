@@ -1,11 +1,14 @@
 use super::{
-    ExplorerId, FilePane, LoadIntent, PaneSide, QueueEntry, QueueId, QueueState, Removal,
-    TransferJob, TransferQueue,
+    ExplorerId, FilePane, FilePaneEvent, LoadIntent, PaneSide, QueueEntry, QueueId, QueueState,
+    Removal, TransferJob, TransferQueue,
     pane_operations::{PaneOperation, PendingOperation},
 };
 use crate::app::ExplorerDispatch as _;
 use crate::{
-    app::{CatalogIcon, CenterTab, CloseExplorer, ExplorerAction, ExplorerCommand, RenameExplorer},
+    app::{
+        CatalogIcon, CenterTab, CloseExplorer, CopySessionHost, ExplorerAction, ExplorerCommand,
+        OpenExplorer, RenameExplorer,
+    },
     connection::{ConnectionPrompt, ConnectionPromptReply},
     session::{BookmarkSide, ConnectionState, SessionId, SessionStore},
     sftp::{
@@ -16,7 +19,8 @@ use crate::{
     shared::{ClosableTabTitle, HostMark, RenamableTab, close_tab_items},
 };
 use gpui_kit::component::{
-    Icon, Sizable as _, WindowExt as _,
+    Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+    button::Button,
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     menu::PopupMenu,
     notification::Notification,
@@ -35,6 +39,9 @@ pub enum ExplorerPanelEvent {
     Activated(ExplorerId),
     Closed(ExplorerId, SessionId),
     StateChanged(ExplorerId, SessionId),
+    /// What the window's status line says for this tab changed without the
+    /// connection changing: a directory could not be read, or can again.
+    StatusChanged(ExplorerId),
     PromptRequested(ExplorerId, SessionId, u64, ConnectionPrompt),
 }
 pub struct ExplorerPanel {
@@ -166,8 +173,13 @@ impl ExplorerPanel {
         });
         let local_focus = local.read(cx).focus_handle(cx);
         let remote_focus = remote.read(cx).focus_handle(cx);
+        let problem_changed = |this: &mut Self, _, _: &FilePaneEvent, cx: &mut Context<Self>| {
+            cx.emit(ExplorerPanelEvent::StatusChanged(this.id))
+        };
         let subscriptions = vec![
             cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.subscribe(&local, problem_changed),
+            cx.subscribe(&remote, problem_changed),
             // Focus listeners run inside a draw, where a view's `notify` is
             // dropped without asking for another frame: a click on empty list
             // space would switch panes unseen. Deferring runs it after the draw.
@@ -247,6 +259,22 @@ impl ExplorerPanel {
     }
     pub fn connection_state(&self) -> ConnectionState {
         self.state
+    }
+    /// What the window's status line shows for this tab: its own connection,
+    /// and what went wrong, remote side first.
+    pub fn status(&self, cx: &App) -> ExplorerStatus {
+        let problem = [&self.remote, &self.local]
+            .into_iter()
+            .find_map(|pane| pane.read(cx).problem().map(SharedString::from));
+        ExplorerStatus {
+            state: self.state,
+            problem,
+        }
+    }
+    /// 重新连接 is there unless it is under way, or a batch runs or waits
+    /// stopped (that one goes on with its own 继续).
+    pub fn can_reconnect(&self) -> bool {
+        self.state != ConnectionState::Connecting && !self.engine_busy && !self.head_stopped()
     }
     /// The engine's last report on the batch at the head of the queue.
     pub fn progress(&self) -> Option<&TransferProgress> {
@@ -332,15 +360,11 @@ impl ExplorerPanel {
         let state = self.state;
         // A batch confirmed while another runs waits its turn in the queue.
         let transfer = state == ConnectionState::Connected;
-        // A stopped transfer offers its own 继续 instead.
-        let reconnect =
-            state == ConnectionState::Disconnected && !self.head_stopped() && !self.engine_busy;
         self.local.update(cx, |pane, cx| {
-            pane.set_available(ConnectionState::Connected, transfer, false, cx)
+            pane.set_available(ConnectionState::Connected, transfer, cx)
         });
-        self.remote.update(cx, |pane, cx| {
-            pane.set_available(state, transfer, reconnect, cx)
-        });
+        self.remote
+            .update(cx, |pane, cx| pane.set_available(state, transfer, cx));
     }
     /// WinSCP's current pane: the one used last, whose path label stands out
     /// and which takes focus back when the tab is shown again.
@@ -712,6 +736,16 @@ impl ExplorerPanel {
                     self.send(SftpCommand::Resume);
                 }
             }
+            ExplorerCommand::Reconnect => {
+                if self.can_reconnect() {
+                    if self.state == ConnectionState::Connected {
+                        self.disconnect(window, cx);
+                    }
+                    // With no stopped batch, 继续 is a bare reconnect.
+                    self.engine_busy = true;
+                    self.send(SftpCommand::Resume);
+                }
+            }
             ExplorerCommand::DiscardTransfer => {
                 if !self.engine_busy && self.head_stopped() {
                     self.queue.abandon_head(Removal::Discarded);
@@ -785,12 +819,13 @@ impl Panel for ExplorerPanel {
             .map(|s| s.name.clone())
             .unwrap_or_else(|| "SFTP".into());
         let os = session.and_then(|s| s.os);
-        let (id, group, panel) = (self.id, self.tab_group.clone(), cx.entity_id());
+        let id = self.id;
+        let menu = self.tab_menu(cx);
         // The host's mark, as on the session's terminal tabs.
         let mark = HostMark::new(("explorer-tab-os", id.0), name, os).small();
         ClosableTabTitle::new(("explorer-tab", id.0), mark, self.tab_title(cx))
             .closable(("close-explorer", id.0), Box::new(CloseExplorer(id)))
-            .context_menu(move |menu, _, cx| tab_menu(menu, id, group.clone(), panel, cx))
+            .context_menu(move |popup, _, cx| menu.build(popup, cx))
     }
     fn dropdown_menu(
         &mut self,
@@ -798,7 +833,30 @@ impl Panel for ExplorerPanel {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        tab_menu(menu, self.id, self.tab_group.clone(), cx.entity_id(), cx)
+        self.tab_menu(cx).build(menu, cx)
+    }
+    /// A terminal tab's buttons that apply here too.
+    fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
+        let (id, session_id) = (self.id, self.session_id);
+        Some(vec![
+            Button::new(("open-sftp", id.0))
+                .icon(Icon::new(CatalogIcon::FolderTree))
+                .label("SFTP")
+                .tooltip("打开 SFTP 文件浏览")
+                .on_click(move |_, window, cx| {
+                    window.dispatch_action(Box::new(OpenExplorer(session_id)), cx)
+                }),
+            Button::new(("reconnect-sftp", id.0))
+                .icon(Icon::new(CatalogIcon::RefreshCw))
+                .tooltip("重新连接")
+                .disabled(!self.can_reconnect())
+                .on_click(move |_, window, cx| {
+                    window.dispatch_action(
+                        Box::new(ExplorerAction::new(id, ExplorerCommand::Reconnect)),
+                        cx,
+                    )
+                }),
+        ])
     }
     fn inner_padding(&self, _: &App) -> bool {
         false
@@ -824,23 +882,83 @@ impl RenamableTab for ExplorerPanel {
         cx.notify();
     }
 }
-/// The commands of an SFTP tab, shared by its context menu and the tab bar's
-/// 「…」 menu.
-fn tab_menu(
-    menu: PopupMenu,
+/// The status of an SFTP tab for the window's status line.
+pub struct ExplorerStatus {
+    pub state: ConnectionState,
+    /// What went wrong reading a directory, or why the connection dropped.
+    pub problem: Option<SharedString>,
+}
+
+/// The commands of an SFTP tab, as a snapshot taken while the tab renders.
+/// Its context menu and the tab bar's 「…」 menu both build from it, so the
+/// two always list the same commands.
+#[derive(Clone)]
+struct TabMenu {
     id: ExplorerId,
+    session_id: SessionId,
+    host_is_ip: bool,
+    can_reconnect: bool,
     group: Option<WeakEntity<TabGroup>>,
     panel: EntityId,
-    cx: &App,
-) -> PopupMenu {
-    let menu = menu
-        .menu_with_icon(
-            "重命名标签…",
-            Icon::new(CatalogIcon::Pencil),
-            Box::new(RenameExplorer(id)),
+}
+
+impl ExplorerPanel {
+    fn tab_menu(&self, cx: &Context<Self>) -> TabMenu {
+        TabMenu {
+            id: self.id,
+            session_id: self.session_id,
+            host_is_ip: self
+                .store
+                .read(cx)
+                .session(self.session_id)
+                .is_some_and(|session| session.host_is_ip()),
+            can_reconnect: self.can_reconnect(),
+            group: self.tab_group.clone(),
+            panel: cx.entity_id(),
+        }
+    }
+}
+
+impl TabMenu {
+    /// A terminal tab's commands that apply to an SFTP tab, then closing.
+    fn build(&self, menu: PopupMenu, cx: &App) -> PopupMenu {
+        let (id, session_id) = (self.id, self.session_id);
+        let copy_host = if self.host_is_ip {
+            "复制 IP 地址"
+        } else {
+            "复制主机名"
+        };
+        let menu = menu
+            .menu_with_icon(
+                "重命名标签…",
+                Icon::new(CatalogIcon::Pencil),
+                Box::new(RenameExplorer(id)),
+            )
+            .menu_with_icon(
+                "打开 SFTP",
+                Icon::new(CatalogIcon::FolderTree),
+                Box::new(OpenExplorer(session_id)),
+            )
+            .menu_with_icon(
+                copy_host,
+                Icon::new(IconName::Copy),
+                Box::new(CopySessionHost(session_id)),
+            )
+            .menu_with_icon_and_disabled(
+                "重新连接",
+                Icon::new(CatalogIcon::RefreshCw),
+                Box::new(ExplorerAction::new(id, ExplorerCommand::Reconnect)),
+                !self.can_reconnect,
+            )
+            .separator();
+        close_tab_items(
+            menu,
+            CenterTab::Explorer(id),
+            self.group.clone(),
+            self.panel,
+            cx,
         )
-        .separator();
-    close_tab_items(menu, CenterTab::Explorer(id), group, panel, cx)
+    }
 }
 impl Render for ExplorerPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
