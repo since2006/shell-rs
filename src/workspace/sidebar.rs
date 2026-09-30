@@ -7,6 +7,7 @@ use gpui_kit::component::{
 use gpui_kit::*;
 
 use crate::app::{CatalogIcon, OpenSettings};
+use crate::credential::CredentialPanel;
 use crate::forward::ForwardPanel;
 use crate::session::SessionPanel;
 
@@ -16,28 +17,36 @@ pub enum SidebarMode {
     #[default]
     Sessions,
     Forwards,
+    Credentials,
 }
 
-/// The left dock's one panel: the session tree or the port-forwarding list,
-/// whichever the title bar's switch picked, over the 设置 button they share.
+/// The left dock's one panel: the session tree, the port-forwarding list or
+/// the credential list, whichever the title bar's switch picked, over the
+/// 设置 button they share.
 ///
 /// One panel showing either list rather than two panels swapped in the dock:
 /// swapping would take the displaced list out of the dock (and the focus
-/// with it), and two panels in one tab group always draw a tab bar. Both
-/// lists stay alive while hidden, so each keeps its search, its selection
+/// with it), and two panels in one tab group always draw a tab bar. Every
+/// list stays alive while hidden, so each keeps its search, its selection
 /// and its scroll position.
 pub struct Sidebar {
     mode: SidebarMode,
     sessions: Entity<SessionPanel>,
     forwards: Entity<ForwardPanel>,
+    credentials: Entity<CredentialPanel>,
 }
 
 impl Sidebar {
-    pub fn new(sessions: Entity<SessionPanel>, forwards: Entity<ForwardPanel>) -> Self {
+    pub fn new(
+        sessions: Entity<SessionPanel>,
+        forwards: Entity<ForwardPanel>,
+        credentials: Entity<CredentialPanel>,
+    ) -> Self {
         Self {
             mode: SidebarMode::default(),
             sessions,
             forwards,
+            credentials,
         }
     }
 
@@ -64,6 +73,9 @@ impl Sidebar {
             SidebarMode::Forwards => self
                 .forwards
                 .update(cx, |panel, cx| panel.focus_search(window, cx)),
+            SidebarMode::Credentials => self
+                .credentials
+                .update(cx, |panel, cx| panel.focus_search(window, cx)),
         }
     }
 }
@@ -75,6 +87,7 @@ impl Focusable for Sidebar {
         match self.mode {
             SidebarMode::Sessions => self.sessions.read(cx).focus_handle(cx),
             SidebarMode::Forwards => self.forwards.read(cx).focus_handle(cx),
+            SidebarMode::Credentials => self.credentials.read(cx).focus_handle(cx),
         }
     }
 }
@@ -101,6 +114,7 @@ impl Panel for Sidebar {
                 .sessions
                 .update(cx, |panel, cx| panel.title(window, cx).into_any_element()),
             SidebarMode::Forwards => self.forwards.read(cx).title().into_any_element(),
+            SidebarMode::Credentials => self.credentials.read(cx).title().into_any_element(),
         }
     }
 
@@ -114,6 +128,7 @@ impl Panel for Sidebar {
                 .sessions
                 .update(cx, |panel, cx| panel.toolbar_buttons(window, cx)),
             SidebarMode::Forwards => Some(self.forwards.read(cx).toolbar_buttons()),
+            SidebarMode::Credentials => Some(self.credentials.read(cx).toolbar_buttons()),
         }
     }
 
@@ -131,6 +146,7 @@ impl Render for Sidebar {
         let list = match self.mode {
             SidebarMode::Sessions => self.sessions.clone().into_any_element(),
             SidebarMode::Forwards => self.forwards.clone().into_any_element(),
+            SidebarMode::Credentials => self.credentials.clone().into_any_element(),
         };
         v_flex()
             .size_full()

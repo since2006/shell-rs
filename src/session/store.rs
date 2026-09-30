@@ -7,14 +7,21 @@ use crate::secrets::{NoSecretStore, SecretRef, SharedSecretStore};
 
 use super::database::now_seconds;
 use super::{
-    AuthKind, BookmarkSide, ConnectionState, ForwardDraft, ForwardId, ForwardRule, GroupDraft,
-    GroupId, HostOs, NodeDrop, PublicId, Session, SessionDatabase, SessionDraft, SessionGroup,
-    SessionId, SessionNode, StoredData,
+    AuthKind, BookmarkSide, ConnectionState, Credential, CredentialDraft, CredentialId,
+    CredentialKind, ForwardDraft, ForwardId, ForwardRule, GroupDraft, GroupId, HostOs, NodeDrop,
+    PublicId, Session, SessionDatabase, SessionDraft, SessionGroup, SessionId, SessionLogin,
+    SessionNode, StoredData,
 };
 
-/// The single source of truth for sessions, groups and the rules that belong
-/// to sessions (bookmarks, port forwards). Created once by the
-/// workspace and shared with every panel and dialog; consumers observe it.
+/// The single source of truth for sessions, groups, the rules that belong
+/// to sessions (bookmarks, port forwards) and the credentials sessions log in
+/// with. Created once by the workspace and shared with every panel and
+/// dialog; consumers observe it.
+///
+/// A session using a credential keeps a copy of the credential's user name,
+/// so everything that shows or keys by `user@host:port` reads the session
+/// alone. The store keeps the copy in step: it takes it from the credential
+/// when a session is saved and rewrites it when the credential changes.
 ///
 /// Mutators that take a `Context` notify observers and mirror the change into
 /// the database; the `*_unnotified` variants are pure in-memory and exist for
@@ -41,6 +48,9 @@ pub struct SessionStore {
     /// Port-forwarding rules, in the order the forward list shows them.
     forwards: Vec<ForwardRule>,
     next_forward_id: u64,
+    /// Credentials, in the order the credential list shows them.
+    credentials: Vec<Credential>,
+    next_credential_id: u64,
     /// `None` for a memory-only store, as used by tests.
     database: Option<SessionDatabase>,
     /// Where passwords go. Defaults to a store that keeps nothing, so unit
@@ -56,8 +66,9 @@ const MAX_RECENT: usize = 10;
 pub enum SessionStoreEvent {
     /// A change was applied in memory but could not be written to disk.
     PersistFailed(SharedString),
-    /// A live terminal must reconnect because its SSH endpoint or
-    /// authentication configuration changed.
+    /// A live terminal must reconnect because the way the session logs in
+    /// changed: its endpoint, its own authentication, or the credential it
+    /// uses.
     ConnectionSettingsChanged(SessionId),
     /// A forwarding rule now listens or connects somewhere else, so a
     /// running forward has to restart to follow it.
@@ -79,6 +90,8 @@ impl SessionStore {
             bookmarks: HashMap::new(),
             forwards: Vec::new(),
             next_forward_id: 1,
+            credentials: Vec::new(),
+            next_credential_id: 1,
             database: None,
             secrets: Arc::new(NoSecretStore),
         }
@@ -96,21 +109,35 @@ impl SessionStore {
     pub fn load(database: SessionDatabase) -> rusqlite::Result<Self> {
         let StoredData {
             groups,
-            sessions,
+            mut sessions,
             mut recent,
             bookmarks: stored_bookmarks,
             forwards,
+            credentials,
         } = database.load()?;
         recent.truncate(MAX_RECENT);
         let mut bookmarks: HashMap<_, Vec<String>> = HashMap::new();
         for (session, side, path) in stored_bookmarks {
             bookmarks.entry((session, side)).or_default().push(path);
         }
+        // A write that failed after the fact can leave a host's copy of its
+        // credential's user name behind, or a link to a credential this
+        // build could not read. Memory is what counts, so it is put right
+        // here and reaches the file with the host's next save.
+        for session in &mut sessions {
+            let draft = normalized(&credentials, session.draft());
+            session.user = draft.user;
+            session.auth = draft.auth;
+            session.key_path = draft.key_path;
+            session.credential = draft.credential;
+        }
         Ok(Self {
             next_group_id: groups.iter().map(|group| group.id.0).max().unwrap_or(0) + 1,
             next_session_id: sessions.iter().map(|s| s.id.0).max().unwrap_or(0) + 1,
             next_forward_id: forwards.iter().map(|rule| rule.id.0).max().unwrap_or(0) + 1,
+            next_credential_id: credentials.iter().map(|c| c.id.0).max().unwrap_or(0) + 1,
             forwards,
+            credentials,
             groups,
             sessions,
             active: None,
@@ -290,6 +317,7 @@ impl SessionStore {
     }
 
     pub fn insert_unnotified(&mut self, draft: SessionDraft) -> SessionId {
+        let draft = normalized(&self.credentials, draft);
         let sort_order = self.last_session_order(draft.group, None);
         let id = SessionId(self.next_session_id);
         self.next_session_id += 1;
@@ -307,28 +335,20 @@ impl SessionStore {
 
     /// Replace the editable fields of a session; connection state is kept.
     pub fn update(&mut self, id: SessionId, draft: SessionDraft, cx: &mut Context<Self>) -> bool {
-        let previous_endpoint = self.session(id).map(Session::password_secret);
-        let connection_changed = self.session(id).is_some_and(|session| {
-            session.host != draft.host
-                || session.port != draft.port
-                || session.user != draft.user
-                || session.auth != draft.auth
-                || session.key_path != draft.key_path
-        });
+        let previous = self.login(id);
         let updated = self.update_unnotified(id, draft);
         if updated {
             if let Some(session) = self.session(id) {
                 self.persist("保存主机", cx, |db| db.update_session(session));
             }
-            // The session moved to another endpoint, so its old keychain
-            // entry is an orphan unless another session still logs in there.
-            if let Some(previous) = previous_endpoint
-                && !password_in_use(&self.sessions, &previous)
-            {
-                self.save_secret(previous, None, cx);
-            }
-            if connection_changed {
-                cx.emit(SessionStoreEvent::ConnectionSettingsChanged(id));
+            if let Some(previous) = previous {
+                // The session no longer reads the password it did, say
+                // because it moved to another endpoint, so that keychain
+                // entry is an orphan unless another session still uses it.
+                self.forget_endpoint_password(previous.password.clone(), cx);
+                if self.login(id).as_ref() != Some(&previous) {
+                    cx.emit(SessionStoreEvent::ConnectionSettingsChanged(id));
+                }
             }
             cx.notify();
         }
@@ -336,6 +356,7 @@ impl SessionStore {
     }
 
     pub fn update_unnotified(&mut self, id: SessionId, draft: SessionDraft) -> bool {
+        let draft = normalized(&self.credentials, draft);
         let new_order = self.last_session_order(draft.group, Some(id));
         let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) else {
             return false;
@@ -360,14 +381,12 @@ impl SessionStore {
     }
 
     pub fn remove(&mut self, id: SessionId, cx: &mut Context<Self>) -> bool {
-        let endpoint = self.session(id).map(Session::password_secret);
+        let login = self.login(id);
         let removed = self.remove_unnotified(id);
         if removed {
             self.persist("删除主机", cx, |db| db.remove_session(id));
-            if let Some(endpoint) = endpoint
-                && !password_in_use(&self.sessions, &endpoint)
-            {
-                self.save_secret(endpoint, None, cx);
+            if let Some(login) = login {
+                self.forget_endpoint_password(login.password, cx);
             }
             cx.notify();
         }
@@ -692,6 +711,174 @@ impl SessionStore {
         self.forwards.len() != before
     }
 
+    /// Every credential, in list order.
+    pub fn credentials(&self) -> &[Credential] {
+        &self.credentials
+    }
+
+    pub fn credential(&self, id: CredentialId) -> Option<&Credential> {
+        self.credentials
+            .iter()
+            .find(|credential| credential.id == id)
+    }
+
+    /// The sessions that log in with `credential`.
+    pub fn sessions_using(&self, credential: CredentialId) -> impl Iterator<Item = &Session> {
+        self.sessions
+            .iter()
+            .filter(move |session| session.credential == Some(credential))
+    }
+
+    /// How a session logs in, with its credential looked up. What the
+    /// terminal, SFTP, forward and CLI workers are given.
+    pub fn login(&self, id: SessionId) -> Option<SessionLogin> {
+        self.session(id).map(|session| self.login_of(session))
+    }
+
+    pub fn login_of(&self, session: &Session) -> SessionLogin {
+        SessionLogin::of(
+            session,
+            session.credential.and_then(|id| self.credential(id)),
+        )
+    }
+
+    /// Add a credential at the end of the list.
+    pub fn insert_credential(
+        &mut self,
+        draft: CredentialDraft,
+        cx: &mut Context<Self>,
+    ) -> CredentialId {
+        let id = self.insert_credential_unnotified(draft);
+        if let Some(credential) = self.credential(id) {
+            self.persist("新建凭据", cx, |db| db.insert_credential(credential));
+        }
+        cx.notify();
+        id
+    }
+
+    pub fn insert_credential_unnotified(&mut self, draft: CredentialDraft) -> CredentialId {
+        let sort_order = self
+            .credentials
+            .iter()
+            .map(|credential| credential.sort_order)
+            .max()
+            .unwrap_or(-1)
+            + 1;
+        let id = CredentialId(self.next_credential_id);
+        self.next_credential_id += 1;
+        let mut credential = Credential::new(id, draft);
+        credential.keychain_id = PublicId::generate_unused(|candidate| {
+            self.credentials
+                .iter()
+                .any(|credential| &credential.keychain_id == candidate)
+        });
+        credential.sort_order = sort_order;
+        self.credentials.push(credential);
+        id
+    }
+
+    /// Replace the editable fields of a credential. Every session using it
+    /// takes the new user name, and those whose login changed reconnect.
+    pub fn update_credential(
+        &mut self,
+        id: CredentialId,
+        draft: CredentialDraft,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(previous) = self.credential(id).cloned() else {
+            return false;
+        };
+        let logins: Vec<(SessionId, SessionLogin)> = self
+            .sessions_using(id)
+            .map(|session| (session.id, self.login_of(session)))
+            .collect();
+        if !self.update_credential_unnotified(id, draft) {
+            return false;
+        }
+        if let Some(credential) = self.credential(id) {
+            self.persist("保存凭据", cx, |db| db.update_credential(credential));
+        }
+        if previous.kind == CredentialKind::Password
+            && self
+                .credential(id)
+                .is_some_and(|credential| credential.kind != CredentialKind::Password)
+        {
+            self.save_secret(previous.password_secret(), None, cx);
+        }
+        for (session, before) in logins {
+            self.forget_endpoint_password(before.password.clone(), cx);
+            if self.login(session).as_ref() != Some(&before) {
+                cx.emit(SessionStoreEvent::ConnectionSettingsChanged(session));
+            }
+        }
+        cx.notify();
+        true
+    }
+
+    pub fn update_credential_unnotified(
+        &mut self,
+        id: CredentialId,
+        draft: CredentialDraft,
+    ) -> bool {
+        let Some(credential) = self
+            .credentials
+            .iter_mut()
+            .find(|credential| credential.id == id)
+        else {
+            return false;
+        };
+        let keychain_id = credential.keychain_id.clone();
+        let sort_order = credential.sort_order;
+        *credential = Credential::new(id, draft);
+        credential.keychain_id = keychain_id;
+        credential.sort_order = sort_order;
+        let user = credential.user.clone();
+        for session in &mut self.sessions {
+            if session.credential == Some(id) {
+                session.user = user.clone();
+            }
+        }
+        true
+    }
+
+    /// Delete a credential. The sessions using it log in on their own again,
+    /// automatically and as the same user, and are returned. They are not
+    /// reconnected: deleting a credential does not drop a working connection.
+    pub fn remove_credential(
+        &mut self,
+        id: CredentialId,
+        cx: &mut Context<Self>,
+    ) -> Vec<SessionId> {
+        let Some(credential) = self.credential(id).cloned() else {
+            return Vec::new();
+        };
+        let released = self.remove_credential_unnotified(id);
+        self.persist("删除凭据", cx, |db| db.remove_credential(id));
+        if credential.kind == CredentialKind::Password {
+            self.save_secret(credential.password_secret(), None, cx);
+        }
+        cx.notify();
+        released
+    }
+
+    pub fn remove_credential_unnotified(&mut self, id: CredentialId) -> Vec<SessionId> {
+        let before = self.credentials.len();
+        self.credentials.retain(|credential| credential.id != id);
+        if self.credentials.len() == before {
+            return Vec::new();
+        }
+        let mut released = Vec::new();
+        for session in &mut self.sessions {
+            if session.credential == Some(id) {
+                session.credential = None;
+                session.auth = AuthKind::Auto;
+                session.key_path = None;
+                released.push(session.id);
+            }
+        }
+        released
+    }
+
     /// Persist a group's expanded or collapsed state after a tree interaction.
     pub fn set_group_expanded(
         &mut self,
@@ -845,9 +1032,7 @@ impl SessionStore {
         // One delete mirrors the whole subtree: both foreign keys cascade.
         self.persist("删除分组", cx, |db| db.remove_group(id));
         for endpoint in endpoints {
-            if !password_in_use(&self.sessions, &endpoint) {
-                self.save_secret(endpoint, None, cx);
-            }
+            self.forget_endpoint_password(endpoint, cx);
         }
         cx.notify();
         removed
@@ -951,6 +1136,8 @@ impl SessionStore {
             (SecretRef::Password { .. }, false) => "密码未能从系统钥匙串删除",
             (SecretRef::Passphrase { .. }, true) => "私钥口令未能写入系统钥匙串",
             (SecretRef::Passphrase { .. }, false) => "私钥口令未能从系统钥匙串删除",
+            (SecretRef::Credential { .. }, true) => "凭据的密码未能写入系统钥匙串",
+            (SecretRef::Credential { .. }, false) => "凭据的密码未能从系统钥匙串删除",
         };
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -974,19 +1161,37 @@ impl SessionStore {
         .detach();
     }
 
-    /// The distinct keychain endpoints these sessions log into.
+    /// The distinct password entries these sessions log in with.
     fn endpoints_of(&self, ids: &[SessionId]) -> Vec<SecretRef> {
         let mut endpoints: Vec<SecretRef> = Vec::new();
         for secret in ids
             .iter()
-            .filter_map(|id| self.session(*id))
-            .map(Session::password_secret)
+            .filter_map(|id| self.login(*id))
+            .map(|login| login.password)
         {
             if !endpoints.contains(&secret) {
                 endpoints.push(secret);
             }
         }
         endpoints
+    }
+
+    /// Delete an endpoint's saved password once no session logs in with it.
+    /// A credential's password is left alone: it goes with the credential,
+    /// not with the sessions using it.
+    fn forget_endpoint_password(&mut self, secret: SecretRef, cx: &mut Context<Self>) {
+        if matches!(secret, SecretRef::Password { .. }) && !self.password_in_use(&secret) {
+            self.save_secret(secret, None, cx);
+        }
+    }
+
+    /// Whether any session still logs in with this password entry. Entries
+    /// are shared, so one may only be cleaned up once the last session using
+    /// it is gone.
+    fn password_in_use(&self, secret: &SecretRef) -> bool {
+        self.sessions
+            .iter()
+            .any(|session| self.login_of(session).password == *secret)
     }
 
     /// Write a change through to the database, when there is one. A failed
@@ -1059,13 +1264,22 @@ fn reordered<Id: Copy + Ord>(
     Some(ids)
 }
 
-/// Whether any session still logs into the endpoint this secret belongs to.
-/// Keychain entries are shared by endpoint, so one may only be cleaned up once
-/// the last session using it is gone.
-fn password_in_use(sessions: &[Session], secret: &SecretRef) -> bool {
-    sessions
-        .iter()
-        .any(|session| session.password_secret() == *secret)
+/// `draft` as the store keeps it. A session using a credential logs in as
+/// the credential's user and keeps nothing of its own login; one naming a
+/// credential that is not there logs in on its own.
+fn normalized(credentials: &[Credential], mut draft: SessionDraft) -> SessionDraft {
+    let credential = draft
+        .credential
+        .and_then(|id| credentials.iter().find(|credential| credential.id == id));
+    match credential {
+        Some(credential) => {
+            draft.user = credential.user.clone();
+            draft.auth = AuthKind::Auto;
+            draft.key_path = None;
+        }
+        None => draft.credential = None,
+    }
+    draft
 }
 
 #[cfg(test)]
@@ -1194,6 +1408,162 @@ mod tests {
         );
     }
 
+    fn password_credential(store: &mut SessionStore, user: &str) -> CredentialId {
+        store.insert_credential_unnotified(CredentialDraft::new(
+            "运维",
+            CredentialKind::Password,
+            user,
+        ))
+    }
+
+    #[test]
+    fn a_host_using_a_credential_logs_in_as_its_user() {
+        let mut store = SessionStore::empty();
+        let credential = password_credential(&mut store, "deploy");
+        let mut form = draft("web", None).with_credential(credential);
+        // Whatever the form still held of its own login is dropped.
+        form.auth = AuthKind::Key;
+        form.key_path = Some("/tmp/id".into());
+        let web = store.insert_unnotified(form);
+
+        let session = store.session(web).unwrap();
+        assert_eq!(session.credential, Some(credential));
+        assert_eq!(session.user.as_ref(), "deploy");
+        assert_eq!(session.auth, AuthKind::Auto);
+        assert_eq!(session.key_path, None);
+        let login = store.login(web).unwrap();
+        assert_eq!(login.user, "deploy");
+        assert_eq!(
+            login.password,
+            store.credential(credential).unwrap().password_secret()
+        );
+        assert_eq!(store.sessions_using(credential).count(), 1);
+    }
+
+    #[test]
+    fn a_draft_naming_a_missing_credential_is_saved_as_manual() {
+        let mut store = SessionStore::empty();
+        let web = store.insert_unnotified(draft("web", None).with_credential(CredentialId(9)));
+        let session = store.session(web).unwrap();
+        assert_eq!(session.credential, None);
+        assert_eq!(session.user.as_ref(), "root");
+    }
+
+    #[test]
+    fn renaming_a_credentials_user_renames_every_host_using_it() {
+        let mut store = SessionStore::empty();
+        let credential = password_credential(&mut store, "deploy");
+        let web = store.insert_unnotified(draft("web", None).with_credential(credential));
+        let db = store.insert_unnotified(draft("db", None));
+
+        let mut edited = store.credential(credential).unwrap().draft();
+        edited.user = "admin".into();
+        assert!(store.update_credential_unnotified(credential, edited));
+        assert_eq!(store.session(web).unwrap().user.as_ref(), "admin");
+        assert_eq!(store.session(web).unwrap().address(), "admin@10.0.0.1:22");
+        assert_eq!(store.session(db).unwrap().user.as_ref(), "root");
+        assert!(!store.update_credential_unnotified(
+            CredentialId(9),
+            CredentialDraft::new("x", CredentialKind::Agent, "x")
+        ));
+    }
+
+    #[test]
+    fn changing_only_a_credentials_name_changes_no_login() {
+        let mut store = SessionStore::empty();
+        let credential = password_credential(&mut store, "deploy");
+        let web = store.insert_unnotified(draft("web", None).with_credential(credential));
+        let before = store.login(web);
+        let keychain_id = store.credential(credential).unwrap().keychain_id.clone();
+
+        let mut edited = store.credential(credential).unwrap().draft();
+        edited.name = "生产运维".into();
+        assert!(store.update_credential_unnotified(credential, edited));
+        assert_eq!(store.login(web), before);
+        // The keychain entry stays the credential's.
+        assert_eq!(
+            store.credential(credential).unwrap().keychain_id,
+            keychain_id
+        );
+    }
+
+    #[test]
+    fn deleting_a_credential_leaves_its_hosts_manual_auto_with_the_user() {
+        let mut store = SessionStore::empty();
+        let credential = store.insert_credential_unnotified(
+            CredentialDraft::new("部署", CredentialKind::Key, "deploy").with_key_path("/tmp/id"),
+        );
+        let web = store.insert_unnotified(draft("web", None).with_credential(credential));
+        let db = store.insert_unnotified(draft("db", None));
+
+        assert_eq!(store.remove_credential_unnotified(credential), [web]);
+        assert!(store.credentials().is_empty());
+        let session = store.session(web).unwrap();
+        assert_eq!(session.credential, None);
+        assert_eq!(session.auth, AuthKind::Auto);
+        assert_eq!(session.key_path, None);
+        assert_eq!(session.user.as_ref(), "deploy");
+        assert_eq!(store.session(db).unwrap().user.as_ref(), "root");
+        assert!(store.remove_credential_unnotified(credential).is_empty());
+    }
+
+    #[test]
+    fn a_copy_of_a_host_uses_the_same_credential() {
+        let mut store = SessionStore::empty();
+        let credential = password_credential(&mut store, "deploy");
+        let web = store.insert_unnotified(draft("web", None).with_credential(credential));
+        let copy = store.duplicate_unnotified(web).unwrap();
+        assert_eq!(store.session(copy).unwrap().credential, Some(credential));
+        assert_eq!(store.sessions_using(credential).count(), 2);
+    }
+
+    #[test]
+    fn a_host_with_a_password_credential_does_not_keep_the_endpoint_password_in_use() {
+        let mut store = SessionStore::empty();
+        let credential = password_credential(&mut store, "root");
+        let web = store.insert_unnotified(draft("web", None));
+        let endpoint = store.session(web).unwrap().password_secret();
+        assert!(store.password_in_use(&endpoint));
+
+        store.update_unnotified(web, draft("web", None).with_credential(credential));
+        // Same user, host and port, but the password comes from elsewhere.
+        assert_eq!(store.session(web).unwrap().password_secret(), endpoint);
+        assert!(!store.password_in_use(&endpoint));
+        let secret = store.credential(credential).unwrap().password_secret();
+        assert!(store.password_in_use(&secret));
+    }
+
+    #[test]
+    fn load_resumes_the_credential_id_sequence_and_repairs_usernames() {
+        let database = SessionDatabase::in_memory().unwrap();
+        let credential = Credential::new(
+            CredentialId(4),
+            CredentialDraft::new("运维", CredentialKind::Agent, "deploy"),
+        );
+        database.insert_credential(&credential).unwrap();
+        let mut stale = Session::new(SessionId(1), draft("web", None));
+        stale.credential = Some(credential.id);
+        stale.auth = AuthKind::Password;
+        database.insert_session(&stale).unwrap();
+
+        let mut store = SessionStore::load(database).unwrap();
+        let session = store.session(SessionId(1)).unwrap();
+        assert_eq!(session.user.as_ref(), "deploy");
+        assert_eq!(session.auth, AuthKind::Auto);
+        assert_eq!(
+            store.credential(CredentialId(4)).unwrap().keychain_id,
+            credential.keychain_id
+        );
+        assert_eq!(
+            store.insert_credential_unnotified(CredentialDraft::new(
+                "x",
+                CredentialKind::Agent,
+                "x"
+            )),
+            CredentialId(5)
+        );
+    }
+
     #[test]
     fn the_detected_system_survives_an_edit() {
         let mut store = SessionStore::empty();
@@ -1226,10 +1596,10 @@ mod tests {
         let mut store = SessionStore::empty();
         let id = store.insert_unnotified(draft("web", None));
         let endpoint = store.session(id).unwrap().password_secret();
-        assert!(password_in_use(store.sessions(), &endpoint));
+        assert!(store.password_in_use(&endpoint));
 
         store.remove_unnotified(id);
-        assert!(!password_in_use(store.sessions(), &endpoint));
+        assert!(!store.password_in_use(&endpoint));
     }
 
     #[test]
@@ -1241,7 +1611,7 @@ mod tests {
         assert_eq!(endpoint, store.session(second).unwrap().password_secret());
 
         store.remove_unnotified(first);
-        assert!(password_in_use(store.sessions(), &endpoint));
+        assert!(store.password_in_use(&endpoint));
     }
 
     #[test]
@@ -1251,7 +1621,7 @@ mod tests {
         let endpoint = store.session(id).unwrap().password_secret();
         let moved = SessionDraft::new("web", "10.0.0.1", 2222, "root", AuthKind::Auto, None);
         store.update_unnotified(id, moved);
-        assert!(!password_in_use(store.sessions(), &endpoint));
+        assert!(!store.password_in_use(&endpoint));
     }
 
     #[test]

@@ -3,6 +3,8 @@ use rand::{Rng as _, distr::Alphanumeric};
 
 use crate::secrets::SecretRef;
 
+use super::CredentialId;
+
 /// Stable identity of a session. Never reused within a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(pub u64);
@@ -14,6 +16,8 @@ pub struct SessionId(pub u64);
 /// restart, while this one is never reused and stays with its session
 /// through renames and address changes. It names a session; it grants
 /// nothing.
+///
+/// A credential uses one the same way to name its password in the keychain.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PublicId(SharedString);
 
@@ -288,9 +292,15 @@ pub struct Session {
     pub name: SharedString,
     pub host: SharedString,
     pub port: u16,
+    /// The user it logs in as. For a session using a credential this is the
+    /// credential's user, which the store keeps in step.
     pub user: SharedString,
+    /// How a session typed into the form logs in. A session using a
+    /// credential keeps [`AuthKind::Auto`] and no key file here.
     pub auth: AuthKind,
     pub key_path: Option<SharedString>,
+    /// The credential it logs in with instead of `auth`, if any.
+    pub credential: Option<CredentialId>,
     pub group: Option<GroupId>,
     /// Order among sessions in the same group.
     pub sort_order: i64,
@@ -314,6 +324,7 @@ impl Session {
             user: draft.user,
             auth: draft.auth,
             key_path: draft.key_path,
+            credential: draft.credential,
             group: draft.group,
             sort_order: 0,
             state: ConnectionState::Disconnected,
@@ -348,6 +359,7 @@ impl Session {
             user: self.user.clone(),
             auth: self.auth,
             key_path: self.key_path.clone(),
+            credential: self.credential,
             group: self.group,
         }
     }
@@ -408,6 +420,7 @@ pub struct SessionDraft {
     pub user: SharedString,
     pub auth: AuthKind,
     pub key_path: Option<SharedString>,
+    pub credential: Option<CredentialId>,
     pub group: Option<GroupId>,
 }
 
@@ -427,8 +440,16 @@ impl SessionDraft {
             user: user.into(),
             auth,
             key_path: None,
+            credential: None,
             group,
         }
+    }
+
+    /// Log in with a saved credential instead of `auth`. The store takes the
+    /// user name from the credential when the draft is saved.
+    pub fn with_credential(mut self, credential: CredentialId) -> Self {
+        self.credential = Some(credential);
+        self
     }
 
     /// The keychain entry this draft would log in with. Matches

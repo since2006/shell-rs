@@ -65,13 +65,7 @@ impl SshConnectionTester {
             return Err(format!("无法解析主机 {}", request.host()));
         }
 
-        let config = SshConnectionConfig::new(
-            request.host(),
-            request.port(),
-            request.user(),
-            request.auth(),
-            request.key_path().map(Into::into),
-        );
+        let config = SshConnectionConfig::from(request.login());
         let secrets: SharedSecretStore =
             Arc::new(FormSecrets::new(&request, self.connector.secrets().clone()));
         let host_trust = Arc::new(Mutex::new(HostTrust::default()));
@@ -183,43 +177,37 @@ fn describe_connect_error(error: &std::io::Error) -> String {
     }
 }
 
-/// The secrets a test logs in with. The form is authoritative for the login
-/// password and for the passphrase of the key it names, whether or not they
-/// were saved; anything else (a default key's passphrase) is read from the
-/// keychain. Nothing is ever written.
+/// The secrets a test logs in with. For a login typed into the form, the
+/// form is authoritative for the login password and for the passphrase of
+/// the key it names, whether or not they were saved; anything else (a
+/// default key's passphrase) is read from the keychain. A login through a
+/// credential reads everything from the keychain. Nothing is ever written.
 struct FormSecrets {
-    password: (SecretRef, Option<Zeroizing<String>>),
-    passphrase: Option<(SecretRef, Option<Zeroizing<String>>)>,
+    typed: Vec<(SecretRef, Option<Zeroizing<String>>)>,
     fallback: SharedSecretStore,
 }
 
 impl FormSecrets {
     fn new(request: &LoginTest, fallback: SharedSecretStore) -> Self {
         let owned = |value: Option<&str>| value.map(|value| Zeroizing::new(value.to_string()));
-        Self {
-            password: (
-                SecretRef::password(request.user(), request.host(), request.port()),
-                owned(request.password()),
-            ),
-            passphrase: request
-                .key_path()
-                .map(|path| (SecretRef::passphrase(path), owned(request.passphrase()))),
-            fallback,
+        let mut typed = Vec::new();
+        if request.is_typed() {
+            let login = request.login();
+            typed.push((login.password.clone(), owned(request.password())));
+            if let Some(path) = &login.key_path {
+                typed.push((SecretRef::passphrase(path), owned(request.passphrase())));
+            }
         }
+        Self { typed, fallback }
     }
 }
 
 impl SecretStore for FormSecrets {
     fn get(&self, secret: &SecretRef) -> anyhow::Result<Option<Zeroizing<String>>> {
-        if *secret == self.password.0 {
-            return Ok(self.password.1.clone());
+        match self.typed.iter().find(|(key, _)| key == secret) {
+            Some((_, value)) => Ok(value.clone()),
+            None => self.fallback.get(secret),
         }
-        if let Some((key, value)) = &self.passphrase
-            && secret == key
-        {
-            return Ok(value.clone());
-        }
-        self.fallback.get(secret)
     }
 
     fn set(&self, _: &SecretRef, _: &str) -> anyhow::Result<()> {

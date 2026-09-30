@@ -14,7 +14,7 @@ use shellrs::app::cli_endpoint;
 use shellrs::cli::{
     CliBackend, CliError, CliServer, CliTarget, SessionInfo, TransferCounters, TransferSummary,
 };
-use shellrs::session::{AuthKind, Session, SessionDraft, SessionId};
+use shellrs::session::{AuthKind, Session, SessionDraft, SessionId, SessionLogin};
 use shellrs::ssh::ExecStream;
 
 /// More than a pipe's buffer, so the app finishes writing before the
@@ -29,7 +29,7 @@ struct FakeBackend {
 impl CliBackend for FakeBackend {
     fn exec(
         &self,
-        _: &Session,
+        _: &CliTarget,
         command: &str,
         output: &mut dyn FnMut(ExecStream, &[u8]) -> io::Result<()>,
     ) -> Result<i32, CliError> {
@@ -52,7 +52,7 @@ impl CliBackend for FakeBackend {
 
     fn upload(
         &self,
-        _: &Session,
+        _: &CliTarget,
         _: &Path,
         _: &str,
         _: &mut dyn FnMut(TransferCounters) -> io::Result<()>,
@@ -62,7 +62,7 @@ impl CliBackend for FakeBackend {
 
     fn download(
         &self,
-        _: &Session,
+        _: &CliTarget,
         _: &str,
         _: &Path,
         _: &mut dyn FnMut(TransferCounters) -> io::Result<()>,
@@ -106,7 +106,11 @@ fn the_command_finds_the_app_through_its_data_directory() {
         SessionId(1),
         SessionDraft::new("web-01", "10.0.1.12", 22, "root", AuthKind::Auto, None),
     );
-    server.set_targets(vec![CliTarget::new(&web, None)]);
+    server.set_targets(vec![CliTarget::new(
+        &web,
+        SessionLogin::of(&web, None),
+        None,
+    )]);
     server.set_enabled(true);
     let id = web.public_id.to_string();
 

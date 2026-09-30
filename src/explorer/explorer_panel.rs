@@ -97,12 +97,11 @@ impl ExplorerPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let session = store
+        let login = store
             .read(cx)
-            .session(session_id)
-            .cloned()
+            .login(session_id)
             .expect("workspace checked session");
-        let endpoint = format!("{}@{}:{}", session.user, session.host, session.port);
+        let endpoint = login.endpoint();
         let home = local_provider.home().to_string_lossy().into_owned();
         let places = local_provider
             .places()
@@ -140,7 +139,7 @@ impl ExplorerPanel {
         });
         let (commands, receiver) = async_channel::unbounded();
         let (sender, events) = async_channel::unbounded();
-        let transport = provider.create(&session);
+        let transport = provider.create(&login);
         let failed = sender.clone();
         if let Err(error) = std::thread::Builder::new()
             .name("shellrs-sftp".into())

@@ -54,16 +54,20 @@ impl TerminalPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let session = store
-            .read(cx)
-            .session(session_id)
-            .cloned()
-            .expect("terminal sessions must exist in the store");
+        let (session, login) = {
+            let store = store.read(cx);
+            let session = store
+                .session(session_id)
+                .cloned()
+                .expect("terminal sessions must exist in the store");
+            let login = store.login_of(&session);
+            (session, login)
+        };
         let terminal = cx.new(|cx| {
             let mut terminal = TerminalView::new(
                 ("terminal", id.0),
                 format!("{} 的终端", session.name),
-                remote_provider.factory_for(&session),
+                remote_provider.factory_for(&login),
                 window,
                 cx,
             );
@@ -140,10 +144,10 @@ impl TerminalPanel {
     }
 
     pub fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(session) = self.store.read(cx).session(self.session_id).cloned() else {
+        let Some(login) = self.store.read(cx).login(self.session_id) else {
             return;
         };
-        let factory = self.remote_provider.factory_for(&session);
+        let factory = self.remote_provider.factory_for(&login);
         self.terminal.update(cx, |terminal, cx| {
             terminal.restart_with_factory(factory, cx)
         });

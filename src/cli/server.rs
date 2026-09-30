@@ -19,7 +19,7 @@ use super::protocol::{
     CliError, Envelope, ErrorCode, FrameKind, PROTOCOL_VERSION, Reply, Request, SessionInfo,
     TransferCounters, TransferSummary, parse_json, read_frame, write_frame, write_json,
 };
-use crate::session::{Session, SessionStore, matches_query};
+use crate::session::{Session, SessionLogin, SessionStore, matches_query};
 use crate::ssh::ExecStream;
 
 /// Does what a CLI request asks. Every method blocks: each request has a
@@ -30,7 +30,7 @@ pub trait CliBackend: Send + Sync + 'static {
     /// and the command should be abandoned.
     fn exec(
         &self,
-        session: &Session,
+        target: &CliTarget,
         command: &str,
         output: &mut dyn FnMut(ExecStream, &[u8]) -> io::Result<()>,
     ) -> Result<i32, CliError>;
@@ -40,7 +40,7 @@ pub trait CliBackend: Send + Sync + 'static {
     /// should stop.
     fn upload(
         &self,
-        session: &Session,
+        target: &CliTarget,
         source: &Path,
         destination: &str,
         progress: &mut dyn FnMut(TransferCounters) -> io::Result<()>,
@@ -50,23 +50,25 @@ pub trait CliBackend: Send + Sync + 'static {
     /// does.
     fn download(
         &self,
-        session: &Session,
+        target: &CliTarget,
         source: &str,
         destination: &Path,
         progress: &mut dyn FnMut(TransferCounters) -> io::Result<()>,
     ) -> Result<TransferSummary, CliError>;
 }
 
-/// A saved session as the CLI sees it.
+/// A saved session as the CLI sees it, with the login it connects with
+/// resolved when the target list was built.
 #[derive(Clone, Debug)]
 pub struct CliTarget {
     info: SessionInfo,
     session: Session,
+    login: SessionLogin,
 }
 
 impl CliTarget {
     /// `group` is the session's full group path, if it has one.
-    pub fn new(session: &Session, group: Option<String>) -> Self {
+    pub fn new(session: &Session, login: SessionLogin, group: Option<String>) -> Self {
         Self {
             info: SessionInfo {
                 id: session.public_id.to_string(),
@@ -78,7 +80,17 @@ impl CliTarget {
                 os: session.os.map(|os| os.as_str().to_string()),
             },
             session: session.clone(),
+            login,
         }
+    }
+
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    /// How a request logs in to the session's host.
+    pub fn login(&self) -> &SessionLogin {
+        &self.login
     }
 
     /// Every session in `store`, with its group path.
@@ -91,7 +103,11 @@ impl CliTarget {
                     .group
                     .map(|id| store.group_names(id))
                     .unwrap_or_default();
-                Self::new(session, (!names.is_empty()).then(|| names.join("/")))
+                Self::new(
+                    session,
+                    store.login_of(session),
+                    (!names.is_empty()).then(|| names.join("/")),
+                )
             })
             .collect()
     }
@@ -440,7 +456,7 @@ fn respond(
             let target = find(shared, &session)?;
             let code = shared
                 .backend
-                .exec(&target.session, &command, &mut |stream, bytes| {
+                .exec(&target, &command, &mut |stream, bytes| {
                     let kind = match stream {
                         ExecStream::Stdout => FrameKind::Stdout,
                         ExecStream::Stderr => FrameKind::Stderr,
@@ -460,7 +476,7 @@ fn respond(
             }
             shared
                 .backend
-                .upload(&target.session, &source, &destination, &mut |counters| {
+                .upload(&target, &source, &destination, &mut |counters| {
                     write_json(writer, &Reply::Progress(counters))
                 })
                 .map(Reply::TransferDone)
@@ -476,7 +492,7 @@ fn respond(
             }
             shared
                 .backend
-                .download(&target.session, &source, &destination, &mut |counters| {
+                .download(&target, &source, &destination, &mut |counters| {
                     write_json(writer, &Reply::Progress(counters))
                 })
                 .map(Reply::TransferDone)

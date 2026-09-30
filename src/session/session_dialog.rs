@@ -6,33 +6,48 @@ use gpui_kit::component::{
     dialog::{Cancel, Confirm, DialogButtonProps, DialogFooter},
     form::{Field, Form},
     h_flex,
-    input::{Input, InputContentType, InputEvent, InputState},
+    input::{Input, InputState},
     notification::Notification,
+    radio::{Radio, RadioGroup},
     select::{Select, SelectState},
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use zeroize::Zeroizing;
 
 use crate::connection::{LoginTest, SharedConnectionTester, TrustCallback, UnknownHostPrompt};
-use crate::secrets::{SecretRef, SharedSecretStore};
+use crate::secrets::SecretRef;
 
-use super::{AuthKind, GroupId, Session, SessionDraft, SessionId, SessionStore, group_options};
+use super::secret_fields::SecretFields;
+use super::{
+    AuthKind, Credential, CredentialId, CredentialKind, DEFAULT_USER, GroupId, Session,
+    SessionDraft, SessionId, SessionLogin, SessionStore, group_options,
+};
 pub use crate::shared::DeleteHandler;
 use crate::shared::{confirm_delete, form_error, parse_port};
 
 /// The label of the row that puts a session at the root of the tree.
 pub const NO_GROUP_LABEL: &str = "（无分组）";
 
-/// What the keychain had for the session being edited.
-#[derive(Default)]
-struct SavedSecrets {
-    password: Option<Zeroizing<String>>,
-    passphrase: Option<Zeroizing<String>>,
-    /// Whether a key file was configured at all. Without one nothing was
-    /// looked up, so an empty passphrase field means nothing either.
-    looked_for_passphrase: bool,
+/// Where a host's login comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AuthSource {
+    /// Typed into this form.
+    Manual,
+    /// A saved credential.
+    Credential,
+}
+
+impl AuthSource {
+    /// Both, in the order the form lists them.
+    const ALL: [AuthSource; 2] = [AuthSource::Manual, AuthSource::Credential];
+
+    fn label(self) -> &'static str {
+        match self {
+            AuthSource::Manual => "手动输入",
+            AuthSource::Credential => "使用凭据",
+        }
+    }
 }
 
 /// The body of the new/edit session dialog. Owns the field states and
@@ -43,11 +58,16 @@ pub struct SessionForm {
     name: Entity<InputState>,
     host: Entity<InputState>,
     port: Entity<InputState>,
+    source: AuthSource,
     user: Entity<InputState>,
     auth: Entity<SelectState<Vec<&'static str>>>,
-    key_path: Entity<InputState>,
-    password: Entity<InputState>,
-    passphrase: Entity<InputState>,
+    /// The password, key file and passphrase of a login typed here.
+    fields: Entity<SecretFields>,
+    credential: Entity<SelectState<Vec<SharedString>>>,
+    /// The credentials as they were when the form opened, parallel to the
+    /// credential select's rows. The dialog is modal, so nothing can change
+    /// them while it is open.
+    credentials: Vec<Credential>,
     group: Entity<SelectState<Vec<SharedString>>>,
     /// Parallel to the group select's rows; `None` is the root of the tree.
     group_ids: Vec<Option<GroupId>>,
@@ -56,16 +76,7 @@ pub struct SessionForm {
     /// Logs in with the form's current values for 「测试连接」.
     tester: SharedConnectionTester,
     editing_connected: bool,
-    /// Where saved secrets are read from. Writes go through the store, which
-    /// owns the one error channel.
-    secrets: SharedSecretStore,
-    /// Whether the saved secret has been read back yet. Until it has, an empty
-    /// field means "still loading", not "the user cleared it", so committing
-    /// early never deletes anything.
-    password_loaded: bool,
-    passphrase_loaded: bool,
-    _auth_subscription: Subscription,
-    _key_path_subscription: Subscription,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl SessionForm {
@@ -78,11 +89,12 @@ impl SessionForm {
         cx: &mut Context<Self>,
     ) -> Self {
         let secrets = store.read(cx).secrets();
-        let (draft, options, editing_connected) = {
+        let (draft, options, credentials, editing_connected) = {
             let read = store.read(cx);
             (
                 editing.and_then(|id| read.session(id)).map(Session::draft),
                 group_options(read.groups(), &[]),
+                read.credentials().to_vec(),
                 editing
                     .and_then(|id| read.session(id))
                     .is_some_and(|session| session.state != super::ConnectionState::Disconnected),
@@ -97,7 +109,7 @@ impl SessionForm {
             group_names.push(path);
         }
         let draft = draft.unwrap_or_else(|| {
-            SessionDraft::new("", "", 22, "root", AuthKind::Auto, preselect_group)
+            SessionDraft::new("", "", 22, DEFAULT_USER, AuthKind::Auto, preselect_group)
         });
 
         let name = cx.new(|cx| {
@@ -117,7 +129,7 @@ impl SessionForm {
         });
         let user = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("root")
+                .placeholder(DEFAULT_USER)
                 .default_value(draft.user.clone())
         });
         let auth_ix = AuthKind::ALL
@@ -135,154 +147,78 @@ impl SessionForm {
                 cx,
             )
         });
-        let key_path = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("选择 OpenSSH 私钥文件")
-                .default_value(draft.key_path.clone().unwrap_or_default())
+        let fields = cx.new(|cx| SecretFields::new(secrets, draft.key_path.clone(), window, cx));
+        let credential_ix = draft.credential.and_then(|id| {
+            credentials
+                .iter()
+                .position(|credential| credential.id == id)
         });
-        let auth_subscription = cx.observe(&auth, |_, _, cx| cx.notify());
-        let password = cx.new(|cx| {
-            InputState::new(window, cx)
-                .masked(true)
-                .placeholder("留空则每次连接都询问")
+        let credential = cx.new(|cx| {
+            SelectState::new(
+                credentials
+                    .iter()
+                    .map(credential_option)
+                    .collect::<Vec<_>>(),
+                credential_ix.map(IndexPath::new),
+                window,
+                cx,
+            )
+            .searchable(true)
         });
-        let passphrase = cx.new(|cx| {
-            InputState::new(window, cx)
-                .masked(true)
-                .placeholder("留空则每次连接都询问")
-        });
-        // A passphrase belongs to a key file, so picking another key makes
-        // whatever is in the field meaningless. Clearing it is also the
-        // visible cue that the new key needs its own passphrase.
-        let key_path_subscription = cx.subscribe_in(
-            &key_path,
-            window,
-            |this, _, event: &InputEvent, window, cx| {
-                if matches!(event, InputEvent::Change) {
-                    this.forget_loaded_passphrase(window, cx);
-                }
-            },
-        );
         let group_ix = group_ids
             .iter()
             .position(|group| *group == draft.group)
             .unwrap_or(0);
         let group =
             cx.new(|cx| SelectState::new(group_names, Some(IndexPath::new(group_ix)), window, cx));
+        let subscriptions = vec![
+            cx.observe(&auth, |_, _, cx| cx.notify()),
+            cx.observe(&credential, |_, _, cx| cx.notify()),
+            cx.observe(&fields, |_, _, cx| cx.notify()),
+        ];
 
-        let this = Self {
+        if editing.is_some() {
+            // The typed login's secrets, even for a host that uses a
+            // credential now: they are what switching back would show.
+            fields.update(cx, |fields, cx| {
+                let key_path = (draft.auth == AuthKind::Key)
+                    .then(|| draft.key_path.clone())
+                    .flatten();
+                fields.load_saved(Some(draft.password_secret()), key_path, cx)
+            });
+        }
+        Self {
             store,
             editing,
             name,
             host,
             port,
+            source: if credential_ix.is_some() {
+                AuthSource::Credential
+            } else {
+                AuthSource::Manual
+            },
             user,
             auth,
-            key_path,
-            password,
-            passphrase,
+            fields,
+            credential,
+            credentials,
             group,
             group_ids,
             error: None,
             testing_connection: false,
             tester,
             editing_connected,
-            secrets,
-            password_loaded: false,
-            passphrase_loaded: false,
-            _auth_subscription: auth_subscription,
-            _key_path_subscription: key_path_subscription,
-        };
-        if editing.is_some() {
-            this.load_saved_secrets(&draft, cx);
+            _subscriptions: subscriptions,
         }
-        this
     }
 
-    /// Read what the keychain holds for the session being edited, off the UI
-    /// thread: the call blocks and on macOS may raise a system authorization
-    /// dialog. The form stays usable while it runs.
-    fn load_saved_secrets(&self, draft: &SessionDraft, cx: &mut Context<Self>) {
-        let secrets = self.secrets.clone();
-        let endpoint = draft.password_secret();
-        let key_path = draft.key_path.clone();
-        cx.spawn(async move |this, cx| {
-            let loaded = cx
-                .background_executor()
-                .spawn(async move {
-                    SavedSecrets {
-                        password: secrets.get(&endpoint).ok().flatten(),
-                        passphrase: key_path
-                            .as_ref()
-                            .map(|path| SecretRef::passphrase(path.as_ref()))
-                            .and_then(|secret| secrets.get(&secret).ok().flatten()),
-                        looked_for_passphrase: key_path.is_some(),
-                    }
-                })
-                .await;
-            this.update_in(cx, |this, window, cx| this.fill_saved(loaded, window, cx))
-                .ok();
-        })
-        .detach();
-    }
-
-    /// Put the saved secrets into their fields. A field the user has already
-    /// typed into wins: the read is asynchronous and may land late.
-    fn fill_saved(&mut self, loaded: SavedSecrets, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(password) = loaded.password
-            && self.password.read(cx).value().is_empty()
-        {
-            self.password
-                .update(cx, |input, cx| input.set_value(&*password, window, cx));
+    fn set_source(&mut self, source: AuthSource, cx: &mut Context<Self>) {
+        if self.source != source {
+            self.source = source;
+            self.error = None;
+            cx.notify();
         }
-        self.password_loaded = true;
-        if loaded.looked_for_passphrase {
-            if let Some(passphrase) = loaded.passphrase
-                && self.passphrase.read(cx).value().is_empty()
-            {
-                self.passphrase
-                    .update(cx, |input, cx| input.set_value(&*passphrase, window, cx));
-            }
-            self.passphrase_loaded = true;
-        }
-        cx.notify();
-    }
-
-    /// Drop a passphrase that belonged to a key file the form no longer points
-    /// at, so it cannot be written under the new key's name.
-    fn forget_loaded_passphrase(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.passphrase_loaded {
-            return;
-        }
-        self.passphrase_loaded = false;
-        self.passphrase
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        cx.notify();
-    }
-
-    fn choose_key(&mut self, _: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let receiver = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some("选择 SSH 私钥".into()),
-        });
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = receiver.await else {
-                return;
-            };
-            let Some(path) = paths.into_iter().next() else {
-                return;
-            };
-            this.update_in(cx, |this, window, cx| {
-                this.key_path.update(cx, |input, cx| {
-                    input.set_value(path.to_string_lossy().into_owned(), window, cx)
-                });
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
     }
 
     /// The authentication method the form has selected.
@@ -294,36 +230,58 @@ impl SessionForm {
             .unwrap_or_default()
     }
 
+    /// The credential the form has selected.
+    fn selected_credential(&self, cx: &App) -> Option<&Credential> {
+        self.credential
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|ix| self.credentials.get(ix.row))
+    }
+
+    /// The address and port, or why they will not do.
+    fn endpoint(&self, cx: &App) -> Result<(String, u16), &'static str> {
+        let host = self.host.read(cx).value().trim().to_string();
+        let port = parse_port(self.port.read(cx).value().trim());
+        match (host.is_empty(), port) {
+            (true, _) => Err("请输入地址"),
+            (_, None) => Err("端口必须是 1 到 65535 之间的数字"),
+            (_, Some(port)) => Ok((host, port)),
+        }
+    }
+
     /// The login the form's current values describe, saved or not, or why
     /// there is nothing to test yet.
     fn login_test(&self, cx: &App) -> Result<LoginTest, &'static str> {
-        let host = self.host.read(cx).value().trim().to_string();
-        let port = parse_port(self.port.read(cx).value().trim());
+        let (host, port) = self.endpoint(cx)?;
+        if self.source == AuthSource::Credential {
+            let credential = self.selected_credential(cx).ok_or("请选择凭据")?;
+            return Ok(LoginTest::saved(SessionLogin::with_credential(
+                host, port, credential,
+            )));
+        }
         let user = self.user.read(cx).value().trim().to_string();
+        if user.is_empty() {
+            return Err("请输入用户名");
+        }
         let auth = self.auth(cx);
-        let key_path = self.key_path.read(cx).value().trim().to_string();
-        let port = match (host.is_empty(), port, user.is_empty()) {
-            (true, _, _) => return Err("请输入地址"),
-            (_, None, _) => return Err("端口必须是 1 到 65535 之间的数字"),
-            (_, _, true) => return Err("请输入用户名"),
-            (_, Some(port), _) => port,
-        };
+        let fields = self.fields.read(cx);
+        let key_path = fields.key_path(cx);
         if auth == AuthKind::Key && key_path.is_empty() {
             return Err("私钥认证需要选择私钥文件");
         }
-        let mut request = LoginTest::new(host, port, user, auth);
+        let key_path = (auth == AuthKind::Key).then(|| key_path.into());
+        let mut request = LoginTest::typed(SessionLogin::manual(host, port, user, auth, key_path));
         // Only what the chosen method uses, which is also what the form shows.
         if uses_password(auth) {
-            let password = self.password.read(cx).value();
+            let password = fields.password(cx);
             if !password.is_empty() {
-                request = request.with_password(password.to_string());
+                request = request.with_password(password);
             }
         }
         if auth == AuthKind::Key {
-            request = request.with_key_path(key_path);
-            let passphrase = self.passphrase.read(cx).value();
+            let passphrase = fields.passphrase(cx);
             if !passphrase.is_empty() {
-                request = request.with_passphrase(passphrase.to_string());
+                request = request.with_passphrase(passphrase);
             }
         }
         Ok(request)
@@ -405,31 +363,44 @@ impl SessionForm {
         .detach();
     }
 
+    /// How the form says the host logs in, or what is missing.
+    fn committed_login(&self, cx: &App) -> Result<CommittedLogin, &'static str> {
+        match self.source {
+            AuthSource::Manual => {
+                let auth = self.auth(cx);
+                let key_path = self.fields.read(cx).key_path(cx);
+                if auth == AuthKind::Key && key_path.is_empty() {
+                    return Err("私钥认证需要选择私钥文件");
+                }
+                Ok(CommittedLogin::Typed { auth, key_path })
+            }
+            AuthSource::Credential => self
+                .selected_credential(cx)
+                .map(|credential| CommittedLogin::Saved {
+                    credential: credential.id,
+                    user: credential.user.clone(),
+                })
+                .ok_or("请选择凭据"),
+        }
+    }
+
     /// Validate and write to the store. Returns whether the dialog may close.
     pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let name = self.name.read(cx).value().trim().to_string();
-        let host = self.host.read(cx).value().trim().to_string();
-        let user = self.user.read(cx).value().trim().to_string();
-        let port = parse_port(self.port.read(cx).value().trim());
-        let auth = self.auth(cx);
-        let key_path = self.key_path.read(cx).value().trim().to_string();
-
-        let error = if name.is_empty() {
-            Some("请输入名称")
-        } else if host.is_empty() {
-            Some("请输入地址")
-        } else if port.is_none() {
-            Some("端口必须是 1 到 65535 之间的数字")
-        } else if auth == AuthKind::Key && key_path.is_empty() {
-            Some("私钥认证需要选择私钥文件")
+        let checked = if name.is_empty() {
+            Err("请输入名称")
         } else {
-            None
+            self.endpoint(cx)
+                .and_then(|endpoint| Ok((endpoint, self.committed_login(cx)?)))
         };
-        if let Some(error) = error {
-            self.error = Some(error.into());
-            cx.notify();
-            return false;
-        }
+        let ((host, port), login) = match checked {
+            Ok(checked) => checked,
+            Err(error) => {
+                self.error = Some(error.into());
+                cx.notify();
+                return false;
+            }
+        };
 
         let group = self
             .group
@@ -437,44 +408,37 @@ impl SessionForm {
             .selected_index(cx)
             .and_then(|ix| self.group_ids.get(ix.row).copied())
             .unwrap_or(None);
-        let mut draft = SessionDraft::new(
-            name,
-            host,
-            port.unwrap_or(22),
-            if user.is_empty() {
-                "root".to_string()
-            } else {
-                user
-            },
-            auth,
-            group,
-        );
-        if auth == AuthKind::Key {
-            draft = draft.with_key_path(key_path);
-        }
-
         // Secrets never ride along in the draft, which derives `Debug`. They
-        // go to the keychain separately, under the endpoint the draft names.
-        let password_secret = draft.password_secret();
-        let passphrase_secret = draft
-            .key_path
-            .as_ref()
-            .map(|path| SecretRef::passphrase(path.as_ref()));
-        let password_change = if uses_password(auth) {
-            secret_change(
-                self.password.read(cx).value().to_string(),
-                self.password_loaded,
-            )
-        } else {
-            None
-        };
-        let passphrase_change = if auth == AuthKind::Key {
-            secret_change(
-                self.passphrase.read(cx).value().to_string(),
-                self.passphrase_loaded,
-            )
-        } else {
-            None
+        // go to the keychain separately, under the endpoint the draft names;
+        // a login through a credential leaves the host's own entries alone.
+        let mut secret_changes: Vec<(SecretRef, Option<String>)> = Vec::new();
+        let draft = match login {
+            CommittedLogin::Saved { credential, user } => {
+                SessionDraft::new(name, host, port, user, AuthKind::Auto, group)
+                    .with_credential(credential)
+            }
+            CommittedLogin::Typed { auth, key_path } => {
+                let user = self.user.read(cx).value().trim().to_string();
+                let user = if user.is_empty() {
+                    DEFAULT_USER.to_string()
+                } else {
+                    user
+                };
+                let mut draft = SessionDraft::new(name, host, port, user, auth, group);
+                let fields = self.fields.read(cx);
+                if uses_password(auth)
+                    && let Some(change) = fields.password_change(cx)
+                {
+                    secret_changes.push((draft.password_secret(), change));
+                }
+                if auth == AuthKind::Key {
+                    if let Some(change) = fields.passphrase_change(cx) {
+                        secret_changes.push((SecretRef::passphrase(&key_path), change));
+                    }
+                    draft = draft.with_key_path(key_path);
+                }
+                draft
+            }
         };
 
         let editing = self.editing;
@@ -489,120 +453,174 @@ impl SessionForm {
             }
             // `update` above may have dropped the entry for the endpoint the
             // session just left; this writes the one it moved to.
-            if let Some(change) = password_change {
-                store.save_secret(password_secret, change, cx);
-            }
-            if let (Some(secret), Some(change)) = (passphrase_secret, passphrase_change) {
+            for (secret, change) in secret_changes {
                 store.save_secret(secret, change, cx);
             }
         });
         // The dialog is about to close and take the form with it; drop the
         // plaintext now rather than waiting for the entity.
-        self.password
-            .update(cx, |input, cx| input.set_value("", window, cx));
-        self.passphrase
-            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.fields
+            .update(cx, |fields, cx| fields.clear(window, cx));
         self.error = None;
         true
+    }
+
+    /// The fields of a login typed into the form.
+    fn manual_fields(&self, form: Form, cx: &mut Context<Self>) -> Form {
+        let auth = self.auth(cx);
+        let fields = self.fields.read(cx);
+        form.child(
+            Field::new()
+                .label("用户名")
+                .col_span(4)
+                .child(Input::new(&self.user).id("session-user").small()),
+        )
+        .child(
+            Field::new()
+                .label("认证类型")
+                .col_span(4)
+                .child(Select::new(&self.auth).id("session-auth").small()),
+        )
+        .when(uses_password(auth), |form| {
+            form.child(
+                Field::new()
+                    .label("密码")
+                    .col_span(4)
+                    .child(fields.password_input("session-password")),
+            )
+        })
+        .when(auth == AuthKind::Key, |form| {
+            form.child(
+                Field::new()
+                    .label("私钥文件")
+                    .required(true)
+                    .col_span(4)
+                    .child(SecretFields::key_path_input(
+                        &self.fields,
+                        "session-key-path",
+                        "choose-key",
+                        cx,
+                    )),
+            )
+            .child(
+                Field::new()
+                    .label("私钥口令")
+                    .col_span(4)
+                    .child(fields.passphrase_input("session-passphrase")),
+            )
+        })
+    }
+
+    /// The field that picks a saved credential, with what it logs in as.
+    fn credential_field(&self, cx: &App) -> Field {
+        let summary = match self.selected_credential(cx) {
+            Some(credential) => Some(credential_summary(credential)),
+            None if self.credentials.is_empty() => {
+                Some("还没有凭据，可在侧栏的「凭据」中新建".into())
+            }
+            None => None,
+        };
+        Field::new()
+            .label("凭据")
+            .required(true)
+            .col_span(4)
+            .child(
+                Select::new(&self.credential)
+                    .id("session-credential")
+                    .placeholder("请选择凭据")
+                    .search_placeholder("搜索凭据")
+                    .empty(|_, cx| {
+                        div()
+                            .py_4()
+                            .text_sm()
+                            .text_center()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("还没有凭据")
+                    })
+                    .small(),
+            )
+            .when_some(summary, |field, summary: SharedString| {
+                field.description_fn(move |_, _| {
+                    div()
+                        .id("session-credential-summary")
+                        .test_support()
+                        .aria_label(summary.clone())
+                        .child(summary.clone())
+                })
+            })
     }
 }
 
 impl Render for SessionForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let auth = self.auth(cx);
-        let keychain = self.secrets.is_available();
+        let source = self.source;
+        let keychain = self.fields.read(cx).keychain_available();
         let secret_note = if keychain {
             "密码保存在系统钥匙串，不会写入 ShellRS 的数据库。"
         } else {
             "系统钥匙串不可用，这台机器上无法保存密码，每次连接都会询问。"
         };
+        // Four columns so the address and its port share a row, as they are
+        // written (`host:port`); every other field takes a row of its own.
+        let form = Form::new()
+            .columns(4)
+            .child(
+                Field::new()
+                    .label("名称")
+                    .required(true)
+                    .col_span(4)
+                    .child(Input::new(&self.name).id("session-name").small()),
+            )
+            .child(
+                Field::new()
+                    .label("地址")
+                    .required(true)
+                    .col_span(3)
+                    .child(Input::new(&self.host).id("session-host").small()),
+            )
+            .child(
+                Field::new()
+                    .label("端口")
+                    .child(Input::new(&self.port).id("session-port").small()),
+            )
+            .child(
+                Field::new().label("认证方式").col_span(4).child(
+                    RadioGroup::horizontal("session-auth-source")
+                        .selected_index(AuthSource::ALL.iter().position(|each| *each == source))
+                        .on_change(cx.listener(|this, ix: &usize, _, cx| {
+                            if let Some(source) = AuthSource::ALL.get(*ix) {
+                                this.set_source(*source, cx);
+                            }
+                        }))
+                        .children(
+                            AuthSource::ALL
+                                .map(|each| Radio::new(each.label()).label(each.label()).small()),
+                        ),
+                ),
+            );
+        let form = match source {
+            AuthSource::Manual => self.manual_fields(form, cx),
+            AuthSource::Credential => form.child(self.credential_field(cx)),
+        };
         v_flex()
             .gap_3()
             .w_full()
             .child(
-                Form::new()
-                    .child(
-                        Field::new()
-                            .label("名称")
-                            .required(true)
-                            .child(Input::new(&self.name).id("session-name").small()),
-                    )
-                    .child(
-                        Field::new()
-                            .label("地址")
-                            .required(true)
-                            .child(Input::new(&self.host).id("session-host").small()),
-                    )
-                    .child(
-                        Field::new()
-                            .label("端口")
-                            .child(Input::new(&self.port).id("session-port").small()),
-                    )
-                    .child(
-                        Field::new()
-                            .label("用户名")
-                            .child(Input::new(&self.user).id("session-user").small()),
-                    )
-                    .child(
-                        Field::new()
-                            .label("认证方式")
-                            .child(Select::new(&self.auth).id("session-auth").small()),
-                    )
-                    .when(uses_password(auth), |form| {
-                        form.child(
-                            Field::new().label("密码").child(
-                                Input::new(&self.password)
-                                    .id("session-password")
-                                    .small()
-                                    .mask_toggle()
-                                    .content_type(InputContentType::Password)
-                                    .disabled(!keychain),
-                            ),
-                        )
-                    })
-                    .when(auth == AuthKind::Key, |form| {
-                        form.child(
-                            Field::new().label("私钥文件").required(true).child(
-                                h_flex()
-                                    .gap_2()
-                                    .w_full()
-                                    .child(
-                                        Input::new(&self.key_path)
-                                            .id("session-key-path")
-                                            .small()
-                                            .flex_1(),
-                                    )
-                                    .child(
-                                        Button::new("choose-key")
-                                            .label("选择…")
-                                            .small()
-                                            .on_click(cx.listener(Self::choose_key)),
-                                    ),
-                            ),
-                        )
-                        .child(
-                            Field::new().label("私钥口令").child(
-                                Input::new(&self.passphrase)
-                                    .id("session-passphrase")
-                                    .small()
-                                    .mask_toggle()
-                                    .content_type(InputContentType::Password)
-                                    .disabled(!keychain),
-                            ),
-                        )
-                    })
-                    .child(
-                        Field::new()
-                            .label("分组")
-                            .child(Select::new(&self.group).small()),
-                    ),
+                form.child(
+                    Field::new()
+                        .label("分组")
+                        .col_span(4)
+                        .child(Select::new(&self.group).small()),
+                ),
             )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(secret_note),
-            )
+            .when(source == AuthSource::Manual, |form| {
+                form.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(secret_note),
+                )
+            })
             .when(self.editing_connected, |form| {
                 form.child(
                     div()
@@ -615,6 +633,36 @@ impl Render for SessionForm {
                 form.child(form_error(error.clone(), cx).aria_label(error))
             })
     }
+}
+
+/// How a host the form commits logs in.
+enum CommittedLogin {
+    Typed {
+        auth: AuthKind,
+        key_path: String,
+    },
+    Saved {
+        credential: CredentialId,
+        user: SharedString,
+    },
+}
+
+/// A credential as the host form's select lists it: `运维（root · 密码）`.
+fn credential_option(credential: &Credential) -> SharedString {
+    format!("{}（{}）", credential.name, credential.summary()).into()
+}
+
+/// What a host using `credential` logs in as and with.
+fn credential_summary(credential: &Credential) -> SharedString {
+    let with = match credential.kind {
+        CredentialKind::Password => "使用凭据保存的密码".to_string(),
+        CredentialKind::Key => format!(
+            "使用私钥 {}",
+            credential.key_path.as_deref().unwrap_or_default()
+        ),
+        CredentialKind::Agent => "使用 SSH Agent 中的密钥".to_string(),
+    };
+    format!("以 {} 登录，{with}", credential.user).into()
 }
 
 /// A trust question from the test's worker, with where to send the answer.
@@ -671,22 +719,6 @@ fn connection_test_notification(result: Result<(), String>) -> Notification {
 /// `Auto` walks agent, then keys, then password, so it can.
 fn uses_password(auth: AuthKind) -> bool {
     matches!(auth, AuthKind::Auto | AuthKind::Password)
-}
-
-/// What to do with a secret field on commit: `None` leaves the keychain
-/// alone, `Some(None)` deletes the entry, `Some(Some(value))` writes it.
-///
-/// An empty field only means "delete" once the saved value has been read
-/// back. Before that it just means the read has not landed, so committing
-/// straight away can never wipe a saved password.
-fn secret_change(value: String, loaded: bool) -> Option<Option<String>> {
-    if !value.is_empty() {
-        Some(Some(value))
-    } else if loaded {
-        Some(None)
-    } else {
-        None
-    }
 }
 
 /// Open the new-session (`editing == None`) or edit-session dialog.
@@ -815,7 +847,7 @@ fn describe_session_delete(
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthKind, describe_session_delete, secret_change, uses_password};
+    use super::{AuthKind, describe_session_delete, uses_password};
 
     #[test]
     fn deleting_a_session_says_what_goes_with_it() {
@@ -843,31 +875,5 @@ mod tests {
         assert!(uses_password(AuthKind::Auto));
         assert!(uses_password(AuthKind::Password));
         assert!(!uses_password(AuthKind::Key));
-    }
-
-    #[test]
-    fn a_filled_field_is_written() {
-        assert_eq!(
-            secret_change("hunter2".into(), false),
-            Some(Some("hunter2".into()))
-        );
-        assert_eq!(
-            secret_change("hunter2".into(), true),
-            Some(Some("hunter2".into()))
-        );
-    }
-
-    #[test]
-    fn an_emptied_field_deletes_only_once_the_saved_value_was_read() {
-        assert_eq!(secret_change(String::new(), true), Some(None));
-        assert_eq!(secret_change(String::new(), false), None);
-    }
-
-    #[test]
-    fn surrounding_whitespace_is_part_of_the_secret() {
-        assert_eq!(
-            secret_change("  spaced  ".into(), true),
-            Some(Some("  spaced  ".into()))
-        );
     }
 }

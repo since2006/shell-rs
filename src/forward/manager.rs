@@ -210,11 +210,11 @@ impl ForwardManager {
         let Some(rule) = store.forward(id) else {
             return;
         };
-        let Some(session) = store.session(rule.session) else {
+        let Some(login) = store.login(rule.session) else {
             return;
         };
-        let session_id = session.id;
-        let transport = self.provider.create(rule, session);
+        let session_id = rule.session;
+        let transport = self.provider.create(rule, &login);
         let (commands, command_receiver) = async_channel::unbounded();
         let (event_sender, events) = async_channel::unbounded();
         self.failures.remove(&id);

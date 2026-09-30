@@ -3,7 +3,7 @@ use super::*;
 use crate::{
     connection::{ConnectionPromptKind, ConnectionPromptReply, ConnectionSecret},
     secrets::InMemorySecretStore,
-    session::{AuthKind, Session, SessionDraft, SessionId},
+    session::{AuthKind, Session, SessionDraft, SessionId, SessionLogin},
     ssh::SshConnector,
 };
 use russh::{
@@ -260,7 +260,7 @@ fn worker(port: u16, data: &std::path::Path) -> Worker {
             None,
         ),
     );
-    let transport = provider.create(&session);
+    let transport = provider.create(&SessionLogin::of(&session, None));
     let (commands, rx) = async_channel::unbounded();
     let (tx, events) = async_channel::unbounded();
     let thread = std::thread::spawn(move || transport.run(rx, tx).unwrap());

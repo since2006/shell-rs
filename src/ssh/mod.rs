@@ -5,8 +5,8 @@ mod probe;
 mod tester;
 mod transport;
 pub use connection::{
-    ForwardedTcpip, MissingCredential, SshConnectionConfig, SshConnector, SshHandle, SshPrompts,
-    is_network_error,
+    AgentLocation, ForwardedTcpip, MissingCredential, SshConnectionConfig, SshConnector, SshHandle,
+    SshPrompts, is_network_error,
 };
 pub use exec::{ExecError, ExecErrorKind, ExecExit, ExecStream, run_command};
 pub use tester::{SshConnectionTester, describe_login_error};

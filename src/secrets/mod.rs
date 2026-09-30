@@ -22,7 +22,7 @@ pub const SERVICE: &str = "shellrs";
 ///
 /// 按「用哪个用户连到哪个端点」而不是「哪条保存的主机」归属：主机改名、复制都
 /// 不丢密码，端点和用户相同的几条共用一条；私钥口令按文件路径归属，同一把钥匙
-/// 只问一次。
+/// 只问一次。密码凭据的密码归凭据自己，用它的主机共用这一条。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SecretRef {
     /// 某个 SSH 端点的登录密码。
@@ -33,6 +33,8 @@ pub enum SecretRef {
     },
     /// 某个私钥文件的口令。
     Passphrase { key_path: String },
+    /// 某条密码凭据的密码，按凭据随机生成、永不复用的 `keychain_id` 归属。
+    Credential { keychain_id: String },
 }
 
 impl SecretRef {
@@ -50,11 +52,18 @@ impl SecretRef {
         }
     }
 
+    pub fn credential(keychain_id: impl Into<String>) -> Self {
+        Self::Credential {
+            keychain_id: keychain_id.into(),
+        }
+    }
+
     /// 钥匙串条目的账户名。前缀区分种类，在 Keychain Access 里直接可读。
     pub fn account(&self) -> String {
         match self {
             Self::Password { user, host, port } => format!("password:{user}@{host}:{port}"),
             Self::Passphrase { key_path } => format!("passphrase:{key_path}"),
+            Self::Credential { keychain_id } => format!("credential:{keychain_id}"),
         }
     }
 }
@@ -103,10 +112,19 @@ mod tests {
     }
 
     #[test]
+    fn credential_accounts_name_the_keychain_id() {
+        let secret = SecretRef::credential("Jwg5rHvXCxw89paM");
+        assert_eq!(secret.account(), "credential:Jwg5rHvXCxw89paM");
+    }
+
+    #[test]
     fn accounts_of_different_kinds_never_collide() {
         let password = SecretRef::password("root", "10.0.1.12", 22);
         let passphrase = SecretRef::passphrase("root@10.0.1.12:22");
+        let credential = SecretRef::credential("root@10.0.1.12:22");
         assert_ne!(password.account(), passphrase.account());
+        assert_ne!(password.account(), credential.account());
+        assert_ne!(passphrase.account(), credential.account());
     }
 
     #[test]

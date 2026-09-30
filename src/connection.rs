@@ -215,84 +215,86 @@ impl std::fmt::Debug for ConnectionPromptReply {
 /// What a connection test logs in with: the session form's current values,
 /// saved or not. Secrets stay zeroized and never print.
 pub struct LoginTest {
-    host: String,
-    port: u16,
-    user: String,
-    auth: crate::session::AuthKind,
-    key_path: Option<std::path::PathBuf>,
+    login: crate::session::SessionLogin,
+    /// The secrets typed into the form, for a login typed there. `None` for
+    /// a login through a credential, which uses what the credential saved.
+    typed: Option<TypedSecrets>,
+}
+
+#[derive(Default)]
+struct TypedSecrets {
     password: Option<Zeroizing<String>>,
     passphrase: Option<Zeroizing<String>>,
 }
 
 impl LoginTest {
-    pub fn new(
-        host: impl Into<String>,
-        port: u16,
-        user: impl Into<String>,
-        auth: crate::session::AuthKind,
-    ) -> Self {
+    /// A login typed into the form. The form decides its password and its
+    /// key's passphrase: an empty field means none, whatever is saved.
+    pub fn typed(login: crate::session::SessionLogin) -> Self {
         Self {
-            host: host.into(),
-            port,
-            user: user.into(),
-            auth,
-            key_path: None,
-            password: None,
-            passphrase: None,
+            login,
+            typed: Some(TypedSecrets::default()),
         }
     }
 
-    pub fn with_key_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
-        self.key_path = Some(path.into());
-        self
+    /// A login through a saved credential, with the secrets saved for it.
+    pub fn saved(login: crate::session::SessionLogin) -> Self {
+        Self { login, typed: None }
     }
 
+    /// The password typed into the form. Only a typed login has one.
     pub fn with_password(mut self, password: impl Into<String>) -> Self {
-        self.password = Some(Zeroizing::new(password.into()));
+        if let Some(typed) = &mut self.typed {
+            typed.password = Some(Zeroizing::new(password.into()));
+        }
         self
     }
 
+    /// The passphrase typed into the form. Only a typed login has one.
     pub fn with_passphrase(mut self, passphrase: impl Into<String>) -> Self {
-        self.passphrase = Some(Zeroizing::new(passphrase.into()));
+        if let Some(typed) = &mut self.typed {
+            typed.passphrase = Some(Zeroizing::new(passphrase.into()));
+        }
         self
     }
 
+    pub fn login(&self) -> &crate::session::SessionLogin {
+        &self.login
+    }
     pub fn host(&self) -> &str {
-        &self.host
+        &self.login.host
     }
     pub fn port(&self) -> u16 {
-        self.port
+        self.login.port
     }
     pub fn user(&self) -> &str {
-        &self.user
+        &self.login.user
     }
-    pub fn auth(&self) -> crate::session::AuthKind {
-        self.auth
-    }
-    pub fn key_path(&self) -> Option<&std::path::Path> {
-        self.key_path.as_deref()
+    /// Whether the form, not the keychain, decides the secrets.
+    pub fn is_typed(&self) -> bool {
+        self.typed.is_some()
     }
     pub fn password(&self) -> Option<&str> {
-        self.password.as_deref().map(String::as_str)
+        self.typed
+            .as_ref()
+            .and_then(|typed| typed.password.as_deref())
+            .map(String::as_str)
     }
     pub fn passphrase(&self) -> Option<&str> {
-        self.passphrase.as_deref().map(String::as_str)
+        self.typed
+            .as_ref()
+            .and_then(|typed| typed.passphrase.as_deref())
+            .map(String::as_str)
     }
 }
 
 impl std::fmt::Debug for LoginTest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoginTest")
-            .field("host", &self.host)
-            .field("port", &self.port)
-            .field("user", &self.user)
-            .field("auth", &self.auth)
-            .field("key_path", &self.key_path)
-            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
-            .field(
-                "passphrase",
-                &self.passphrase.as_ref().map(|_| "<redacted>"),
-            )
+            .field("login", &self.login)
+            .field("typed", &self.is_typed())
+            .field("password", &self.password().map(|_| "<redacted>"))
+            .field("passphrase", &self.passphrase().map(|_| "<redacted>"))
             .finish()
     }
 }

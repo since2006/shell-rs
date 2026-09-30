@@ -28,7 +28,12 @@ impl Workspace {
     }
 
     /// Show one of the sidebar's lists, opening the sidebar if it is hidden.
-    fn show_sidebar(&mut self, mode: SidebarMode, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn show_sidebar(
+        &mut self,
+        mode: SidebarMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.dock_area.read(cx).is_dock_open(DockPlacement::Left) {
             self.dock_area.update(cx, |area, cx| {
                 area.toggle_dock(DockPlacement::Left, window, cx);

@@ -14,11 +14,11 @@ use gpui_kit::{
 
 use shellrs::app::{
     CenterTab, ClearTerminal, CloseScope, CloseTabs, CollapseAllGroups, ConnectGroup,
-    ConnectSession, CopySessionHost, CopySessionId, DeleteForward, DeleteGroup, DeleteSession,
-    DisconnectSession, DisconnectTerminal, EditForward, EditSession, ExpandAllGroups,
-    FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch, InstallCliCommand,
-    NewLocalTerminal, NewSessionInGroup, OpenExplorer, ReconnectTerminal, RemoveAgentSkill,
-    RenameGroup, RenameTerminal, StartForward, StopForward, ToggleSessionPanel,
+    ConnectSession, CopySessionHost, CopySessionId, DeleteCredential, DeleteForward, DeleteGroup,
+    DeleteSession, DisconnectSession, DisconnectTerminal, EditCredential, EditForward, EditSession,
+    ExpandAllGroups, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch,
+    InstallCliCommand, NewLocalTerminal, NewSessionInGroup, OpenExplorer, ReconnectTerminal,
+    RemoveAgentSkill, RenameGroup, RenameTerminal, StartForward, StopForward, ToggleSessionPanel,
 };
 use shellrs::cli::{AgentKind, IntegrationPaths};
 use shellrs::connection::{
@@ -31,8 +31,9 @@ use shellrs::forward::{
 };
 use shellrs::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
 use shellrs::session::{
-    AuthKind, ConnectionState, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule,
-    GroupDraft, GroupId, HostOs, Session, SessionDatabase, SessionDraft, SessionId, SessionStore,
+    AuthKind, ConnectionState, CredentialDraft, CredentialId, CredentialKind, ForwardDraft,
+    ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft, GroupId, HostOs, LoginMethod,
+    SessionDatabase, SessionDraft, SessionId, SessionLogin, SessionStore,
 };
 use shellrs::settings::{Appearance, InterfaceLanguage, SettingsStore};
 use shellrs::sftp::{
@@ -40,7 +41,8 @@ use shellrs::sftp::{
     SftpCommand, SftpEvent, SftpTransport, SftpTransportProvider, UploadRequest,
 };
 use shellrs::terminal::{
-    FixedRemoteTerminalTransportProvider, Latency, LocalTerminalId, RemoteTerminalId, TerminalFont,
+    FixedRemoteTerminalTransportProvider, Latency, LocalTerminalId, RemoteTerminalId,
+    RemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalFont,
     TerminalLifecycle, TerminalSize, TerminalTransport, TerminalTransportCommand,
     TerminalTransportEvent, TerminalTransportFactory,
 };
@@ -957,6 +959,21 @@ async fn new_session_dialog_validates_then_inserts(cx: &mut TestAppContext) {
         assert!(window.find("commit").visible());
         assert!(window.try_find("form-error").is_none());
 
+        // The address and its port share a row; the name above them and the
+        // user name below each take the row's whole width.
+        let [name, host, port, user] = [
+            "session-name",
+            "session-host",
+            "session-port",
+            "session-user",
+        ]
+        .map(|id| window.find(id).bounds());
+        assert_eq!(host.top(), port.top());
+        assert!(host.right() < port.left() && host.size.width > port.size.width);
+        assert!(name.bottom() < host.top() && user.top() > host.bottom());
+        assert_eq!((name.left(), name.right()), (host.left(), port.right()));
+        assert_eq!((user.left(), user.right()), (name.left(), name.right()));
+
         // An empty form is rejected and the dialog stays open. The commit
         // action is dispatched deferred, so the error shows after effects run.
         // The dialog's focus trap owns focus until a field is clicked.
@@ -965,11 +982,17 @@ async fn new_session_dialog_validates_then_inserts(cx: &mut TestAppContext) {
         window.click("commit", cx);
     })
     .unwrap();
-    cx.run_until_parked();
+    // The dialog slides in over real time, and the error line is its last
+    // row: under a loaded test run it can take a few frames to come into view.
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window
+            .try_find("form-error")
+            .is_some_and(|error| error.visible())
+    })
+    .await;
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find("form-error").visible());
         assert!(window.find("commit").visible());
 
         window.click("session-name", cx);
@@ -3961,7 +3984,7 @@ struct FakeSftpProvider {
     slow_home: bool,
 }
 impl SftpTransportProvider for FakeSftpProvider {
-    fn create(&self, _: &shellrs::session::Session) -> Box<dyn SftpTransport> {
+    fn create(&self, _: &SessionLogin) -> Box<dyn SftpTransport> {
         Box::new(FakeSftpTransport {
             requests: self.requests.clone(),
             downloads: self.downloads.clone(),
@@ -6824,11 +6847,11 @@ impl FakeForwardProvider {
 }
 
 impl ForwardTransportProvider for FakeForwardProvider {
-    fn create(&self, rule: &ForwardRule, session: &Session) -> Box<dyn ForwardTransport> {
+    fn create(&self, rule: &ForwardRule, _: &SessionLogin) -> Box<dyn ForwardTransport> {
         Box::new(FakeForwardTransport {
             script: self.script.clone(),
             rule: rule.clone(),
-            session: session.id,
+            session: rule.session,
             runs: self.runs.clone(),
         })
     }
@@ -7809,9 +7832,13 @@ async fn a_click_beside_a_dialog_does_not_close_it(cx: &mut TestAppContext) {
         ("new-session", "session-name"),
         ("new-group", "group-name"),
         ("new-forward", "forward-name"),
+        ("new-credential", "credential-name"),
     ] {
         if open == "new-forward" {
             show_forwards(cx, handle).await;
+        }
+        if open == "new-credential" {
+            show_credentials(cx, handle).await;
         }
         in_frame(cx, handle, |window, cx| window.click(open, cx));
         in_frame(cx, handle, |window, cx| {
@@ -8019,4 +8046,584 @@ fn a_problem_found_while_the_window_is_built_is_shown_once_it_is_open(cx: &mut T
         assert!(window.find("session-search").visible());
     })
     .unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// 凭据
+// ---------------------------------------------------------------------------
+
+/// Hands every remote terminal the same fake, recording the login each one
+/// was started with.
+#[derive(Default)]
+struct RecordingRemoteProvider {
+    factory: Arc<FakeTerminalFactory>,
+    logins: Mutex<Vec<SessionLogin>>,
+}
+
+impl RecordingRemoteProvider {
+    fn logins(&self) -> Vec<SessionLogin> {
+        self.logins
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+}
+
+impl RemoteTerminalTransportProvider for RecordingRemoteProvider {
+    fn factory_for(&self, login: &SessionLogin) -> SharedTerminalTransportFactory {
+        self.logins
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(login.clone());
+        self.factory.clone()
+    }
+}
+
+/// A workspace over `store`, its remote terminals recorded by `remote` and
+/// its connection test answered by `tester`. Dialogs do not slide, so their
+/// fields stay where they were found.
+fn open_workspace_with_credentials(
+    cx: &mut TestAppContext,
+    store: SessionStore,
+    remote: Arc<RecordingRemoteProvider>,
+    tester: Arc<FakeConnectionTester>,
+) -> (WindowHandle<Root>, Entity<Workspace>) {
+    cx.update(shellrs::init);
+    cx.update(|cx| cx.set_reduce_motion(true));
+    let mut workspace = None;
+    let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
+        let store = cx.new(|_| store);
+        let view = cx.new(|cx| {
+            Workspace::new_with_services(
+                store,
+                cx.new(|_| SettingsStore::in_memory()),
+                remote,
+                Arc::new(FakeTerminalFactory::default()),
+                Arc::new(FakeSftpProvider::default()),
+                Arc::new(FakeLocalDirectory::default()),
+                tester,
+                Arc::new(FakeForwardProvider::default()),
+                window,
+                cx,
+            )
+        });
+        workspace = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    cx.run_until_parked();
+    (handle, workspace.expect("workspace created"))
+}
+
+/// Show the credential list and wait for it to be up.
+async fn show_credentials(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+    in_frame(cx, handle, |window, cx| {
+        window.click("show-credentials", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("credential-search").is_some()
+    })
+    .await;
+}
+
+/// Wait for the open dialog to close.
+async fn wait_for_dialog_to_close(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("commit").is_none()
+    })
+    .await;
+    cx.run_until_parked();
+}
+
+/// A store with one password credential, 「运维」 as `deploy`, and the host
+/// db-01 logging in with it; the keychain holds the credential's password.
+fn store_with_credential(
+    secrets: Arc<InMemorySecretStore>,
+) -> (SessionStore, CredentialId, SessionId) {
+    let mut store = SessionStore::empty();
+    let credential = store.insert_credential_unnotified(CredentialDraft::new(
+        "运维",
+        CredentialKind::Password,
+        "deploy",
+    ));
+    secrets
+        .set(
+            &store.credential(credential).unwrap().password_secret(),
+            "hunter2",
+        )
+        .unwrap();
+    let session = store.insert_unnotified(
+        SessionDraft::new("db-01", "10.0.2.5", 22, "root", AuthKind::Auto, None)
+            .with_credential(credential),
+    );
+    (store.with_secrets(secrets), credential, session)
+}
+
+#[gpui_kit::test]
+async fn the_title_bar_switches_the_sidebar_to_credentials(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace_with_credentials(
+        cx,
+        SessionStore::seed(),
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    show_credentials(cx, handle).await;
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("show-credentials").checked(), Some(true));
+        assert_eq!(window.find("show-sessions").checked(), Some(false));
+        assert_eq!(window.find("show-forwards").checked(), Some(false));
+        assert_eq!(window.find("credential-empty").label(), Some("还没有凭据"));
+        // The dock's toolbar follows the list; the settings footer stays.
+        assert!(window.find("new-credential").visible());
+        assert!(window.try_find("new-group").is_none());
+        assert!(window.find("open-settings").visible());
+        assert!(window.try_find("session-search").is_none());
+    });
+
+    // The search shortcut goes to the list that is up.
+    in_frame(cx, handle, |window, cx| {
+        window.activate_window();
+        window.dispatch_action(Box::new(FocusSearch), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("credential-search").focused(), Some(true));
+    });
+
+    in_frame(cx, handle, |window, cx| window.click("show-sessions", cx));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("session-search").visible());
+        assert!(window.try_find("credential-search").is_none());
+        assert_eq!(window.find("show-credentials").checked(), Some(false));
+    });
+}
+
+#[gpui_kit::test]
+async fn a_new_password_credential_keeps_its_password_in_the_keychain(cx: &mut TestAppContext) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        SessionStore::empty().with_secrets(secrets.clone()),
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    show_credentials(cx, handle).await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("credential-empty-new", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        // A new credential starts at its name, as a password credential.
+        assert_eq!(window.find("credential-name").focused(), Some(true));
+        assert!(window.find("credential-password").visible());
+        window.input("运维", cx);
+        window.click("credential-user", cx);
+        window.press("cmd-a", cx);
+        window.input("deploy", cx);
+        window.click("credential-password", cx);
+        window.input("hunter2", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+
+    let credential = cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(store.credentials().len(), 1);
+        let credential = store.credentials()[0].clone();
+        assert_eq!(credential.name.as_ref(), "运维");
+        assert_eq!(credential.user.as_ref(), "deploy");
+        assert_eq!(credential.kind, CredentialKind::Password);
+        assert!(
+            !format!("{credential:?}").contains("hunter2"),
+            "凭据本身不该带着密码"
+        );
+        credential
+    });
+    assert_eq!(
+        secrets
+            .get(&credential.password_secret())
+            .unwrap()
+            .as_deref()
+            .map(String::as_str),
+        Some("hunter2")
+    );
+    // The new credential is in the list, selected.
+    in_frame(cx, handle, |window, _| {
+        let row = window.find(("credential-row", credential.id.0));
+        assert!(row.visible());
+        assert_eq!(row.selected(), Some(true));
+    });
+}
+
+#[gpui_kit::test]
+async fn the_credential_kind_decides_which_fields_show(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        SessionStore::empty(),
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    show_credentials(cx, handle).await;
+    in_frame(cx, handle, |window, cx| window.click("new-credential", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("credential-key-path").is_none());
+        assert!(window.try_find("credential-agent-note").is_none());
+        // Nothing but a name is missing, and that is said first.
+        window.click("commit", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("form-error").label(), Some("请输入名称"));
+        window.click("credential-name", cx);
+        window.input("部署", cx);
+        window.within("credential-kind").click(1usize, cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("credential-password").is_none());
+        assert!(window.find("credential-passphrase").visible());
+        window.click("commit", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("form-error").label(),
+            Some("密钥凭据需要选择私钥文件")
+        );
+        window.click("choose-credential-key", cx);
+    });
+    assert!(cx.did_prompt_for_paths());
+    cx.simulate_path_prompt_response(|_| Some(vec!["/tmp/id_deploy".into()]));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("credential-key-path").value(),
+            Some("/tmp/id_deploy")
+        );
+        window.within("credential-kind").click(2usize, cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("credential-agent-note").visible());
+        assert!(window.try_find("credential-key-path").is_none());
+        assert!(window.try_find("credential-password").is_none());
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let credential = &store.credentials()[0];
+        assert_eq!(credential.kind, CredentialKind::Agent);
+        // The key file picked on the way is not kept by an agent credential.
+        assert_eq!(credential.key_path, None);
+        assert_eq!(credential.user.as_ref(), "root");
+    });
+}
+
+#[gpui_kit::test]
+async fn the_credential_list_moves_with_the_arrow_keys_and_edits_on_enter(cx: &mut TestAppContext) {
+    let mut store = SessionStore::empty();
+    let first = store.insert_credential_unnotified(CredentialDraft::new(
+        "运维",
+        CredentialKind::Password,
+        "root",
+    ));
+    let second = store.insert_credential_unnotified(CredentialDraft::new(
+        "个人",
+        CredentialKind::Agent,
+        "me",
+    ));
+    let (handle, _) = open_workspace_with_credentials(
+        cx,
+        store,
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    show_credentials(cx, handle).await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("credential-row", first.0), cx)
+    });
+    in_frame(cx, handle, |window, cx| window.press("down", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find(("credential-row", second.0)).selected(),
+            Some(true)
+        );
+        assert_eq!(
+            window.find(("credential-row", first.0)).selected(),
+            Some(false)
+        );
+        window.press("enter", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("credential-name").value(), Some("个人"));
+        // An agent credential opens with its own kind picked.
+        assert!(window.find("credential-agent-note").visible());
+    });
+}
+
+#[gpui_kit::test]
+async fn a_host_can_use_a_credential_instead_of_typing_a_login(cx: &mut TestAppContext) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (store, credential, _) = store_with_credential(secrets.clone());
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        store,
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    in_frame(cx, handle, |window, cx| window.click("new-session", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("session-name", cx);
+        window.input("web-01", cx);
+        window.click("session-host", cx);
+        window.input("10.0.1.12", cx);
+        window.within("session-auth-source").click(1usize, cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        // The credential brings the user and the secret: neither is asked.
+        assert!(window.try_find("session-user").is_none());
+        assert!(window.try_find("session-password").is_none());
+        assert_eq!(
+            window.find("session-credential").value(),
+            Some("请选择凭据")
+        );
+        window.click("commit", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("form-error").label(), Some("请选择凭据"));
+        window.within("session-credential").click("input", cx);
+    });
+    for key in ["down", "enter"] {
+        in_frame(cx, handle, |window, cx| window.press(key, cx));
+    }
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("session-credential").value(),
+            Some("运维（deploy · 密码）")
+        );
+        assert_eq!(
+            window.find("session-credential-summary").label(),
+            Some("以 deploy 登录，使用凭据保存的密码")
+        );
+        // Off the select first: a focused select opens on the commit.
+        window.click("session-name", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let created = store
+            .sessions()
+            .iter()
+            .find(|session| session.name == "web-01")
+            .expect("web-01 inserted");
+        assert_eq!(created.credential, Some(credential));
+        assert_eq!(created.user.as_ref(), "deploy");
+        assert_eq!(created.auth, AuthKind::Auto);
+    });
+    // Nothing of the host's own went to the keychain.
+    assert_eq!(secrets.len(), 1);
+}
+
+#[gpui_kit::test]
+async fn testing_a_connection_with_a_credential_uses_the_saved_login(cx: &mut TestAppContext) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (store, _, session) = store_with_credential(secrets);
+    let tester = Arc::new(FakeConnectionTester::default());
+    let (handle, _) = open_workspace_with_credentials(
+        cx,
+        store,
+        Arc::new(RecordingRemoteProvider::default()),
+        tester.clone(),
+    );
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(EditSession(session)), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        // A host using a credential opens that way.
+        assert_eq!(
+            window.find("session-credential").value(),
+            Some("运维（deploy · 密码）")
+        );
+        assert!(window.try_find("session-user").is_none());
+        window.click("test-connection", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.notifications(cx).len() == 1
+    })
+    .await;
+    // The credential's user, and no password from the form: the saved one
+    // is read by the login itself.
+    assert_eq!(
+        tester.requests(),
+        [("10.0.2.5".to_string(), 22, "deploy".to_string(), None)]
+    );
+}
+
+#[gpui_kit::test]
+async fn a_terminal_logs_in_with_its_credentials_login(cx: &mut TestAppContext) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (store, credential, session) = store_with_credential(secrets);
+    let secret = store.credential(credential).unwrap().password_secret();
+    let remote = Arc::new(RecordingRemoteProvider::default());
+    let (handle, _) = open_workspace_with_credentials(
+        cx,
+        store,
+        remote.clone(),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ConnectSession(session)), cx)
+    });
+    let logins = remote.logins();
+    assert_eq!(logins.len(), 1);
+    assert_eq!(logins[0].user, "deploy");
+    assert_eq!(logins[0].method, LoginMethod::Password);
+    assert_eq!(logins[0].password, secret);
+}
+
+#[gpui_kit::test]
+async fn editing_a_credentials_user_reconnects_the_hosts_using_it(cx: &mut TestAppContext) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (mut store, credential, session) = store_with_credential(secrets);
+    let other = store.insert_unnotified(SessionDraft::new(
+        "web-01",
+        "10.0.1.12",
+        22,
+        "root",
+        AuthKind::Auto,
+        None,
+    ));
+    let remote = Arc::new(RecordingRemoteProvider::default());
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        store,
+        remote.clone(),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    for id in [session, other] {
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_action(Box::new(ConnectSession(id)), cx)
+        });
+    }
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        workspace
+            .read(cx)
+            .store()
+            .read(cx)
+            .session(session)
+            .is_some_and(|session| session.state.is_connected())
+    })
+    .await;
+    assert_eq!(remote.logins().len(), 2);
+    show_credentials(cx, handle).await;
+
+    // A new name changes no login: nothing reconnects.
+    in_frame(cx, handle, |window, cx| {
+        window.click(("credential-row", credential.0), cx);
+        window.dispatch_action(Box::new(EditCredential(credential)), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("credential-usage").label(),
+            Some(
+                "有 1 台主机使用此凭据。修改用户名、类型或私钥文件后，其中已连接的主机会重新连接。"
+            )
+        );
+        window.click("credential-name", cx);
+        window.press("cmd-a", cx);
+        window.input("生产运维", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    assert_eq!(remote.logins().len(), 2);
+
+    // A new user is a new login for the host using it, and only for it.
+    in_frame(cx, handle, |window, cx| {
+        window.click(("credential-row", credential.0), cx);
+        window.dispatch_action(Box::new(EditCredential(credential)), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("credential-user", cx);
+        window.press("cmd-a", cx);
+        window.input("admin", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    let logins = remote.logins();
+    assert_eq!(logins.len(), 3);
+    assert_eq!(logins[2].user, "admin");
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(
+            store.session(session).unwrap().address(),
+            "admin@10.0.2.5:22"
+        );
+        assert_eq!(store.session(other).unwrap().user.as_ref(), "root");
+    });
+}
+
+#[gpui_kit::test]
+async fn deleting_a_used_credential_leaves_its_hosts_connected_and_logging_in_on_their_own(
+    cx: &mut TestAppContext,
+) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (store, credential, session) = store_with_credential(secrets.clone());
+    let secret = store.credential(credential).unwrap().password_secret();
+    let remote = Arc::new(RecordingRemoteProvider::default());
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        store,
+        remote.clone(),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ConnectSession(session)), cx)
+    });
+    show_credentials(cx, handle).await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("credential-row", credential.0), cx);
+        window.dispatch_action(Box::new(DeleteCredential(credential)), cx);
+    });
+    in_frame(cx, handle, |window, cx| window.click("ok", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find(("credential-row", credential.0)).is_none()
+    })
+    .await;
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert!(store.credentials().is_empty());
+        let host = store.session(session).unwrap();
+        assert_eq!(host.credential, None);
+        assert_eq!(host.auth, AuthKind::Auto);
+        assert_eq!(host.user.as_ref(), "deploy");
+    });
+    // The working connection was left alone, and the password went with the
+    // credential.
+    assert_eq!(remote.logins().len(), 1);
+    assert!(secrets.get(&secret).unwrap().is_none());
+}
+
+#[gpui_kit::test]
+async fn a_long_credential_row_fits_the_smallest_window(cx: &mut TestAppContext) {
+    let mut store = SessionStore::seed();
+    let id = store.insert_credential_unnotified(
+        CredentialDraft::new(
+            "生产环境所有数据库服务器共用的只读巡检账号（不要用于写操作）",
+            CredentialKind::Key,
+            "readonly-inspector",
+        )
+        .with_key_path("/Users/someone/.ssh/a_rather_long_private_key_file_name_ed25519"),
+    );
+    let (handle, _) = open_sized_workspace_with_forwards(
+        cx,
+        store,
+        Arc::new(FakeForwardProvider::default()),
+        size(px(960.), px(600.)),
+    );
+    cx.run_until_parked();
+    show_credentials(cx, handle).await;
+    in_frame(cx, handle, |window, _| {
+        let list = window.find("credential-list").bounds();
+        let row = window.find(("credential-row", id.0)).bounds();
+        assert!(row.right() <= list.right(), "{row:?} in {list:?}");
+    });
 }

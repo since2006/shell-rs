@@ -26,7 +26,7 @@ use super::{
 };
 use crate::{
     connection::{ConnectionPrompt, ConnectionPromptKind},
-    session::{ForwardEndpoint, ForwardKind, ForwardRule, Session},
+    session::{ForwardEndpoint, ForwardKind, ForwardRule, SessionLogin},
     ssh::{
         ForwardedTcpip, MissingCredential, SshConnectionConfig, SshConnector, SshHandle,
         SshPrompts, describe_login_error, is_network_error,
@@ -78,10 +78,10 @@ impl SshForwardTransportProvider {
 }
 
 impl ForwardTransportProvider for SshForwardTransportProvider {
-    fn create(&self, rule: &ForwardRule, session: &Session) -> Box<dyn ForwardTransport> {
+    fn create(&self, rule: &ForwardRule, login: &SessionLogin) -> Box<dyn ForwardTransport> {
         Box::new(SshForwardTransport {
             connector: self.connector.clone(),
-            config: SshConnectionConfig::from(session),
+            config: SshConnectionConfig::from(login),
             kind: rule.kind,
             bind: rule.bind.clone(),
             target: rule.target.clone(),

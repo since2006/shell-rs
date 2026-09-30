@@ -8,9 +8,8 @@ use std::{
 };
 
 use super::protocol::{CliError, ErrorCode, TransferCounters, TransferSummary};
-use super::server::CliBackend;
+use super::server::{CliBackend, CliTarget};
 use crate::connection::{ConnectionPromptKind, ConnectionPromptReply};
-use crate::session::Session;
 use crate::sftp::{
     DownloadRequest, RemotePath, SftpCommand, SftpEvent, SharedSftpTransportProvider,
     TransferAnswer, TransferChoice, TransferPhase, TransferProgress, TransferQuestionKind,
@@ -39,11 +38,11 @@ impl SshCliBackend {
     /// question the way an unattended copy should.
     fn transfer(
         &self,
-        session: &Session,
+        target: &CliTarget,
         command: SftpCommand,
         progress: &mut dyn FnMut(TransferCounters) -> io::Result<()>,
     ) -> Result<TransferSummary, CliError> {
-        let transport = self.sftp.create(session);
+        let transport = self.sftp.create(target.login());
         let (commands, command_receiver) = async_channel::unbounded();
         let (event_sender, events) = async_channel::unbounded();
         let worker = std::thread::Builder::new()
@@ -119,11 +118,11 @@ impl SshCliBackend {
 impl CliBackend for SshCliBackend {
     fn exec(
         &self,
-        session: &Session,
+        target: &CliTarget,
         command: &str,
         output: &mut dyn FnMut(ExecStream, &[u8]) -> io::Result<()>,
     ) -> Result<i32, CliError> {
-        let config = SshConnectionConfig::from(session);
+        let config = SshConnectionConfig::from(target.login());
         match run_command(&self.connector, &config, command, output) {
             Ok(ExecExit::Code(code)) => Ok(i32::try_from(code).unwrap_or(255)),
             Ok(ExecExit::Signal(signal)) => {
@@ -147,25 +146,25 @@ impl CliBackend for SshCliBackend {
 
     fn upload(
         &self,
-        session: &Session,
+        target: &CliTarget,
         source: &Path,
         destination: &str,
         progress: &mut dyn FnMut(TransferCounters) -> io::Result<()>,
     ) -> Result<TransferSummary, CliError> {
         let request = UploadRequest::scp(source.to_path_buf(), remote_path(destination)?);
-        self.transfer(session, SftpCommand::Upload(request), progress)
+        self.transfer(target, SftpCommand::Upload(request), progress)
     }
 
     fn download(
         &self,
-        session: &Session,
+        target: &CliTarget,
         source: &str,
         destination: &Path,
         progress: &mut dyn FnMut(TransferCounters) -> io::Result<()>,
     ) -> Result<TransferSummary, CliError> {
         let request = DownloadRequest::scp(remote_path(source)?, destination.to_path_buf())
             .map_err(|error| CliError::new(ErrorCode::BadRequest, error.to_string()))?;
-        self.transfer(session, SftpCommand::Download(request), progress)
+        self.transfer(target, SftpCommand::Download(request), progress)
     }
 }
 

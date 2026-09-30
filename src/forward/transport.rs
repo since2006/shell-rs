@@ -7,7 +7,7 @@ use async_channel::{Receiver, Sender};
 
 use crate::{
     connection::{ConnectionPrompt, ConnectionPromptReply},
-    session::{ForwardRule, Session},
+    session::{ForwardRule, SessionLogin},
 };
 
 /// What the list tells a running forward.
@@ -56,8 +56,9 @@ pub trait ForwardTransport: Send + 'static {
 }
 
 pub trait ForwardTransportProvider: Send + Sync + 'static {
-    /// A transport for `rule` as it stands now, through `session`.
-    fn create(&self, rule: &ForwardRule, session: &Session) -> Box<dyn ForwardTransport>;
+    /// A transport for `rule` as it stands now, logging in to its session
+    /// with `login`.
+    fn create(&self, rule: &ForwardRule, login: &SessionLogin) -> Box<dyn ForwardTransport>;
 }
 
 pub type SharedForwardTransportProvider = Arc<dyn ForwardTransportProvider>;

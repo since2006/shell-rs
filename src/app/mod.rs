@@ -18,6 +18,8 @@ pub const SESSION_PANEL_CONTEXT: &str = "SessionPanel";
 pub const RECENT_SESSIONS_CONTEXT: &str = "RecentSessions";
 /// Key context of the port-forwarding list.
 pub const FORWARD_PANEL_CONTEXT: &str = "ForwardPanel";
+/// Key context of the credential list.
+pub const CREDENTIAL_PANEL_CONTEXT: &str = "CredentialPanel";
 /// Key contexts of the two SFTP file lists.
 pub const LOCAL_FILE_LIST_CONTEXT: &str = "LocalFileList";
 pub const REMOTE_FILE_LIST_CONTEXT: &str = "RemoteFileList";
@@ -77,6 +79,17 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("enter", ToggleSelectedForward, Some(FORWARD_PANEL_CONTEXT)),
         KeyBinding::new("up", SelectPreviousForward, Some(FORWARD_PANEL_CONTEXT)),
         KeyBinding::new("down", SelectNextForward, Some(FORWARD_PANEL_CONTEXT)),
+        KeyBinding::new(
+            "enter",
+            EditSelectedCredential,
+            Some(CREDENTIAL_PANEL_CONTEXT),
+        ),
+        KeyBinding::new(
+            "up",
+            SelectPreviousCredential,
+            Some(CREDENTIAL_PANEL_CONTEXT),
+        ),
+        KeyBinding::new("down", SelectNextCredential, Some(CREDENTIAL_PANEL_CONTEXT)),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-c", CopyTerminal, Some(TERMINAL_KEY_CONTEXT)),
         #[cfg(target_os = "macos")]

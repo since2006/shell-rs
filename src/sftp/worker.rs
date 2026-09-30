@@ -12,7 +12,7 @@ use super::{
     upload::UploadBatch,
 };
 use crate::{
-    session::Session,
+    session::SessionLogin,
     ssh::{SshConnectionConfig, SshConnector, SshPrompts},
 };
 use anyhow::{Result, anyhow};
@@ -43,10 +43,10 @@ impl SshSftpTransportProvider {
     }
 }
 impl SftpTransportProvider for SshSftpTransportProvider {
-    fn create(&self, session: &Session) -> Box<dyn SftpTransport> {
+    fn create(&self, login: &SessionLogin) -> Box<dyn SftpTransport> {
         Box::new(SshSftpTransport {
             connector: self.connector.clone(),
-            config: SshConnectionConfig::from(session),
+            config: SshConnectionConfig::from(login),
             journal: Journal::new(self.resume_dir.clone()),
             download_journal: DownloadJournal::new(self.download_resume_dir.clone()),
         })

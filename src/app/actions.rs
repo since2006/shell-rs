@@ -6,7 +6,7 @@ use gpui_kit::*;
 use crate::{
     cli::AgentKind,
     explorer::{ExplorerId, FileSizeFormat},
-    session::{ForwardId, GroupId, NodeDrop, SessionId, SessionNode},
+    session::{CredentialId, ForwardId, GroupId, NodeDrop, SessionId, SessionNode},
     terminal::{LocalTerminalId, RemoteTerminalId},
 };
 
@@ -49,6 +49,17 @@ gpui_kit::actions!(
         SelectPreviousForward,
         /// Move the forward list's selection to the row below.
         SelectNextForward,
+        /// Show the credential list in the left dock.
+        ShowCredentials,
+        /// Open the new-credential dialog.
+        NewCredential,
+        /// Open the edit dialog of the credential selected in the credential
+        /// list.
+        EditSelectedCredential,
+        /// Move the credential list's selection to the row above.
+        SelectPreviousCredential,
+        /// Move the credential list's selection to the row below.
+        SelectNextCredential,
         /// Switch between the light and dark theme.
         ToggleTheme,
         /// Move keyboard focus to the search field of the list the left dock
@@ -163,6 +174,12 @@ id_actions! {
     EditForward(ForwardId);
     /// Ask for confirmation, then delete a port-forwarding rule.
     DeleteForward(ForwardId);
+
+    /// Open the edit-credential dialog.
+    EditCredential(CredentialId);
+    /// Ask for confirmation, then delete a credential. The hosts using it
+    /// go back to logging in on their own.
+    DeleteCredential(CredentialId);
 }
 
 /// Move a session-tree row by dropping it beside a peer or into a group.

@@ -10,8 +10,9 @@ use std::{collections::HashSet, path::Path};
 use rusqlite::{Connection, params};
 
 use super::{
-    AuthKind, BookmarkSide, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule,
-    GroupDraft, GroupId, HostOs, PublicId, Session, SessionDraft, SessionGroup, SessionId,
+    AuthKind, BookmarkSide, Credential, CredentialDraft, CredentialId, CredentialKind,
+    ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft, GroupId,
+    HostOs, PublicId, Session, SessionDraft, SessionGroup, SessionId,
 };
 
 /// SQLite's only integer type is `i64`, so the `u64` ids cross the boundary
@@ -30,7 +31,7 @@ fn from_sql(id: i64) -> u64 {
 ///
 /// The steps start at 7 rather than 1 because the databases of development
 /// builds were already at 7 when the older steps were folded into `SCHEMA`.
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 /// The port-forwarding rules, added in version 8. A macro rather than a
 /// constant so that `SCHEMA` and the step from version 7 are built from the
@@ -59,6 +60,56 @@ CREATE TABLE forwards (
 CREATE INDEX forwards_session_id ON forwards(session_id);"
     };
 }
+
+/// The credentials and which session uses which, added in version 9. Built
+/// like `forwards_table!`, for the same reason.
+///
+/// The link is a table of its own rather than a column on `sessions`: adding
+/// a column rewrites the table's recorded definition into a shape the full
+/// schema could only match by copying it. A session uses at most one
+/// credential; deleting either side drops the link. Only a key credential
+/// names a key file.
+macro_rules! credential_tables {
+    () => {
+        "\
+CREATE TABLE credentials (
+    id          INTEGER PRIMARY KEY,
+    keychain_id TEXT NOT NULL UNIQUE,
+    name        TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK (kind IN ('password', 'key', 'agent')),
+    username    TEXT NOT NULL,
+    key_path    TEXT,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    CHECK ((kind = 'key') = (key_path IS NOT NULL))
+);
+CREATE TABLE session_credentials (
+    session_id    INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    credential_id INTEGER NOT NULL REFERENCES credentials(id) ON DELETE CASCADE
+);
+CREATE INDEX session_credentials_credential_id ON session_credentials(credential_id);"
+    };
+}
+
+/// The steps from each older version to the next, in order. Each is one
+/// transaction that ends by recording the version it reached.
+const STEPS: [(i64, &str); 2] = [
+    (
+        7,
+        concat!(
+            "BEGIN;\n",
+            forwards_table!(),
+            "\nPRAGMA user_version = 8;\nCOMMIT;"
+        ),
+    ),
+    (
+        8,
+        concat!(
+            "BEGIN;\n",
+            credential_tables!(),
+            "\nPRAGMA user_version = 9;\nCOMMIT;"
+        ),
+    ),
+];
 
 /// The whole schema, as a new database gets it.
 ///
@@ -102,7 +153,9 @@ CREATE TABLE bookmarks (
     UNIQUE (session_id, side, path)
 );
 ",
-    forwards_table!()
+    forwards_table!(),
+    "\n",
+    credential_tables!()
 );
 
 /// Everything one launch reads back from disk.
@@ -117,6 +170,8 @@ pub struct StoredData {
     pub bookmarks: Vec<(SessionId, BookmarkSide, String)>,
     /// Port-forwarding rules in the order the forward list shows them.
     pub forwards: Vec<ForwardRule>,
+    /// Credentials in the order the credential list shows them.
+    pub credentials: Vec<Credential>,
 }
 
 pub struct SessionDatabase {
@@ -166,8 +221,10 @@ impl SessionDatabase {
         let sessions = self
             .connection
             .prepare(
-                "SELECT id, name, host, port, username, auth, group_id, key_path, os, sort_order, \
-                 public_id FROM sessions ORDER BY id",
+                "SELECT s.id, s.name, s.host, s.port, s.username, s.auth, s.group_id, \
+                 s.key_path, s.os, s.sort_order, s.public_id, c.credential_id \
+                 FROM sessions s LEFT JOIN session_credentials c ON c.session_id = s.id \
+                 ORDER BY s.id",
             )?
             .query_map([], |row| {
                 let id: i64 = row.get(0)?;
@@ -179,6 +236,7 @@ impl SessionDatabase {
                 let group: Option<i64> = row.get(6)?;
                 let key_path: Option<String> = row.get(7)?;
                 let os: Option<String> = row.get(8)?;
+                let credential: Option<i64> = row.get(11)?;
                 let mut session = Session::new(
                     SessionId(from_sql(id)),
                     SessionDraft::new(
@@ -194,6 +252,7 @@ impl SessionDatabase {
                 session.os = os.as_deref().and_then(HostOs::from_stored);
                 session.sort_order = row.get(9)?;
                 session.public_id = PublicId::from_stored(row.get(10)?);
+                session.credential = credential.map(|id| CredentialId(from_sql(id)));
                 Ok(session)
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -267,12 +326,42 @@ impl SessionDatabase {
             .filter_map(Result::transpose)
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        let credentials = self
+            .connection
+            .prepare(
+                "SELECT id, keychain_id, name, kind, username, key_path, sort_order \
+                 FROM credentials ORDER BY sort_order, id",
+            )?
+            .query_map([], |row| {
+                let id: i64 = row.get(0)?;
+                let keychain_id: String = row.get(1)?;
+                let name: String = row.get(2)?;
+                let kind: String = row.get(3)?;
+                let user: String = row.get(4)?;
+                let key_path: Option<String> = row.get(5)?;
+                let sort_order: i64 = row.get(6)?;
+                // A kind this build does not know was written by a newer one;
+                // it is left out, and the hosts using it fall back to their
+                // own login rather than trying it as something else.
+                Ok(CredentialKind::from_stored(&kind).map(|kind| {
+                    let mut draft = CredentialDraft::new(name, kind, user);
+                    draft.key_path = key_path.map(Into::into);
+                    let mut credential = Credential::new(CredentialId(from_sql(id)), draft);
+                    credential.keychain_id = PublicId::from_stored(keychain_id);
+                    credential.sort_order = sort_order;
+                    credential
+                }))
+            })?
+            .filter_map(Result::transpose)
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
         Ok(StoredData {
             groups,
             sessions,
             recent,
             bookmarks,
             forwards,
+            credentials,
         })
     }
 
@@ -328,8 +417,10 @@ impl SessionDatabase {
         Ok(())
     }
 
+    /// Insert a session together with its link to a credential.
     pub fn insert_session(&self, session: &Session) -> rusqlite::Result<()> {
-        self.connection.execute(
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
             "INSERT INTO sessions (id, name, host, port, username, auth, group_id, key_path, os, sort_order, public_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
@@ -346,14 +437,17 @@ impl SessionDatabase {
                 session.public_id.as_str(),
             ],
         )?;
-        Ok(())
+        link_credential(&transaction, session)?;
+        transaction.commit()
     }
 
-    /// Rewrites the editable fields. `last_connected_at` and `os` are left
-    /// alone: they are written by `touch_connected` and `set_host_os`, and
-    /// neither is part of the session form. `public_id` never changes.
+    /// Rewrites the editable fields and the link to a credential.
+    /// `last_connected_at` and `os` are left alone: they are written by
+    /// `touch_connected` and `set_host_os`, and neither is part of the session
+    /// form. `public_id` never changes.
     pub fn update_session(&self, session: &Session) -> rusqlite::Result<()> {
-        self.connection.execute(
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
             "UPDATE sessions SET name = ?2, host = ?3, port = ?4, username = ?5, \
              auth = ?6, group_id = ?7, key_path = ?8, sort_order = ?9 WHERE id = ?1",
             params![
@@ -368,7 +462,12 @@ impl SessionDatabase {
                 session.sort_order,
             ],
         )?;
-        Ok(())
+        transaction.execute(
+            "DELETE FROM session_credentials WHERE session_id = ?1",
+            params![to_sql(session.id.0)],
+        )?;
+        link_credential(&transaction, session)?;
+        transaction.commit()
     }
 
     pub fn remove_session(&self, id: SessionId) -> rusqlite::Result<()> {
@@ -504,6 +603,64 @@ impl SessionDatabase {
         Ok(())
     }
 
+    pub fn insert_credential(&self, credential: &Credential) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "INSERT INTO credentials (id, keychain_id, name, kind, username, key_path, sort_order) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                to_sql(credential.id.0),
+                credential.keychain_id.as_str(),
+                credential.name.as_ref(),
+                credential.kind.as_str(),
+                credential.user.as_ref(),
+                credential.key_path.as_deref(),
+                credential.sort_order,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Rewrite a credential, and the user name of every session using it in
+    /// the same transaction: the sessions keep a copy of it.
+    pub fn update_credential(&self, credential: &Credential) -> rusqlite::Result<()> {
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "UPDATE credentials SET name = ?2, kind = ?3, username = ?4, key_path = ?5, \
+             sort_order = ?6 WHERE id = ?1",
+            params![
+                to_sql(credential.id.0),
+                credential.name.as_ref(),
+                credential.kind.as_str(),
+                credential.user.as_ref(),
+                credential.key_path.as_deref(),
+                credential.sort_order,
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE sessions SET username = ?2 WHERE id IN \
+             (SELECT session_id FROM session_credentials WHERE credential_id = ?1)",
+            params![to_sql(credential.id.0), credential.user.as_ref()],
+        )?;
+        transaction.commit()
+    }
+
+    /// Delete a credential. The sessions using it go back to logging in on
+    /// their own, automatically, keeping the user name they had; the links
+    /// go through `ON DELETE CASCADE`.
+    pub fn remove_credential(&self, id: CredentialId) -> rusqlite::Result<()> {
+        let transaction = self.connection.unchecked_transaction()?;
+        transaction.execute(
+            "UPDATE sessions SET auth = ?2, key_path = NULL WHERE id IN \
+             (SELECT session_id FROM session_credentials WHERE credential_id = ?1)",
+            params![to_sql(id.0), AuthKind::Auto.as_str()],
+        )?;
+        transaction.execute(
+            "DELETE FROM credentials WHERE id = ?1",
+            params![to_sql(id.0)],
+        )?;
+        transaction.commit()
+    }
+
     /// Record the operating system a probe found on the host. `None` clears
     /// it, which is what a failed probe on a rebuilt host leaves behind.
     pub fn set_host_os(&self, id: SessionId, os: Option<HostOs>) -> rusqlite::Result<()> {
@@ -525,22 +682,33 @@ impl SessionDatabase {
     }
 }
 
+/// Record which credential `session` uses, if any. Its old link, if it had
+/// one, is already gone.
+fn link_credential(connection: &Connection, session: &Session) -> rusqlite::Result<()> {
+    if let Some(credential) = session.credential {
+        connection.execute(
+            "INSERT INTO session_credentials (session_id, credential_id) VALUES (?1, ?2)",
+            params![to_sql(session.id.0), to_sql(credential.0)],
+        )?;
+    }
+    Ok(())
+}
+
 /// Bring the database to `SCHEMA_VERSION`. A new file has version 0 and gets
 /// the whole schema; an older one is taken forward one version at a time.
 /// Each step is one transaction, so a file is never left between versions.
 fn migrate(connection: &Connection) -> rusqlite::Result<()> {
-    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let mut version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version == 0 {
         return connection.execute_batch(&format!(
             "BEGIN;\n{SCHEMA}\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
         ));
     }
-    if version == 7 {
-        connection.execute_batch(concat!(
-            "BEGIN;\n",
-            forwards_table!(),
-            "\nPRAGMA user_version = 8;\nCOMMIT;"
-        ))?;
+    for (from, step) in STEPS {
+        if version == from {
+            connection.execute_batch(step)?;
+            version = from + 1;
+        }
     }
     Ok(())
 }
@@ -688,6 +856,7 @@ PRAGMA user_version = 7;";
         let data = db.load().unwrap();
         assert_eq!(data.sessions[0].name.as_ref(), "web");
         assert!(data.forwards.is_empty());
+        assert!(data.credentials.is_empty());
         // Upgrading ends with exactly the schema a new file gets.
         let fresh = SessionDatabase::in_memory().unwrap();
         assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
@@ -695,6 +864,174 @@ PRAGMA user_version = 7;";
         // Opening it again finds nothing left to do.
         drop(db);
         assert!(SessionDatabase::open(&path).is_ok());
+    }
+
+    /// The schema as version 8 had it: version 7's plus the forwards table.
+    const SCHEMA_V8_FORWARDS: &str = "
+CREATE TABLE forwards (
+    id          INTEGER PRIMARY KEY,
+    session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL DEFAULT '',
+    kind        TEXT NOT NULL CHECK (kind IN ('local', 'remote', 'dynamic')),
+    bind_host   TEXT NOT NULL,
+    bind_port   INTEGER NOT NULL CHECK (bind_port BETWEEN 1 AND 65535),
+    target_host TEXT,
+    target_port INTEGER,
+    auto_start  INTEGER NOT NULL DEFAULT 0,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    CHECK ((kind = 'dynamic' AND target_host IS NULL AND target_port IS NULL)
+        OR (kind <> 'dynamic' AND target_host IS NOT NULL
+            AND target_port BETWEEN 1 AND 65535))
+);
+CREATE INDEX forwards_session_id ON forwards(session_id);
+PRAGMA user_version = 8;";
+
+    #[test]
+    fn a_version_8_database_gains_the_credential_tables_and_keeps_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(SCHEMA_V7).unwrap();
+            old.execute_batch(SCHEMA_V8_FORWARDS).unwrap();
+            old.execute(
+                "INSERT INTO sessions (id, name, host, port, username, auth, key_path, public_id) \
+                 VALUES (1, 'web', 'example.test', 22, 'deploy', 'key', '/tmp/id', 'abcdefgh12345678')",
+                [],
+            )
+            .unwrap();
+            old.execute(
+                "INSERT INTO forwards (id, session_id, kind, bind_host, bind_port) \
+                 VALUES (1, 1, 'dynamic', '127.0.0.1', 1080)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let db = SessionDatabase::open(&path).unwrap();
+        let version: i64 = db
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let data = db.load().unwrap();
+        assert_eq!(data.sessions[0].user.as_ref(), "deploy");
+        assert_eq!(data.sessions[0].auth, AuthKind::Key);
+        assert_eq!(data.sessions[0].credential, None);
+        assert_eq!(data.forwards.len(), 1);
+        assert!(data.credentials.is_empty());
+        let fresh = SessionDatabase::in_memory().unwrap();
+        assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
+
+        drop(db);
+        assert!(SessionDatabase::open(&path).is_ok());
+    }
+
+    fn credential(id: u64, name: &str, kind: CredentialKind) -> Credential {
+        let draft = CredentialDraft::new(name, kind, "deploy");
+        let draft = match kind {
+            CredentialKind::Key => draft.with_key_path("/tmp/id_deploy"),
+            _ => draft,
+        };
+        Credential::new(CredentialId(id), draft)
+    }
+
+    fn using(mut session: Session, credential: &Credential) -> Session {
+        session.credential = Some(credential.id);
+        session.user = credential.user.clone();
+        session.auth = AuthKind::Auto;
+        session
+    }
+
+    #[test]
+    fn credentials_round_trip_and_hosts_keep_their_link() {
+        let db = SessionDatabase::in_memory().unwrap();
+        let mut agent = credential(1, "agent", CredentialKind::Agent);
+        agent.sort_order = 1;
+        db.insert_credential(&agent).unwrap();
+        let key = credential(2, "部署", CredentialKind::Key);
+        db.insert_credential(&key).unwrap();
+        let web = using(session(1, "web", None), &key);
+        db.insert_session(&web).unwrap();
+        db.insert_session(&session(2, "db", None)).unwrap();
+
+        let data = db.load().unwrap();
+        // `sort_order` first, then id.
+        assert_eq!(data.credentials, [key.clone(), agent.clone()]);
+        assert_eq!(data.sessions[0].credential, Some(key.id));
+        assert_eq!(data.sessions[1].credential, None);
+
+        // Moving a host to another credential replaces its link; leaving it
+        // takes the link away.
+        db.update_session(&using(web.clone(), &agent)).unwrap();
+        assert_eq!(db.load().unwrap().sessions[0].credential, Some(agent.id));
+        let mut manual = web.clone();
+        manual.credential = None;
+        db.update_session(&manual).unwrap();
+        assert_eq!(db.load().unwrap().sessions[0].credential, None);
+
+        // Editing a credential renames its user on every host using it.
+        db.update_session(&web).unwrap();
+        let mut renamed = key.clone();
+        renamed.name = "生产部署".into();
+        renamed.user = "admin".into();
+        db.update_credential(&renamed).unwrap();
+        let data = db.load().unwrap();
+        assert_eq!(data.credentials[0], renamed);
+        assert_eq!(data.sessions[0].user.as_ref(), "admin");
+        assert_eq!(data.sessions[1].user.as_ref(), "root");
+
+        // Deleting a host drops its link with it.
+        db.remove_session(SessionId(1)).unwrap();
+        let links: i64 = db
+            .connection
+            .query_row("SELECT COUNT(*) FROM session_credentials", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(links, 0);
+    }
+
+    #[test]
+    fn removing_a_credential_turns_its_hosts_into_auto_and_drops_the_link() {
+        let db = SessionDatabase::in_memory().unwrap();
+        let key = credential(1, "部署", CredentialKind::Key);
+        db.insert_credential(&key).unwrap();
+        let mut web = using(session(1, "web", None), &key);
+        // Against the invariant, to show the delete does not rely on it.
+        web.auth = AuthKind::Key;
+        web.key_path = Some("/tmp/id_other".into());
+        db.insert_session(&web).unwrap();
+        db.insert_session(&session(2, "db", None)).unwrap();
+
+        db.remove_credential(key.id).unwrap();
+        let data = db.load().unwrap();
+        assert!(data.credentials.is_empty());
+        assert_eq!(data.sessions[0].credential, None);
+        assert_eq!(data.sessions[0].auth, AuthKind::Auto);
+        assert_eq!(data.sessions[0].key_path, None);
+        assert_eq!(data.sessions[0].user.as_ref(), "deploy");
+        // A host that never used it is untouched.
+        assert_eq!(data.sessions[1].auth, AuthKind::Password);
+    }
+
+    #[test]
+    fn the_database_refuses_a_credential_whose_key_file_does_not_fit_its_kind() {
+        let db = SessionDatabase::in_memory().unwrap();
+        let mut key_without_file = credential(1, "部署", CredentialKind::Key);
+        key_without_file.key_path = None;
+        assert!(db.insert_credential(&key_without_file).is_err());
+
+        let mut password_with_file = credential(2, "运维", CredentialKind::Password);
+        password_with_file.key_path = Some("/tmp/id".into());
+        assert!(db.insert_credential(&password_with_file).is_err());
+
+        // A host cannot use a credential that is not there.
+        let mut orphan = session(1, "web", None);
+        orphan.credential = Some(CredentialId(99));
+        assert!(db.insert_session(&orphan).is_err());
+        // And the failed insert left no half of the host behind.
+        assert!(db.load().unwrap().sessions.is_empty());
     }
 
     fn forward(id: u64, session: u64, kind: ForwardKind, port: u16) -> ForwardRule {
@@ -1054,8 +1391,9 @@ PRAGMA user_version = 7;";
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
-        assert!(tables.contains(&"sessions".to_string()));
-        assert!(tables.contains(&"forwards".to_string()));
+        for table in ["sessions", "forwards", "credentials", "session_credentials"] {
+            assert!(tables.contains(&table.to_string()), "{table}");
+        }
         let mut columns = Vec::new();
         for table in tables {
             let mut statement = db

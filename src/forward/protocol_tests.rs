@@ -24,7 +24,7 @@ use crate::{
     secrets::{InMemorySecretStore, SecretRef, SecretStore as _},
     session::{
         AuthKind, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, Session,
-        SessionDraft, SessionId,
+        SessionDraft, SessionId, SessionLogin,
     },
     ssh::{SshConnectionConfig, SshConnector, SshPrompts},
 };
@@ -328,7 +328,7 @@ impl Fixture {
                 target.map(|port| ForwardEndpoint::new("127.0.0.1", port)),
             ),
         );
-        let transport = provider.create(&rule, &self.session());
+        let transport = provider.create(&rule, &SessionLogin::of(&self.session(), None));
         let (commands, command_receiver) = async_channel::unbounded();
         let (event_sender, events) = async_channel::unbounded();
         let thread = std::thread::spawn(move || transport.run(command_receiver, event_sender));
@@ -848,7 +848,7 @@ fn a_connection_that_forwards_nothing_refuses_channels_from_the_server() {
         // A terminal's or an SFTP tab's kind of connection.
         let (_shutdown, shutdown) = watch::channel(false);
         let prompts = Arc::new(SshPrompts::new(Arc::new(|_| false), shutdown).non_interactive());
-        let config = SshConnectionConfig::from(&fixture.session());
+        let config = SshConnectionConfig::from(&SessionLogin::of(&fixture.session(), None));
         let (handle, _) = fixture.connector.connect(&config, prompts).await.unwrap();
         let remote = free_port();
         handle

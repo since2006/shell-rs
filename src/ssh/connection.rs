@@ -4,7 +4,7 @@ use crate::{
         ConnectionPrompt, ConnectionPromptField, ConnectionPromptKind, ConnectionPromptReply,
     },
     secrets::{SecretRef, SharedSecretStore},
-    session::{AuthKind, Session},
+    session::{LoginMethod, SessionLogin},
 };
 use anyhow::{Context as _, Result, anyhow, bail};
 use russh::keys::{
@@ -31,31 +31,37 @@ use zeroize::Zeroizing;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const AUTH_RETRIES: usize = 3;
+/// How long to wait for the agent to answer the door. A named pipe that
+/// stays busy would otherwise be retried forever.
+const AGENT_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_FAILED: &str = "无法建立 SSH 连接，请检查地址、端口和主机密钥";
 static NEXT_PROMPT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// What one connection logs in with: a host's login as the store resolved
+/// it on the UI thread, credential and all.
 #[derive(Clone)]
 pub struct SshConnectionConfig {
-    host: String,
-    port: u16,
-    user: String,
-    auth: AuthKind,
-    key_path: Option<PathBuf>,
+    login: SessionLogin,
 }
 
-impl From<&Session> for SshConnectionConfig {
-    fn from(session: &Session) -> Self {
+impl From<&SessionLogin> for SshConnectionConfig {
+    fn from(login: &SessionLogin) -> Self {
         Self {
-            host: session.host.to_string(),
-            port: session.port,
-            user: session.user.to_string(),
-            auth: session.auth,
-            key_path: session
-                .key_path
-                .as_ref()
-                .map(|path| PathBuf::from(path.as_ref())),
+            login: login.clone(),
         }
     }
+}
+
+/// Where the SSH agent listens.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum AgentLocation {
+    /// The user's own agent: the socket `SSH_AUTH_SOCK` names on macOS and
+    /// Linux, the OpenSSH agent service's pipe on Windows.
+    #[default]
+    System,
+    /// An agent at this socket or pipe. Tests use it rather than change the
+    /// process's environment under other tests.
+    At(PathBuf),
 }
 
 /// Cloneable trust and credential service. Every clone shares the trust-file lock.
@@ -64,6 +70,7 @@ pub struct SshConnector {
     known_hosts_path: PathBuf,
     known_hosts_lock: Arc<Mutex<()>>,
     secrets: SharedSecretStore,
+    agent: AgentLocation,
 }
 impl SshConnector {
     pub fn new(path: impl Into<PathBuf>, secrets: SharedSecretStore) -> Self {
@@ -71,7 +78,14 @@ impl SshConnector {
             known_hosts_path: path.into(),
             known_hosts_lock: Arc::new(Mutex::new(())),
             secrets,
+            agent: AgentLocation::System,
         }
+    }
+
+    /// Use the agent at `agent` instead of the user's own.
+    pub fn with_agent(mut self, agent: AgentLocation) -> Self {
+        self.agent = agent;
+        self
     }
     /// Must run on a worker: keychain and private-key reads are blocking.
     pub async fn connect(
@@ -122,9 +136,10 @@ impl SshConnector {
         forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
     ) -> Result<(client::Handle<SshClientHandler>, String)> {
         let fingerprint = Arc::new(Mutex::new(String::new()));
+        let login = &config.login;
         let handler = SshClientHandler {
-            host: config.host.clone(),
-            port: config.port,
+            host: login.host.clone(),
+            port: login.port,
             known_hosts_path: self.known_hosts_path.clone(),
             known_hosts_lock: self.known_hosts_lock.clone(),
             broker: broker.clone(),
@@ -138,7 +153,7 @@ impl SshConnector {
                 nodelay: true,
                 ..Default::default()
             }),
-            (config.host.as_str(), config.port),
+            (login.host.as_str(), login.port),
             handler,
         );
         let mut shutdown = broker.shutdown_receiver();
@@ -147,7 +162,7 @@ impl SshConnector {
             _ = shutdown.changed() => bail!("连接已取消"),
         };
         tokio::select! {
-            result = authenticate(&mut handle, config, secrets, &broker) => result?,
+            result = authenticate(&mut handle, login, secrets, &self.agent, &broker) => result?,
             _ = shutdown.changed() => bail!("连接已取消"),
         }
         let fingerprint = lock(&fingerprint).clone();
@@ -155,24 +170,8 @@ impl SshConnector {
     }
 }
 impl SshConnectionConfig {
-    pub fn new(
-        host: impl Into<String>,
-        port: u16,
-        user: impl Into<String>,
-        auth: AuthKind,
-        key_path: Option<PathBuf>,
-    ) -> Self {
-        Self {
-            host: host.into(),
-            port,
-            user: user.into(),
-            auth,
-            key_path,
-        }
-    }
-
     pub fn endpoint(&self) -> String {
-        format!("{}@{}:{}", self.user, self.host, self.port)
+        self.login.endpoint()
     }
 }
 
@@ -532,12 +531,15 @@ fn read_known_keys(host: &str, port: u16, path: &Path) -> Result<Vec<(usize, Pub
 
 async fn authenticate(
     handle: &mut SshHandle,
-    config: &SshConnectionConfig,
+    login: &SessionLogin,
     secrets: &SharedSecretStore,
+    agent: &AgentLocation,
     broker: &SshPrompts,
 ) -> Result<()> {
+    let user = login.user.as_str();
+    let method = login.method;
     let first = handle
-        .authenticate_none(&config.user)
+        .authenticate_none(user)
         .await
         .map_err(|_| anyhow!("无法查询服务器支持的认证方式"))?;
     if first.success() {
@@ -546,21 +548,33 @@ async fn authenticate(
     let mut methods = remaining_methods(first);
     let mut partial = false;
 
-    if config.auth == AuthKind::Auto
-        && methods.contains(&MethodKind::PublicKey)
-        && let Some(result) = try_agent(handle, &config.user).await?
-    {
-        if result.success() {
-            return Ok(());
+    // Automatic logins try the agent quietly and move on; a login that is
+    // only the agent says what went wrong with it.
+    if matches!(method, LoginMethod::Auto | LoginMethod::Agent) {
+        if methods.contains(&MethodKind::PublicKey) {
+            match try_agent(handle, user, agent).await? {
+                Ok(result) => {
+                    if result.success() {
+                        return Ok(());
+                    }
+                    partial = is_partial(&result);
+                    methods = remaining_methods(result);
+                }
+                Err(problem) if method == LoginMethod::Agent => bail!(problem.to_string()),
+                Err(_) => {}
+            }
+            if method == LoginMethod::Agent && !partial {
+                bail!("服务器未接受 SSH Agent 中的密钥");
+            }
+        } else if method == LoginMethod::Agent {
+            bail!("服务器不接受公钥登录，无法使用 SSH Agent");
         }
-        partial = is_partial(&result);
-        methods = remaining_methods(result);
     }
 
-    if matches!(config.auth, AuthKind::Auto | AuthKind::Key)
+    if matches!(method, LoginMethod::Auto | LoginMethod::Key)
         && methods.contains(&MethodKind::PublicKey)
     {
-        let paths = key_paths(config)?;
+        let paths = key_paths(login)?;
         for path in paths {
             let Some(key) = load_private_key(&path, secrets, broker).await? else {
                 continue;
@@ -571,10 +585,7 @@ async fn authenticate(
                 .map_err(|_| anyhow!("无法协商 RSA 签名算法"))?
                 .flatten();
             let result = handle
-                .authenticate_publickey(
-                    &config.user,
-                    PrivateKeyWithHashAlg::new(Arc::new(key), hash),
-                )
+                .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
                 .await
                 .map_err(|_| anyhow!("私钥认证失败"))?;
             if result.success() {
@@ -586,18 +597,18 @@ async fn authenticate(
                 break;
             }
         }
-        if config.auth == AuthKind::Key && !partial {
+        if method == LoginMethod::Key && !partial {
             bail!("服务器未接受指定的私钥");
         }
     }
 
-    if matches!(config.auth, AuthKind::Auto | AuthKind::Password) || partial {
+    if matches!(method, LoginMethod::Auto | LoginMethod::Password) || partial {
         if methods.contains(&MethodKind::Password) {
             // Try what the session has saved before bothering anyone.
             let mut saved_rejected = false;
-            if let Some(saved) = saved_secret(secrets, &password_secret(config)) {
+            if let Some(saved) = saved_secret(secrets, &login.password) {
                 let result = handle
-                    .authenticate_password(&config.user, saved.to_string())
+                    .authenticate_password(user, saved.to_string())
                     .await
                     .map_err(|_| anyhow!("密码认证失败"))?;
                 if result.success() {
@@ -628,7 +639,7 @@ async fn authenticate(
                     )
                     .await?;
                     let result = handle
-                        .authenticate_password(&config.user, answer.into_inner())
+                        .authenticate_password(user, answer.into_inner())
                         .await
                         .map_err(|_| anyhow!("密码认证失败"))?;
                     if result.success() {
@@ -644,7 +655,7 @@ async fn authenticate(
         }
         if methods.contains(&MethodKind::KeyboardInteractive) {
             for _ in 0..AUTH_RETRIES {
-                if keyboard_interactive(handle, &config.user, broker).await? {
+                if keyboard_interactive(handle, user, broker).await? {
                     return Ok(());
                 }
             }
@@ -653,46 +664,128 @@ async fn authenticate(
     bail!("认证失败：服务器未接受可用的认证方式")
 }
 
-async fn try_agent(handle: &mut SshHandle, user: &str) -> Result<Option<AuthResult>> {
-    #[cfg(unix)]
-    {
-        use russh::keys::agent::client::AgentClient;
+type Agent = russh::keys::agent::client::AgentClient<
+    Box<dyn russh::keys::agent::client::AgentStream + Send + Unpin>,
+>;
 
-        let Ok(mut agent) = AgentClient::connect_env().await else {
-            return Ok(None);
-        };
-        let Ok(identities) = agent.request_identities().await else {
-            return Ok(None);
-        };
-        let hash = handle
-            .best_supported_rsa_hash()
-            .await
-            .map_err(|_| anyhow!("无法协商 SSH Agent 签名算法"))?
-            .flatten();
-        let mut last = None;
-        for identity in identities {
-            let key = identity.public_key().into_owned();
-            match handle
-                .authenticate_publickey_with(user, key, hash, &mut agent)
-                .await
-            {
-                Ok(result) if result.success() => return Ok(Some(result)),
-                Ok(result) => last = Some(result),
-                Err(_) => continue,
-            }
+/// Why the agent's keys could not be offered at all. `Display` is the text a
+/// person reads. The cause is folded into the words rather than chained, so
+/// a missing agent is never mistaken for a network failure worth retrying.
+#[derive(Debug)]
+enum AgentProblem {
+    Unreachable(String),
+    Empty,
+    /// Every key failed to sign: a locked agent, or one that asked to
+    /// confirm and was told no.
+    Unsigned,
+}
+
+impl std::fmt::Display for AgentProblem {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AgentProblem::Unreachable(reason) => write!(formatter, "无法连接 SSH Agent：{reason}"),
+            AgentProblem::Empty => formatter.write_str("SSH Agent 中没有密钥，请先用 ssh-add 添加"),
+            AgentProblem::Unsigned => formatter.write_str("SSH Agent 拒绝了签名请求"),
         }
-        Ok(last)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (handle, user);
-        Ok(None)
     }
 }
 
-fn key_paths(config: &SshConnectionConfig) -> Result<Vec<PathBuf>> {
-    if config.auth == AuthKind::Key {
-        return config
+/// Offer the agent's keys one after another. The result is the server's
+/// answer to the last key offered: a success, or the refusal that says what
+/// the server will take next.
+async fn try_agent(
+    handle: &mut SshHandle,
+    user: &str,
+    location: &AgentLocation,
+) -> Result<Result<AuthResult, AgentProblem>> {
+    let mut agent = match connect_agent(location).await {
+        Ok(agent) => agent,
+        Err(problem) => return Ok(Err(problem)),
+    };
+    let identities = match agent.request_identities().await {
+        Ok(identities) if identities.is_empty() => return Ok(Err(AgentProblem::Empty)),
+        Ok(identities) => identities,
+        Err(error) => return Ok(Err(AgentProblem::Unreachable(error.to_string()))),
+    };
+    let hash = handle
+        .best_supported_rsa_hash()
+        .await
+        .map_err(|_| anyhow!("无法协商 SSH Agent 签名算法"))?
+        .flatten();
+    let mut last = None;
+    for identity in identities {
+        let key = identity.public_key().into_owned();
+        match handle
+            .authenticate_publickey_with(user, key, hash, &mut agent)
+            .await
+        {
+            Ok(result) if result.success() => return Ok(Ok(result)),
+            Ok(result) => last = Some(result),
+            Err(_) => continue,
+        }
+    }
+    Ok(last.ok_or(AgentProblem::Unsigned))
+}
+
+#[cfg(unix)]
+async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
+    use russh::keys::agent::client::AgentClient;
+
+    let path = match location {
+        AgentLocation::At(path) => path.clone(),
+        AgentLocation::System => match std::env::var_os("SSH_AUTH_SOCK") {
+            Some(path) if !path.is_empty() => PathBuf::from(path),
+            _ => {
+                return Err(AgentProblem::Unreachable(
+                    "没有设置 SSH_AUTH_SOCK".to_string(),
+                ));
+            }
+        },
+    };
+    match tokio::time::timeout(AGENT_TIMEOUT, AgentClient::connect_uds(&path)).await {
+        Ok(Ok(agent)) => Ok(agent.dynamic()),
+        Ok(Err(russh::keys::Error::IO(error))) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(AgentProblem::Unreachable(format!(
+                "{} 不存在",
+                path.display()
+            )))
+        }
+        Ok(Err(error)) => Err(AgentProblem::Unreachable(error.to_string())),
+        Err(_) => Err(AgentProblem::Unreachable("没有响应".to_string())),
+    }
+}
+
+#[cfg(windows)]
+async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
+    use russh::keys::agent::client::AgentClient;
+
+    /// Where the OpenSSH Authentication Agent service listens.
+    const SYSTEM_PIPE: &str = r"\\.\pipe\openssh-ssh-agent";
+    let pipe = match location {
+        AgentLocation::At(path) => path.as_os_str().to_owned(),
+        AgentLocation::System => SYSTEM_PIPE.into(),
+    };
+    match tokio::time::timeout(AGENT_TIMEOUT, AgentClient::connect_named_pipe(&pipe)).await {
+        Ok(Ok(agent)) => Ok(agent.dynamic()),
+        Ok(Err(russh::keys::Error::IO(error))) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(AgentProblem::Unreachable(
+                "OpenSSH Authentication Agent 服务没有运行".to_string(),
+            ))
+        }
+        Ok(Err(error)) => Err(AgentProblem::Unreachable(error.to_string())),
+        Err(_) => Err(AgentProblem::Unreachable("没有响应".to_string())),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
+    let _ = location;
+    Err(AgentProblem::Unreachable("这个平台不支持".to_string()))
+}
+
+fn key_paths(login: &SessionLogin) -> Result<Vec<PathBuf>> {
+    if login.method == LoginMethod::Key {
+        return login
             .key_path
             .clone()
             .map(|path| vec![path])
@@ -750,11 +843,6 @@ async fn load_private_key(
         }
     }
     bail!("私钥口令错误次数过多")
-}
-
-/// Where this connection's password lives in the system keychain.
-fn password_secret(config: &SshConnectionConfig) -> SecretRef {
-    SecretRef::password(&config.user, &config.host, config.port)
 }
 
 /// Read a saved secret. A keychain that errors, is locked, or holds an empty

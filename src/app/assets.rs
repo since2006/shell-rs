@@ -42,7 +42,11 @@ icon_assets!(
         Laptop,
         Lock,
         CircleAlert,
-        Target
+        Target,
+        KeyRound,
+        RectangleEllipsis,
+        FileKey,
+        UserRoundKey
     ]
 );
 

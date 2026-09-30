@@ -7,8 +7,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, NewLocalTerminal, NewSession, ShowForwards, ShowSessions, ToggleSessionPanel,
-    ToggleTheme,
+    CatalogIcon, NewLocalTerminal, NewSession, ShowCredentials, ShowForwards, ShowSessions,
+    ToggleSessionPanel, ToggleTheme,
 };
 
 use super::sidebar::SidebarMode;
@@ -77,11 +77,19 @@ pub fn render_title_bar(
                                         }
                                     }),
                             )
+                            .child(
+                                Button::new("show-credentials")
+                                    .icon(CatalogIcon::KeyRound)
+                                    .tooltip("凭据")
+                                    .accessibility_label("凭据")
+                                    .selected(sidebar == Some(SidebarMode::Credentials)),
+                            )
                             .on_click(move |picked: &Vec<usize>, window, cx| {
                                 match picked.first() {
                                     Some(0) => mode.dispatch_action(&ShowSessions, window, cx),
-                                    Some(_) => mode.dispatch_action(&ShowForwards, window, cx),
-                                    None => {}
+                                    Some(1) => mode.dispatch_action(&ShowForwards, window, cx),
+                                    Some(2) => mode.dispatch_action(&ShowCredentials, window, cx),
+                                    _ => {}
                                 }
                             }),
                     ),

@@ -17,7 +17,7 @@ use super::server::{CliBackend, CliServer, CliTarget};
 use super::{Cli, Command};
 use super::{ConsoleText, normalize_command};
 use crate::app::cli_endpoint;
-use crate::session::{AuthKind, GroupId, Session, SessionDraft, SessionId};
+use crate::session::{AuthKind, GroupId, Session, SessionDraft, SessionId, SessionLogin};
 use crate::ssh::ExecStream;
 
 /// Records what it was asked and answers from a script.
@@ -29,14 +29,14 @@ struct FakeBackend {
 impl CliBackend for FakeBackend {
     fn exec(
         &self,
-        session: &Session,
+        target: &CliTarget,
         command: &str,
         output: &mut dyn FnMut(ExecStream, &[u8]) -> io::Result<()>,
     ) -> Result<i32, CliError> {
         self.calls
             .lock()
             .unwrap()
-            .push(format!("exec {} {command}", session.name));
+            .push(format!("exec {} {command}", target.session().name));
         if command == "unreachable" {
             return Err(CliError::new(ErrorCode::HostKeyUnknown, "尚未信任"));
         }
@@ -47,14 +47,14 @@ impl CliBackend for FakeBackend {
 
     fn upload(
         &self,
-        session: &Session,
+        target: &CliTarget,
         source: &Path,
         destination: &str,
         progress: &mut dyn FnMut(TransferCounters) -> io::Result<()>,
     ) -> Result<TransferSummary, CliError> {
         self.calls.lock().unwrap().push(format!(
             "upload {} {} {destination}",
-            session.name,
+            target.session().name,
             source.display()
         ));
         progress(TransferCounters {
@@ -75,7 +75,7 @@ impl CliBackend for FakeBackend {
 
     fn download(
         &self,
-        _: &Session,
+        _: &CliTarget,
         _: &str,
         _: &Path,
         _: &mut dyn FnMut(TransferCounters) -> io::Result<()>,
@@ -107,8 +107,8 @@ fn fixture() -> Fixture {
     let web = session(1, "web-01", "10.0.1.12");
     let db = session(2, "db-01", "10.0.2.5");
     server.set_targets(vec![
-        CliTarget::new(&web, Some("生产".into())),
-        CliTarget::new(&db, Some("生产/数据库".into())),
+        CliTarget::new(&web, SessionLogin::of(&web, None), Some("生产".into())),
+        CliTarget::new(&db, SessionLogin::of(&db, None), Some("生产/数据库".into())),
     ]);
     server.set_enabled(true);
     Fixture {

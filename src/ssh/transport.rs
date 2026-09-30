@@ -3,7 +3,7 @@ use super::{
     probe::{HostOsProbe, ProbeOutcome},
 };
 use crate::{
-    session::Session,
+    session::SessionLogin,
     terminal::{
         Latency, RemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalSize,
         TerminalTransport, TerminalTransportCommand, TerminalTransportEvent,
@@ -42,9 +42,9 @@ impl SshTerminalTransportProvider {
     }
 }
 impl RemoteTerminalTransportProvider for SshTerminalTransportProvider {
-    fn factory_for(&self, session: &Session) -> SharedTerminalTransportFactory {
+    fn factory_for(&self, login: &SessionLogin) -> SharedTerminalTransportFactory {
         Arc::new(SshTerminalTransport {
-            config: SshConnectionConfig::from(session),
+            config: SshConnectionConfig::from(login),
             connector: self.connector.clone(),
         })
     }
@@ -323,7 +323,7 @@ mod tests {
     use crate::ssh::probe::{PROBE_COMMAND, WINDOWS_PROBE_COMMAND};
     use crate::{
         connection::{ConnectionPromptKind, ConnectionPromptReply, ConnectionSecret},
-        session::AuthKind,
+        session::{AuthKind, Session},
     };
     use russh::keys::{PublicKey, known_hosts::learn_known_hosts_path};
     use russh::server::{self, Server as _};
@@ -697,7 +697,7 @@ mod tests {
         let mut report = ConnectionReport::default();
         let provider =
             SshTerminalTransportProvider::with_connector(SshConnector::new(known_hosts, secrets));
-        let factory = provider.factory_for(&session);
+        let factory = provider.factory_for(&SessionLogin::of(&session, None));
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::unbounded();
         let (done_tx, done_rx) = mpsc::channel();
@@ -775,7 +775,7 @@ mod tests {
             &known_hosts,
             Arc::new(NoSecretStore),
         ));
-        let factory = provider.factory_for(&session);
+        let factory = provider.factory_for(&SessionLogin::of(&session, None));
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::unbounded();
         let worker = thread::spawn(move || {
@@ -848,7 +848,7 @@ mod tests {
 
         // A second connection must trust the saved key without prompting and
         // an active close must return the worker within the shutdown bound.
-        let factory = provider.factory_for(&session);
+        let factory = provider.factory_for(&SessionLogin::of(&session, None));
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::unbounded();
         let (done_tx, done_rx) = mpsc::channel();
@@ -944,7 +944,13 @@ mod tests {
     }
 
     fn login_request(port: u16) -> crate::connection::LoginTest {
-        crate::connection::LoginTest::new("127.0.0.1", port, "tester", AuthKind::Password)
+        crate::connection::LoginTest::typed(SessionLogin::manual(
+            "127.0.0.1",
+            port,
+            "tester",
+            AuthKind::Password,
+            None,
+        ))
     }
 
     /// The CLI's `exec` against the test server, on a thread of its own so
@@ -959,7 +965,7 @@ mod tests {
         Vec<u8>,
     ) {
         let connector = SshConnector::new(known_hosts, keychain);
-        let config = SshConnectionConfig::from(session);
+        let config = SshConnectionConfig::from(&SessionLogin::of(session, None));
         let (done_tx, done_rx) = mpsc::channel();
         thread::spawn(move || {
             let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
@@ -1040,6 +1046,197 @@ mod tests {
         assert!(stdout.is_empty());
         // Nothing was trusted on the user's behalf.
         assert!(!known_hosts.exists());
+    }
+
+    /// A connection test through `connector`, trusting the host it meets.
+    fn test_through(
+        connector: SshConnector,
+        request: crate::connection::LoginTest,
+    ) -> Result<(), String> {
+        use crate::connection::ConnectionTester as _;
+        crate::ssh::SshConnectionTester::new(connector).test(request, Box::new(|_| true))
+    }
+
+    fn credential(kind: crate::session::CredentialKind) -> crate::session::Credential {
+        crate::session::Credential::new(
+            crate::session::CredentialId(1),
+            crate::session::CredentialDraft::new("运维", kind, "tester"),
+        )
+    }
+
+    #[test]
+    fn a_password_credential_logs_in_with_its_own_keychain_entry() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let credential = credential(crate::session::CredentialKind::Password);
+        let keychain = Arc::new(InMemorySecretStore::default());
+        keychain
+            .set(&credential.password_secret(), TEST_PASSWORD)
+            .unwrap();
+        // The endpoint's own entry is wrong: it must not be the one read.
+        keychain
+            .set(
+                &SecretRef::password("tester", "127.0.0.1", server.port),
+                "wrong",
+            )
+            .unwrap();
+        let login = SessionLogin::with_credential("127.0.0.1", server.port, &credential);
+
+        let connector = SshConnector::new(directory.path().join("known_hosts"), keychain);
+        assert_eq!(
+            test_through(connector, crate::connection::LoginTest::saved(login)),
+            Ok(())
+        );
+    }
+
+    /// An SSH agent on a socket of its own holding `keys`, for as long as
+    /// the value lives.
+    #[cfg(unix)]
+    struct TestAgent {
+        path: std::path::PathBuf,
+        _directory: tempfile::TempDir,
+        _runtime: tokio::runtime::Runtime,
+    }
+
+    #[cfg(unix)]
+    fn start_agent(keys: &[russh::keys::PrivateKey]) -> TestAgent {
+        use russh::keys::agent::client::AgentClient;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("agent.sock");
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let listener = runtime
+            .block_on(async { tokio::net::UnixListener::bind(&path) })
+            .unwrap();
+        runtime.spawn(async move {
+            let incoming = futures::stream::poll_fn(move |cx| {
+                listener
+                    .poll_accept(cx)
+                    .map(|accepted| Some(accepted.map(|(stream, _)| stream)))
+            });
+            let _ = russh::keys::agent::server::serve(incoming, ()).await;
+        });
+        runtime.block_on(async {
+            let mut client = AgentClient::connect_uds(&path).await.unwrap();
+            for key in keys {
+                client.add_identity(key, &[]).await.unwrap();
+            }
+        });
+        TestAgent {
+            path,
+            _directory: directory,
+            _runtime: runtime,
+        }
+    }
+
+    #[cfg(unix)]
+    fn random_key() -> russh::keys::PrivateKey {
+        let mut rng = russh::keys::key::safe_rng();
+        russh::keys::PrivateKey::random(&mut rng, russh::keys::Algorithm::Ed25519).unwrap()
+    }
+
+    /// Log in to `server` as an agent credential would, with the agent at
+    /// `agent`.
+    #[cfg(unix)]
+    fn agent_login(port: u16, agent: std::path::PathBuf, known_hosts: &Path) -> Result<(), String> {
+        let login = SessionLogin::with_credential(
+            "127.0.0.1",
+            port,
+            &credential(crate::session::CredentialKind::Agent),
+        );
+        let connector = SshConnector::new(known_hosts, Arc::new(NoSecretStore))
+            .with_agent(crate::ssh::AgentLocation::At(agent));
+        test_through(connector, crate::connection::LoginTest::saved(login))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_credential_logs_in_with_the_agents_key() {
+        let key = random_key();
+        let Some(server) = start_server(TestAuth::PublicKey(key.public_key().clone())) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        // Another key first: the agent's keys are offered until one fits.
+        let agent = start_agent(&[random_key(), key]);
+        assert_eq!(
+            agent_login(
+                server.port,
+                agent.path.clone(),
+                &directory.path().join("known_hosts")
+            ),
+            Ok(())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn automatic_login_tries_the_same_agent() {
+        let key = random_key();
+        let Some(server) = start_server(TestAuth::PublicKey(key.public_key().clone())) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let agent = start_agent(&[key]);
+        let login = SessionLogin::manual("127.0.0.1", server.port, "tester", AuthKind::Auto, None);
+        let connector = SshConnector::new(
+            directory.path().join("known_hosts"),
+            Arc::new(NoSecretStore),
+        )
+        .with_agent(crate::ssh::AgentLocation::At(agent.path.clone()));
+        assert_eq!(
+            test_through(connector, crate::connection::LoginTest::typed(login)),
+            Ok(())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_credential_says_what_stood_in_the_way() {
+        let key = random_key();
+        let Some(server) = start_server(TestAuth::PublicKey(key.public_key().clone())) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+
+        let missing = directory.path().join("no-agent.sock");
+        let error = agent_login(server.port, missing.clone(), &known_hosts).unwrap_err();
+        assert_eq!(
+            error,
+            format!("无法连接 SSH Agent：{} 不存在", missing.display())
+        );
+
+        let empty = start_agent(&[]);
+        assert_eq!(
+            agent_login(server.port, empty.path.clone(), &known_hosts),
+            Err("SSH Agent 中没有密钥，请先用 ssh-add 添加".to_string())
+        );
+
+        let stranger = start_agent(&[random_key()]);
+        assert_eq!(
+            agent_login(server.port, stranger.path.clone(), &known_hosts),
+            Err("服务器未接受 SSH Agent 中的密钥".to_string())
+        );
+
+        let Some(password_server) = start_server(TestAuth::Password) else {
+            panic!("loopback became unavailable during the agent test")
+        };
+        let agent = start_agent(&[key]);
+        assert_eq!(
+            agent_login(password_server.port, agent.path.clone(), &known_hosts),
+            Err("服务器不接受公钥登录，无法使用 SSH Agent".to_string())
+        );
     }
 
     #[test]
@@ -1489,7 +1686,7 @@ mod tests {
             &known_hosts,
             Arc::new(NoSecretStore),
         ));
-        let factory = provider.factory_for(&session);
+        let factory = provider.factory_for(&SessionLogin::of(&session, None));
         let (_command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::unbounded();
         let (done_tx, done_rx) = mpsc::channel();
