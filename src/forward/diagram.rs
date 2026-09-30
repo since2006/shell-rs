@@ -236,11 +236,11 @@ impl RenderOnce for ForwardDiagram {
             .w_full()
             .items_stretch()
             .gap_2()
-            .child(render_stop(entrance, true, cx))
+            .child(render_stop(entrance, cx))
             .child(render_hop(Some("SSH 隧道"), tunnel_dot, cx))
-            .child(render_stop(exit, false, cx))
+            .child(render_stop(exit, cx))
             .child(render_hop(None, plain_dot, cx))
-            .child(render_stop(reached, false, cx))
+            .child(render_stop(reached, cx))
     }
 }
 
@@ -253,9 +253,10 @@ fn machine_icon(machine: Machine) -> Icon {
     }
 }
 
-/// One stop: its role above a card with the machine and the address. The
-/// entrance is the one outlined, because that is where the user connects.
-fn render_stop(stop: Stop, entrance: bool, cx: &App) -> impl IntoElement {
+/// One stop: its role above a card with the machine and the address. All
+/// three are drawn alike: an outline in the primary colour is how the kind
+/// cards above mark the chosen one, and a stop is not something to choose.
+fn render_stop(stop: Stop, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     v_flex()
         .flex_1()
@@ -276,11 +277,7 @@ fn render_stop(stop: Stop, entrance: bool, cx: &App) -> impl IntoElement {
                 .p_2()
                 .rounded(theme.radius)
                 .border_1()
-                .border_color(if entrance {
-                    theme.primary
-                } else {
-                    theme.border
-                })
+                .border_color(theme.border)
                 .bg(theme.background)
                 .child(machine_icon(stop.machine))
                 .child(
