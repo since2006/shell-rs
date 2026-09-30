@@ -13,7 +13,8 @@ use russh::ChannelMsg;
 use tokio::sync::watch;
 
 use super::connection::{
-    MissingCredential, SshConnectionConfig, SshConnector, SshPrompts, timeout_excluding_prompts,
+    MissingCredential, SshConnectionConfig, SshConnector, SshPrompts, lock,
+    timeout_excluding_prompts,
 };
 use super::tester::describe_login_error;
 use crate::connection::{ConnectionPrompt, ConnectionPromptKind};
@@ -210,8 +211,4 @@ fn describe_failure(
         );
     }
     ExecError::new(ExecErrorKind::Connect, describe_login_error(error))
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|error| error.into_inner())
 }

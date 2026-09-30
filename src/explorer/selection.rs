@@ -1,7 +1,6 @@
 //! WinSCP-style multi-selection over one directory listing, kept by name so it
 //! survives sorting and refreshes.
 
-use serde::Deserialize;
 use std::collections::HashSet;
 
 /// The `..` row: it can hold the cursor but is never part of a selection.
@@ -19,7 +18,7 @@ pub enum ClickMode {
 }
 
 /// A keyboard cursor movement.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CursorMotion {
     Up,
     Down,
@@ -37,10 +36,6 @@ pub struct Selection {
 }
 
 impl Selection {
-    pub fn names(&self) -> &HashSet<String> {
-        &self.names
-    }
-
     pub fn cursor(&self) -> Option<&str> {
         self.cursor.as_deref()
     }
@@ -51,10 +46,6 @@ impl Selection {
 
     pub fn is_empty(&self) -> bool {
         self.names.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.names.len()
     }
 
     /// Apply a row click. `order` is the displayed row order, `..` included.

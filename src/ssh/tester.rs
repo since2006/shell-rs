@@ -9,7 +9,8 @@ use tokio::sync::watch;
 use zeroize::Zeroizing;
 
 use super::connection::{
-    MissingCredential, SshConnectionConfig, SshConnector, SshPrompts, timeout_excluding_prompts,
+    MissingCredential, SshConnectionConfig, SshConnector, SshPrompts, lock,
+    timeout_excluding_prompts,
 };
 use crate::{
     connection::{
@@ -137,10 +138,6 @@ impl SshConnectionTester {
             Err(error) => Err(describe_test_failure(&error, *lock(&host_trust))),
         }
     }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|error| error.into_inner())
 }
 
 /// Why a test failed, in the words the notification shows.

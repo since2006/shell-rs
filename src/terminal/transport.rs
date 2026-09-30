@@ -4,14 +4,8 @@ use anyhow::Result;
 use async_channel::Sender;
 
 use super::{Latency, TerminalSize};
+use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::session::{HostOs, Session};
-
-pub use crate::connection::{
-    AuthenticationPrompt, ConnectionPrompt as TerminalPrompt,
-    ConnectionPromptField as TerminalPromptField, ConnectionPromptKind as TerminalPromptKind,
-    ConnectionPromptReply as TerminalPromptReply, ConnectionSecret as TerminalSecret,
-    HostKeyChangedPrompt, UnknownHostPrompt,
-};
 
 /// Commands accepted by every terminal byte-stream transport.
 pub enum TerminalTransportCommand {
@@ -19,7 +13,7 @@ pub enum TerminalTransportCommand {
     Resize(TerminalSize),
     PromptReply {
         request_id: u64,
-        reply: TerminalPromptReply,
+        reply: ConnectionPromptReply,
     },
     Shutdown,
 }
@@ -44,7 +38,7 @@ impl std::fmt::Debug for TerminalTransportCommand {
 pub enum TerminalTransportEvent {
     Started,
     Output(Vec<u8>),
-    Prompt(TerminalPrompt),
+    Prompt(ConnectionPrompt),
     /// What the transport found running on the host. Sent once per successful
     /// connection, after the shell is up.
     HostOsDetected(HostOs),

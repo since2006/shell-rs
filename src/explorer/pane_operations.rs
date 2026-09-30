@@ -2,7 +2,7 @@
 //! SFTP worker, local ones on the background executor. Either way the pane
 //! stays busy until the result arrives, then re-reads its directory.
 
-use super::{ExplorerPanel, LoadIntent, NewEntryKind};
+use super::{ExplorerPanel, NewEntryKind};
 use crate::session::ConnectionState;
 use crate::sftp::{
     LocalDirectoryProvider, PermissionEdit, RemoteOperation, RemotePath, SftpCommand,
@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 
 /// A file operation the user confirmed, with names relative to the pane's
 /// current directory.
-#[derive(Clone, Debug)]
-pub(super) enum PaneOperation {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaneOperation {
     Delete(Vec<String>),
     Rename {
         from: String,
@@ -204,10 +204,7 @@ impl ExplorerPanel {
             window.push_notification(Notification::error(message).title(pending.failure), cx);
         }
         // Re-read even after a failure: a delete may have removed part of a tree.
-        if !pending.remote || self.connection_state() == ConnectionState::Connected {
-            let path = pane.read(cx).path();
-            self.navigate(pending.remote, path, LoadIntent::Reload, window, cx);
-        }
+        self.reload(pending.remote, window, cx);
     }
 
     /// The connection dropped: remote operations will not answer.

@@ -20,7 +20,10 @@ use shellrs::app::{
     RemoveAgentSkill, RenameGroup, RenameTerminal,
 };
 use shellrs::cli::{AgentKind, IntegrationPaths};
-use shellrs::connection::{ConnectionPromptKind, ConnectionTester, LoginTest, TrustCallback};
+use shellrs::connection::{
+    ConnectionPrompt, ConnectionPromptField, ConnectionPromptKind, ConnectionPromptReply,
+    ConnectionTester, LoginTest, TrustCallback,
+};
 use shellrs::explorer::ExplorerId;
 use shellrs::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
 use shellrs::session::{
@@ -34,8 +37,7 @@ use shellrs::sftp::{
 };
 use shellrs::terminal::{
     FixedRemoteTerminalTransportProvider, Latency, LocalTerminalId, RemoteTerminalId, TerminalFont,
-    TerminalLifecycle, TerminalPrompt, TerminalPromptField, TerminalPromptKind,
-    TerminalPromptReply, TerminalSize, TerminalTransport, TerminalTransportCommand,
+    TerminalLifecycle, TerminalSize, TerminalTransport, TerminalTransportCommand,
     TerminalTransportEvent, TerminalTransportFactory,
 };
 use shellrs::workspace::Workspace;
@@ -429,19 +431,19 @@ impl TerminalTransport for PromptTerminalTransport {
     ) -> anyhow::Result<()> {
         let request_id = 9001;
         let kind = match self.behavior {
-            PromptBehavior::Authentication => TerminalPromptKind::authentication(
+            PromptBehavior::Authentication => ConnectionPromptKind::authentication(
                 "SSH 登录",
                 "请输入密码",
-                vec![TerminalPromptField::new("密码", false)],
+                vec![ConnectionPromptField::new("密码", false)],
             ),
-            PromptBehavior::UnknownHost => TerminalPromptKind::unknown_host(
+            PromptBehavior::UnknownHost => ConnectionPromptKind::unknown_host(
                 "example.test",
                 22,
                 "ssh-ed25519",
                 "SHA256:test-fingerprint",
             ),
         };
-        events.send_blocking(TerminalTransportEvent::Prompt(TerminalPrompt::new(
+        events.send_blocking(TerminalTransportEvent::Prompt(ConnectionPrompt::new(
             request_id, kind,
         )))?;
         loop {
@@ -450,20 +452,20 @@ impl TerminalTransport for PromptTerminalTransport {
                     request_id: reply_id,
                     reply,
                 } if reply_id == request_id => match reply {
-                    TerminalPromptReply::TrustAndSave
+                    ConnectionPromptReply::TrustAndSave
                         if matches!(self.behavior, PromptBehavior::UnknownHost) =>
                     {
                         self.accepted.fetch_add(1, Ordering::SeqCst);
                         break;
                     }
-                    TerminalPromptReply::Answers(answers)
+                    ConnectionPromptReply::Answers(answers)
                         if matches!(self.behavior, PromptBehavior::Authentication)
                             && answers.len() == 1 =>
                     {
                         self.accepted.fetch_add(1, Ordering::SeqCst);
                         break;
                     }
-                    TerminalPromptReply::Cancel => {
+                    ConnectionPromptReply::Cancel => {
                         self.canceled.fetch_add(1, Ordering::SeqCst);
                         events
                             .send_blocking(TerminalTransportEvent::Failed("认证已取消".into()))?;
@@ -647,9 +649,12 @@ async fn canceling_unknown_host_prompt_keeps_session_disconnected(cx: &mut TestA
         window.click("cancel", cx);
     })
     .unwrap();
+    // The window says so at once; the transport hears of the cancel on its
+    // own thread, a moment later.
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
         window.render_frame(cx);
         window.find("status-connection").label() == Some("未连接 prompt-host")
+            && factory.canceled.load(Ordering::SeqCst) == 1
     })
     .await;
 

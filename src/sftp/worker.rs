@@ -6,6 +6,7 @@ use super::{
     control::{Cancelled, TransferControl},
     download::DownloadBatch,
     journal::{DownloadJournal, Journal},
+    meter::TransferMeter,
     model::{scp_local_target, scp_remote_target},
     operations,
     upload::UploadBatch,
@@ -76,19 +77,19 @@ impl TransferBatch {
             Self::Download(batch) => batch.is_complete(),
         }
     }
-    fn phase(&mut self, phase: TransferPhase, control: &TransferControl) {
+    fn meter(&mut self) -> &mut TransferMeter {
         match self {
-            Self::Upload(batch) => batch.phase(phase, control),
-            Self::Download(batch) => batch.phase(phase, control),
+            Self::Upload(batch) => &mut batch.meter,
+            Self::Download(batch) => &mut batch.meter,
         }
+    }
+    fn phase(&mut self, phase: TransferPhase, control: &TransferControl) {
+        self.meter().phase(phase, control);
     }
     /// Say what a reconnecting batch is waiting for; the next phase
     /// other than reconnecting clears it.
     fn set_note(&mut self, note: String) {
-        match self {
-            Self::Upload(batch) => batch.progress.note = Some(note),
-            Self::Download(batch) => batch.progress.note = Some(note),
-        }
+        self.meter().progress.note = Some(note);
     }
     async fn run(&mut self, client: &SftpClient, control: &TransferControl) -> Result<()> {
         match self {

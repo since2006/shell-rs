@@ -35,6 +35,11 @@ impl RemotePath {
                 .to_owned(),
         )
     }
+    /// The last component; empty for the root.
+    pub fn file_name(&self) -> &str {
+        let path = self.0.trim_end_matches('/');
+        path.rsplit('/').next().unwrap_or(path)
+    }
     pub fn is_root(&self) -> bool {
         self.0 == "/"
     }
@@ -211,15 +216,8 @@ pub(crate) fn scp_remote_target(
     destination: &RemotePath,
     is_directory: bool,
 ) -> (RemotePath, Option<String>) {
-    let name = destination
-        .as_str()
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next();
-    match name {
-        Some(name) if !is_directory && !name.is_empty() => {
-            (destination.parent(), Some(name.to_string()))
-        }
+    match destination.file_name() {
+        name if !is_directory && !name.is_empty() => (destination.parent(), Some(name.to_string())),
         _ => (destination.clone(), None),
     }
 }
@@ -307,8 +305,9 @@ impl DownloadRequest {
         self
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TransferPhase {
+    #[default]
     Scanning,
     Transferring,
     Waiting,
@@ -316,7 +315,7 @@ pub enum TransferPhase {
     Stopped,
     Completed,
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TransferProgress {
     pub(crate) direction: TransferDirection,
     pub(crate) phase: TransferPhase,
@@ -391,29 +390,6 @@ impl TransferDetail {
         self.reason.as_deref()
     }
 }
-impl Default for TransferProgress {
-    fn default() -> Self {
-        Self {
-            direction: TransferDirection::Upload,
-            phase: TransferPhase::Scanning,
-            current: String::new(),
-            completed_bytes: 0,
-            total_bytes: 0,
-            total: 0,
-            succeeded: 0,
-            skipped: 0,
-            failed: 0,
-            bytes_per_second: 0,
-            details: Vec::new(),
-            current_source: String::new(),
-            current_bytes: 0,
-            current_total: 0,
-            elapsed: Duration::ZERO,
-            settled_bytes: 0,
-            note: None,
-        }
-    }
-}
 impl TransferProgress {
     pub fn new(phase: TransferPhase) -> Self {
         Self {
@@ -445,7 +421,8 @@ impl TransferProgress {
         self.current_total = total;
         self
     }
-    /// How the batch's items ended so far, for fakes and tests.
+    /// How the batch's items ended so far.
+    #[cfg(test)]
     pub fn with_details(mut self, details: Vec<TransferDetail>) -> Self {
         self.succeeded = details
             .iter()
@@ -541,12 +518,6 @@ impl TransferProgress {
             left as f64 / self.bytes_per_second as f64,
         ))
     }
-    pub fn is_active(&self) -> bool {
-        !matches!(
-            self.phase,
-            TransferPhase::Stopped | TransferPhase::Completed
-        )
-    }
 }
 /// The bytes an item puts through: a file's size, nothing for folders and
 /// links.
@@ -606,7 +577,7 @@ impl TransferQuestion {
         &self.message
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferChoice {
     Overwrite,
     Skip,
@@ -615,7 +586,7 @@ pub enum TransferChoice {
     Resume,
     Restart,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransferAnswer {
     choice: TransferChoice,
     apply_to_all: bool,
@@ -639,7 +610,7 @@ impl TransferAnswer {
 /// dialog does for a multi-selection: bits in `set` turn on, bits in `clear`
 /// turn off, and every other bit (file type, setuid, setgid, sticky, and the
 /// rwx bits the user left alone) keeps its value per item.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PermissionEdit {
     set: u32,
     clear: u32,

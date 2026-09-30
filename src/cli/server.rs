@@ -19,7 +19,7 @@ use super::protocol::{
     CliError, Envelope, ErrorCode, FrameKind, PROTOCOL_VERSION, Reply, Request, SessionInfo,
     TransferCounters, TransferSummary, parse_json, read_frame, write_frame, write_json,
 };
-use crate::session::{GroupId, Session, SessionGroup, SessionStore, matches_query};
+use crate::session::{Session, SessionStore, matches_query};
 use crate::ssh::ExecStream;
 
 /// Does what a CLI request asks. Every method blocks: each request has a
@@ -83,28 +83,16 @@ impl CliTarget {
 
     /// Every session in `store`, with its group path.
     pub fn all(store: &SessionStore) -> Vec<Self> {
-        let groups: std::collections::HashMap<GroupId, &SessionGroup> = store
-            .groups()
-            .iter()
-            .map(|group| (group.id, group))
-            .collect();
-        let path = |mut id: Option<GroupId>| {
-            let mut names = Vec::new();
-            while let Some(group) = id.and_then(|id| groups.get(&id)) {
-                names.push(group.name.to_string());
-                id = group.parent;
-                // A cycle cannot be saved, but must not hang the app either.
-                if names.len() > groups.len() {
-                    break;
-                }
-            }
-            names.reverse();
-            (!names.is_empty()).then(|| names.join("/"))
-        };
         store
             .sessions()
             .iter()
-            .map(|session| Self::new(session, path(session.group)))
+            .map(|session| {
+                let names = session
+                    .group
+                    .map(|id| store.group_names(id))
+                    .unwrap_or_default();
+                Self::new(session, (!names.is_empty()).then(|| names.join("/")))
+            })
             .collect()
     }
 
@@ -260,11 +248,8 @@ fn accept(stream: tokio::net::UnixStream, owner: u32, shared: &Arc<Shared>) {
     let _ = std::thread::Builder::new()
         .name("shellrs-cli-request".into())
         .spawn(move || {
-            let Ok(reading) = stream.try_clone() else {
-                return;
-            };
             // A caller that hangs up mid-answer is no one's problem.
-            let _ = serve(&mut BufReader::new(reading), &mut &stream, &shared);
+            let _ = serve(&mut BufReader::new(&stream), &mut &stream, &shared);
         });
 }
 
@@ -388,36 +373,38 @@ fn serve(
     writer: &mut impl io::Write,
     shared: &Shared,
 ) -> io::Result<()> {
-    let envelope: Envelope = match read_frame(reader)? {
-        Some((FrameKind::Json, payload)) => match parse_json(&payload) {
-            Ok(envelope) => envelope,
-            Err(error) => {
-                return reply_error(
-                    writer,
-                    CliError::new(ErrorCode::BadRequest, error.to_string()),
-                );
-            }
-        },
-        _ => return Ok(()),
+    let Some((FrameKind::Json, payload)) = read_frame(reader)? else {
+        return Ok(());
     };
+    let reply = respond(&payload, writer, shared).unwrap_or_else(|error| Reply::Error {
+        code: error.code,
+        message: error.message,
+    });
+    write_json(writer, &reply)
+}
+
+/// Carry out one request. Output and progress go to `writer` as they come;
+/// what comes back is the reply that ends the connection, or the error sent
+/// in its place.
+fn respond(
+    payload: &[u8],
+    writer: &mut impl io::Write,
+    shared: &Shared,
+) -> Result<Reply, CliError> {
+    let envelope: Envelope = parse_json(payload)
+        .map_err(|error| CliError::new(ErrorCode::BadRequest, error.to_string()))?;
     if envelope.version != PROTOCOL_VERSION {
-        return reply_error(
-            writer,
-            CliError::new(
-                ErrorCode::VersionMismatch,
-                "shellrs 命令与正在运行的 ShellRS 版本不同：\
-                 请重新启动 ShellRS，或在 设置 → 外部 CLI 中更新 CLI",
-            ),
-        );
+        return Err(CliError::new(
+            ErrorCode::VersionMismatch,
+            "shellrs 命令与正在运行的 ShellRS 版本不同：\
+             请重新启动 ShellRS，或在 设置 → 外部 CLI 中更新 CLI",
+        ));
     }
     if !shared.enabled.load(Ordering::Acquire) {
-        return reply_error(
-            writer,
-            CliError::new(
-                ErrorCode::NotEnabled,
-                "ShellRS 未启用外部 CLI：请在 ShellRS 的 设置 → 外部 CLI 中打开「启用外部 CLI」",
-            ),
-        );
+        return Err(CliError::new(
+            ErrorCode::NotEnabled,
+            "ShellRS 未启用外部 CLI：请在 ShellRS 的 设置 → 外部 CLI 中打开「启用外部 CLI」",
+        ));
     }
     match envelope.request {
         Request::List { query } => {
@@ -430,14 +417,11 @@ fn serve(
                 .filter(|target| query.as_deref().is_none_or(|query| target.matches(query)))
                 .map(|target| target.info.clone())
                 .collect();
-            write_json(writer, &Reply::Sessions { sessions })
+            Ok(Reply::Sessions { sessions })
         }
         Request::Exec { session, command } => {
-            let target = match find(shared, &session) {
-                Ok(target) => target,
-                Err(error) => return reply_error(writer, error),
-            };
-            let result = shared
+            let target = find(shared, &session)?;
+            let code = shared
                 .backend
                 .exec(&target.session, &command, &mut |stream, bytes| {
                     let kind = match stream {
@@ -445,51 +429,40 @@ fn serve(
                         ExecStream::Stderr => FrameKind::Stderr,
                     };
                     write_frame(writer, kind, bytes)
-                });
-            match result {
-                Ok(code) => write_json(writer, &Reply::Exit { code }),
-                Err(error) => reply_error(writer, error),
-            }
+                })?;
+            Ok(Reply::Exit { code })
         }
         Request::Upload {
             session,
             source,
             destination,
         } => {
-            let target = match find(shared, &session) {
-                Ok(target) => target,
-                Err(error) => return reply_error(writer, error),
-            };
+            let target = find(shared, &session)?;
             if !source.is_absolute() {
-                return reply_error(writer, not_absolute(&source));
+                return Err(not_absolute(&source));
             }
-            let result =
-                shared
-                    .backend
-                    .upload(&target.session, &source, &destination, &mut |counters| {
-                        write_json(writer, &Reply::Progress(counters))
-                    });
-            reply_transfer(writer, result)
+            shared
+                .backend
+                .upload(&target.session, &source, &destination, &mut |counters| {
+                    write_json(writer, &Reply::Progress(counters))
+                })
+                .map(Reply::TransferDone)
         }
         Request::Download {
             session,
             source,
             destination,
         } => {
-            let target = match find(shared, &session) {
-                Ok(target) => target,
-                Err(error) => return reply_error(writer, error),
-            };
+            let target = find(shared, &session)?;
             if !destination.is_absolute() {
-                return reply_error(writer, not_absolute(&destination));
+                return Err(not_absolute(&destination));
             }
-            let result =
-                shared
-                    .backend
-                    .download(&target.session, &source, &destination, &mut |counters| {
-                        write_json(writer, &Reply::Progress(counters))
-                    });
-            reply_transfer(writer, result)
+            shared
+                .backend
+                .download(&target.session, &source, &destination, &mut |counters| {
+                    write_json(writer, &Reply::Progress(counters))
+                })
+                .map(Reply::TransferDone)
         }
     }
 }
@@ -514,25 +487,5 @@ fn not_absolute(path: &Path) -> CliError {
     CliError::new(
         ErrorCode::BadRequest,
         format!("本地路径必须是绝对路径：{}", path.display()),
-    )
-}
-
-fn reply_transfer(
-    writer: &mut impl io::Write,
-    result: Result<TransferSummary, CliError>,
-) -> io::Result<()> {
-    match result {
-        Ok(summary) => write_json(writer, &Reply::TransferDone(summary)),
-        Err(error) => reply_error(writer, error),
-    }
-}
-
-fn reply_error(writer: &mut impl io::Write, error: CliError) -> io::Result<()> {
-    write_json(
-        writer,
-        &Reply::Error {
-            code: error.code,
-            message: error.message,
-        },
     )
 }

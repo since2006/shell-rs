@@ -10,38 +10,14 @@ use crate::explorer::ExplorerStatus;
 use crate::session::{ConnectionState, Session};
 use crate::terminal::{TerminalLifecycle, TerminalStatus};
 
-pub enum WorkspaceStatusSource {
+/// The active connection/process state on the left and terminal facts on the
+/// right. Local terminals report their real emulator cursor coordinates.
+#[derive(IntoElement)]
+pub enum WorkspaceStatus {
     Session(Option<Session>),
     Local(TerminalStatus),
     /// An SFTP tab: its own connection and what went wrong in it.
     Explorer(Option<Session>, ExplorerStatus),
-}
-
-/// The active connection/process state on the left and terminal facts on the
-/// right. Local terminals report their real emulator cursor coordinates.
-#[derive(IntoElement)]
-pub struct WorkspaceStatus {
-    source: WorkspaceStatusSource,
-}
-
-impl WorkspaceStatus {
-    pub fn session(active: Option<Session>) -> Self {
-        Self {
-            source: WorkspaceStatusSource::Session(active),
-        }
-    }
-
-    pub fn local(status: TerminalStatus) -> Self {
-        Self {
-            source: WorkspaceStatusSource::Local(status),
-        }
-    }
-
-    pub fn explorer(session: Option<Session>, status: ExplorerStatus) -> Self {
-        Self {
-            source: WorkspaceStatusSource::Explorer(session, status),
-        }
-    }
 }
 
 /// The icon for a connection state; a dropped one, like a problem, in red.
@@ -65,82 +41,82 @@ impl RenderOnce for WorkspaceStatus {
         // Red when something is wrong: a dropped connection, or an SFTP
         // tab's directory that could not be read.
         let mut alarming = false;
-        let (text, icon, address, cursor): (SharedString, Icon, Option<String>, String) =
-            match self.source {
-                WorkspaceStatusSource::Session(active) => match active {
-                    Some(session) => {
-                        alarming = session.state == ConnectionState::Disconnected;
+        let (text, icon, address, cursor): (SharedString, Icon, Option<String>, String) = match self
+        {
+            WorkspaceStatus::Session(active) => match active {
+                Some(session) => {
+                    alarming = session.state == ConnectionState::Disconnected;
+                    (
+                        format!("{} {}", session.state.label(), session.name).into(),
+                        state_icon(session.state, cx),
+                        Some(session.address()),
+                        "行 1，列 1".into(),
+                    )
+                }
+                None => (
+                    ConnectionState::Disconnected.label().into(),
+                    Icon::new(CatalogIcon::Unplug).text_color(muted),
+                    None,
+                    "行 1，列 1".into(),
+                ),
+            },
+            WorkspaceStatus::Explorer(session, status) => {
+                let name = session
+                    .as_ref()
+                    .map_or_else(|| "SFTP".into(), |session| session.name.clone());
+                let state = format!("{} {name}", status.state.label());
+                let (text, icon) = match (status.state, status.problem) {
+                    (ConnectionState::Disconnected, Some(problem)) => {
+                        alarming = true;
+                        (format!("{state}：{problem}"), state_icon(status.state, cx))
+                    }
+                    // Connected, but a directory could not be read.
+                    (ConnectionState::Connected, Some(problem)) => {
+                        alarming = true;
                         (
-                            format!("{} {}", session.state.label(), session.name).into(),
-                            state_icon(session.state, cx),
-                            Some(session.address()),
-                            "行 1，列 1".into(),
+                            problem.to_string(),
+                            Icon::new(IconName::CircleX).text_color(cx.theme().danger),
                         )
                     }
-                    None => (
-                        ConnectionState::Disconnected.label().into(),
-                        Icon::new(CatalogIcon::Unplug).text_color(muted),
-                        None,
-                        "行 1，列 1".into(),
+                    (now, _) => {
+                        alarming = now == ConnectionState::Disconnected;
+                        (state, state_icon(now, cx))
+                    }
+                };
+                (
+                    text.into(),
+                    icon,
+                    session.map(|session| session.address()),
+                    "行 1，列 1".into(),
+                )
+            }
+            WorkspaceStatus::Local(status) => {
+                let lifecycle = status.lifecycle();
+                let icon = match lifecycle {
+                    TerminalLifecycle::Running => {
+                        Icon::new(IconName::CircleCheck).text_color(cx.theme().success)
+                    }
+                    TerminalLifecycle::Starting => {
+                        Icon::new(IconName::LoaderCircle).text_color(cx.theme().warning)
+                    }
+                    TerminalLifecycle::Exited { .. }
+                    | TerminalLifecycle::Failed(_)
+                    | TerminalLifecycle::Closing => {
+                        Icon::new(CatalogIcon::Terminal).text_color(muted)
+                    }
+                };
+                (
+                    format!("{} 本地终端", lifecycle.label()).into(),
+                    icon,
+                    None,
+                    format!(
+                        "行 {}，列 {}",
+                        status.cursor_row() + 1,
+                        status.cursor_column() + 1
                     ),
-                },
-                WorkspaceStatusSource::Explorer(session, status) => {
-                    let name = session
-                        .as_ref()
-                        .map_or_else(|| "SFTP".into(), |session| session.name.clone());
-                    let state = format!("{} {name}", status.state.label());
-                    let (text, icon) = match (status.state, status.problem) {
-                        (ConnectionState::Disconnected, Some(problem)) => {
-                            alarming = true;
-                            (format!("{state}：{problem}"), state_icon(status.state, cx))
-                        }
-                        // Connected, but a directory could not be read.
-                        (ConnectionState::Connected, Some(problem)) => {
-                            alarming = true;
-                            (
-                                problem.to_string(),
-                                Icon::new(IconName::CircleX).text_color(cx.theme().danger),
-                            )
-                        }
-                        (now, _) => {
-                            alarming = now == ConnectionState::Disconnected;
-                            (state, state_icon(now, cx))
-                        }
-                    };
-                    (
-                        text.into(),
-                        icon,
-                        session.map(|session| session.address()),
-                        "行 1，列 1".into(),
-                    )
-                }
-                WorkspaceStatusSource::Local(status) => {
-                    let lifecycle = status.lifecycle();
-                    let icon = match lifecycle {
-                        TerminalLifecycle::Running => {
-                            Icon::new(IconName::CircleCheck).text_color(cx.theme().success)
-                        }
-                        TerminalLifecycle::Starting => {
-                            Icon::new(IconName::LoaderCircle).text_color(cx.theme().warning)
-                        }
-                        TerminalLifecycle::Exited { .. }
-                        | TerminalLifecycle::Failed(_)
-                        | TerminalLifecycle::Closing => {
-                            Icon::new(CatalogIcon::Terminal).text_color(muted)
-                        }
-                    };
-                    (
-                        format!("{} 本地终端", lifecycle.label()).into(),
-                        icon,
-                        None,
-                        format!(
-                            "行 {}，列 {}",
-                            status.cursor_row() + 1,
-                            status.cursor_column() + 1
-                        ),
-                    )
-                }
-            };
+                )
+            }
+        };
 
         let danger = cx.theme().danger;
         StatusBar::new()

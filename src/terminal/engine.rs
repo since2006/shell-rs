@@ -15,13 +15,13 @@ use alacritty_terminal::term::color::COUNT;
 use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, CursorStyle, Processor, Rgb};
 
+use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::session::HostOs;
 
 use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
 use super::{
-    Latency, SharedTerminalTransportFactory, TerminalLifecycle, TerminalPrompt,
-    TerminalPromptReply, TerminalSize, TerminalStatus, TerminalTransportCommand,
-    TerminalTransportEvent,
+    Latency, SharedTerminalTransportFactory, TerminalLifecycle, TerminalSize, TerminalStatus,
+    TerminalTransportCommand, TerminalTransportEvent,
 };
 
 pub type AlacrittyTerm = Term<TerminalEventProxy>;
@@ -47,7 +47,6 @@ pub struct TerminalSnapshot {
     pub cursor_blinking: bool,
     pub display_offset: usize,
     pub colors: [Option<Rgb>; COUNT],
-    pub mode: TermMode,
 }
 
 impl TerminalSnapshot {
@@ -127,7 +126,6 @@ impl TerminalEngine {
                                     cx.emit(event);
                                 }
                             }
-                            cx.emit(TerminalEngineEvent::Changed);
                             cx.notify();
                         })
                         .is_err()
@@ -140,7 +138,7 @@ impl TerminalEngine {
 
     /// Fold one transport event into the engine's state. Anything the view
     /// must hear about comes back as an event to emit.
-    fn handle_event(&mut self, event: TerminalUiEvent) -> Option<TerminalEngineEvent> {
+    fn handle_event(&mut self, event: TerminalUiEvent) -> Option<TerminalEvent> {
         if event.generation != self.generation {
             return None;
         }
@@ -162,10 +160,10 @@ impl TerminalEngine {
             }
             TerminalUiEventKind::Latency(latency) => self.latency = Some(latency),
             TerminalUiEventKind::Prompt(prompt) => {
-                return Some(TerminalEngineEvent::PromptRequested(prompt));
+                return Some(TerminalEvent::PromptRequested(prompt));
             }
             TerminalUiEventKind::HostOs(os) => {
-                return Some(TerminalEngineEvent::HostOsDetected(os));
+                return Some(TerminalEvent::HostOsDetected(os));
             }
             TerminalUiEventKind::ColorRequest(index, formatter) => {
                 let color = self.runtime.term.lock().colors()[index]
@@ -190,7 +188,6 @@ impl TerminalEngine {
             self.factory.create(),
             self.event_sender.clone(),
         );
-        cx.emit(TerminalEngineEvent::Changed);
         cx.notify();
     }
 
@@ -203,7 +200,7 @@ impl TerminalEngine {
         self.restart(cx);
     }
 
-    pub fn reply_to_prompt(&self, request_id: u64, reply: TerminalPromptReply) {
+    pub fn reply_to_prompt(&self, request_id: u64, reply: ConnectionPromptReply) {
         self.runtime.reply_to_prompt(request_id, reply);
     }
 
@@ -211,7 +208,6 @@ impl TerminalEngine {
         self.generation = self.generation.saturating_add(1);
         self.lifecycle = TerminalLifecycle::Closing;
         self.runtime.shutdown();
-        cx.emit(TerminalEngineEvent::Changed);
         cx.notify();
     }
 
@@ -223,13 +219,6 @@ impl TerminalEngine {
             code: 0,
             signal: None,
         };
-        cx.emit(TerminalEngineEvent::Changed);
-        cx.notify();
-    }
-
-    pub fn append_system_message(&mut self, message: &str, cx: &mut gpui_kit::Context<Self>) {
-        append_message(&self.runtime.term, message);
-        cx.emit(TerminalEngineEvent::Changed);
         cx.notify();
     }
 
@@ -263,9 +252,6 @@ impl TerminalEngine {
     }
 
     pub fn paste(&self, text: &str) {
-        if !self.lifecycle.accepts_input() {
-            return;
-        }
         self.send_user_input(encode_paste(text, self.mode()));
     }
 
@@ -281,7 +267,6 @@ impl TerminalEngine {
             .unwrap_or_else(|error| error.into_inner()) = size;
         self.runtime.term.lock().resize(size);
         self.runtime.resize(size);
-        cx.emit(TerminalEngineEvent::Changed);
         cx.notify();
     }
 
@@ -371,7 +356,6 @@ impl TerminalEngine {
             search.refresh(&mut term);
         }
         drop(term);
-        cx.emit(TerminalEngineEvent::Changed);
         cx.notify();
     }
 
@@ -419,7 +403,6 @@ impl TerminalEngine {
             self.lifecycle.clone(),
             cursor.line.0.max(0) as usize,
             cursor.column.0,
-            self.title.clone(),
         )
     }
 
@@ -471,7 +454,6 @@ impl TerminalEngine {
             cursor_blinking: term.cursor_style().blinking,
             display_offset: content.display_offset,
             colors: std::array::from_fn(|index| content.colors[index]),
-            mode: content.mode,
         }
     }
 }
@@ -502,7 +484,7 @@ fn normalize_wide_character_selection(cells: &mut [TerminalCell], columns: usize
     }
 }
 
-impl gpui_kit::EventEmitter<TerminalEngineEvent> for TerminalEngine {}
+impl gpui_kit::EventEmitter<TerminalEvent> for TerminalEngine {}
 
 impl Drop for TerminalEngine {
     fn drop(&mut self) {
@@ -511,9 +493,8 @@ impl Drop for TerminalEngine {
 }
 
 #[derive(Clone, Debug)]
-pub enum TerminalEngineEvent {
-    Changed,
-    PromptRequested(TerminalPrompt),
+pub enum TerminalEvent {
+    PromptRequested(ConnectionPrompt),
     HostOsDetected(HostOs),
 }
 
@@ -547,7 +528,6 @@ impl TerminalRuntime {
         let term = Arc::new(FairMutex::new(AlacrittyTerm::new(config, &size, proxy)));
 
         let parser_term = term.clone();
-        let parser_ui_events = ui_events.clone();
         thread::Builder::new()
             .name("shellrs-terminal-parser".into())
             .spawn(move || {
@@ -555,32 +535,20 @@ impl TerminalRuntime {
                 while let Ok(event) = transport_receiver.recv_blocking() {
                     match event {
                         TerminalTransportEvent::Started => {
-                            send_ui(&parser_ui_events, generation, TerminalUiEventKind::Started);
+                            parser_proxy.send(TerminalUiEventKind::Started);
                         }
                         TerminalTransportEvent::Output(bytes) => {
                             processor.advance(&mut *parser_term.lock(), &bytes);
                             parser_proxy.wakeup();
                         }
                         TerminalTransportEvent::HostOsDetected(os) => {
-                            send_ui(
-                                &parser_ui_events,
-                                generation,
-                                TerminalUiEventKind::HostOs(os),
-                            );
+                            parser_proxy.send(TerminalUiEventKind::HostOs(os));
                         }
                         TerminalTransportEvent::Latency(latency) => {
-                            send_ui(
-                                &parser_ui_events,
-                                generation,
-                                TerminalUiEventKind::Latency(latency),
-                            );
+                            parser_proxy.send(TerminalUiEventKind::Latency(latency));
                         }
                         TerminalTransportEvent::Prompt(prompt) => {
-                            send_ui(
-                                &parser_ui_events,
-                                generation,
-                                TerminalUiEventKind::Prompt(prompt),
-                            );
+                            parser_proxy.send(TerminalUiEventKind::Prompt(prompt));
                         }
                         TerminalTransportEvent::Exited { code, signal } => {
                             let description = signal
@@ -592,11 +560,7 @@ impl TerminalRuntime {
                                 &mut processor,
                                 &description,
                             );
-                            send_ui(
-                                &parser_ui_events,
-                                generation,
-                                TerminalUiEventKind::Exited { code, signal },
-                            );
+                            parser_proxy.send(TerminalUiEventKind::Exited { code, signal });
                             parser_proxy.wakeup();
                             break;
                         }
@@ -606,11 +570,7 @@ impl TerminalRuntime {
                                 &mut processor,
                                 &format!("终端错误：{error}"),
                             );
-                            send_ui(
-                                &parser_ui_events,
-                                generation,
-                                TerminalUiEventKind::Failed(error),
-                            );
+                            parser_proxy.send(TerminalUiEventKind::Failed(error));
                             parser_proxy.wakeup();
                         }
                     }
@@ -649,7 +609,7 @@ impl TerminalRuntime {
         let _ = self.commands.send(TerminalTransportCommand::Shutdown);
     }
 
-    fn reply_to_prompt(&self, request_id: u64, reply: TerminalPromptReply) {
+    fn reply_to_prompt(&self, request_id: u64, reply: ConnectionPromptReply) {
         let _ = self
             .commands
             .send(TerminalTransportCommand::PromptReply { request_id, reply });
@@ -687,26 +647,10 @@ pub struct TerminalEventProxy {
 impl EventListener for TerminalEventProxy {
     fn send_event(&self, event: Event) {
         match event {
-            Event::Title(title) => {
-                send_ui(
-                    &self.ui_events,
-                    self.generation,
-                    TerminalUiEventKind::Title(title),
-                );
-            }
-            Event::ResetTitle => {
-                send_ui(
-                    &self.ui_events,
-                    self.generation,
-                    TerminalUiEventKind::ResetTitle,
-                );
-            }
+            Event::Title(title) => self.send(TerminalUiEventKind::Title(title)),
+            Event::ResetTitle => self.send(TerminalUiEventKind::ResetTitle),
             Event::ColorRequest(index, formatter) => {
-                send_ui(
-                    &self.ui_events,
-                    self.generation,
-                    TerminalUiEventKind::ColorRequest(index, formatter),
-                );
+                self.send(TerminalUiEventKind::ColorRequest(index, formatter));
             }
             Event::PtyWrite(text) => {
                 let _ = self
@@ -725,23 +669,29 @@ impl EventListener for TerminalEventProxy {
                     .commands
                     .send(TerminalTransportCommand::Write(response.into_bytes()));
             }
-            Event::Wakeup | Event::MouseCursorDirty | Event::CursorBlinkingChange | Event::Bell => {
-                self.wakeup()
-            }
+            Event::Wakeup
+            | Event::MouseCursorDirty
+            | Event::CursorBlinkingChange
+            | Event::Bell
+            | Event::Exit
+            | Event::ChildExit(_) => self.wakeup(),
             Event::ClipboardStore(_, _) | Event::ClipboardLoad(_, _) => {}
-            Event::Exit | Event::ChildExit(_) => self.wakeup(),
         }
     }
 }
 
 impl TerminalEventProxy {
+    /// Queue an event for the UI thread, stamped with this run's generation.
+    fn send(&self, kind: TerminalUiEventKind) {
+        let _ = self.ui_events.send(TerminalUiEvent {
+            generation: self.generation,
+            kind,
+        });
+    }
+
     fn wakeup(&self) {
         if !self.wakeup_pending.swap(true, Ordering::AcqRel) {
-            send_ui(
-                &self.ui_events,
-                self.generation,
-                TerminalUiEventKind::Wakeup,
-            );
+            self.send(TerminalUiEventKind::Wakeup);
         }
     }
 }
@@ -758,14 +708,10 @@ enum TerminalUiEventKind {
     ResetTitle,
     Exited { code: u32, signal: Option<String> },
     Failed(String),
-    Prompt(TerminalPrompt),
+    Prompt(ConnectionPrompt),
     HostOs(HostOs),
     Latency(Latency),
     ColorRequest(usize, Arc<dyn Fn(Rgb) -> String + Send + Sync>),
-}
-
-fn send_ui(events: &mpsc::Sender<TerminalUiEvent>, generation: u64, kind: TerminalUiEventKind) {
-    let _ = events.send(TerminalUiEvent { generation, kind });
 }
 
 fn append_message(term: &Arc<FairMutex<AlacrittyTerm>>, message: &str) {

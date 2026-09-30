@@ -1,11 +1,10 @@
 use gpui_kit::{Rgba, SharedString, rgb};
 use rand::{Rng as _, distr::Alphanumeric};
-use serde::Deserialize;
 
 use crate::secrets::SecretRef;
 
 /// Stable identity of a session. Never reused within a process.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SessionId(pub u64);
 
 /// The identity a session shows outside the app, such as
@@ -59,7 +58,7 @@ impl std::fmt::Display for PublicId {
 }
 
 /// Stable identity of a session group (a folder in the session tree).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GroupId(pub u64);
 
 /// How a session authenticates.

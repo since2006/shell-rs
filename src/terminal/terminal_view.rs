@@ -23,13 +23,12 @@ use crate::app::{
     CatalogIcon, ClearTerminal, CopyTerminal, DismissTerminalFind, FindInTerminal,
     FindNextInTerminal, FindPreviousInTerminal, PasteTerminal,
 };
-use crate::session::HostOs;
+use crate::connection::ConnectionPromptReply;
 
 use super::search::SearchMark;
 use super::{
-    Latency, SearchDirection, SharedTerminalTransportFactory, TerminalEngine, TerminalEngineEvent,
-    TerminalFont, TerminalLifecycle, TerminalPrompt, TerminalPromptReply, TerminalSize,
-    TerminalSnapshot, TerminalStatus,
+    Latency, SearchDirection, SharedTerminalTransportFactory, TerminalEngine, TerminalEvent,
+    TerminalFont, TerminalLifecycle, TerminalSize, TerminalSnapshot, TerminalStatus,
 };
 
 pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";
@@ -60,28 +59,6 @@ pub(crate) fn terminal_key_bindings() -> [KeyBinding; 2] {
         KeyBinding::new("tab", SendTab, Some(TERMINAL_KEY_CONTEXT)),
         KeyBinding::new("shift-tab", SendBackTab, Some(TERMINAL_KEY_CONTEXT)),
     ]
-}
-
-#[derive(Clone, Debug)]
-pub enum TerminalViewEvent {
-    Changed,
-    PromptRequested(TerminalPrompt),
-    HostOsDetected(HostOs),
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct SelectionGesture {
-    active: bool,
-}
-
-impl SelectionGesture {
-    fn start(&mut self) {
-        self.active = true;
-    }
-
-    fn finish(&mut self) {
-        self.active = false;
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,11 +100,29 @@ impl ScrollAccumulator {
     }
 }
 
+/// Where the grid sits on screen and how large one cell of it is.
 #[derive(Clone, Copy, Debug)]
-struct TerminalViewport {
+struct TerminalGeometry {
     bounds: Bounds<Pixels>,
     cell_width: Pixels,
     line_height: Pixels,
+}
+
+impl TerminalGeometry {
+    fn cell_bounds(&self, column: usize, row: usize, width: usize) -> Bounds<Pixels> {
+        Bounds::new(
+            point(
+                self.bounds.left() + self.cell_width * column as f32,
+                self.bounds.top() + self.line_height * row as f32,
+            ),
+            size(self.cell_width * width as f32, self.line_height),
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TerminalViewport {
+    geometry: TerminalGeometry,
     columns: usize,
     rows: usize,
     display_offset: usize,
@@ -138,22 +133,12 @@ impl TerminalViewport {
     fn grid_point(&self, position: gpui_kit::Point<Pixels>) -> (TerminalPoint, Side) {
         grid_point(
             position,
-            self.bounds,
-            self.cell_width,
-            self.line_height,
+            self.geometry.bounds,
+            self.geometry.cell_width,
+            self.geometry.line_height,
             self.display_offset,
             self.columns,
             self.rows,
-        )
-    }
-
-    fn cell_bounds(&self, column: usize, row: usize, width: usize) -> Bounds<Pixels> {
-        Bounds::new(
-            point(
-                self.bounds.left() + self.cell_width * column as f32,
-                self.bounds.top() + self.line_height * row as f32,
-            ),
-            size(self.cell_width * width as f32, self.line_height),
         )
     }
 }
@@ -168,7 +153,8 @@ pub struct TerminalView {
     viewport: Option<TerminalViewport>,
     ime_cursor_bounds: Option<Bounds<Pixels>>,
     requested_size: TerminalSize,
-    selection_gesture: SelectionGesture,
+    /// A selection drag is under way.
+    selecting: bool,
     scroll_accumulator: ScrollAccumulator,
     context_menu: Option<(Entity<PopupMenu>, gpui_kit::Point<Pixels>)>,
     context_menu_subscription: Option<Subscription>,
@@ -191,22 +177,11 @@ impl TerminalView {
         let engine = cx.new(|cx| TerminalEngine::new(factory, cx));
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
-            cx.observe(&engine, |_, _, cx| {
-                cx.emit(TerminalViewEvent::Changed);
-                cx.notify();
+            cx.observe(&engine, |_, _, cx| cx.notify()),
+            // The panel hears the engine's events through the view.
+            cx.subscribe(&engine, |_, _, event: &TerminalEvent, cx| {
+                cx.emit(event.clone())
             }),
-            cx.subscribe(
-                &engine,
-                |_, _, event: &TerminalEngineEvent, cx| match event {
-                    TerminalEngineEvent::PromptRequested(prompt) => {
-                        cx.emit(TerminalViewEvent::PromptRequested(prompt.clone()));
-                    }
-                    TerminalEngineEvent::HostOsDetected(os) => {
-                        cx.emit(TerminalViewEvent::HostOsDetected(*os));
-                    }
-                    TerminalEngineEvent::Changed => {}
-                },
-            ),
             cx.on_focus(&focus_handle, window, |this, _, cx| {
                 this.focused = true;
                 this.cursor_visible = true;
@@ -216,7 +191,7 @@ impl TerminalView {
             cx.on_blur(&focus_handle, window, |this, _, cx| {
                 this.focused = false;
                 this.cursor_visible = false;
-                this.selection_gesture.finish();
+                this.selecting = false;
                 this.engine.read(cx).set_focused(false);
                 cx.notify();
             }),
@@ -253,7 +228,7 @@ impl TerminalView {
             viewport: None,
             ime_cursor_bounds: None,
             requested_size: TerminalSize::DEFAULT,
-            selection_gesture: SelectionGesture::default(),
+            selecting: false,
             scroll_accumulator: ScrollAccumulator::default(),
             context_menu: None,
             context_menu_subscription: None,
@@ -275,15 +250,7 @@ impl TerminalView {
     }
 
     pub fn restart(&mut self, cx: &mut Context<Self>) {
-        self.marked_text.clear();
-        self.marked_selection = 0..0;
-        self.ime_cursor_bounds = None;
-        self.selection_gesture.finish();
-        self.scroll_accumulator.reset();
-        self.context_menu = None;
-        self.context_menu_subscription = None;
-        self.find = None;
-        self.cursor_visible = true;
+        self.reset_interaction();
         self.engine.update(cx, |engine, cx| engine.restart(cx));
     }
 
@@ -293,46 +260,36 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.reset_interaction();
-        self.find = None;
         self.engine
             .update(cx, |engine, cx| engine.restart_with_factory(factory, cx));
     }
 
-    pub fn reply_to_prompt(&self, request_id: u64, reply: TerminalPromptReply, cx: &App) {
+    pub fn reply_to_prompt(&self, request_id: u64, reply: ConnectionPromptReply, cx: &App) {
         self.engine.read(cx).reply_to_prompt(request_id, reply);
     }
 
+    /// Forget everything in progress on the screen that is going away: IME
+    /// composition, a selection drag, the context menu and the find bar.
     fn reset_interaction(&mut self) {
         self.marked_text.clear();
         self.marked_selection = 0..0;
         self.ime_cursor_bounds = None;
-        self.selection_gesture.finish();
-        self.scroll_accumulator.reset();
-        self.context_menu = None;
-        self.context_menu_subscription = None;
-        self.cursor_visible = true;
-    }
-
-    pub fn shutdown(&mut self, cx: &mut Context<Self>) {
-        self.marked_text.clear();
-        self.marked_selection = 0..0;
-        self.ime_cursor_bounds = None;
-        self.selection_gesture.finish();
+        self.selecting = false;
         self.scroll_accumulator.reset();
         self.context_menu = None;
         self.context_menu_subscription = None;
         self.find = None;
+        self.cursor_visible = true;
+    }
+
+    pub fn shutdown(&mut self, cx: &mut Context<Self>) {
+        self.reset_interaction();
         self.engine.update(cx, |engine, cx| engine.shutdown(cx));
     }
 
     pub fn stop(&mut self, message: &str, cx: &mut Context<Self>) {
         self.engine
             .update(cx, |engine, cx| engine.stop(message, cx));
-    }
-
-    pub fn append_system_message(&mut self, message: &str, cx: &mut Context<Self>) {
-        self.engine
-            .update(cx, |engine, cx| engine.append_system_message(message, cx));
     }
 
     pub fn status(&self, cx: &App) -> TerminalStatus {
@@ -355,36 +312,29 @@ impl TerminalView {
         self.engine.read(cx).snapshot().visible_text()
     }
 
-    pub fn has_selection(&self, cx: &App) -> bool {
-        self.engine.read(cx).has_selection()
-    }
-
-    pub fn copy_selection(&self, cx: &mut App) -> bool {
-        let Some(text) = self
+    pub fn copy_selection(&self, cx: &mut App) {
+        if let Some(text) = self
             .engine
             .read(cx)
             .selection_text()
             .filter(|text| !text.is_empty())
-        else {
-            return false;
-        };
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
-        true
+        {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
     }
 
-    pub fn paste_clipboard(&mut self, cx: &mut Context<Self>) -> bool {
+    pub fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
         if !self.engine.read(cx).lifecycle().accepts_input() {
-            return false;
+            return;
         }
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-            return false;
+            return;
         };
         self.engine.read(cx).paste(&text);
-        self.selection_gesture.finish();
+        self.selecting = false;
         self.scroll_accumulator.reset();
         self.cursor_visible = true;
         cx.notify();
-        true
     }
 
     /// Add the owner's commands below the terminal's own in the context menu.
@@ -394,7 +344,7 @@ impl TerminalView {
 
     /// Clear the screen and the scrollback, keeping the prompt line.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
-        self.selection_gesture.finish();
+        self.selecting = false;
         self.scroll_accumulator.reset();
         self.engine
             .update(cx, |engine, cx| engine.clear_keeping_prompt(cx));
@@ -412,21 +362,22 @@ impl TerminalView {
             Some(find) => find.input.clone(),
             None => {
                 let input = cx.new(|cx| InputState::new(window, cx).placeholder("查找"));
-                let subscription =
-                    cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
-                        match event {
-                            InputEvent::Change => this.schedule_find(window, cx),
-                            InputEvent::PressEnter { shift, .. } => {
-                                let direction = if *shift {
-                                    SearchDirection::Up
-                                } else {
-                                    SearchDirection::Down
-                                };
-                                this.step_find(direction, cx);
-                            }
-                            _ => {}
+                let subscription = cx.subscribe_in(
+                    &input,
+                    window,
+                    |this, _, event: &InputEvent, _, cx| match event {
+                        InputEvent::Change => this.schedule_find(cx),
+                        InputEvent::PressEnter { shift, .. } => {
+                            let direction = if *shift {
+                                SearchDirection::Up
+                            } else {
+                                SearchDirection::Down
+                            };
+                            this.step_find(direction, cx);
                         }
-                    });
+                        _ => {}
+                    },
+                );
                 self.find = Some(FindBar {
                     input: input.clone(),
                     pending: None,
@@ -471,18 +422,13 @@ impl TerminalView {
         cx.notify();
     }
 
-    fn schedule_find(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+    fn schedule_find(&mut self, cx: &mut Context<Self>) {
         let Some(find) = &mut self.find else {
             return;
         };
         find.pending = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(FIND_DEBOUNCE).await;
-            _ = this.update(cx, |this, cx| {
-                if let Some(find) = &mut this.find {
-                    find.pending = None;
-                }
-                this.run_find(cx);
-            });
+            _ = this.update(cx, |this, cx| this.run_find(cx));
         }));
     }
 
@@ -546,7 +492,7 @@ impl TerminalView {
         selection_type: SelectionType,
         cx: &mut Context<Self>,
     ) {
-        self.selection_gesture.start();
+        self.selecting = true;
         self.engine.update(cx, |engine, cx| {
             engine.start_selection(point, side, selection_type, cx)
         });
@@ -557,12 +503,8 @@ impl TerminalView {
             .update(cx, |engine, cx| engine.update_selection(point, side, cx));
     }
 
-    fn finish_selection(&mut self) {
-        self.selection_gesture.finish();
-    }
-
     fn send_user_input(&mut self, bytes: impl Into<Vec<u8>>, cx: &mut Context<Self>) {
-        self.selection_gesture.finish();
+        self.selecting = false;
         self.scroll_accumulator.reset();
         self.cursor_visible = true;
         self.engine.read(cx).send_user_input(bytes);
@@ -570,7 +512,7 @@ impl TerminalView {
     }
 
     fn prepare_for_user_input(&mut self, cx: &mut Context<Self>) {
-        self.selection_gesture.finish();
+        self.selecting = false;
         self.scroll_accumulator.reset();
         self.cursor_visible = true;
         self.engine.read(cx).prepare_for_user_input();
@@ -652,7 +594,7 @@ impl Focusable for TerminalView {
     }
 }
 
-impl EventEmitter<TerminalViewEvent> for TerminalView {}
+impl EventEmitter<TerminalEvent> for TerminalView {}
 
 impl EntityInputHandler for TerminalView {
     fn text_for_range(
@@ -692,7 +634,7 @@ impl EntityInputHandler for TerminalView {
     fn paste(&mut self, item: ClipboardItem, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = item.text() {
             self.engine.read(cx).paste(&text);
-            self.selection_gesture.finish();
+            self.selecting = false;
             self.scroll_accumulator.reset();
             cx.notify();
         }
@@ -1103,9 +1045,7 @@ impl Element for TerminalElement {
             1,
         );
         let viewport = TerminalViewport {
-            bounds,
-            cell_width,
-            line_height,
+            geometry,
             columns: self.snapshot.columns,
             rows: self.snapshot.rows,
             display_offset: self.snapshot.display_offset,
@@ -1173,9 +1113,9 @@ impl Element for TerminalElement {
                 let _ = line.paint(
                     point(
                         bounds.left(),
-                        bounds.top() + state.viewport.line_height * row as f32,
+                        bounds.top() + state.viewport.geometry.line_height * row as f32,
                     ),
-                    state.viewport.line_height,
+                    state.viewport.geometry.line_height,
                     TextAlign::Left,
                     Some(bounds.size.width),
                     window,
@@ -1222,29 +1162,26 @@ impl Element for TerminalElement {
 
         let view = self.view.clone();
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-            if !phase.capture() || !view.read(cx).selection_gesture.active {
+            if !phase.capture() || !view.read(cx).selecting {
                 return;
             }
             if event.dragging() {
                 let (point, side) = viewport.grid_point(event.position);
                 view.update(cx, |view, cx| view.update_selection(point, side, cx));
             } else {
-                view.update(cx, |view, _| view.finish_selection());
+                view.update(cx, |view, _| view.selecting = false);
             }
         });
 
         let view = self.view.clone();
         window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-            if event.button != MouseButton::Left
-                || !phase.capture()
-                || !view.read(cx).selection_gesture.active
-            {
+            if event.button != MouseButton::Left || !phase.capture() || !view.read(cx).selecting {
                 return;
             }
             let (point, side) = viewport.grid_point(event.position);
             view.update(cx, |view, cx| {
                 view.update_selection(point, side, cx);
-                view.finish_selection();
+                view.selecting = false;
             });
         });
 
@@ -1255,7 +1192,7 @@ impl Element for TerminalElement {
                 return;
             }
             view.update(cx, |view, cx| {
-                view.scroll(event.delta, viewport.line_height, cx)
+                view.scroll(event.delta, viewport.geometry.line_height, cx)
             });
             cx.stop_propagation();
         });
@@ -1396,7 +1333,7 @@ fn build_preedit(
             column = 0;
             row = row.saturating_add(1);
         }
-        let cell_bounds = viewport.cell_bounds(column, row, width);
+        let cell_bounds = viewport.geometry.cell_bounds(column, row, width);
         if row < viewport.rows {
             let selected = !selection.is_empty()
                 && selection.start < layout.utf16_range.end
@@ -1417,7 +1354,7 @@ fn build_preedit(
                 layout.text.into(),
                 font_size,
                 &[run],
-                Some(viewport.cell_width * width as f32),
+                Some(viewport.geometry.cell_width * width as f32),
             );
             painted.push(PreeditPaintCell {
                 bounds: cell_bounds,
@@ -1431,26 +1368,10 @@ fn build_preedit(
 
     let caret_column = caret.0.min(viewport.columns.saturating_sub(1));
     let caret_row = caret.1.min(viewport.rows.saturating_sub(1));
-    (painted, viewport.cell_bounds(caret_column, caret_row, 1))
-}
-
-#[derive(Clone, Copy)]
-struct TerminalGeometry {
-    bounds: Bounds<Pixels>,
-    cell_width: Pixels,
-    line_height: Pixels,
-}
-
-impl TerminalGeometry {
-    fn cell_bounds(&self, column: usize, row: usize, width: usize) -> Bounds<Pixels> {
-        Bounds::new(
-            point(
-                self.bounds.left() + self.cell_width * column as f32,
-                self.bounds.top() + self.line_height * row as f32,
-            ),
-            size(self.cell_width * width as f32, self.line_height),
-        )
-    }
+    (
+        painted,
+        viewport.geometry.cell_bounds(caret_column, caret_row, 1),
+    )
 }
 
 fn push_background(
@@ -1464,16 +1385,7 @@ fn push_background(
         return;
     }
     quads.push(fill(
-        Bounds::new(
-            point(
-                geometry.bounds.left() + geometry.cell_width * columns.start as f32,
-                geometry.bounds.top() + geometry.line_height * row as f32,
-            ),
-            size(
-                geometry.cell_width * columns.len() as f32,
-                geometry.line_height,
-            ),
-        ),
+        geometry.cell_bounds(columns.start, row, columns.len()),
         color,
     ));
 }

@@ -1,7 +1,7 @@
 use super::{
     ClickMode, CursorMotion, ExplorerId, FileEntry, FileListing, FileSizeFormat, LoadIntent,
-    NavigationHistory, Selection,
-    file_listing::{ListGeometry, ListingContext, MenuHit, Pressed},
+    NavigationHistory, Selection, child_path,
+    file_listing::{ListGeometry, ListingContext, MenuHit, Pressed, accept_drops, offer_drop},
     pane_menu::{
         PaneMenuState, bookmark_menu, directory_menu, item_menu, new_menu, size_format_menu,
     },
@@ -186,8 +186,8 @@ pub struct FilePane {
     /// Scrolls the list while the rectangle is dragged past its edge.
     marquee_scroll: gpui_kit::base::AutoScroll,
     history: NavigationHistory,
-    /// The load in flight, why it started, and where it started from.
-    pending: Option<(u64, LoadIntent, String)>,
+    /// Why the load in flight started, and where it started from.
+    pending: Option<(LoadIntent, String)>,
     /// A row to select once the next listing arrives (after create/rename).
     select_after_load: Option<String>,
     request_id: u64,
@@ -223,7 +223,7 @@ impl FilePane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let listing = FileListing::new(side, Vec::new());
+        let listing = FileListing::new(side);
         // The pane owns selection (multi-select by name); the table's single
         // row selection stays off so it never paints a competing highlight.
         let table = cx.new(|cx| {
@@ -295,9 +295,6 @@ impl FilePane {
         pane.sync_listing(cx);
         pane
     }
-    pub fn side(&self) -> PaneSide {
-        self.side
-    }
     fn is_remote(&self) -> bool {
         self.side == PaneSide::Remote
     }
@@ -365,13 +362,6 @@ impl FilePane {
     pub fn focus_handle(&self, cx: &App) -> FocusHandle {
         self.table.read(cx).focus_handle(cx)
     }
-    /// The file or folder under the last right-click, if that was one.
-    pub fn menu_hit(&self) -> Option<String> {
-        match &*self.menu_hit.borrow() {
-            Some(MenuHit::Item(name)) => Some(name.clone()),
-            _ => None,
-        }
-    }
     pub fn bookmarks(&self, cx: &App) -> Vec<String> {
         self.store
             .read(cx)
@@ -385,14 +375,7 @@ impl FilePane {
         self.history.forward_target().map(str::to_string)
     }
     pub fn child_path_of(&self, name: &str) -> String {
-        if self.side == PaneSide::Local {
-            PathBuf::from(&self.path)
-                .join(name)
-                .to_string_lossy()
-                .into_owned()
-        } else {
-            format!("{}/{name}", self.path.trim_end_matches('/'))
-        }
+        child_path(&self.path, name, self.is_remote())
     }
     pub fn parent_path(&self) -> String {
         if self.side == PaneSide::Local {
@@ -775,7 +758,7 @@ impl FilePane {
     }
     pub fn begin_load(&mut self, intent: LoadIntent, cx: &mut Context<Self>) -> u64 {
         self.request_id += 1;
-        self.pending = Some((self.request_id, intent, self.path.clone()));
+        self.pending = Some((intent, self.path.clone()));
         self.loading = true;
         self.set_error(None, cx);
         self.sync_listing(cx);
@@ -819,7 +802,7 @@ impl FilePane {
         let pending = self.pending.take();
         match result {
             Ok(listing) => {
-                if let Some((_, intent, from)) = pending {
+                if let Some((intent, from)) = pending {
                     self.history.record(intent, &from, listing.path());
                 }
                 if listing.path() != self.path {
@@ -1071,42 +1054,33 @@ impl Render for FilePane {
                 .disabled(!navigable || !state.can_go_forward),
             );
         let transfer_shortcut = ExplorerShortcut(ExplorerCommand::Transfer { remote });
-        let transfer = if remote {
-            let dispatch = self.dispatch.clone();
-            Button::new("download")
-                .ghost()
-                .small()
-                .icon(Icon::new(CatalogIcon::Download))
-                .label("下载…")
-                .tooltip_with_action("下载所选项目", &transfer_shortcut, Some(context))
-                .disabled(selected == 0 || !state.can_transfer)
-                .on_click(move |_, window, cx| {
+        let (id, icon, label, tip) = if remote {
+            ("download", CatalogIcon::Download, "下载…", "下载所选项目")
+        } else {
+            ("upload", CatalogIcon::Upload, "上传…", "上传所选项目")
+        };
+        let transfer = Button::new(id)
+            .icon(Icon::new(icon))
+            .label(label)
+            .tooltip_with_action(tip, &transfer_shortcut, Some(context))
+            .disabled(selected == 0 || !state.can_transfer)
+            .on_click({
+                let dispatch = self.dispatch.clone();
+                move |_, window, cx| {
                     dispatch.dispatch_explorer_action(
                         &ExplorerAction::new(sid, ExplorerCommand::Transfer { remote }),
                         window,
                         cx,
                     )
-                })
-                .into_any_element()
+                }
+            });
+        let transfer = if remote {
+            transfer.ghost().small().into_any_element()
         } else {
-            let dispatch = self.dispatch.clone();
             DropdownButton::new("upload-menu")
                 .ghost()
                 .small()
-                .button(
-                    Button::new("upload")
-                        .icon(Icon::new(CatalogIcon::Upload))
-                        .label("上传…")
-                        .tooltip_with_action("上传所选项目", &transfer_shortcut, Some(context))
-                        .disabled(selected == 0 || !state.can_transfer)
-                        .on_click(move |_, window, cx| {
-                            dispatch.dispatch_explorer_action(
-                                &ExplorerAction::new(sid, ExplorerCommand::Transfer { remote }),
-                                window,
-                                cx,
-                            )
-                        }),
-                )
+                .button(transfer)
                 .disabled(!state.can_transfer)
                 .dropdown_menu(move |menu, _, _| {
                     menu.menu(
@@ -1228,101 +1202,27 @@ impl Render for FilePane {
                         MouseButton::Left,
                         cx.listener(|pane, _, _, cx| pane.end_marquee(cx)),
                     )
+                    // Files dropped on the list itself go to its directory.
                     .when(remote, |this| {
-                        let dispatch = self.dispatch.clone();
-                        let path = self.path.clone();
-                        let enabled = self.transfer_enabled;
                         this.drag_over::<ExternalPaths>(|style, _, _, cx| {
                             style.bg(cx.theme().muted)
                         })
-                        .on_drop(move |paths: &ExternalPaths, window, cx| {
-                            if enabled {
-                                dispatch.dispatch_explorer_action(
-                                    &ExplorerAction::new(
-                                        sid,
-                                        ExplorerCommand::UploadPaths {
-                                            paths: paths.paths().to_vec(),
-                                            target: path.clone(),
-                                        },
-                                    ),
-                                    window,
-                                    cx,
-                                );
-                                cx.stop_propagation();
-                            }
-                        })
-                        .when(enabled, |this| {
-                            this.drag_over::<super::file_listing::LocalFilesDrag>(
-                                |style, _, _, cx| style.bg(cx.theme().muted),
-                            )
-                            .on_drag_move(
-                                |event: &DragMoveEvent<super::file_listing::LocalFilesDrag>,
-                                 _,
-                                 cx| {
-                                    event
-                                        .drag(cx)
-                                        .spot
-                                        .offer(event.event.position, event.bounds)
-                                },
-                            )
-                        })
-                        .on_drop({
-                            let dispatch = self.dispatch.clone();
-                            let path = self.path.clone();
-                            move |drag: &super::file_listing::LocalFilesDrag, window, cx| {
-                                if enabled {
-                                    dispatch.dispatch_explorer_action(
-                                        &ExplorerAction::new(
-                                            sid,
-                                            ExplorerCommand::UploadPaths {
-                                                paths: drag.paths.clone(),
-                                                target: path.clone(),
-                                            },
-                                        ),
-                                        window,
-                                        cx,
-                                    );
-                                    cx.stop_propagation();
-                                }
-                            }
-                        })
                     })
-                    .when(!remote, |this| {
-                        let dispatch = self.dispatch.clone();
-                        let path = self.path.clone();
-                        let enabled = self.transfer_enabled;
-                        this.when(enabled, |this| {
-                            this.drag_over::<super::file_listing::RemoteFilesDrag>(
-                                |style, _, _, cx| style.bg(cx.theme().muted),
-                            )
-                            .on_drag_move(
-                                |event: &DragMoveEvent<super::file_listing::RemoteFilesDrag>,
-                                 _,
-                                 cx| {
-                                    event
-                                        .drag(cx)
-                                        .spot
-                                        .offer(event.event.position, event.bounds)
-                                },
-                            )
-                        })
-                        .on_drop(
-                            move |drag: &super::file_listing::RemoteFilesDrag, window, cx| {
-                                if enabled {
-                                    dispatch.dispatch_explorer_action(
-                                        &ExplorerAction::new(
-                                            sid,
-                                            ExplorerCommand::DownloadPaths {
-                                                paths: drag.paths.clone(),
-                                                target: path.clone(),
-                                            },
-                                        ),
-                                        window,
-                                        cx,
-                                    );
-                                    cx.stop_propagation();
-                                }
-                            },
+                    .when(self.transfer_enabled, |this| {
+                        if remote {
+                            offer_drop::<PathBuf>(this)
+                        } else {
+                            offer_drop::<String>(this)
+                        }
+                    })
+                    .map(|this| {
+                        accept_drops(
+                            this,
+                            self.side,
+                            self.transfer_enabled,
+                            self.dispatch.clone(),
+                            sid,
+                            self.path.clone(),
                         )
                     })
                     // One menu for rows, column titles and empty space, on the

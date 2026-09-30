@@ -19,6 +19,7 @@ use crate::connection::{LoginTest, SharedConnectionTester, TrustCallback, Unknow
 use crate::secrets::{SecretRef, SharedSecretStore};
 
 use super::{AuthKind, GroupId, Session, SessionDraft, SessionId, SessionStore, group_options};
+use crate::shared::form_error;
 
 /// The label of the row that puts a session at the root of the tree.
 pub const NO_GROUP_LABEL: &str = "（无分组）";
@@ -286,18 +287,22 @@ impl SessionForm {
         .detach();
     }
 
+    /// The authentication method the form has selected.
+    fn auth(&self, cx: &App) -> AuthKind {
+        self.auth
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|ix| AuthKind::ALL.get(ix.row).copied())
+            .unwrap_or_default()
+    }
+
     /// The login the form's current values describe, saved or not, or why
     /// there is nothing to test yet.
     fn login_test(&self, cx: &App) -> Result<LoginTest, &'static str> {
         let host = self.host.read(cx).value().trim().to_string();
         let port = parse_port(self.port.read(cx).value().trim());
         let user = self.user.read(cx).value().trim().to_string();
-        let auth = self
-            .auth
-            .read(cx)
-            .selected_index(cx)
-            .and_then(|ix| AuthKind::ALL.get(ix.row).copied())
-            .unwrap_or_default();
+        let auth = self.auth(cx);
         let key_path = self.key_path.read(cx).value().trim().to_string();
         let port = match (host.is_empty(), port, user.is_empty()) {
             (true, _, _) => return Err("请输入主机"),
@@ -407,20 +412,15 @@ impl SessionForm {
         let name = self.name.read(cx).value().trim().to_string();
         let host = self.host.read(cx).value().trim().to_string();
         let user = self.user.read(cx).value().trim().to_string();
-        let port = self.port.read(cx).value().trim().parse::<u16>();
-        let auth = self
-            .auth
-            .read(cx)
-            .selected_index(cx)
-            .and_then(|ix| AuthKind::ALL.get(ix.row).copied())
-            .unwrap_or_default();
+        let port = parse_port(self.port.read(cx).value().trim());
+        let auth = self.auth(cx);
         let key_path = self.key_path.read(cx).value().trim().to_string();
 
         let error = if name.is_empty() {
             Some("请输入名称")
         } else if host.is_empty() {
             Some("请输入主机")
-        } else if !matches!(port, Ok(1..=u16::MAX)) {
+        } else if port.is_none() {
             Some("端口必须是 1 到 65535 之间的数字")
         } else if auth == AuthKind::Key && key_path.is_empty() {
             Some("私钥认证需要选择私钥文件")
@@ -511,12 +511,7 @@ impl SessionForm {
 
 impl Render for SessionForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let auth = self
-            .auth
-            .read(cx)
-            .selected_index(cx)
-            .and_then(|ix| AuthKind::ALL.get(ix.row).copied())
-            .unwrap_or_default();
+        let auth = self.auth(cx);
         let keychain = self.secrets.is_available();
         let secret_note = if keychain {
             "密码保存在系统钥匙串，不会写入 ShellRS 的数据库。"
@@ -619,15 +614,7 @@ impl Render for SessionForm {
                 )
             })
             .when_some(self.error.clone(), |form, error| {
-                form.child(
-                    div()
-                        .id("form-error")
-                        .test_support()
-                        .aria_label(error.clone())
-                        .text_sm()
-                        .text_color(cx.theme().danger)
-                        .child(error),
-                )
+                form.child(form_error(error.clone(), cx).aria_label(error))
             })
     }
 }
@@ -799,19 +786,35 @@ pub fn confirm_delete_session(
     cx: &mut App,
 ) {
     let (closes_tabs, uploads) = affected;
-    let title: SharedString = format!("删除“{}”？", session.name).into();
+    let description = closes_tabs.then(|| {
+        format!(
+            "会一并关闭该会话已打开的终端和 SFTP 标签。{}",
+            if uploads > 0 {
+                format!("将停止 {uploads} 个传输批次并保留续传进度。")
+            } else {
+                String::new()
+            }
+        )
+        .into()
+    });
+    confirm_delete(&session.name, description, on_delete, window, cx);
+}
+
+/// The confirmation deleting a session and deleting a group share.
+/// `description` says what goes with it.
+pub(super) fn confirm_delete(
+    name: &str,
+    description: Option<SharedString>,
+    on_delete: DeleteHandler,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let title: SharedString = format!("删除“{name}”？").into();
     window.open_alert_dialog(cx, move |alert, _, _| {
         alert
             .title(title.clone())
-            .when(closes_tabs, |alert| {
-                alert.description(format!(
-                    "会一并关闭该会话已打开的终端和 SFTP 标签。{}",
-                    if uploads > 0 {
-                        format!("将停止 {uploads} 个传输批次并保留续传进度。")
-                    } else {
-                        String::new()
-                    }
-                ))
+            .when_some(description.clone(), |alert, description| {
+                alert.description(description)
             })
             .button_props(
                 DialogButtonProps::default()

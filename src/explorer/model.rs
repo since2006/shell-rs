@@ -5,12 +5,12 @@ use gpui_kit::{Global, SharedString};
 use serde::{Deserialize, Serialize};
 
 /// Stable identity for one SFTP tab. A session can have several, each with
-/// its own connection and transfer batch.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+/// its own connection and transfer queue.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ExplorerId(pub u64);
 
 /// What the 新建 menu creates.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NewEntryKind {
     Folder,
     File,
@@ -95,6 +95,7 @@ impl FileEntry {
         Self::new(name, FileKind::Dir)
     }
 
+    #[cfg(test)]
     pub fn file(name: &str, size: u64) -> Self {
         Self {
             size,
@@ -152,6 +153,18 @@ impl FileEntry {
             },
             kind => kind.label().to_string(),
         }
+    }
+}
+
+/// Where the item called `name` in `directory` is, by its side's path rules.
+pub fn child_path(directory: &str, name: &str, remote: bool) -> String {
+    if remote {
+        format!("{}/{name}", directory.trim_end_matches('/'))
+    } else {
+        std::path::Path::new(directory)
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
     }
 }
 

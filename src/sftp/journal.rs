@@ -1,6 +1,6 @@
 use super::{EntryKind, FileMetadata, RemotePath};
 use anyhow::{Context as _, Result, bail};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
 use std::{
     path::{Path, PathBuf},
@@ -40,7 +40,6 @@ pub(crate) struct ResumeRecord {
     pub endpoint: String,
     pub host_key: String,
     pub source: PathBuf,
-    #[serde(alias = "fingerprint")]
     pub source_metadata: Option<SourceMetadata>,
     pub link_target: Option<String>,
     pub target: RemotePath,
@@ -81,7 +80,7 @@ impl ResumeRecord {
         source: &Path,
         target: &RemotePath,
     ) -> Result<()> {
-        if !matches!(self.version, 1 | 2)
+        if self.version != 2
             || self.endpoint != endpoint
             || self.host_key != host_key
             || self.source != source
@@ -89,12 +88,9 @@ impl ResumeRecord {
         {
             bail!("续传记录与当前来源或服务器不匹配");
         }
-        let temporary_is_valid = if self.version == 1 {
-            managed_uuid_path(&self.temporary, target, ".filepart")
-        } else {
-            self.temporary == RemotePath::new(format!("{}.filepart", target.as_str()))?
-        };
-        if !temporary_is_valid || !managed_uuid_path(&self.backup, target, ".backup") {
+        if self.temporary != RemotePath::new(format!("{}.filepart", target.as_str()))?
+            || !managed_backup_path(&self.backup, target)
+        {
             bail!("无效的续传临时路径");
         }
         if self
@@ -108,10 +104,11 @@ impl ResumeRecord {
     }
 }
 
-fn managed_uuid_path(path: &RemotePath, target: &RemotePath, suffix: &str) -> bool {
+/// Whether `path` is a backup name this module makes up, beside `target`.
+fn managed_backup_path(path: &RemotePath, target: &RemotePath) -> bool {
     let name = path.as_str().rsplit('/').next().unwrap_or_default();
     name.strip_prefix(".shellrs-")
-        .and_then(|value| value.strip_suffix(suffix))
+        .and_then(|value| value.strip_suffix(".backup"))
         .and_then(|value| uuid::Uuid::parse_str(value).ok())
         .is_some()
         && path.parent() == target.parent()
@@ -141,26 +138,37 @@ impl Journal {
         source: &Path,
         target: &RemotePath,
     ) -> Result<Option<ResumeRecord>> {
-        match tokio::fs::read(self.path(endpoint, source, target)).await {
-            Ok(bytes) => Ok(Some(
-                serde_json::from_slice(&bytes).context("续传记录损坏，原文件和临时文件均已保留")?,
-            )),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error).context("无法读取续传记录"),
-        }
+        read_record(
+            &self.path(endpoint, source, target),
+            "续传记录损坏，原文件和临时文件均已保留",
+        )
+        .await
     }
     pub async fn save(&self, record: &ResumeRecord) -> Result<()> {
         let path = self.path(&record.endpoint, &record.source, &record.target);
         write_atomic(&self.root, &path, &serde_json::to_vec(record)?).await
     }
     pub async fn remove(&self, record: &ResumeRecord) -> Result<()> {
-        match tokio::fs::remove_file(self.path(&record.endpoint, &record.source, &record.target))
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.into()),
-        }
+        remove_if_present(&self.path(&record.endpoint, &record.source, &record.target)).await
+    }
+}
+
+/// Read a record, if there is one. `damaged` is what to say when the file
+/// is there and cannot be understood.
+async fn read_record<T: DeserializeOwned>(path: &Path, damaged: &'static str) -> Result<Option<T>> {
+    match tokio::fs::read(path).await {
+        Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).context(damaged)?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).context("无法读取续传记录"),
+    }
+}
+
+/// Remove a file that may already be gone.
+pub(crate) async fn remove_if_present(path: &Path) -> Result<()> {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -280,25 +288,17 @@ impl DownloadJournal {
         source: &RemotePath,
         target: &Path,
     ) -> Result<Option<DownloadRecord>> {
-        match tokio::fs::read(self.path(endpoint, source, target)).await {
-            Ok(bytes) => Ok(Some(
-                serde_json::from_slice(&bytes).context("续传记录损坏，临时文件已保留")?,
-            )),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error).context("无法读取续传记录"),
-        }
+        read_record(
+            &self.path(endpoint, source, target),
+            "续传记录损坏，临时文件已保留",
+        )
+        .await
     }
     pub async fn save(&self, record: &DownloadRecord) -> Result<()> {
         let path = self.path(&record.endpoint, &record.source, &record.target);
         write_atomic(&self.root, &path, &serde_json::to_vec(record)?).await
     }
     pub async fn remove(&self, record: &DownloadRecord) -> Result<()> {
-        match tokio::fs::remove_file(self.path(&record.endpoint, &record.source, &record.target))
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.into()),
-        }
+        remove_if_present(&self.path(&record.endpoint, &record.source, &record.target)).await
     }
 }

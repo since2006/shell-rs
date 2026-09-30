@@ -124,6 +124,9 @@ impl RemoteFs for Remote {
         bail!("too many levels of symbolic links")
     }
     async fn read_dir(&self, path: &RemotePath) -> Result<Vec<DirectoryEntry>> {
+        if self.denied.borrow().as_deref() == Some(path.as_str()) {
+            bail!("permission denied");
+        }
         let prefix = format!("{}/", path.as_str().trim_end_matches('/'));
         Ok(self
             .nodes
@@ -468,7 +471,7 @@ fn recursive_upload_deduplicates_sources_and_preserves_empty_directories_and_lin
                 .unwrap(),
             "../不存在"
         );
-        assert_eq!(batch.progress.failed(), 0);
+        assert_eq!(batch.meter.progress.failed(), 0);
         assert!(answers.questions.lock().unwrap().is_empty());
         assert!(
             std::fs::read_dir(tmp.path().join("journal"))
@@ -500,7 +503,7 @@ fn winscp_style_upload_finishes_without_a_verification_phase() {
 
         assert_eq!(remote.bytes("/dest/file"), data);
         assert!(remote.max_in_flight.get() > 1);
-        assert_eq!(batch.progress.succeeded(), 1);
+        assert_eq!(batch.meter.progress.succeeded(), 1);
         let progress = answers.progress.lock().unwrap();
         assert!(progress.iter().all(|snapshot| matches!(
             snapshot.phase(),
@@ -575,7 +578,7 @@ fn resume_uses_remote_filepart_size_and_preserves_old_target() {
                 .permissions(),
             Some(0o640)
         );
-        assert_eq!(second.progress.succeeded(), 1);
+        assert_eq!(second.meter.progress.succeeded(), 1);
     });
 }
 
@@ -604,7 +607,7 @@ fn filepart_larger_than_source_requires_explicit_restart() {
                 TransferQuestionKind::InvalidResume
             ]
         );
-        assert_eq!(next.progress.skipped(), 1);
+        assert_eq!(next.meter.progress.skipped(), 1);
     });
 }
 
@@ -642,7 +645,7 @@ fn winscp_style_resume_does_not_prevalidate_the_source_version() {
             *answers.questions.lock().unwrap(),
             vec![TransferQuestionKind::Resume]
         );
-        assert_eq!(resumed.progress.succeeded(), 1);
+        assert_eq!(resumed.meter.progress.succeeded(), 1);
     });
 }
 
@@ -670,7 +673,7 @@ fn winscp_style_resume_detects_filepart_without_a_local_record() {
             *answers.questions.lock().unwrap(),
             vec![TransferQuestionKind::Resume]
         );
-        assert_eq!(upload.progress.succeeded(), 1);
+        assert_eq!(upload.meter.progress.succeeded(), 1);
     });
 }
 
@@ -698,7 +701,7 @@ fn lost_replies_at_backup_publish_and_close_are_reconciled() {
             run(&mut resumed, &remote, &answers.control).await.unwrap();
             assert_eq!(remote.bytes("/dest/file"), b"new contents");
             assert_eq!(remote.nodes.borrow().len(), 1);
-            assert_eq!(resumed.progress.succeeded(), 1);
+            assert_eq!(resumed.meter.progress.succeeded(), 1);
         }
     });
 }
@@ -716,7 +719,7 @@ fn cancellation_retains_journal_and_skip_does_not_overwrite() {
         let mut skipped = batch(&source, journal.clone(), &answers.control).await;
         run(&mut skipped, &remote, &answers.control).await.unwrap();
         assert_eq!(remote.bytes("/dest/file"), b"old");
-        assert_eq!(skipped.progress.skipped(), 1);
+        assert_eq!(skipped.meter.progress.skipped(), 1);
         let answers = Answers::new(vec![TransferChoice::Overwrite]);
         let mut canceled = batch(&source, journal, &answers.control).await;
         answers.cancel.send_replace(true);
@@ -746,11 +749,107 @@ fn directory_permission_error_is_reported_as_failure() {
         )
         .await;
         run(&mut batch, &remote, &answers.control).await.unwrap();
-        assert_eq!(batch.progress.failed(), 1);
-        assert_eq!(batch.progress.succeeded(), 0);
-        let detail = &batch.progress.details()[0];
+        assert_eq!(batch.meter.progress.failed(), 1);
+        assert_eq!(batch.meter.progress.succeeded(), 0);
+        let detail = &batch.meter.progress.details()[0];
         assert_eq!(detail.outcome(), TransferOutcome::Failed);
         assert!(detail.reason().unwrap().contains("permission denied"));
+    });
+}
+
+/// A folder that could not be listed is scanned again on 重试. The batch then
+/// grows by the files in it, and by nothing for the folder itself.
+#[cfg(unix)]
+#[test]
+fn retrying_an_unreadable_folder_adds_only_its_files_to_the_upload() {
+    use std::os::unix::fs::PermissionsExt as _;
+    runtime().block_on(async {
+        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let folder = tmp.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("inside.bin"), vec![1; 300]).unwrap();
+        let beside = tmp.path().join("beside.bin");
+        std::fs::write(&beside, vec![2; 10_000]).unwrap();
+        let set_mode = |mode| {
+            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        // Unreadable while the batch is scanned, readable again by the retry.
+        set_mode(0o000);
+        if std::fs::read_dir(&folder).is_ok() {
+            // Nothing is unreadable to root.
+            set_mode(0o755);
+            return;
+        }
+        let answers = Answers::new(vec![TransferChoice::Retry]);
+        let request = UploadRequest::new(
+            vec![folder.clone(), beside],
+            RemotePath::new("/dest").unwrap(),
+        )
+        .unwrap();
+        let mut batch = UploadBatch::scan(
+            &request,
+            "retry",
+            "key",
+            Journal::new(tmp.path().join("journal")),
+            &answers.control,
+        )
+        .await
+        .unwrap();
+        set_mode(0o755);
+        assert_eq!(batch.meter.progress.total_bytes(), 10_000);
+
+        let remote = Remote::new(true);
+        run(&mut batch, &remote, &answers.control).await.unwrap();
+        assert_eq!(batch.meter.progress.failed(), 0);
+        assert_eq!(batch.meter.progress.total_bytes(), 10_300);
+        assert_eq!(batch.meter.progress.completed_bytes(), 10_300);
+        assert_eq!(remote.bytes("/dest/folder/inside.bin"), vec![1; 300]);
+    });
+}
+
+/// The same for a download: a remote folder has a size of its own, which is
+/// not part of what the batch moves.
+#[test]
+fn retrying_an_unreadable_folder_adds_only_its_files_to_the_download() {
+    runtime().block_on(async {
+        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let out = tmp.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        let remote = Remote::new(true);
+        remote.nodes.borrow_mut().insert(
+            "/srv/folder".into(),
+            Node {
+                metadata: FileMetadata::new(EntryKind::Directory, 4096, None, Some(0o040_755)),
+                data: vec![],
+                link: String::new(),
+            },
+        );
+        remote.file("/srv/folder/inside.bin", &[1; 300]);
+        remote.file("/srv/beside.bin", &[2; 10_000]);
+        // Unreadable while the batch is scanned, readable again by the retry.
+        *remote.denied.borrow_mut() = Some("/srv/folder".into());
+        let answers = Answers::new(vec![TransferChoice::Retry]);
+        let mut batch = download_batch(
+            &["/srv/folder", "/srv/beside.bin"],
+            &out,
+            DownloadJournal::new(tmp.path().join("journal")),
+            &remote,
+            &answers.control,
+        )
+        .await;
+        *remote.denied.borrow_mut() = None;
+        assert_eq!(batch.meter.progress.total_bytes(), 10_000);
+
+        run_download(&mut batch, &remote, &answers.control)
+            .await
+            .unwrap();
+        assert_eq!(batch.meter.progress.failed(), 0);
+        assert_eq!(batch.meter.progress.total_bytes(), 10_300);
+        assert_eq!(batch.meter.progress.completed_bytes(), 10_300);
+        assert_eq!(
+            std::fs::read(out.join("folder/inside.bin")).unwrap(),
+            vec![1; 300]
+        );
     });
 }
 
@@ -922,8 +1021,8 @@ fn failed_compatibility_publish_restores_old_target_and_reports_failure() {
         .await;
         run(&mut upload, &remote, &answers.control).await.unwrap();
         assert_eq!(remote.bytes("/dest/file"), b"original");
-        assert_eq!(upload.progress.failed(), 1);
-        assert_eq!(upload.progress.succeeded(), 0);
+        assert_eq!(upload.meter.progress.failed(), 1);
+        assert_eq!(upload.meter.progress.succeeded(), 0);
         assert!(
             remote
                 .nodes
@@ -953,7 +1052,7 @@ fn target_changed_during_upload_requires_another_conflict_answer() {
         .await;
         run(&mut upload, &remote, &answers.control).await.unwrap();
         assert_eq!(remote.bytes("/dest/file"), b"external mutation");
-        assert_eq!(upload.progress.skipped(), 1);
+        assert_eq!(upload.meter.progress.skipped(), 1);
         assert_eq!(
             *answers.questions.lock().unwrap(),
             vec![
@@ -1003,7 +1102,7 @@ fn target_removed_during_upload_still_requires_confirmation() {
                 TransferQuestionKind::Conflict
             ]
         );
-        assert_eq!(upload.progress.skipped(), 1);
+        assert_eq!(upload.meter.progress.skipped(), 1);
     });
 }
 
@@ -1206,8 +1305,11 @@ fn download_copies_trees_links_and_empty_directories_in_order() {
                 Path::new("large.bin")
             );
             assert!(!partial_path(&root.join("large.bin")).exists());
-            assert_eq!(batch.progress.failed(), 0);
-            assert_eq!(batch.progress.direction(), TransferDirection::Download);
+            assert_eq!(batch.meter.progress.failed(), 0);
+            assert_eq!(
+                batch.meter.progress.direction(),
+                TransferDirection::Download
+            );
             assert!(answers.questions.lock().unwrap().is_empty());
             let modified = std::fs::metadata(root.join("large.bin"))
                 .unwrap()
@@ -1297,7 +1399,7 @@ fn download_asks_before_overwriting_and_keeps_the_replaced_permissions() {
             .await
             .unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"old");
-        assert_eq!(skipped.progress.skipped(), 1);
+        assert_eq!(skipped.meter.progress.skipped(), 1);
 
         let answers = Answers::new(vec![TransferChoice::Overwrite]);
         let mut replaced =

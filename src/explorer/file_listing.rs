@@ -15,12 +15,12 @@ use std::{
 
 use super::{
     ClickMode, ExplorerId, FileEntry, FileKind, FilePane, FileSizeFormat, PaneSide, Selection,
-    format_changed, format_rights,
+    child_path, format_changed, format_rights,
 };
 
 /// What the row closures need from the pane, pushed in by `FilePane` so
 /// rendering never reads another entity.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(super) struct ListingContext {
     pub explorer: ExplorerId,
     pub path: String,
@@ -94,22 +94,6 @@ pub(super) enum MenuHit {
     Column(SharedString),
 }
 
-impl Default for ListingContext {
-    fn default() -> Self {
-        Self {
-            explorer: ExplorerId(0),
-            path: String::new(),
-            selection: Rc::default(),
-            transfer_enabled: false,
-            dispatch: None,
-            pane: None,
-            menu_hit: Rc::default(),
-            geometry: Rc::default(),
-            placeholder: SharedString::default(),
-        }
-    }
-}
-
 /// The rows and columns of one explorer pane, for `DataTable`. Selection is
 /// the pane's; the table's own row selection stays off.
 pub struct FileListing {
@@ -145,16 +129,14 @@ fn columns(side: PaneSide) -> Vec<Column> {
 }
 
 impl FileListing {
-    pub fn new(side: PaneSide, rows: Vec<FileEntry>) -> Self {
-        let mut listing = Self {
+    pub fn new(side: PaneSide) -> Self {
+        Self {
             columns: columns(side),
             rows: Vec::new(),
             sort: None,
             side,
             context: ListingContext::default(),
-        };
-        listing.set_rows(rows);
-        listing
+        }
     }
 
     pub(super) fn configure(&mut self, context: ListingContext) {
@@ -180,14 +162,7 @@ impl FileListing {
 
     /// Where a row's item is, on its side.
     fn child_path(&self, name: &str) -> String {
-        let path = &self.context.path;
-        match self.side {
-            PaneSide::Local => PathBuf::from(path)
-                .join(name)
-                .to_string_lossy()
-                .into_owned(),
-            PaneSide::Remote => format!("{}/{name}", path.trim_end_matches('/')),
-        }
+        child_path(&self.context.path, name, self.side == PaneSide::Remote)
     }
 
     /// Let `cell` drag its row's item to the other pane, with the rest of the
@@ -214,38 +189,10 @@ impl FileListing {
             }),
             None => cell,
         };
+        let paths = names.iter().map(|name| self.child_path(name));
         match self.side {
-            PaneSide::Local => {
-                let paths = names
-                    .iter()
-                    .map(|name| PathBuf::from(self.child_path(name)))
-                    .collect();
-                let drag = LocalFilesDrag {
-                    paths,
-                    spot: DropSpot::default(),
-                };
-                cell.on_drag(drag, |drag, _, _, cx| {
-                    cx.new(|_| FileDragPreview {
-                        verb: "上传",
-                        count: drag.paths.len(),
-                        spot: drag.spot.clone(),
-                    })
-                })
-            }
-            PaneSide::Remote => {
-                let paths = names.iter().map(|name| self.child_path(name)).collect();
-                let drag = RemoteFilesDrag {
-                    paths,
-                    spot: DropSpot::default(),
-                };
-                cell.on_drag(drag, |drag, _, _, cx| {
-                    cx.new(|_| FileDragPreview {
-                        verb: "下载",
-                        count: drag.paths.len(),
-                        spot: drag.spot.clone(),
-                    })
-                })
-            }
+            PaneSide::Local => drag_files(cell, paths.map(PathBuf::from).collect(), "上传"),
+            PaneSide::Remote => drag_files(cell, paths.collect::<Vec<String>>(), "下载"),
         }
     }
 
@@ -522,71 +469,18 @@ impl TableDelegate for FileListing {
         let Some(dispatch) = context.dispatch.clone() else {
             return row;
         };
-        let sid = context.explorer;
-        if entry.is_parent() {
-            return row;
-        }
-        let enabled = context.transfer_enabled;
-        if !entry.is_dir() {
+        if entry.is_parent() || !entry.is_dir() {
             return row;
         }
         // Dropping on a directory row puts the items in that directory.
-        let target = self.child_path(&name);
-        match self.side {
-            PaneSide::Remote => row
-                .on_drop({
-                    let dispatch = dispatch.clone();
-                    let target = target.clone();
-                    move |paths: &ExternalPaths, window, cx| {
-                        if enabled {
-                            dispatch.dispatch_explorer_action(
-                                &ExplorerAction::new(
-                                    sid,
-                                    ExplorerCommand::UploadPaths {
-                                        paths: paths.paths().to_vec(),
-                                        target: target.clone(),
-                                    },
-                                ),
-                                window,
-                                cx,
-                            );
-                            cx.stop_propagation();
-                        }
-                    }
-                })
-                .on_drop(move |drag: &LocalFilesDrag, window, cx| {
-                    if enabled {
-                        dispatch.dispatch_explorer_action(
-                            &ExplorerAction::new(
-                                sid,
-                                ExplorerCommand::UploadPaths {
-                                    paths: drag.paths.clone(),
-                                    target: target.clone(),
-                                },
-                            ),
-                            window,
-                            cx,
-                        );
-                        cx.stop_propagation();
-                    }
-                }),
-            PaneSide::Local => row.on_drop(move |drag: &RemoteFilesDrag, window, cx| {
-                if enabled {
-                    dispatch.dispatch_explorer_action(
-                        &ExplorerAction::new(
-                            sid,
-                            ExplorerCommand::DownloadPaths {
-                                paths: drag.paths.clone(),
-                                target: target.clone(),
-                            },
-                        ),
-                        window,
-                        cx,
-                    );
-                    cx.stop_propagation();
-                }
-            }),
-        }
+        accept_drops(
+            row,
+            self.side,
+            context.transfer_enabled,
+            dispatch,
+            context.explorer,
+            self.child_path(&name),
+        )
     }
 
     fn perform_sort(
@@ -634,16 +528,80 @@ fn name_column(width: Pixels) -> Column {
         .sortable()
 }
 
+/// Rows dragged toward the other pane, as paths on their own side.
 #[derive(Clone)]
-pub(super) struct LocalFilesDrag {
-    pub paths: Vec<PathBuf>,
+pub(super) struct FilesDrag<P> {
+    pub paths: Vec<P>,
     pub spot: DropSpot,
 }
-/// Remote rows dragged toward the local pane, as remote paths.
-#[derive(Clone)]
-pub(super) struct RemoteFilesDrag {
-    pub paths: Vec<String>,
-    pub spot: DropSpot,
+pub(super) type LocalFilesDrag = FilesDrag<PathBuf>;
+pub(super) type RemoteFilesDrag = FilesDrag<String>;
+
+/// Let `cell` be dragged to the other pane, carrying `paths`. `verb` is what
+/// dropping them there does.
+fn drag_files<P: 'static>(cell: Stateful<Div>, paths: Vec<P>, verb: &'static str) -> Stateful<Div> {
+    let drag = FilesDrag {
+        paths,
+        spot: DropSpot::default(),
+    };
+    cell.on_drag(drag, move |drag, _, _, cx| {
+        cx.new(|_| FileDragPreview {
+            verb,
+            count: drag.paths.len(),
+            spot: drag.spot.clone(),
+        })
+    })
+}
+
+/// Show that the other pane's rows can be dropped on `element`, and tell
+/// their drag so while the pointer is over it.
+pub(super) fn offer_drop<P: 'static>(element: Stateful<Div>) -> Stateful<Div> {
+    element
+        .drag_over::<FilesDrag<P>>(|style, _, _, cx| style.bg(cx.theme().muted))
+        .on_drag_move(|event: &DragMoveEvent<FilesDrag<P>>, _, cx| {
+            event
+                .drag(cx)
+                .spot
+                .offer(event.event.position, event.bounds)
+        })
+}
+
+/// Let `element` take what is dropped on it for the directory `target` on
+/// `side`: files from outside the app and the local pane's rows are uploaded
+/// to a remote directory, the remote pane's rows downloaded to a local one.
+/// A drop does nothing while transfers are not `enabled`.
+pub(super) fn accept_drops(
+    element: Stateful<Div>,
+    side: PaneSide,
+    enabled: bool,
+    dispatch: FocusHandle,
+    explorer: ExplorerId,
+    target: String,
+) -> Stateful<Div> {
+    let send = move |command: ExplorerCommand, window: &mut Window, cx: &mut App| {
+        if enabled {
+            dispatch.dispatch_explorer_action(&ExplorerAction::new(explorer, command), window, cx);
+            cx.stop_propagation();
+        }
+    };
+    match side {
+        PaneSide::Remote => element
+            .on_drop({
+                let (send, target) = (send.clone(), target.clone());
+                move |paths: &ExternalPaths, window, cx| {
+                    let (paths, target) = (paths.paths().to_vec(), target.clone());
+                    send(ExplorerCommand::UploadPaths { paths, target }, window, cx)
+                }
+            })
+            .on_drop(move |drag: &LocalFilesDrag, window, cx| {
+                let (paths, target) = (drag.paths.clone(), target.clone());
+                send(ExplorerCommand::UploadPaths { paths, target }, window, cx)
+            }),
+        PaneSide::Local => element.on_drop(move |drag: &RemoteFilesDrag, window, cx| {
+            let (paths, target) = (drag.paths.clone(), target.clone());
+            send(ExplorerCommand::DownloadPaths { paths, target }, window, cx)
+        }),
+    }
 }
 
 /// Where the pointer last was over a pane that takes a file drag, recorded

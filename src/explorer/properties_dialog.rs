@@ -2,15 +2,13 @@
 //! them: a 3×3 grid and an octal field that stay in step. With several items,
 //! a bit that differs between them is left alone unless the user changes it.
 
-use super::{ExplorerPanel, FileEntry, format_changed, format_size};
-use crate::app::ExplorerDispatch as _;
-use crate::app::{ExplorerAction, ExplorerCommand};
+use super::{ExplorerPanel, FileEntry, PaneOperation, format_changed, format_size};
+use crate::app::ExplorerCommand;
 use crate::sftp::PermissionEdit;
+use crate::shared::commit_footer;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
-    dialog::{DialogAction, DialogClose, DialogFooter},
     h_flex,
     input::{Input, InputEvent, InputState},
     separator::Separator,
@@ -50,6 +48,7 @@ impl PermissionDraft {
     }
 
     /// Differs between the items and has not been set by the user.
+    #[cfg(test)]
     pub fn is_mixed(&self, bit: u32) -> bool {
         self.mixed & !self.touched & bit != 0
     }
@@ -338,22 +337,15 @@ impl ExplorerPanel {
             .map(|item| item.name.to_string())
             .collect();
         let form = cx.new(|cx| PropertiesForm::new(items, location, remote, window, cx));
-        let (dispatch, sid, generation) = (self.dispatch.clone(), self.id(), self.generation());
+        let sender = self.sender();
         let focus = window.focused(cx);
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(title.clone())
                 .child(form.clone())
-                .footer(
-                    DialogFooter::new()
-                        .child(DialogClose::new().trigger(|button| button.label("取消")))
-                        .child(
-                            DialogAction::new()
-                                .child(Button::new("commit").primary().label("应用")),
-                        ),
-                )
+                .footer(commit_footer("commit", "应用"))
                 .on_ok({
-                    let (form, dispatch, names) = (form.clone(), dispatch.clone(), names.clone());
+                    let (form, sender, names) = (form.clone(), sender.clone(), names.clone());
                     move |_, window, cx| {
                         let (edit, recursive, add_x_to_dirs, editable) = {
                             let form = form.read(cx);
@@ -369,21 +361,13 @@ impl ExplorerPanel {
                         if !editable || (edit.is_empty() && !add_x_to_dirs) {
                             return true;
                         }
-                        dispatch.dispatch_explorer_action(
-                            &ExplorerAction::new(
-                                sid,
-                                ExplorerCommand::ApplyPermissions {
-                                    remote,
-                                    names: names.clone(),
-                                    edit,
-                                    recursive,
-                                    add_x_to_dirs,
-                                },
-                            )
-                            .with_generation(generation),
-                            window,
-                            cx,
-                        );
+                        let operation = PaneOperation::Permissions {
+                            names: names.clone(),
+                            edit,
+                            recursive,
+                            add_x_to_dirs,
+                        };
+                        sender.send(ExplorerCommand::Operate { remote, operation }, window, cx);
                         true
                     }
                 })

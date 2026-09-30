@@ -7,6 +7,7 @@ mod client;
 mod control;
 mod download;
 mod journal;
+mod meter;
 mod operations;
 mod speed;
 mod upload;

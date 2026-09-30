@@ -7,8 +7,6 @@
 use std::path::Path;
 use std::{fs, io, path::PathBuf};
 
-use serde::Deserialize;
-
 /// The skill that teaches an agent to use `shellrs`.
 pub const SKILL: &str = include_str!("SKILL.md");
 
@@ -18,7 +16,7 @@ const COMMAND_NAME: &str = "shellrs";
 const SKILL_FILE: &str = "SKILL.md";
 
 /// An agent the skill can be installed for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AgentKind {
     /// The shared Agent Skills directory that several agents read.
     Generic,

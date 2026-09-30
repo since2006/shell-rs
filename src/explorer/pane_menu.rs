@@ -180,7 +180,6 @@ fn add_bookmark_item(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
     )
 }
 
-/// The toolbar's 新建 menu, also the context menu's 新建 submenu.
 /// The 大小 column title's menu: WinSCP's 文件大小显示为, with the format in
 /// use checked. The choice holds for every SFTP tab and is saved.
 pub(super) fn size_format_menu(menu: PopupMenu, current: FileSizeFormat) -> PopupMenu {
@@ -195,6 +194,7 @@ pub(super) fn size_format_menu(menu: PopupMenu, current: FileSizeFormat) -> Popu
         })
 }
 
+/// The toolbar's 新建 menu, also the context menu's 新建 submenu.
 pub(super) fn new_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
     let remote = state.remote;
     menu.menu_with_icon_and_disabled(

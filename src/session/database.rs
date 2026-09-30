@@ -25,15 +25,28 @@ fn from_sql(id: i64) -> u64 {
     id as u64
 }
 
-/// Bumped whenever `migrate` gains a step. Stored in `PRAGMA user_version`.
+/// The schema's version, stored in `PRAGMA user_version`. A change to the
+/// schema bumps it and gives `migrate` a step from the version before.
+///
+/// It stands at 7 rather than 1 because the databases of development builds
+/// are already at 7, and have exactly this schema.
 const SCHEMA_VERSION: i64 = 7;
 
-const SCHEMA_V1: &str = "\
-BEGIN;
+/// The whole schema, as a new database gets it.
+///
+/// Groups nest through `parent_id`, and both references to a group cascade:
+/// deleting one takes its subgroups and their sessions. Bookmarks are kept
+/// per session and per pane, and go with their session, the way WinSCP drops
+/// a site's bookmarks with the site. `public_id` may be missing, which a row
+/// added by hand is until the next open (see `fill_missing_public_ids`); the
+/// index keeps the ones that are there unique.
+const SCHEMA: &str = "\
 CREATE TABLE groups (
-    id        INTEGER PRIMARY KEY,
-    name      TEXT NOT NULL,
-    parent_id INTEGER REFERENCES groups(id) ON DELETE CASCADE
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    parent_id  INTEGER REFERENCES groups(id) ON DELETE CASCADE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    expanded   INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE sessions (
     id                INTEGER PRIMARY KEY,
@@ -43,44 +56,14 @@ CREATE TABLE sessions (
     username          TEXT NOT NULL,
     auth              TEXT NOT NULL,
     group_id          INTEGER REFERENCES groups(id) ON DELETE CASCADE,
-    last_connected_at INTEGER
+    last_connected_at INTEGER,
+    key_path          TEXT,
+    os                TEXT,
+    sort_order        INTEGER NOT NULL DEFAULT 0,
+    public_id         TEXT
 );
 CREATE INDEX sessions_group_id ON sessions(group_id);
-PRAGMA user_version = 1;
-COMMIT;";
-
-const SCHEMA_V2: &str = "\
-BEGIN;
-ALTER TABLE sessions ADD COLUMN key_path TEXT;
-UPDATE sessions SET auth = 'auto' WHERE auth = 'key';
-PRAGMA user_version = 2;
-COMMIT;";
-
-const SCHEMA_V3: &str = "\
-BEGIN;
-ALTER TABLE sessions ADD COLUMN os TEXT;
-PRAGMA user_version = 3;
-COMMIT;";
-
-const SCHEMA_V4: &str = "\
-BEGIN;
-ALTER TABLE groups ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE sessions ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
-UPDATE groups SET sort_order = id;
-UPDATE sessions SET sort_order = id;
-PRAGMA user_version = 4;
-COMMIT;";
-
-const SCHEMA_V5: &str = "\
-BEGIN;
-ALTER TABLE groups ADD COLUMN expanded INTEGER NOT NULL DEFAULT 1;
-PRAGMA user_version = 5;
-COMMIT;";
-
-/// Per-session SFTP bookmarks, one list per pane. The cascade removes them
-/// with their session, the way WinSCP drops a site's bookmarks with the site.
-const SCHEMA_V6: &str = "\
-BEGIN;
+CREATE UNIQUE INDEX sessions_public_id ON sessions(public_id);
 CREATE TABLE bookmarks (
     id         INTEGER PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -88,19 +71,7 @@ CREATE TABLE bookmarks (
     path       TEXT NOT NULL,
     sort_order INTEGER NOT NULL,
     UNIQUE (session_id, side, path)
-);
-PRAGMA user_version = 6;
-COMMIT;";
-
-/// Each session's [`PublicId`]. `ADD COLUMN` cannot declare `UNIQUE`, so an
-/// index carries it. The sessions already there get their ids from
-/// `fill_missing_public_ids` right after.
-const SCHEMA_V7: &str = "\
-BEGIN;
-ALTER TABLE sessions ADD COLUMN public_id TEXT;
-CREATE UNIQUE INDEX sessions_public_id ON sessions(public_id);
-PRAGMA user_version = 7;
-COMMIT;";
+);";
 
 /// Everything one launch reads back from disk.
 pub struct StoredData {
@@ -119,13 +90,13 @@ pub struct SessionDatabase {
 }
 
 impl SessionDatabase {
-    /// Open (creating it if needed) the database at `path` and migrate it.
+    /// Open the database at `path`, creating it if it is not there yet.
     pub fn open(path: &Path) -> rusqlite::Result<Self> {
         Self::prepare(Connection::open(path)?)
     }
 
-    /// An anonymous database that lives only as long as this value. Used by
-    /// tests, and as the fallback when the real file cannot be opened.
+    /// An anonymous database that lives only as long as this value.
+    #[cfg(test)]
     pub fn in_memory() -> rusqlite::Result<Self> {
         Self::prepare(Connection::open_in_memory()?)
     }
@@ -135,7 +106,7 @@ impl SessionDatabase {
         // SQLite only honours the foreign keys when asked, per connection.
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.execute_batch("PRAGMA journal_mode = WAL;")?;
-        migrate(&mut connection)?;
+        migrate(&connection)?;
         fill_missing_public_ids(&mut connection)?;
         Ok(Self { connection })
     }
@@ -432,38 +403,22 @@ impl SessionDatabase {
     }
 }
 
-fn migrate(connection: &mut Connection) -> rusqlite::Result<()> {
+/// Bring the database to `SCHEMA_VERSION`. A new file has version 0 and gets
+/// the schema; there are no steps between versions yet.
+fn migrate(connection: &Connection) -> rusqlite::Result<()> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version >= SCHEMA_VERSION {
-        return Ok(());
-    }
-    if version < 1 {
-        connection.execute_batch(SCHEMA_V1)?;
-    }
-    if version < 2 {
-        connection.execute_batch(SCHEMA_V2)?;
-    }
-    if version < 3 {
-        connection.execute_batch(SCHEMA_V3)?;
-    }
-    if version < 4 {
-        connection.execute_batch(SCHEMA_V4)?;
-    }
-    if version < 5 {
-        connection.execute_batch(SCHEMA_V5)?;
-    }
-    if version < 6 {
-        connection.execute_batch(SCHEMA_V6)?;
-    }
-    if version < 7 {
-        connection.execute_batch(SCHEMA_V7)?;
+    if version == 0 {
+        // One transaction: a file is either new or complete.
+        connection.execute_batch(&format!(
+            "BEGIN;\n{SCHEMA}\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
+        ))?;
     }
     Ok(())
 }
 
-/// Give every session without a [`PublicId`] one: those from before schema
-/// v7, and any row added by hand with `sqlite3`. Runs at every open; once
-/// every session has an id it is one query that finds nothing.
+/// Give every session without a [`PublicId`] one, which is any row added by
+/// hand with `sqlite3`. Runs at every open; once every session has an id it
+/// is one query that finds nothing.
 fn fill_missing_public_ids(connection: &mut Connection) -> rusqlite::Result<()> {
     let missing = connection
         .prepare("SELECT id FROM sessions WHERE public_id IS NULL")?
@@ -519,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_database_is_empty_and_migrated() {
+    fn a_fresh_database_is_empty_and_at_the_current_version() {
         let db = SessionDatabase::in_memory().unwrap();
         let version: i64 = db
             .connection
@@ -656,17 +611,13 @@ mod tests {
     }
 
     #[test]
-    fn v4_groups_start_expanded_and_then_keep_the_saved_choice() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch(SCHEMA_V1).unwrap();
-        connection.execute_batch(SCHEMA_V2).unwrap();
-        connection.execute_batch(SCHEMA_V3).unwrap();
-        connection.execute_batch(SCHEMA_V4).unwrap();
-        connection
+    fn groups_start_expanded_and_then_keep_the_saved_choice() {
+        let database = SessionDatabase::in_memory().unwrap();
+        database
+            .connection
             .execute("INSERT INTO groups (id, name) VALUES (1, '生产')", [])
             .unwrap();
 
-        let database = SessionDatabase::prepare(connection).unwrap();
         let mut group = database.load().unwrap().groups.remove(0);
         assert!(group.expanded);
         database.set_group_expanded(group.id, false).unwrap();
@@ -676,66 +627,6 @@ mod tests {
         let saved = database.load().unwrap().groups.remove(0);
         assert_eq!(saved.name.as_ref(), "生产环境");
         assert!(!saved.expanded);
-    }
-
-    #[test]
-    fn migrates_v1_key_auth_to_auto_and_adds_key_path_and_os() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch(SCHEMA_V1).unwrap();
-        connection
-            .execute(
-                "INSERT INTO sessions (id, name, host, port, username, auth) \
-             VALUES (1, '旧会话', 'example.test', 22, 'root', 'key')",
-                [],
-            )
-            .unwrap();
-
-        let db = SessionDatabase::prepare(connection).unwrap();
-        let version: i64 = db
-            .connection
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, SCHEMA_VERSION);
-        let data = db.load().unwrap();
-        assert_eq!(data.sessions[0].auth, AuthKind::Auto);
-        assert_eq!(data.sessions[0].key_path, None);
-        assert_eq!(data.sessions[0].os, None, "老库里的会话还没探测过");
-    }
-
-    #[test]
-    fn sessions_from_before_v7_get_distinct_public_ids_that_stay() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("shellrs.db");
-        let connection = Connection::open(&path).unwrap();
-        for step in [
-            SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
-        ] {
-            connection.execute_batch(step).unwrap();
-        }
-        connection
-            .execute(
-                "INSERT INTO sessions (id, name, host, port, username, auth) \
-             VALUES (1, 'web', 'example.test', 22, 'root', 'auto'), \
-                    (2, 'db', 'example.test', 22, 'root', 'auto')",
-                [],
-            )
-            .unwrap();
-
-        let ids = |data: StoredData| -> Vec<PublicId> {
-            data.sessions.into_iter().map(|s| s.public_id).collect()
-        };
-        let first = ids(SessionDatabase::prepare(connection)
-            .unwrap()
-            .load()
-            .unwrap());
-        assert_eq!(first.len(), 2);
-        assert_ne!(first[0], first[1]);
-        assert!(first.iter().all(|id| id.as_str().len() == 16));
-        // Assigned once, not again at every open.
-        assert_eq!(
-            ids(SessionDatabase::open(&path).unwrap().load().unwrap()),
-            first
-        );
     }
 
     #[test]
@@ -758,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_added_by_hand_gets_a_public_id_at_the_next_open() {
+    fn sessions_added_by_hand_get_distinct_public_ids_that_stay() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shellrs.db");
         SessionDatabase::open(&path)
@@ -766,12 +657,22 @@ mod tests {
             .connection
             .execute(
                 "INSERT INTO sessions (id, name, host, port, username, auth) \
-             VALUES (1, 'web', 'example.test', 22, 'root', 'auto')",
+             VALUES (1, 'web', 'example.test', 22, 'root', 'auto'), \
+                    (2, 'db', 'example.test', 22, 'root', 'auto')",
                 [],
             )
             .unwrap();
-        let data = SessionDatabase::open(&path).unwrap().load().unwrap();
-        assert_eq!(data.sessions[0].public_id.as_str().len(), 16);
+
+        let ids = || -> Vec<PublicId> {
+            let data = SessionDatabase::open(&path).unwrap().load().unwrap();
+            data.sessions.into_iter().map(|s| s.public_id).collect()
+        };
+        let first = ids();
+        assert_eq!(first.len(), 2);
+        assert_ne!(first[0], first[1]);
+        assert!(first.iter().all(|id| id.as_str().len() == 16));
+        // Assigned once, not again at every open.
+        assert_eq!(ids(), first);
     }
 
     #[test]
@@ -798,20 +699,10 @@ mod tests {
     }
 
     #[test]
-    fn v5_databases_gain_bookmarks_that_cascade_with_their_session() {
-        let connection = Connection::open_in_memory().unwrap();
-        for step in [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5] {
-            connection.execute_batch(step).unwrap();
-        }
-        connection
-            .execute(
-                "INSERT INTO sessions (id, name, host, port, username, auth) \
-             VALUES (1, 'web', 'example.test', 22, 'root', 'auto'), \
-                    (2, 'db', 'example.test', 22, 'root', 'auto')",
-                [],
-            )
-            .unwrap();
-        let db = SessionDatabase::prepare(connection).unwrap();
+    fn bookmarks_keep_their_order_and_go_with_their_session() {
+        let db = SessionDatabase::in_memory().unwrap();
+        db.insert_session(&session(1, "web", None)).unwrap();
+        db.insert_session(&session(2, "db", None)).unwrap();
         db.insert_bookmark(SessionId(1), BookmarkSide::Remote, "/var/log")
             .unwrap();
         db.insert_bookmark(SessionId(1), BookmarkSide::Local, "/Users/me")

@@ -22,7 +22,7 @@ pub enum Removal {
 pub struct QueueId(pub u64);
 
 /// What a batch copies, as the user confirmed it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TransferJob {
     Upload { paths: Vec<PathBuf>, target: String },
     Download { paths: Vec<String>, target: String },

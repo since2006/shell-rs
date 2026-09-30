@@ -66,14 +66,6 @@ fn pipe_name(dir: &Path) -> String {
     format!(r"\\.\pipe\shellrs-cli-{hex}")
 }
 
-/// ShellRS's private host-key trust store. It deliberately does not read or
-/// modify OpenSSH's `~/.ssh/known_hosts`.
-pub fn known_hosts_path() -> std::io::Result<PathBuf> {
-    let dir = data_dir();
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir.join("known_hosts"))
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;

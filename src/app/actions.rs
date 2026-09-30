@@ -2,7 +2,6 @@
 //! the same action and cannot disagree.
 
 use gpui_kit::*;
-use serde::Deserialize;
 
 use crate::{
     cli::AgentKind,
@@ -72,166 +71,87 @@ gpui_kit::actions!(
     ]
 );
 
-macro_rules! session_action {
-    ($(#[$doc:meta])* $name:ident) => {
-        $(#[$doc])*
-        #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-        #[action(namespace = shellrs, no_json)]
-        pub struct $name(pub SessionId);
+/// Commands that carry the id of what they act on.
+macro_rules! id_actions {
+    ($($(#[$doc:meta])* $name:ident($id:ty);)*) => {
+        $(
+            $(#[$doc])*
+            #[derive(Action, Clone, PartialEq, Eq)]
+            #[action(namespace = shellrs, no_json)]
+            pub struct $name(pub $id);
+        )*
     };
 }
 
-macro_rules! group_action {
-    ($(#[$doc:meta])* $name:ident) => {
-        $(#[$doc])*
-        #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-        #[action(namespace = shellrs, no_json)]
-        pub struct $name(pub GroupId);
-    };
-}
-
-macro_rules! local_terminal_action {
-    ($(#[$doc:meta])* $name:ident) => {
-        $(#[$doc])*
-        #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-        #[action(namespace = shellrs, no_json)]
-        pub struct $name(pub LocalTerminalId);
-    };
-}
-
-macro_rules! explorer_action {
-    ($(#[$doc:meta])* $name:ident) => {
-        $(#[$doc])*
-        #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-        #[action(namespace = shellrs, no_json)]
-        pub struct $name(pub ExplorerId);
-    };
-}
-
-macro_rules! remote_terminal_action {
-    ($(#[$doc:meta])* $name:ident) => {
-        $(#[$doc])*
-        #[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-        #[action(namespace = shellrs, no_json)]
-        pub struct $name(pub RemoteTerminalId);
-    };
-}
-
-session_action!(
+id_actions! {
     /// Open a new terminal connection for a session.
-    ConnectSession
-);
-session_action!(
+    ConnectSession(SessionId);
     /// Mark a session disconnected.
-    DisconnectSession
-);
-session_action!(
+    DisconnectSession(SessionId);
     /// Open a new SFTP tab for a session, like a new terminal connection.
-    OpenExplorer
-);
-explorer_action!(
-    /// Close one SFTP tab.
-    CloseExplorer
-);
-explorer_action!(
-    /// Open the dialog that gives one SFTP tab its own title.
-    RenameExplorer
-);
-session_action!(
+    OpenExplorer(SessionId);
     /// Open the edit-session dialog for a session.
-    EditSession
-);
-session_action!(
+    EditSession(SessionId);
     /// Duplicate a session in the same group.
-    DuplicateSession
-);
-session_action!(
+    DuplicateSession(SessionId);
     /// Ask for confirmation, then delete a session.
-    DeleteSession
-);
-session_action!(
+    DeleteSession(SessionId);
     /// Copy a session's host field (an IP address or a host name) to the
     /// clipboard.
-    CopySessionHost
-);
-session_action!(
+    CopySessionHost(SessionId);
     /// Copy a session's public id to the clipboard, for another tool to
     /// name the machine by.
-    CopySessionId
-);
+    CopySessionId(SessionId);
 
-group_action!(
     /// Open a terminal connection for every session in this group's subtree.
-    ConnectGroup
-);
-group_action!(
+    ConnectGroup(GroupId);
     /// Open the new-session dialog with this group pre-selected.
-    NewSessionInGroup
-);
+    NewSessionInGroup(GroupId);
+    /// Open the new-group dialog for a group nested inside this one.
+    NewChildGroup(GroupId);
+    /// Open the rename-group dialog.
+    RenameGroup(GroupId);
+    /// Ask for confirmation, then delete a group with everything inside it.
+    DeleteGroup(GroupId);
+
+    /// Close one remote terminal connection and its tab.
+    CloseTerminal(RemoteTerminalId);
+    /// Reconnect one remote terminal using the session's latest settings.
+    ReconnectTerminal(RemoteTerminalId);
+    /// Disconnect one remote terminal, keeping its tab to reconnect from.
+    DisconnectTerminal(RemoteTerminalId);
+    /// Open the dialog that gives one remote terminal tab its own title.
+    RenameTerminal(RemoteTerminalId);
+
+    /// Close a local terminal tab and terminate its child process.
+    CloseLocalTerminal(LocalTerminalId);
+    /// Restart a local terminal with a fresh emulator and PTY.
+    RestartLocalTerminal(LocalTerminalId);
+
+    /// Close one SFTP tab.
+    CloseExplorer(ExplorerId);
+    /// Open the dialog that gives one SFTP tab its own title.
+    RenameExplorer(ExplorerId);
+
+    /// Install (or update) the agent skill for one agent.
+    InstallAgentSkill(AgentKind);
+    /// Remove the agent skill of one agent.
+    RemoveAgentSkill(AgentKind);
+
+    /// Show the SFTP 大小 column in another format, from its title's menu.
+    SetFileSizeFormat(FileSizeFormat);
+}
 
 /// Move a session-tree row by dropping it beside a peer or into a group.
-#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = shellrs, no_json)]
 pub struct MoveSessionNode {
     pub source: SessionNode,
     pub destination: NodeDrop,
 }
-group_action!(
-    /// Open the new-group dialog for a group nested inside this one.
-    NewChildGroup
-);
-group_action!(
-    /// Open the rename-group dialog.
-    RenameGroup
-);
-group_action!(
-    /// Ask for confirmation, then delete a group with everything inside it.
-    DeleteGroup
-);
-
-local_terminal_action!(
-    /// Close a local terminal tab and terminate its child process.
-    CloseLocalTerminal
-);
-
-remote_terminal_action!(
-    /// Close one remote terminal connection and its tab.
-    CloseTerminal
-);
-remote_terminal_action!(
-    /// Reconnect one remote terminal using the session's latest settings.
-    ReconnectTerminal
-);
-remote_terminal_action!(
-    /// Disconnect one remote terminal, keeping its tab to reconnect from.
-    DisconnectTerminal
-);
-remote_terminal_action!(
-    /// Open the dialog that gives one remote terminal tab its own title.
-    RenameTerminal
-);
-local_terminal_action!(
-    /// Restart a local terminal with a fresh emulator and PTY.
-    RestartLocalTerminal
-);
-
-/// Install (or update) the agent skill for one agent.
-#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-#[action(namespace = shellrs, no_json)]
-pub struct InstallAgentSkill(pub AgentKind);
-
-/// Remove the agent skill of one agent.
-#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-#[action(namespace = shellrs, no_json)]
-pub struct RemoveAgentSkill(pub AgentKind);
-
-/// Show the SFTP 大小 column in another format, from its title's menu.
-#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
-#[action(namespace = shellrs, no_json)]
-pub struct SetFileSizeFormat(pub FileSizeFormat);
 
 /// One tab of the center area, by the identity of what it shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CenterTab {
     Terminal(RemoteTerminalId),
     Explorer(ExplorerId),
@@ -241,7 +161,7 @@ pub enum CenterTab {
 }
 
 /// Which tabs of a tab bar a batch close takes, relative to one tab.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseScope {
     Left,
     Right,
@@ -265,7 +185,7 @@ impl CloseScope {
 
 /// Close several tabs of the tab bar that holds `tab`, each through its own
 /// close path.
-#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = shellrs, no_json)]
 pub struct CloseTabs {
     pub tab: CenterTab,
@@ -274,7 +194,7 @@ pub struct CloseTabs {
 
 /// Commands shared by explorer controls, drops, dialogs and keyboard bindings.
 /// `remote` names the pane a command acts on.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExplorerCommand {
     Navigate {
         remote: bool,
@@ -347,51 +267,30 @@ pub enum ExplorerCommand {
         paths: Vec<String>,
         target: String,
     },
-    BeginDownload {
-        paths: Vec<String>,
-        target: String,
-    },
+    /// Put a confirmed upload or download on the transfer queue.
+    Enqueue(crate::explorer::TransferJob),
     /// Ask to delete the pane's selection.
     Delete {
         remote: bool,
     },
-    BeginDelete {
+    /// Carry out a confirmed delete, rename, new item or permission change
+    /// in the pane's directory.
+    Operate {
         remote: bool,
-        names: Vec<String>,
+        operation: crate::explorer::PaneOperation,
     },
     Rename {
         remote: bool,
-    },
-    CommitRename {
-        remote: bool,
-        from: String,
-        to: String,
     },
     New {
         remote: bool,
         kind: crate::explorer::NewEntryKind,
     },
-    CommitNew {
-        remote: bool,
-        kind: crate::explorer::NewEntryKind,
-        name: String,
-    },
     Properties {
         remote: bool,
     },
-    ApplyPermissions {
-        remote: bool,
-        names: Vec<String>,
-        edit: crate::sftp::PermissionEdit,
-        recursive: bool,
-        add_x_to_dirs: bool,
-    },
     ChooseFiles,
     UploadPaths {
-        paths: Vec<std::path::PathBuf>,
-        target: String,
-    },
-    BeginUpload {
         paths: Vec<std::path::PathBuf>,
         target: String,
     },
@@ -422,7 +321,7 @@ pub enum ExplorerCommand {
     ClearFinishedTransfers,
     CloseConfirmed,
 }
-#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = shellrs, no_json)]
 pub struct ExplorerAction {
     explorer: ExplorerId,
@@ -453,7 +352,7 @@ impl ExplorerAction {
 }
 /// A file-list key binding. The binding carries the pane side, and the
 /// workspace sends it to the explorer that holds focus.
-#[derive(Action, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = shellrs, no_json)]
 pub struct ExplorerShortcut(pub ExplorerCommand);
 

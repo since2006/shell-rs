@@ -64,10 +64,6 @@ impl LocalTerminalPanel {
         }
     }
 
-    pub fn id(&self) -> LocalTerminalId {
-        self.id
-    }
-
     pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
         self.tab_group.clone()
     }

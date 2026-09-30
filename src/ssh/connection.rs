@@ -21,7 +21,7 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -31,6 +31,7 @@ use zeroize::Zeroizing;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const AUTH_RETRIES: usize = 3;
+const CONNECT_FAILED: &str = "无法建立 SSH 连接，请检查主机、端口和主机密钥";
 static NEXT_PROMPT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -114,17 +115,14 @@ impl SshConnector {
         );
         let mut shutdown = broker.shutdown_receiver();
         let mut handle = tokio::select! {
-            result = timeout_excluding_prompts(connect, broker.prompt_activity_receiver(), CONNECT_TIMEOUT) => result?.map_err(|e| e.context(safe_connect_error()))?,
+            result = timeout_excluding_prompts(connect, broker.prompt_activity_receiver(), CONNECT_TIMEOUT) => result?.map_err(|e| e.context(CONNECT_FAILED))?,
             _ = shutdown.changed() => bail!("连接已取消"),
         };
         tokio::select! {
             result = authenticate(&mut handle, config, secrets, &broker) => result?,
             _ = shutdown.changed() => bail!("连接已取消"),
         }
-        let fingerprint = fingerprint
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
+        let fingerprint = lock(&fingerprint).clone();
         Ok((handle, fingerprint))
     }
 }
@@ -145,10 +143,6 @@ impl SshConnectionConfig {
         }
     }
 
-    pub fn host(&self) -> &str {
-        &self.host
-    }
-
     pub fn endpoint(&self) -> String {
         format!("{}@{}:{}", self.user, self.host, self.port)
     }
@@ -166,7 +160,8 @@ pub struct SshPrompts {
 }
 
 /// A credential authentication needed and could not ask for, because the
-/// connection runs without anyone to answer (a connection test).
+/// connection runs without anyone to answer (a connection test, or a command
+/// from the external CLI).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MissingCredential {
     /// `rejected` when a password was tried and the server refused it.
@@ -226,10 +221,7 @@ impl SshPrompts {
     async fn ask(&self, kind: ConnectionPromptKind) -> Result<ConnectionPromptReply> {
         let request_id = NEXT_PROMPT_ID.fetch_add(1, Ordering::Relaxed);
         let (sender, receiver) = oneshot::channel();
-        self.pending
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(request_id, sender);
+        lock(&self.pending).insert(request_id, sender);
         let _ = self.prompt_activity.send(true);
         let result = async {
             if !(self.events)(ConnectionPrompt::new(request_id, kind)) {
@@ -242,10 +234,7 @@ impl SshPrompts {
             }
         }
         .await;
-        self.pending
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(&request_id);
+        lock(&self.pending).remove(&request_id);
         let _ = self.prompt_activity.send(false);
         result
     }
@@ -262,27 +251,19 @@ impl SshPrompts {
         self.ask(kind).await
     }
 
-    async fn emit(&self, kind: ConnectionPromptKind) {
+    fn emit(&self, kind: ConnectionPromptKind) {
         let request_id = NEXT_PROMPT_ID.fetch_add(1, Ordering::Relaxed);
         (self.events)(ConnectionPrompt::new(request_id, kind));
     }
 
     pub fn respond(&self, request_id: u64, reply: ConnectionPromptReply) {
-        if let Some(sender) = self
-            .pending
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(&request_id)
-        {
+        if let Some(sender) = lock(&self.pending).remove(&request_id) {
             let _ = sender.send(reply);
         }
     }
 
     pub fn cancel_all(&self) {
-        self.pending
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear();
+        lock(&self.pending).clear();
     }
 }
 
@@ -330,6 +311,12 @@ where
 
 pub type SshHandle = client::Handle<SshClientHandler>;
 
+/// Lock a mutex that a panicking thread may have poisoned; the data it guards
+/// here stays usable either way.
+pub(super) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|error| error.into_inner())
+}
+
 pub struct SshClientHandler {
     host: String,
     port: u16,
@@ -348,13 +335,10 @@ impl client::Handler for SshClientHandler {
     ) -> Result<bool, Self::Error> {
         let key = server_public_key.public_key();
         let fingerprint = key.fingerprint(HashAlg::Sha256).to_string();
-        *self.fingerprint.lock().unwrap_or_else(|e| e.into_inner()) = fingerprint.clone();
+        *lock(&self.fingerprint) = fingerprint.clone();
         let algorithm = key.algorithm().to_string();
         let known = {
-            let _guard = self
-                .known_hosts_lock
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
+            let _guard = lock(&self.known_hosts_lock);
             read_known_keys(&self.host, self.port, &self.known_hosts_path)?
         };
         if known.iter().any(|(_, saved)| saved == &key) {
@@ -365,16 +349,14 @@ impl client::Handler for SshClientHandler {
                 .iter()
                 .map(|(_, saved)| saved.fingerprint(HashAlg::Sha256).to_string())
                 .collect();
-            self.broker
-                .emit(ConnectionPromptKind::host_key_changed(
-                    &self.host,
-                    self.port,
-                    algorithm,
-                    old,
-                    fingerprint,
-                    &self.known_hosts_path,
-                ))
-                .await;
+            self.broker.emit(ConnectionPromptKind::host_key_changed(
+                &self.host,
+                self.port,
+                algorithm,
+                old,
+                fingerprint,
+                &self.known_hosts_path,
+            ));
             return Ok(false);
         }
 
@@ -390,10 +372,7 @@ impl client::Handler for SshClientHandler {
         if !matches!(reply, ConnectionPromptReply::TrustAndSave) {
             return Ok(false);
         }
-        let _guard = self
-            .known_hosts_lock
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        let _guard = lock(&self.known_hosts_lock);
         let known = read_known_keys(&self.host, self.port, &self.known_hosts_path)?;
         if known.iter().any(|(_, saved)| saved == &key) {
             return Ok(true);
@@ -430,15 +409,12 @@ fn read_known_keys(host: &str, port: u16, path: &Path) -> Result<Vec<(usize, Pub
         .map_err(|_| anyhow!("主机信任文件已损坏或无法读取：{}", path.display()))
 }
 
-async fn authenticate<H: client::Handler>(
-    handle: &mut client::Handle<H>,
+async fn authenticate(
+    handle: &mut SshHandle,
     config: &SshConnectionConfig,
     secrets: &SharedSecretStore,
     broker: &SshPrompts,
-) -> Result<()>
-where
-    H::Error: From<russh::Error>,
-{
+) -> Result<()> {
     let first = handle
         .authenticate_none(&config.user)
         .await
@@ -556,13 +532,7 @@ where
     bail!("认证失败：服务器未接受可用的认证方式")
 }
 
-async fn try_agent<H: client::Handler>(
-    handle: &mut client::Handle<H>,
-    user: &str,
-) -> Result<Option<AuthResult>>
-where
-    H::Error: From<russh::Error>,
-{
+async fn try_agent(handle: &mut SshHandle, user: &str) -> Result<Option<AuthResult>> {
     #[cfg(unix)]
     {
         use russh::keys::agent::client::AgentClient;
@@ -705,14 +675,11 @@ async fn ask_one_secret(
     }
 }
 
-async fn keyboard_interactive<H: client::Handler>(
-    handle: &mut client::Handle<H>,
+async fn keyboard_interactive(
+    handle: &mut SshHandle,
     user: &str,
     broker: &SshPrompts,
-) -> Result<bool>
-where
-    H::Error: From<russh::Error>,
-{
+) -> Result<bool> {
     let mut response = handle
         .authenticate_keyboard_interactive_start(user, None)
         .await
@@ -770,10 +737,6 @@ fn is_partial(result: &AuthResult) -> bool {
             ..
         }
     )
-}
-
-fn safe_connect_error() -> &'static str {
-    "无法建立 SSH 连接，请检查主机、端口和主机密钥"
 }
 
 #[cfg(test)]

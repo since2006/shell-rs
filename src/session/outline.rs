@@ -4,13 +4,12 @@ use std::collections::HashSet;
 
 use gpui_kit::SharedString;
 use gpui_kit::component::tree::TreeItem;
-use serde::Deserialize;
 
 use super::{GroupId, Session, SessionGroup, SessionId};
 
 /// What a tree row stands for. Encoded into the row's `TreeItem` id so the
 /// renderer and the context menu can recover the domain object.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionNode {
     Group(GroupId),
     Session(SessionId),
@@ -18,7 +17,7 @@ pub enum SessionNode {
 
 /// A drop location in the session tree. Groups and sessions each have their
 /// own order within a parent; a drop into a group changes the parent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeDrop {
     Before(SessionNode),
     After(SessionNode),
@@ -85,6 +84,17 @@ pub fn session_tree_items(
     items_under(None, 0, groups, sessions, query, filtering, expanded)
 }
 
+/// The groups directly under `parent`, in display order. `None` asks for the
+/// top-level groups.
+fn child_groups(groups: &[SessionGroup], parent: Option<GroupId>) -> Vec<&SessionGroup> {
+    let mut children: Vec<_> = groups
+        .iter()
+        .filter(|group| group.parent == parent)
+        .collect();
+    children.sort_by_key(|group| (group.sort_order, group.id));
+    children
+}
+
 fn items_under(
     parent: Option<GroupId>,
     depth: usize,
@@ -101,12 +111,7 @@ fn items_under(
         return Vec::new();
     }
     let mut items: Vec<TreeItem> = Vec::new();
-    let mut child_groups: Vec<_> = groups
-        .iter()
-        .filter(|group| group.parent == parent)
-        .collect();
-    child_groups.sort_by_key(|group| (group.sort_order, group.id));
-    for group in child_groups {
+    for group in child_groups(groups, parent) {
         let children = items_under(
             Some(group.id),
             depth + 1,
@@ -162,12 +167,7 @@ fn collect_group_options(
     if depth > groups.len() {
         return;
     }
-    let mut children: Vec<_> = groups
-        .iter()
-        .filter(|group| group.parent == parent)
-        .collect();
-    children.sort_by_key(|group| (group.sort_order, group.id));
-    for group in children {
+    for group in child_groups(groups, parent) {
         if excluded.contains(&group.id) {
             continue;
         }

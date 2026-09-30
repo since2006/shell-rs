@@ -12,12 +12,13 @@ use crate::app::{
     CatalogIcon, CenterTab, CloseTerminal, ConnectSession, CopySessionHost, DisconnectTerminal,
     EditSession, OpenExplorer, ReconnectTerminal, RenameTerminal,
 };
+use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::session::{HostOs, SessionId, SessionStore};
 use crate::shared::{ClosableTabTitle, HostMark, RenamableTab, close_tab_items};
 
 use super::{
-    LatencyLevel, RemoteTerminalId, SharedRemoteTerminalTransportProvider, TerminalLifecycle,
-    TerminalMenuItems, TerminalPrompt, TerminalPromptReply, TerminalView, TerminalViewEvent,
+    LatencyLevel, RemoteTerminalId, SharedRemoteTerminalTransportProvider, TerminalEvent,
+    TerminalLifecycle, TerminalMenuItems, TerminalView,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,7 +26,7 @@ pub enum TerminalPanelEvent {
     Activated(RemoteTerminalId, SessionId),
     Closed(RemoteTerminalId, SessionId),
     StatusChanged(RemoteTerminalId, SessionId),
-    PromptRequested(RemoteTerminalId, SessionId, TerminalPrompt),
+    PromptRequested(RemoteTerminalId, SessionId, ConnectionPrompt),
     HostOsDetected(SessionId, HostOs),
 }
 
@@ -77,18 +78,17 @@ impl TerminalPanel {
             }),
             cx.subscribe(
                 &terminal,
-                |this, _, event: &TerminalViewEvent, cx| match event {
-                    TerminalViewEvent::PromptRequested(prompt) => {
+                |this, _, event: &TerminalEvent, cx| match event {
+                    TerminalEvent::PromptRequested(prompt) => {
                         cx.emit(TerminalPanelEvent::PromptRequested(
                             this.id,
                             this.session_id,
                             prompt.clone(),
                         ));
                     }
-                    TerminalViewEvent::HostOsDetected(os) => {
+                    TerminalEvent::HostOsDetected(os) => {
                         cx.emit(TerminalPanelEvent::HostOsDetected(this.session_id, *os));
                     }
-                    TerminalViewEvent::Changed => {}
                 },
             ),
         ];
@@ -117,22 +117,6 @@ impl TerminalPanel {
         self.tab_group.clone()
     }
 
-    /// The session's name, as the tab shows it without a title of its own.
-    pub fn session_name(&self, cx: &App) -> SharedString {
-        self.store
-            .read(cx)
-            .session(self.session_id)
-            .map(|session| session.name.clone())
-            .unwrap_or_else(|| "终端".into())
-    }
-
-    /// The tab's label: its own title when it has one, else the session name.
-    pub fn title_text(&self, cx: &App) -> SharedString {
-        self.custom_title
-            .clone()
-            .unwrap_or_else(|| self.session_name(cx))
-    }
-
     fn tab_menu(&self, cx: &Context<Self>) -> TabMenu {
         TabMenu {
             id: self.id,
@@ -153,12 +137,6 @@ impl TerminalPanel {
 
     pub fn lifecycle(&self, cx: &App) -> TerminalLifecycle {
         self.terminal.read(cx).lifecycle(cx)
-    }
-
-    pub fn append_line(&mut self, line: impl AsRef<str>, cx: &mut Context<Self>) {
-        self.terminal.update(cx, |terminal, cx| {
-            terminal.append_system_message(line.as_ref(), cx)
-        });
     }
 
     pub fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -183,7 +161,7 @@ impl TerminalPanel {
             .update(cx, |terminal, cx| terminal.stop("连接已取消", cx));
     }
 
-    pub fn reply_to_prompt(&self, request_id: u64, reply: TerminalPromptReply, cx: &App) {
+    pub fn reply_to_prompt(&self, request_id: u64, reply: ConnectionPromptReply, cx: &App) {
         self.terminal
             .read(cx)
             .reply_to_prompt(request_id, reply, cx);
@@ -244,9 +222,9 @@ impl Panel for TerminalPanel {
             .read(cx)
             .session(self.session_id)
             .and_then(|session| session.os);
-        let mark = HostMark::new(("terminal-tab-os", id.0), self.session_name(cx), os).small();
+        let mark = HostMark::new(("terminal-tab-os", id.0), self.default_title(cx), os).small();
         let tab_menu = self.tab_menu(cx);
-        ClosableTabTitle::new(("terminal-tab", id.0), mark, self.title_text(cx))
+        ClosableTabTitle::new(("terminal-tab", id.0), mark, self.tab_title(cx))
             .closable(("close-terminal", id.0), Box::new(CloseTerminal(id)))
             .context_menu(move |menu, _, cx| tab_menu.build(menu, cx))
     }
@@ -353,11 +331,19 @@ struct TabMenu {
 }
 
 impl RenamableTab for TerminalPanel {
+    /// The session's name, as the tab shows it without a title of its own.
     fn default_title(&self, cx: &App) -> SharedString {
-        self.session_name(cx)
+        self.store
+            .read(cx)
+            .session(self.session_id)
+            .map(|session| session.name.clone())
+            .unwrap_or_else(|| "终端".into())
     }
+    /// The tab's label: its own title when it has one, else the session name.
     fn tab_title(&self, cx: &App) -> SharedString {
-        self.title_text(cx)
+        self.custom_title
+            .clone()
+            .unwrap_or_else(|| self.default_title(cx))
     }
     fn set_custom_title(&mut self, title: Option<SharedString>, cx: &mut Context<Self>) {
         self.custom_title = title;

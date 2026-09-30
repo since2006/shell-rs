@@ -2,14 +2,13 @@ use std::fmt;
 use std::time::Duration;
 
 use alacritty_terminal::grid::Dimensions;
-use serde::Deserialize;
 
 /// Stable identity for one local-terminal tab.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LocalTerminalId(pub u64);
 
 /// Stable identity for one remote-terminal connection and its Dock tab.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RemoteTerminalId(pub u64);
 
 /// The last round trip measured on a remote connection: how long the server
@@ -143,21 +142,14 @@ pub struct TerminalStatus {
     lifecycle: TerminalLifecycle,
     cursor_row: usize,
     cursor_column: usize,
-    title: Option<String>,
 }
 
 impl TerminalStatus {
-    pub fn new(
-        lifecycle: TerminalLifecycle,
-        cursor_row: usize,
-        cursor_column: usize,
-        title: Option<String>,
-    ) -> Self {
+    pub fn new(lifecycle: TerminalLifecycle, cursor_row: usize, cursor_column: usize) -> Self {
         Self {
             lifecycle,
             cursor_row,
             cursor_column,
-            title,
         }
     }
 
@@ -171,10 +163,6 @@ impl TerminalStatus {
 
     pub fn cursor_column(&self) -> usize {
         self.cursor_column
-    }
-
-    pub fn title(&self) -> Option<&str> {
-        self.title.as_deref()
     }
 }
 

@@ -10,7 +10,7 @@ mod terminal_panel;
 mod terminal_view;
 mod transport;
 
-pub use engine::{TerminalCell, TerminalEngine, TerminalEngineEvent, TerminalSnapshot};
+pub use engine::{TerminalCell, TerminalEngine, TerminalEvent, TerminalSnapshot};
 pub use font::{
     DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalFont,
     TerminalFontPreview, is_font_installed, monospace_font_families,
@@ -26,13 +26,10 @@ pub use terminal_panel::{TerminalPanel, TerminalPanelEvent};
 pub(crate) use terminal_view::terminal_key_bindings;
 pub use terminal_view::{
     TERMINAL_FIND_KEY_CONTEXT, TERMINAL_KEY_CONTEXT, TerminalMenuItems, TerminalView,
-    TerminalViewEvent,
 };
 pub(crate) use transport::send_event;
 pub use transport::{
-    AuthenticationPrompt, FixedRemoteTerminalTransportProvider, HostKeyChangedPrompt,
-    RemoteTerminalTransportProvider, SharedRemoteTerminalTransportProvider,
-    SharedTerminalTransportFactory, TerminalPrompt, TerminalPromptField, TerminalPromptKind,
-    TerminalPromptReply, TerminalSecret, TerminalTransport, TerminalTransportCommand,
-    TerminalTransportEvent, TerminalTransportFactory, UnknownHostPrompt,
+    FixedRemoteTerminalTransportProvider, RemoteTerminalTransportProvider,
+    SharedRemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalTransport,
+    TerminalTransportCommand, TerminalTransportEvent, TerminalTransportFactory,
 };

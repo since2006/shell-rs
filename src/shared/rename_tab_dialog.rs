@@ -4,12 +4,12 @@
 
 use gpui_kit::component::{
     Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
-    dialog::{DialogAction, DialogClose, DialogFooter},
     form::{Field, Form},
     input::{Input, InputState},
 };
 use gpui_kit::*;
+
+use super::commit_footer;
 
 /// A tab whose label can be replaced by a title of its own.
 pub trait RenamableTab: Sized + 'static {
@@ -72,13 +72,7 @@ pub fn open_rename_tab_dialog<T: RenamableTab>(
         dialog
             .title("重命名标签")
             .child(form.clone())
-            .footer(
-                DialogFooter::new()
-                    .child(DialogClose::new().trigger(|button| button.label("取消")))
-                    .child(
-                        DialogAction::new().child(Button::new("commit").primary().label("保存")),
-                    ),
-            )
+            .footer(commit_footer("commit", "保存"))
             .on_ok({
                 let form = form.clone();
                 move |_, _, cx| {

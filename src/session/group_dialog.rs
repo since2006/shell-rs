@@ -1,7 +1,5 @@
 use gpui_kit::component::{
-    ActiveTheme as _, IndexPath, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariant, ButtonVariants as _},
-    dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter},
+    IndexPath, Sizable as _, WindowExt as _,
     form::{Field, Form},
     input::{Input, InputState},
     select::{Select, SelectState},
@@ -10,7 +8,10 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{DeleteHandler, GroupDraft, GroupId, SessionStore, group_options};
+use super::{
+    DeleteHandler, GroupDraft, GroupId, SessionStore, group_options, session_dialog::confirm_delete,
+};
+use crate::shared::{commit_footer, form_error};
 
 /// The label of the row that stands for "no parent" / "no group".
 pub const ROOT_LABEL: &str = "（顶层）";
@@ -143,15 +144,7 @@ impl Render for GroupForm {
                     ),
             )
             .when_some(self.error.clone(), |form, error| {
-                form.child(
-                    div()
-                        .id("form-error")
-                        .test_support()
-                        .aria_label(error.clone())
-                        .text_sm()
-                        .text_color(cx.theme().danger)
-                        .child(error),
-                )
+                form.child(form_error(error.clone(), cx).aria_label(error))
             })
     }
 }
@@ -184,14 +177,7 @@ pub fn open_group_dialog(
             dialog
                 .title(title.clone())
                 .child(form.clone())
-                .footer(
-                    DialogFooter::new()
-                        .child(DialogClose::new().trigger(|button| button.label("取消")))
-                        .child(
-                            DialogAction::new()
-                                .child(Button::new("commit").primary().label(commit_label.clone())),
-                        ),
-                )
+                .footer(commit_footer("commit", commit_label.clone()))
                 .on_ok({
                     let form = form.clone();
                     move |_, window, cx| form.update(cx, |form, cx| form.commit(window, cx))
@@ -212,7 +198,6 @@ pub fn confirm_delete_group(
     cx: &mut App,
 ) {
     let (closes_tabs, uploads) = affected;
-    let title: SharedString = format!("删除“{name}”？").into();
     let mut description = describe_contents(sessions, subgroups, closes_tabs);
     if uploads > 0 {
         description = Some(
@@ -223,27 +208,7 @@ pub fn confirm_delete_group(
             .into(),
         );
     }
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        alert
-            .title(title.clone())
-            .when_some(description.clone(), |alert, description| {
-                alert.description(description)
-            })
-            .button_props(
-                DialogButtonProps::default()
-                    .ok_text("删除")
-                    .ok_variant(ButtonVariant::Danger)
-                    .cancel_text("取消"),
-            )
-            .show_cancel(true)
-            .on_ok({
-                let on_delete = on_delete.clone();
-                move |_, window, cx| {
-                    on_delete(window, cx);
-                    true
-                }
-            })
-    });
+    confirm_delete(name, description, on_delete, window, cx);
 }
 
 /// What the delete dialog says about everything that goes with the group.

@@ -193,14 +193,6 @@ impl SessionStore {
         self.groups.iter().find(|g| g.id == id)
     }
 
-    /// The groups directly under `parent`, in display order. `None` asks
-    /// for the top-level groups.
-    pub fn child_groups(&self, parent: Option<GroupId>) -> impl Iterator<Item = &SessionGroup> {
-        let mut children: Vec<_> = self.groups.iter().filter(|g| g.parent == parent).collect();
-        children.sort_by_key(|group| (group.sort_order, group.id));
-        children.into_iter()
-    }
-
     /// Every group below `id`, at any depth. Shared by the cascading delete
     /// and by the check that keeps a group from being moved into itself.
     pub fn descendant_groups(&self, id: GroupId) -> Vec<GroupId> {
@@ -244,6 +236,11 @@ impl SessionStore {
 
     /// The group's full path, e.g. `生产 / 数据库`, as the forms list it.
     pub fn group_path(&self, id: GroupId) -> String {
+        self.group_names(id).join(" / ")
+    }
+
+    /// The names along the path to a group, from the top level down to it.
+    pub fn group_names(&self, id: GroupId) -> Vec<&str> {
         let mut parts: Vec<&str> = Vec::new();
         let mut current = Some(id);
         while let Some(group) = current.and_then(|id| self.group(id)) {
@@ -256,7 +253,7 @@ impl SessionStore {
             current = group.parent;
         }
         parts.reverse();
-        parts.join(" / ")
+        parts
     }
 
     /// The session whose tab is currently displayed, if any.
@@ -272,23 +269,15 @@ impl SessionStore {
 
     pub fn insert(&mut self, draft: SessionDraft, cx: &mut Context<Self>) -> SessionId {
         let id = self.insert_unnotified(draft);
-        if let (Some(database), Some(session)) = (self.database.as_ref(), self.session(id)) {
-            let result = database.insert_session(session);
-            self.report(result, "新建会话", cx);
+        if let Some(session) = self.session(id) {
+            self.persist("新建会话", cx, |db| db.insert_session(session));
         }
         cx.notify();
         id
     }
 
     pub fn insert_unnotified(&mut self, draft: SessionDraft) -> SessionId {
-        let sort_order = self
-            .sessions
-            .iter()
-            .filter(|s| s.group == draft.group)
-            .map(|s| s.sort_order)
-            .max()
-            .unwrap_or(-1)
-            + 1;
+        let sort_order = self.last_session_order(draft.group, None);
         let id = SessionId(self.next_session_id);
         self.next_session_id += 1;
         let mut session = Session::new(id, draft);
@@ -315,9 +304,8 @@ impl SessionStore {
         });
         let updated = self.update_unnotified(id, draft);
         if updated {
-            if let (Some(database), Some(session)) = (self.database.as_ref(), self.session(id)) {
-                let result = database.update_session(session);
-                self.report(result, "保存会话", cx);
+            if let Some(session) = self.session(id) {
+                self.persist("保存会话", cx, |db| db.update_session(session));
             }
             // The session moved to another endpoint, so its old keychain
             // entry is an orphan unless another session still logs in there.
@@ -335,14 +323,7 @@ impl SessionStore {
     }
 
     pub fn update_unnotified(&mut self, id: SessionId, draft: SessionDraft) -> bool {
-        let new_order = self
-            .sessions
-            .iter()
-            .filter(|s| s.id != id && s.group == draft.group)
-            .map(|s| s.sort_order)
-            .max()
-            .unwrap_or(-1)
-            + 1;
+        let new_order = self.last_session_order(draft.group, Some(id));
         let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) else {
             return false;
         };
@@ -369,10 +350,7 @@ impl SessionStore {
         let endpoint = self.session(id).map(Session::password_secret);
         let removed = self.remove_unnotified(id);
         if removed {
-            if let Some(database) = self.database.as_ref() {
-                let result = database.remove_session(id);
-                self.report(result, "删除会话", cx);
-            }
+            self.persist("删除会话", cx, |db| db.remove_session(id));
             if let Some(endpoint) = endpoint
                 && !password_in_use(&self.sessions, &endpoint)
             {
@@ -398,11 +376,11 @@ impl SessionStore {
     /// Copy a session as `<name> 副本`, placed right after the original.
     pub fn duplicate(&mut self, id: SessionId, cx: &mut Context<Self>) -> Option<SessionId> {
         let copy = self.duplicate_unnotified(id)?;
-        if let (Some(database), Some(session)) = (self.database.as_ref(), self.session(copy)) {
-            let result = database.insert_session(session);
-            self.report(result, "复制会话", cx);
-            let result = database.save_tree_order(&self.groups, &self.sessions);
-            self.report(result, "保存会话顺序", cx);
+        if let Some(session) = self.session(copy) {
+            self.persist("复制会话", cx, |db| db.insert_session(session));
+            self.persist("保存会话顺序", cx, |db| {
+                db.save_tree_order(&self.groups, &self.sessions)
+            });
         }
         cx.notify();
         Some(copy)
@@ -432,23 +410,15 @@ impl SessionStore {
 
     pub fn insert_group(&mut self, draft: GroupDraft, cx: &mut Context<Self>) -> GroupId {
         let id = self.insert_group_unnotified(draft);
-        if let (Some(database), Some(group)) = (self.database.as_ref(), self.group(id)) {
-            let result = database.insert_group(group);
-            self.report(result, "新建分组", cx);
+        if let Some(group) = self.group(id) {
+            self.persist("新建分组", cx, |db| db.insert_group(group));
         }
         cx.notify();
         id
     }
 
     pub fn insert_group_unnotified(&mut self, draft: GroupDraft) -> GroupId {
-        let sort_order = self
-            .groups
-            .iter()
-            .filter(|g| g.parent == draft.parent)
-            .map(|g| g.sort_order)
-            .max()
-            .unwrap_or(-1)
-            + 1;
+        let sort_order = self.last_group_order(draft.parent, None);
         let id = GroupId(self.next_group_id);
         self.next_group_id += 1;
         let mut group = SessionGroup::new(id, draft);
@@ -461,9 +431,8 @@ impl SessionStore {
     pub fn update_group(&mut self, id: GroupId, draft: GroupDraft, cx: &mut Context<Self>) -> bool {
         let updated = self.update_group_unnotified(id, draft);
         if updated {
-            if let (Some(database), Some(group)) = (self.database.as_ref(), self.group(id)) {
-                let result = database.update_group(group);
-                self.report(result, "保存分组", cx);
+            if let Some(group) = self.group(id) {
+                self.persist("保存分组", cx, |db| db.update_group(group));
             }
             cx.notify();
         }
@@ -482,14 +451,7 @@ impl SessionStore {
         {
             return false;
         }
-        let new_order = self
-            .groups
-            .iter()
-            .filter(|g| g.id != id && g.parent == draft.parent)
-            .map(|g| g.sort_order)
-            .max()
-            .unwrap_or(-1)
-            + 1;
+        let new_order = self.last_group_order(draft.parent, Some(id));
         let Some(group) = self.groups.iter_mut().find(|g| g.id == id) else {
             return false;
         };
@@ -524,10 +486,7 @@ impl SessionStore {
         if !self.add_bookmark_unnotified(id, side, path) {
             return false;
         }
-        if let Some(database) = self.database.as_ref() {
-            let result = database.insert_bookmark(id, side, path);
-            self.report(result, "添加书签", cx);
-        }
+        self.persist("添加书签", cx, |db| db.insert_bookmark(id, side, path));
         cx.notify();
         true
     }
@@ -559,10 +518,7 @@ impl SessionStore {
         if !self.remove_bookmark_unnotified(id, side, path) {
             return false;
         }
-        if let Some(database) = self.database.as_ref() {
-            let result = database.remove_bookmark(id, side, path);
-            self.report(result, "删除书签", cx);
-        }
+        self.persist("删除书签", cx, |db| db.remove_bookmark(id, side, path));
         cx.notify();
         true
     }
@@ -594,10 +550,9 @@ impl SessionStore {
         if !self.move_bookmark_unnotified(id, side, path, to) {
             return false;
         }
-        if let Some(database) = self.database.as_ref() {
-            let result = database.set_bookmark_order(id, side, self.bookmarks(id, side));
-            self.report(result, "调整书签顺序", cx);
-        }
+        self.persist("调整书签顺序", cx, |db| {
+            db.set_bookmark_order(id, side, self.bookmarks(id, side))
+        });
         cx.notify();
         true
     }
@@ -638,13 +593,9 @@ impl SessionStore {
             return false;
         }
         group.expanded = expanded;
-        if let Some(database) = self.database.as_ref() {
-            self.report(
-                database.set_group_expanded(id, expanded),
-                "保存分组展开状态",
-                cx,
-            );
-        }
+        self.persist("保存分组展开状态", cx, |db| {
+            db.set_group_expanded(id, expanded)
+        });
         cx.notify();
         true
     }
@@ -657,13 +608,9 @@ impl SessionStore {
         for group in &mut self.groups {
             group.expanded = expanded;
         }
-        if let Some(database) = self.database.as_ref() {
-            self.report(
-                database.set_all_groups_expanded(expanded),
-                "保存所有分组展开状态",
-                cx,
-            );
-        }
+        self.persist("保存所有分组展开状态", cx, |db| {
+            db.set_all_groups_expanded(expanded)
+        });
         cx.notify();
         true
     }
@@ -679,10 +626,9 @@ impl SessionStore {
         if !self.move_node_unnotified(source, drop) {
             return false;
         }
-        if let Some(database) = self.database.as_ref() {
-            let result = database.save_tree_order(&self.groups, &self.sessions);
-            self.report(result, "调整会话顺序", cx);
-        }
+        self.persist("调整会话顺序", cx, |db| {
+            db.save_tree_order(&self.groups, &self.sessions)
+        });
         cx.notify();
         true
     }
@@ -705,9 +651,9 @@ impl SessionStore {
         }
         match source {
             SessionNode::Group(id) => {
-                let Some(old_parent) = self.group(id).map(|g| g.parent) else {
+                if self.group(id).is_none() {
                     return false;
-                };
+                }
                 if parent == Some(id)
                     || parent.is_some_and(|parent| self.descendant_groups(id).contains(&parent))
                 {
@@ -718,75 +664,47 @@ impl SessionStore {
                     Some(SessionNode::Session(_)) => return false,
                     None => None,
                 };
-                let mut siblings: Vec<_> = self
+                let siblings = self
                     .groups
                     .iter()
                     .filter(|g| g.parent == parent)
                     .map(|g| (g.sort_order, g.id))
                     .collect();
-                siblings.sort();
-                let old_index = siblings.iter().position(|(_, sibling)| *sibling == id);
-                siblings.retain(|(_, sibling)| *sibling != id);
-                let mut ids: Vec<_> = siblings.into_iter().map(|(_, sibling)| sibling).collect();
-                let index = match target {
-                    Some(target) => {
-                        let Some(index) = ids.iter().position(|sibling| *sibling == target) else {
-                            return false;
-                        };
-                        index + usize::from(after)
-                    }
-                    None => ids.len(),
-                };
-                if old_parent == parent && old_index == Some(index) {
+                let Some(ids) = reordered(siblings, id, target, after) else {
                     return false;
-                }
-                ids.insert(index, id);
-                if let Some(group) = self.groups.iter_mut().find(|g| g.id == id) {
-                    group.parent = parent;
-                }
-                for (order, sibling) in ids.into_iter().enumerate() {
-                    if let Some(group) = self.groups.iter_mut().find(|g| g.id == sibling) {
+                };
+                for group in &mut self.groups {
+                    if group.id == id {
+                        group.parent = parent;
+                    }
+                    if let Some(order) = ids.iter().position(|sibling| *sibling == group.id) {
                         group.sort_order = order as i64;
                     }
                 }
             }
             SessionNode::Session(id) => {
-                let Some(old_parent) = self.session(id).map(|s| s.group) else {
+                if self.session(id).is_none() {
                     return false;
-                };
+                }
                 let target = match target {
                     Some(SessionNode::Session(target)) => Some(target),
                     Some(SessionNode::Group(_)) => return false,
                     None => None,
                 };
-                let mut siblings: Vec<_> = self
+                let siblings = self
                     .sessions
                     .iter()
                     .filter(|s| s.group == parent)
                     .map(|s| (s.sort_order, s.id))
                     .collect();
-                siblings.sort();
-                let old_index = siblings.iter().position(|(_, sibling)| *sibling == id);
-                siblings.retain(|(_, sibling)| *sibling != id);
-                let mut ids: Vec<_> = siblings.into_iter().map(|(_, sibling)| sibling).collect();
-                let index = match target {
-                    Some(target) => {
-                        let Some(index) = ids.iter().position(|sibling| *sibling == target) else {
-                            return false;
-                        };
-                        index + usize::from(after)
-                    }
-                    None => ids.len(),
-                };
-                if old_parent == parent && old_index == Some(index) {
+                let Some(ids) = reordered(siblings, id, target, after) else {
                     return false;
-                }
-                ids.insert(index, id);
-                if let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) {
-                    session.group = parent;
-                }
-                for (order, sibling) in ids.into_iter().enumerate() {
-                    if let Some(session) = self.sessions.iter_mut().find(|s| s.id == sibling) {
+                };
+                for session in &mut self.sessions {
+                    if session.id == id {
+                        session.group = parent;
+                    }
+                    if let Some(order) = ids.iter().position(|sibling| *sibling == session.id) {
                         session.sort_order = order as i64;
                     }
                 }
@@ -812,10 +730,7 @@ impl SessionStore {
         let endpoints = self.endpoints_of(&self.sessions_under(id));
         let removed = self.remove_group_unnotified(id);
         // One delete mirrors the whole subtree: both foreign keys cascade.
-        if let Some(database) = self.database.as_ref() {
-            let result = database.remove_group(id);
-            self.report(result, "删除分组", cx);
-        }
+        self.persist("删除分组", cx, |db| db.remove_group(id));
         for endpoint in endpoints {
             if !password_in_use(&self.sessions, &endpoint) {
                 self.save_secret(endpoint, None, cx);
@@ -843,11 +758,10 @@ impl SessionStore {
         if !self.set_state_unnotified(id, state) {
             return;
         }
-        if state.is_connected()
-            && let Some(database) = self.database.as_ref()
-        {
-            let result = database.touch_connected(id, now_seconds());
-            self.report(result, "记录最近连接", cx);
+        if state.is_connected() {
+            self.persist("记录最近连接", cx, |db| {
+                db.touch_connected(id, now_seconds())
+            });
         }
         cx.notify();
     }
@@ -876,10 +790,7 @@ impl SessionStore {
         if !self.set_host_os_unnotified(id, os) {
             return;
         }
-        if let Some(database) = self.database.as_ref() {
-            let result = database.set_host_os(id, os);
-            self.report(result, "记录主机系统", cx);
-        }
+        self.persist("记录主机系统", cx, |db| db.set_host_os(id, os));
         cx.notify();
     }
 
@@ -965,14 +876,74 @@ impl SessionStore {
         endpoints
     }
 
-    /// Turn a failed write into an event. The in-memory change stands.
-    fn report(&self, result: rusqlite::Result<()>, action: &str, cx: &mut Context<Self>) {
-        if let Err(error) = result {
+    /// Write a change through to the database, when there is one. A failed
+    /// write becomes an event; the in-memory change stands.
+    fn persist(
+        &self,
+        action: &str,
+        cx: &mut Context<Self>,
+        write: impl FnOnce(&SessionDatabase) -> rusqlite::Result<()>,
+    ) {
+        if let Some(database) = &self.database
+            && let Err(error) = write(database)
+        {
             cx.emit(SessionStoreEvent::PersistFailed(
                 format!("{action}未能保存到本地数据库：{error}").into(),
             ));
         }
     }
+
+    /// The sort order that puts a session last in `group`, among the
+    /// sessions other than `except`.
+    fn last_session_order(&self, group: Option<GroupId>, except: Option<SessionId>) -> i64 {
+        self.sessions
+            .iter()
+            .filter(|s| Some(s.id) != except && s.group == group)
+            .map(|s| s.sort_order)
+            .max()
+            .unwrap_or(-1)
+            + 1
+    }
+
+    /// The sort order that puts a group last under `parent`, among the
+    /// groups other than `except`.
+    fn last_group_order(&self, parent: Option<GroupId>, except: Option<GroupId>) -> i64 {
+        self.groups
+            .iter()
+            .filter(|g| Some(g.id) != except && g.parent == parent)
+            .map(|g| g.sort_order)
+            .max()
+            .unwrap_or(-1)
+            + 1
+    }
+}
+
+/// The order `id` and its new siblings end up in: `id` goes before or after
+/// `target`, or to the end without one. `siblings` are the rows under the new
+/// parent as `(sort_order, id)`, with `id` among them when it is not changing
+/// parent. `None` when `target` is not one of them, or nothing would move.
+fn reordered<Id: Copy + Ord>(
+    mut siblings: Vec<(i64, Id)>,
+    id: Id,
+    target: Option<Id>,
+    after: bool,
+) -> Option<Vec<Id>> {
+    siblings.sort();
+    let old_index = siblings.iter().position(|(_, sibling)| *sibling == id);
+    let mut ids: Vec<Id> = siblings
+        .into_iter()
+        .map(|(_, sibling)| sibling)
+        .filter(|sibling| *sibling != id)
+        .collect();
+    let index = match target {
+        Some(target) => ids.iter().position(|sibling| *sibling == target)? + usize::from(after),
+        None => ids.len(),
+    };
+    if old_index == Some(index) {
+        return None;
+    }
+    ids.insert(index, id);
+    Some(ids)
 }
 
 /// Whether any session still logs into the endpoint this secret belongs to.
@@ -1240,17 +1211,12 @@ mod tests {
     }
 
     #[test]
-    fn nested_groups_report_children_descendants_and_path() {
+    fn nested_groups_report_descendants_and_path() {
         let mut store = SessionStore::empty();
         let production = store.insert_group_unnotified(GroupDraft::new("生产", None));
         let databases = store.insert_group_unnotified(GroupDraft::new("数据库", Some(production)));
         let replicas = store.insert_group_unnotified(GroupDraft::new("只读副本", Some(databases)));
         let staging = store.insert_group_unnotified(GroupDraft::new("测试", None));
-
-        let top: Vec<_> = store.child_groups(None).map(|g| g.id).collect();
-        assert_eq!(top, [production, staging]);
-        let under_production: Vec<_> = store.child_groups(Some(production)).map(|g| g.id).collect();
-        assert_eq!(under_production, [databases]);
 
         let mut descendants = store.descendant_groups(production);
         descendants.sort();

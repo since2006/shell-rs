@@ -4,21 +4,21 @@
 //! as WinSCP does, as long as the remote file still has the size and time it
 //! had when the partial file was started.
 
-use super::speed::TransferClock;
 use super::{
-    DownloadRequest, EntryKind, FileMetadata, RemotePath, SftpEvent, TransferChoice,
-    TransferDetail, TransferDirection, TransferPhase, TransferProgress, TransferQuestionKind,
+    DownloadRequest, EntryKind, FileMetadata, RemotePath, TransferChoice, TransferDetail,
+    TransferDirection, TransferPhase, TransferQuestionKind,
     client::RemoteFs,
     control::{Cancelled, TargetGuard, TransferControl},
     file_size,
-    journal::{DownloadJournal, DownloadRecord, partial_path},
+    journal::{DownloadJournal, DownloadRecord, partial_path, remove_if_present},
+    meter::TransferMeter,
 };
 use anyhow::{Result, anyhow, bail};
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use std::{
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::io::{AsyncSeekExt as _, AsyncWriteExt as _};
 
@@ -36,17 +36,13 @@ struct DownloadItem {
 pub(crate) struct DownloadBatch {
     items: Vec<DownloadItem>,
     cursor: usize,
-    pub progress: TransferProgress,
+    pub meter: TransferMeter,
     endpoint: String,
     host_key: String,
     journal: DownloadJournal,
     all_conflicts: Option<TransferChoice>,
     approved_resumes: HashSet<PathBuf>,
     blocked_directories: Vec<PathBuf>,
-    clock: TransferClock,
-    received_bytes: u64,
-    completed_bytes: u64,
-    last_progress: Instant,
     /// A new local file takes the remote file's execute bits, as scp keeps
     /// them; otherwise it gets this machine's defaults.
     preserve_mode: bool,
@@ -65,14 +61,6 @@ fn local_name(name: &str) -> Result<&str> {
         bail!("名称「{name}」在本机无效");
     }
     Ok(name)
-}
-
-fn remote_name(path: &RemotePath) -> &str {
-    path.as_str()
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or_default()
 }
 
 impl DownloadBatch {
@@ -100,7 +88,7 @@ impl DownloadBatch {
         }
         let mut stack = Vec::new();
         for source in roots.into_iter().rev() {
-            let name = request.target_name().unwrap_or(remote_name(&source));
+            let name = request.target_name().unwrap_or(source.file_name());
             let target = local_name(name).map(|name| request.destination().join(name));
             stack.push((source, target, None));
         }
@@ -112,7 +100,7 @@ impl DownloadBatch {
                 Ok(target) => target,
                 Err(error) => {
                     items.push(DownloadItem {
-                        target: request.destination().join(remote_name(&source)),
+                        target: request.destination().join(source.file_name()),
                         source,
                         metadata: FileMetadata::new(EntryKind::Other, 0, None, None),
                         error: Some(error.to_string()),
@@ -179,26 +167,16 @@ impl DownloadBatch {
                 error: scan_error,
             });
         }
-        let progress = TransferProgress {
-            direction: TransferDirection::Download,
-            total: items.len(),
-            total_bytes,
-            ..TransferProgress::default()
-        };
         Ok(Self {
+            meter: TransferMeter::new(TransferDirection::Download, items.len(), total_bytes),
             items,
             cursor: 0,
-            progress,
             endpoint: endpoint.into(),
             host_key: host_key.into(),
             journal,
             all_conflicts: None,
             approved_resumes: HashSet::new(),
             blocked_directories: Vec::new(),
-            clock: TransferClock::default(),
-            received_bytes: 0,
-            completed_bytes: 0,
-            last_progress: Instant::now(),
             preserve_mode: request.is_scp(),
         })
     }
@@ -214,44 +192,15 @@ impl DownloadBatch {
         self.cursor >= self.items.len()
     }
 
-    pub fn emit(&self, control: &TransferControl) {
-        let _ = control
-            .events
-            .try_send(SftpEvent::Progress(self.progress.clone()));
-    }
-
-    pub fn phase(&mut self, phase: TransferPhase, control: &TransferControl) {
-        let now = Instant::now();
-        if phase == TransferPhase::Transferring {
-            self.clock.run(now, self.received_bytes);
-        } else {
-            self.clock.pause(now);
-        }
-        if phase != TransferPhase::Reconnecting {
-            self.progress.note = None;
-        }
-        if phase == TransferPhase::Completed {
-            self.progress.current.clear();
-            self.progress.current_source.clear();
-            self.progress.current_bytes = 0;
-            self.progress.current_total = 0;
-        }
-        self.progress.phase = phase;
-        self.progress.elapsed = self.clock.elapsed(now);
-        self.progress.bytes_per_second = self.clock.speed();
-        self.emit(control);
-    }
-
     pub async fn run<F: RemoteFs>(&mut self, fs: &F, control: &TransferControl) -> Result<()> {
-        self.phase(TransferPhase::Transferring, control);
+        self.meter.phase(TransferPhase::Transferring, control);
         while self.cursor < self.items.len() {
             control.check()?;
             let item = self.items[self.cursor].clone();
-            self.progress.current = item.target.display().to_string();
-            self.progress.current_source = item.source.to_string();
-            self.progress.current_bytes = 0;
-            self.progress.current_total = file_size(&item.metadata);
-            self.emit(control);
+            let size = file_size(&item.metadata);
+            let target = item.target.display().to_string();
+            self.meter
+                .begin(item.source.to_string(), target.clone(), size, control);
             let _target_guard = TargetGuard::acquire(
                 format!("local\0{}", item.target.display()),
                 "其他会话正在下载到同一位置，请稍后继续下载",
@@ -268,22 +217,9 @@ impl DownloadBatch {
                 self.download_item(fs, &item, control).await
             };
             match result {
-                Ok(true) => {
-                    self.progress.succeeded += 1;
-                    self.progress
-                        .details
-                        .push(TransferDetail::done(item.target.display().to_string()));
-                    if item.metadata.kind() == EntryKind::File {
-                        self.completed_bytes =
-                            self.completed_bytes.saturating_add(item.metadata.size());
-                    }
-                }
+                Ok(true) => self.meter.settle(TransferDetail::done(target), size),
                 Ok(false) => {
-                    self.progress.skipped += 1;
-                    self.progress.settled_bytes += file_size(&item.metadata);
-                    self.progress
-                        .details
-                        .push(TransferDetail::skipped(item.target.display().to_string()));
+                    self.meter.settle(TransferDetail::skipped(target), size);
                     if item.metadata.kind() == EntryKind::Directory {
                         self.blocked_directories.push(item.target.clone());
                     }
@@ -294,7 +230,7 @@ impl DownloadBatch {
                     return Err(error);
                 }
                 Err(error) => {
-                    self.phase(TransferPhase::Waiting, control);
+                    self.meter.phase(TransferPhase::Waiting, control);
                     let answer = control
                         .ask(
                             TransferQuestionKind::Error,
@@ -320,33 +256,27 @@ impl DownloadBatch {
                                 control,
                             )
                             .await?;
-                            self.progress.total =
-                                self.progress.total.saturating_sub(1) + scanned.items.len();
-                            self.progress.total_bytes = self
-                                .progress
-                                .total_bytes
-                                .saturating_sub(item.metadata.size())
-                                + scanned.progress.total_bytes;
+                            // What the scan had counted for this item goes; a
+                            // folder counted for nothing.
+                            let progress = &mut self.meter.progress;
+                            progress.total = progress.total.saturating_sub(1) + scanned.items.len();
+                            progress.total_bytes = progress.total_bytes.saturating_sub(size)
+                                + scanned.meter.progress.total_bytes;
                             self.items.splice(self.cursor..=self.cursor, scanned.items);
                         }
                         continue;
                     }
-                    self.progress.failed += 1;
-                    self.progress.settled_bytes += file_size(&item.metadata);
-                    self.progress.details.push(TransferDetail::failed(
-                        item.target.display().to_string(),
-                        format!("{error:#}"),
-                    ));
+                    self.meter
+                        .settle(TransferDetail::failed(target, format!("{error:#}")), size);
                     if item.metadata.kind() == EntryKind::Directory {
                         self.blocked_directories.push(item.target.clone());
                     }
                 }
             }
             self.cursor += 1;
-            self.progress.completed_bytes = self.completed_bytes;
-            self.phase(TransferPhase::Transferring, control);
+            self.meter.next(control);
         }
-        self.phase(TransferPhase::Completed, control);
+        self.meter.phase(TransferPhase::Completed, control);
         Ok(())
     }
 
@@ -365,7 +295,7 @@ impl DownloadBatch {
         if !changed && let Some(choice) = self.all_conflicts {
             return Ok(choice == TransferChoice::Overwrite);
         }
-        self.phase(TransferPhase::Waiting, control);
+        self.meter.phase(TransferPhase::Waiting, control);
         let modified = existing
             .modified()
             .ok()
@@ -391,7 +321,7 @@ impl DownloadBatch {
         if answer.apply_to_all() && !changed {
             self.all_conflicts = Some(answer.choice());
         }
-        self.phase(TransferPhase::Transferring, control);
+        self.meter.phase(TransferPhase::Transferring, control);
         Ok(answer.choice() == TransferChoice::Overwrite)
     }
 
@@ -461,7 +391,7 @@ impl DownloadBatch {
                 bail!("临时文件 {} 不是普通文件", temporary.display());
             }
             if partial.len() > item.metadata.size() || (record.is_some() && !resumable) {
-                self.phase(TransferPhase::Waiting, control);
+                self.meter.phase(TransferPhase::Waiting, control);
                 let reason = if partial.len() > item.metadata.size() {
                     "本地 .filepart 文件比远程文件大，无法续传。"
                 } else {
@@ -480,7 +410,7 @@ impl DownloadBatch {
             } else if answered {
                 offset = partial.len();
             } else {
-                self.phase(TransferPhase::Waiting, control);
+                self.meter.phase(TransferPhase::Waiting, control);
                 let answer = control
                     .ask(
                         TransferQuestionKind::Resume,
@@ -493,7 +423,7 @@ impl DownloadBatch {
                     TransferChoice::Restart => {}
                     _ => offset = partial.len(),
                 }
-                self.phase(TransferPhase::Transferring, control);
+                self.meter.phase(TransferPhase::Transferring, control);
             }
         }
         self.approved_resumes.insert(item.target.clone());
@@ -551,11 +481,11 @@ impl DownloadBatch {
             file.seek(std::io::SeekFrom::Start(offset)).await?;
             let mut next_request = offset;
             let mut next_write = offset;
-            self.progress.current_bytes = next_write;
+            self.meter.progress.current_bytes = next_write;
             let mut remainders: Vec<(u64, u32)> = Vec::new();
             let mut ready: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
             let mut reads = FuturesUnordered::new();
-            self.phase(TransferPhase::Transferring, control);
+            self.meter.phase(TransferPhase::Transferring, control);
             while next_write < size {
                 while reads.len() < MAX_IN_FLIGHT && (!remainders.is_empty() || next_request < size)
                 {
@@ -588,17 +518,7 @@ impl DownloadBatch {
                 while let Some(chunk) = ready.remove(&next_write) {
                     file.write_all(&chunk).await?;
                     next_write += chunk.len() as u64;
-                    self.received_bytes += chunk.len() as u64;
-                    let now = Instant::now();
-                    self.clock.record(now, self.received_bytes);
-                    self.progress.completed_bytes = self.completed_bytes.saturating_add(next_write);
-                    self.progress.current_bytes = next_write;
-                    self.progress.bytes_per_second = self.clock.speed();
-                    self.progress.elapsed = self.clock.elapsed(now);
-                    if self.last_progress.elapsed() >= Duration::from_millis(50) {
-                        self.emit(control);
-                        self.last_progress = Instant::now();
-                    }
+                    self.meter.advance(chunk.len() as u64, next_write, control);
                 }
             }
             file.flush().await?;
@@ -622,11 +542,7 @@ impl DownloadBatch {
                 .await?
             {
                 record.validate(&self.endpoint, &self.host_key, &item.source, &item.target)?;
-                match tokio::fs::remove_file(&record.temporary).await {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.into()),
-                }
+                remove_if_present(&record.temporary).await?;
                 self.journal.remove(&record).await?;
             }
         }

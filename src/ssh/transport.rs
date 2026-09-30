@@ -1,9 +1,8 @@
 use super::{
-    connection::{SshConnectionConfig, SshConnector, SshPrompts},
+    connection::{SshConnectionConfig, SshConnector, SshHandle, SshPrompts},
     probe::{HostOsProbe, ProbeOutcome},
 };
 use crate::{
-    secrets::SharedSecretStore,
     session::Session,
     terminal::{
         Latency, RemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalSize,
@@ -16,7 +15,6 @@ use async_channel::Sender;
 use russh::{ChannelMsg, client};
 use std::{
     future::Future,
-    path::PathBuf,
     pin::Pin,
     sync::{
         Arc,
@@ -39,36 +37,31 @@ pub struct SshTerminalTransportProvider {
     connector: SshConnector,
 }
 impl SshTerminalTransportProvider {
-    pub fn new(path: impl Into<PathBuf>, secrets: SharedSecretStore) -> Self {
-        Self::with_connector(SshConnector::new(path, secrets))
-    }
     pub fn with_connector(connector: SshConnector) -> Self {
         Self { connector }
     }
 }
 impl RemoteTerminalTransportProvider for SshTerminalTransportProvider {
     fn factory_for(&self, session: &Session) -> SharedTerminalTransportFactory {
-        Arc::new(SshTerminalTransportFactory {
+        Arc::new(SshTerminalTransport {
             config: SshConnectionConfig::from(session),
             connector: self.connector.clone(),
         })
     }
 }
-struct SshTerminalTransportFactory {
-    config: SshConnectionConfig,
-    connector: SshConnector,
-}
-impl TerminalTransportFactory for SshTerminalTransportFactory {
-    fn create(&self) -> Box<dyn TerminalTransport> {
-        Box::new(SshTerminalTransport {
-            config: self.config.clone(),
-            connector: self.connector.clone(),
-        })
-    }
-}
+
+/// One session's connection settings. It is its own factory: every launch
+/// and restart runs a fresh copy.
+#[derive(Clone)]
 struct SshTerminalTransport {
     config: SshConnectionConfig,
     connector: SshConnector,
+}
+
+impl TerminalTransportFactory for SshTerminalTransport {
+    fn create(&self) -> Box<dyn TerminalTransport> {
+        Box::new(self.clone())
+    }
 }
 
 impl TerminalTransport for SshTerminalTransport {
@@ -308,8 +301,8 @@ fn pixel_dimension(cells: usize, cell_size: u16) -> u32 {
 /// Open a channel and run one probe command on it. Best effort throughout: a
 /// server that refuses the channel or the command just leaves the session's
 /// recorded operating system as it was.
-async fn open_probe<H: client::Handler>(
-    handle: &client::Handle<H>,
+async fn open_probe(
+    handle: &SshHandle,
     command: Option<&'static str>,
 ) -> Option<russh::Channel<client::Msg>> {
     let command = command?;
@@ -323,13 +316,14 @@ async fn open_probe<H: client::Handler>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secrets::{InMemorySecretStore, NoSecretStore, SecretRef, SecretStore as _};
+    use crate::secrets::{
+        InMemorySecretStore, NoSecretStore, SecretRef, SecretStore as _, SharedSecretStore,
+    };
     use crate::session::HostOs;
     use crate::ssh::probe::{PROBE_COMMAND, WINDOWS_PROBE_COMMAND};
-    use crate::terminal::TerminalSecret;
     use crate::{
+        connection::{ConnectionPromptKind, ConnectionPromptReply, ConnectionSecret},
         session::AuthKind,
-        terminal::{TerminalPromptKind, TerminalPromptReply},
     };
     use russh::keys::{PublicKey, known_hosts::learn_known_hosts_path};
     use russh::server::{self, Server as _};
@@ -659,7 +653,7 @@ mod tests {
     fn connect_then_shutdown(
         session: Session,
         known_hosts: &Path,
-        answer: impl FnMut(&TerminalPromptKind) -> TerminalPromptReply,
+        answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
     ) {
         connect(session, known_hosts, Arc::new(NoSecretStore), false, answer);
     }
@@ -668,7 +662,7 @@ mod tests {
         session: Session,
         known_hosts: &Path,
         secrets: SharedSecretStore,
-        answer: impl FnMut(&TerminalPromptKind) -> TerminalPromptReply,
+        answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
     ) -> ConnectionReport {
         connect(session, known_hosts, secrets, false, answer)
     }
@@ -678,7 +672,7 @@ mod tests {
     fn connect_and_probe(
         session: Session,
         known_hosts: &Path,
-        answer: impl FnMut(&TerminalPromptKind) -> TerminalPromptReply,
+        answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
     ) -> ConnectionReport {
         connect(session, known_hosts, Arc::new(NoSecretStore), true, answer)
     }
@@ -686,7 +680,7 @@ mod tests {
     /// What one connection told the UI about itself.
     #[derive(Default)]
     struct ConnectionReport {
-        prompts: Vec<TerminalPromptKind>,
+        prompts: Vec<ConnectionPromptKind>,
         host_os: Option<HostOs>,
         latency: Option<Latency>,
     }
@@ -698,10 +692,11 @@ mod tests {
         known_hosts: &Path,
         secrets: SharedSecretStore,
         wait_for_host_os: bool,
-        mut answer: impl FnMut(&TerminalPromptKind) -> TerminalPromptReply,
+        mut answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
     ) -> ConnectionReport {
         let mut report = ConnectionReport::default();
-        let provider = SshTerminalTransportProvider::new(known_hosts, secrets);
+        let provider =
+            SshTerminalTransportProvider::with_connector(SshConnector::new(known_hosts, secrets));
         let factory = provider.factory_for(&session);
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::unbounded();
@@ -775,18 +770,11 @@ mod tests {
         };
         let directory = tempfile::tempdir().unwrap();
         let known_hosts = directory.path().join("known_hosts");
-        let session = Session::new(
-            crate::session::SessionId(1),
-            crate::session::SessionDraft::new(
-                "test",
-                "127.0.0.1",
-                server.port,
-                "tester",
-                AuthKind::Password,
-                None,
-            ),
-        );
-        let provider = SshTerminalTransportProvider::new(&known_hosts, Arc::new(NoSecretStore));
+        let session = password_session(server.port);
+        let provider = SshTerminalTransportProvider::with_connector(SshConnector::new(
+            &known_hosts,
+            Arc::new(NoSecretStore),
+        ));
         let factory = provider.factory_for(&session);
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::unbounded();
@@ -803,21 +791,21 @@ mod tests {
         while std::time::Instant::now() < deadline && !(started && ready) {
             match event_rx.recv_blocking().unwrap() {
                 TerminalTransportEvent::Prompt(prompt) => match prompt.kind() {
-                    TerminalPromptKind::UnknownHost(_) => command_tx
+                    ConnectionPromptKind::UnknownHost(_) => command_tx
                         .send(TerminalTransportCommand::PromptReply {
                             request_id: prompt.request_id(),
-                            reply: TerminalPromptReply::TrustAndSave,
+                            reply: ConnectionPromptReply::TrustAndSave,
                         })
                         .unwrap(),
-                    TerminalPromptKind::Authentication(_) => command_tx
+                    ConnectionPromptKind::Authentication(_) => command_tx
                         .send(TerminalTransportCommand::PromptReply {
                             request_id: prompt.request_id(),
-                            reply: TerminalPromptReply::Answers(vec![TerminalSecret::new(
+                            reply: ConnectionPromptReply::Answers(vec![ConnectionSecret::new(
                                 TEST_PASSWORD,
                             )]),
                         })
                         .unwrap(),
-                    TerminalPromptKind::HostKeyChanged(_) => panic!("unexpected changed key"),
+                    ConnectionPromptKind::HostKeyChanged(_) => panic!("unexpected changed key"),
                 },
                 TerminalTransportEvent::Started => started = true,
                 TerminalTransportEvent::HostOsDetected(_) | TerminalTransportEvent::Latency(_) => {}
@@ -874,18 +862,18 @@ mod tests {
         loop {
             match event_rx.recv_blocking().unwrap() {
                 TerminalTransportEvent::Prompt(prompt) => match prompt.kind() {
-                    TerminalPromptKind::UnknownHost(_) => {
+                    ConnectionPromptKind::UnknownHost(_) => {
                         panic!("saved host key prompted again")
                     }
-                    TerminalPromptKind::Authentication(_) => command_tx
+                    ConnectionPromptKind::Authentication(_) => command_tx
                         .send(TerminalTransportCommand::PromptReply {
                             request_id: prompt.request_id(),
-                            reply: TerminalPromptReply::Answers(vec![TerminalSecret::new(
+                            reply: ConnectionPromptReply::Answers(vec![ConnectionSecret::new(
                                 "test-password",
                             )]),
                         })
                         .unwrap(),
-                    TerminalPromptKind::HostKeyChanged(_) => panic!("unexpected changed key"),
+                    ConnectionPromptKind::HostKeyChanged(_) => panic!("unexpected changed key"),
                 },
                 TerminalTransportEvent::Started => break,
                 TerminalTransportEvent::Failed(error) => panic!("SSH failed: {error}"),
@@ -906,6 +894,17 @@ mod tests {
         assert_eq!(state.pty, Some(("xterm-256color".into(), 90, 30, 810, 540)));
         assert_eq!(state.resize, Some((120, 40, 1200, 800)));
         assert_eq!(state.input, b"hello\nexit\n");
+    }
+
+    /// Trust the host on first sight and answer the password prompt.
+    fn trust_and_type_password(kind: &ConnectionPromptKind) -> ConnectionPromptReply {
+        match kind {
+            ConnectionPromptKind::UnknownHost(_) => ConnectionPromptReply::TrustAndSave,
+            ConnectionPromptKind::Authentication(_) => {
+                ConnectionPromptReply::Answers(vec![ConnectionSecret::new(TEST_PASSWORD)])
+            }
+            other => panic!("unexpected prompt: {other:?}"),
+        }
     }
 
     fn password_session(port: u16) -> Session {
@@ -1236,7 +1235,7 @@ mod tests {
             .unwrap();
 
         let report = connect_with_secrets(session, &known_hosts, secrets, |kind| match kind {
-            TerminalPromptKind::UnknownHost(_) => TerminalPromptReply::TrustAndSave,
+            ConnectionPromptKind::UnknownHost(_) => ConnectionPromptReply::TrustAndSave,
             other => panic!("unexpected prompt: {other:?}"),
         });
 
@@ -1244,7 +1243,7 @@ mod tests {
             !report
                 .prompts
                 .iter()
-                .any(|kind| matches!(kind, TerminalPromptKind::Authentication(_))),
+                .any(|kind| matches!(kind, ConnectionPromptKind::Authentication(_))),
             "已保存的密码不该再弹认证框"
         );
     }
@@ -1264,20 +1263,18 @@ mod tests {
         let secrets = Arc::new(InMemorySecretStore::default());
         secrets.set(&endpoint, "stale-password").unwrap();
 
-        let report =
-            connect_with_secrets(session, &known_hosts, secrets.clone(), |kind| match kind {
-                TerminalPromptKind::UnknownHost(_) => TerminalPromptReply::TrustAndSave,
-                TerminalPromptKind::Authentication(_) => {
-                    TerminalPromptReply::Answers(vec![TerminalSecret::new(TEST_PASSWORD)])
-                }
-                other => panic!("unexpected prompt: {other:?}"),
-            });
+        let report = connect_with_secrets(
+            session,
+            &known_hosts,
+            secrets.clone(),
+            trust_and_type_password,
+        );
 
         let instructions = report
             .prompts
             .iter()
             .find_map(|kind| match kind {
-                TerminalPromptKind::Authentication(prompt) => Some(prompt.instructions()),
+                ConnectionPromptKind::Authentication(prompt) => Some(prompt.instructions()),
                 _ => None,
             })
             .expect("被拒绝的密码应当退回认证弹框");
@@ -1307,18 +1304,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let known_hosts = directory.path().join("known_hosts");
 
-        let report =
-            connect_and_probe(
-                password_session(server.port),
-                &known_hosts,
-                |kind| match kind {
-                    TerminalPromptKind::UnknownHost(_) => TerminalPromptReply::TrustAndSave,
-                    TerminalPromptKind::Authentication(_) => {
-                        TerminalPromptReply::Answers(vec![TerminalSecret::new(TEST_PASSWORD)])
-                    }
-                    other => panic!("unexpected prompt: {other:?}"),
-                },
-            );
+        let report = connect_and_probe(
+            password_session(server.port),
+            &known_hosts,
+            trust_and_type_password,
+        );
 
         assert_eq!(report.host_os, Some(HostOs::Alpine));
         let execs = server
@@ -1351,18 +1341,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let known_hosts = directory.path().join("known_hosts");
 
-        let report =
-            connect_and_probe(
-                password_session(server.port),
-                &known_hosts,
-                |kind| match kind {
-                    TerminalPromptKind::UnknownHost(_) => TerminalPromptReply::TrustAndSave,
-                    TerminalPromptKind::Authentication(_) => {
-                        TerminalPromptReply::Answers(vec![TerminalSecret::new(TEST_PASSWORD)])
-                    }
-                    other => panic!("unexpected prompt: {other:?}"),
-                },
-            );
+        let report = connect_and_probe(
+            password_session(server.port),
+            &known_hosts,
+            trust_and_type_password,
+        );
 
         assert_eq!(report.host_os, Some(HostOs::Windows));
         let execs = server
@@ -1388,25 +1371,18 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let known_hosts = directory.path().join("known_hosts");
 
-        let report =
-            connect_and_probe(
-                password_session(server.port),
-                &known_hosts,
-                |kind| match kind {
-                    TerminalPromptKind::UnknownHost(_) => TerminalPromptReply::TrustAndSave,
-                    TerminalPromptKind::Authentication(_) => {
-                        TerminalPromptReply::Answers(vec![TerminalSecret::new(TEST_PASSWORD)])
-                    }
-                    other => panic!("unexpected prompt: {other:?}"),
-                },
-            );
+        let report = connect_and_probe(
+            password_session(server.port),
+            &known_hosts,
+            trust_and_type_password,
+        );
 
         assert_eq!(report.host_os, None);
     }
 
     #[test]
     fn secret_debug_never_contains_plaintext() {
-        let reply = TerminalPromptReply::Answers(vec![TerminalSecret::new("super-secret")]);
+        let reply = ConnectionPromptReply::Answers(vec![ConnectionSecret::new("super-secret")]);
         let debug = format!("{reply:?}");
         assert!(!debug.contains("super-secret"));
         assert!(debug.contains("已隐藏"));
@@ -1445,7 +1421,7 @@ mod tests {
             key_session,
             &directory.path().join("key-known-hosts"),
             |prompt| match prompt {
-                TerminalPromptKind::UnknownHost(_) => TerminalPromptReply::TrustAndSave,
+                ConnectionPromptKind::UnknownHost(_) => ConnectionPromptReply::TrustAndSave,
                 other => panic!("unexpected key-auth prompt: {other:?}"),
             },
         );
@@ -1470,16 +1446,16 @@ mod tests {
             interactive_session,
             &directory.path().join("interactive-known-hosts"),
             |prompt| match prompt {
-                TerminalPromptKind::UnknownHost(_) => TerminalPromptReply::TrustAndSave,
-                TerminalPromptKind::Authentication(authentication) => {
+                ConnectionPromptKind::UnknownHost(_) => ConnectionPromptReply::TrustAndSave,
+                ConnectionPromptKind::Authentication(authentication) => {
                     saw_challenge = true;
                     assert_eq!(authentication.title(), "双字段验证");
                     assert_eq!(authentication.fields().len(), 2);
                     assert!(authentication.fields()[0].echo());
                     assert!(!authentication.fields()[1].echo());
-                    TerminalPromptReply::Answers(vec![
-                        TerminalSecret::new("tester"),
-                        TerminalSecret::new("123456"),
+                    ConnectionPromptReply::Answers(vec![
+                        ConnectionSecret::new("tester"),
+                        ConnectionSecret::new("123456"),
                     ])
                 }
                 other => panic!("unexpected interactive prompt: {other:?}"),
@@ -1508,18 +1484,11 @@ mod tests {
             &known_hosts,
         )
         .unwrap();
-        let session = Session::new(
-            crate::session::SessionId(1),
-            crate::session::SessionDraft::new(
-                "test",
-                "127.0.0.1",
-                server.port,
-                "tester",
-                AuthKind::Password,
-                None,
-            ),
-        );
-        let provider = SshTerminalTransportProvider::new(&known_hosts, Arc::new(NoSecretStore));
+        let session = password_session(server.port);
+        let provider = SshTerminalTransportProvider::with_connector(SshConnector::new(
+            &known_hosts,
+            Arc::new(NoSecretStore),
+        ));
         let factory = provider.factory_for(&session);
         let (_command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::unbounded();
@@ -1538,7 +1507,7 @@ mod tests {
         let changed = loop {
             match event_rx.try_recv() {
                 Ok(TerminalTransportEvent::Prompt(prompt)) => match prompt.kind() {
-                    TerminalPromptKind::HostKeyChanged(changed) => break changed.clone(),
+                    ConnectionPromptKind::HostKeyChanged(changed) => break changed.clone(),
                     other => panic!("unexpected prompt: {other:?}"),
                 },
                 Ok(event) => panic!("unexpected event: {event:?}"),

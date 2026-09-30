@@ -193,12 +193,6 @@ impl TerminalSearch {
     }
 }
 
-impl Default for TerminalSearch {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Tells, cell by cell in reading order, which cells of the display belong to
 /// a match.
 pub struct MatchMarker<'a> {

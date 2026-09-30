@@ -61,15 +61,6 @@ pub struct UnknownHostPrompt {
 }
 
 impl UnknownHostPrompt {
-    pub fn host(&self) -> &str {
-        &self.host
-    }
-    pub fn port(&self) -> u16 {
-        self.port
-    }
-    pub fn algorithm(&self) -> &str {
-        &self.algorithm
-    }
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
     }

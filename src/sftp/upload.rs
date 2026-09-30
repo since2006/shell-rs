@@ -1,20 +1,16 @@
-use super::speed::TransferClock;
 use super::{
-    EntryKind, FileMetadata, RemotePath, SftpEvent, TransferChoice, TransferDetail, TransferPhase,
-    TransferProgress, TransferQuestionKind, UploadRequest,
+    EntryKind, FileMetadata, RemotePath, TransferChoice, TransferDetail, TransferDirection,
+    TransferPhase, TransferQuestionKind, UploadRequest,
     client::RemoteFs,
     control::{TargetGuard, TransferControl},
     file_size,
     journal::{Journal, PublishPhase, ResumeRecord, SourceMetadata},
+    meter::TransferMeter,
     model::local_metadata,
 };
 use anyhow::{Result, anyhow, bail};
 use futures::{StreamExt as _, stream::FuturesUnordered};
-use std::{
-    collections::HashSet,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::{collections::HashSet, path::PathBuf};
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 const CHUNK: usize = 32 * 1024;
 const MAX_IN_FLIGHT: usize = 16;
@@ -29,17 +25,13 @@ struct UploadItem {
 pub(crate) struct UploadBatch {
     items: Vec<UploadItem>,
     cursor: usize,
-    pub progress: TransferProgress,
+    pub meter: TransferMeter,
     endpoint: String,
     host_key: String,
     journal: Journal,
     all_conflicts: Option<TransferChoice>,
     approved_resumes: HashSet<RemotePath>,
     blocked_directories: Vec<RemotePath>,
-    clock: TransferClock,
-    sent_bytes: u64,
-    completed_bytes: u64,
-    last_progress: Instant,
     /// A new remote file takes the local file's permission bits, as scp
     /// gives them; otherwise the server's defaults apply.
     preserve_mode: bool,
@@ -133,25 +125,16 @@ impl UploadBatch {
                 error: scan_error,
             });
         }
-        let progress = TransferProgress {
-            total: items.len(),
-            total_bytes,
-            ..TransferProgress::default()
-        };
         Ok(Self {
+            meter: TransferMeter::new(TransferDirection::Upload, items.len(), total_bytes),
             items,
             cursor: 0,
-            progress,
             endpoint: endpoint.into(),
             host_key: host_key.into(),
             journal,
             all_conflicts: None,
             approved_resumes: HashSet::new(),
             blocked_directories: Vec::new(),
-            clock: TransferClock::default(),
-            sent_bytes: 0,
-            completed_bytes: 0,
-            last_progress: Instant::now(),
             preserve_mode: request.is_scp(),
         })
     }
@@ -164,42 +147,18 @@ impl UploadBatch {
     pub fn is_complete(&self) -> bool {
         self.cursor >= self.items.len()
     }
-    pub fn emit(&self, control: &TransferControl) {
-        let _ = control
-            .events
-            .try_send(SftpEvent::Progress(self.progress.clone()));
-    }
-    pub fn phase(&mut self, phase: TransferPhase, control: &TransferControl) {
-        let now = Instant::now();
-        if phase == TransferPhase::Transferring {
-            self.clock.run(now, self.sent_bytes);
-        } else {
-            self.clock.pause(now);
-        }
-        if phase != TransferPhase::Reconnecting {
-            self.progress.note = None;
-        }
-        if phase == TransferPhase::Completed {
-            self.progress.current.clear();
-            self.progress.current_source.clear();
-            self.progress.current_bytes = 0;
-            self.progress.current_total = 0;
-        }
-        self.progress.phase = phase;
-        self.progress.elapsed = self.clock.elapsed(now);
-        self.progress.bytes_per_second = self.clock.speed();
-        self.emit(control);
-    }
     pub async fn run<F: RemoteFs>(&mut self, fs: &F, control: &TransferControl) -> Result<()> {
-        self.phase(TransferPhase::Transferring, control);
+        self.meter.phase(TransferPhase::Transferring, control);
         while self.cursor < self.items.len() {
             control.check()?;
             let item = self.items[self.cursor].clone();
-            self.progress.current = item.target.to_string();
-            self.progress.current_source = item.source.display().to_string();
-            self.progress.current_bytes = 0;
-            self.progress.current_total = file_size(&item.metadata);
-            self.emit(control);
+            let size = file_size(&item.metadata);
+            self.meter.begin(
+                item.source.display().to_string(),
+                item.target.to_string(),
+                size,
+                control,
+            );
             let _target_guard = TargetGuard::acquire(
                 format!("{}\0{}", self.endpoint, item.target),
                 "其他会话正在上传同一目标，请稍后继续上传",
@@ -216,23 +175,12 @@ impl UploadBatch {
                 self.upload_item(fs, &item, control).await
             };
             match result {
-                Ok(true) => {
-                    self.progress.succeeded += 1;
-                    self.progress
-                        .details
-                        .push(TransferDetail::done(item.target.to_string()));
-                    if item.metadata.kind() == EntryKind::File {
-                        self.completed_bytes =
-                            self.completed_bytes.saturating_add(item.metadata.size());
-                    }
-                }
-                Ok(false) => {
-                    self.progress.skipped += 1;
-                    self.progress.settled_bytes += file_size(&item.metadata);
-                    self.progress
-                        .details
-                        .push(TransferDetail::skipped(item.target.to_string()));
-                }
+                Ok(true) => self
+                    .meter
+                    .settle(TransferDetail::done(item.target.to_string()), size),
+                Ok(false) => self
+                    .meter
+                    .settle(TransferDetail::skipped(item.target.to_string()), size),
                 Err(error)
                     if error.is::<super::control::Cancelled>()
                         || super::client::is_network_error(&error) =>
@@ -240,7 +188,7 @@ impl UploadBatch {
                     return Err(error);
                 }
                 Err(error) => {
-                    self.phase(TransferPhase::Waiting, control);
+                    self.meter.phase(TransferPhase::Waiting, control);
                     let answer = control
                         .ask(
                             TransferQuestionKind::Error,
@@ -262,33 +210,29 @@ impl UploadBatch {
                                 control,
                             )
                             .await?;
-                            self.progress.total =
-                                self.progress.total.saturating_sub(1) + scanned.items.len();
-                            self.progress.total_bytes = self
-                                .progress
-                                .total_bytes
-                                .saturating_sub(item.metadata.size())
-                                + scanned.progress.total_bytes;
+                            // What the scan had counted for this item goes; a
+                            // folder counted for nothing.
+                            let progress = &mut self.meter.progress;
+                            progress.total = progress.total.saturating_sub(1) + scanned.items.len();
+                            progress.total_bytes = progress.total_bytes.saturating_sub(size)
+                                + scanned.meter.progress.total_bytes;
                             self.items.splice(self.cursor..=self.cursor, scanned.items);
                         }
                         continue;
                     }
-                    self.progress.failed += 1;
-                    self.progress.settled_bytes += file_size(&item.metadata);
-                    self.progress.details.push(TransferDetail::failed(
-                        item.target.to_string(),
-                        format!("{error:#}"),
-                    ));
+                    self.meter.settle(
+                        TransferDetail::failed(item.target.to_string(), format!("{error:#}")),
+                        size,
+                    );
                     if item.metadata.kind() == EntryKind::Directory {
                         self.blocked_directories.push(item.target.clone());
                     }
                 }
             }
             self.cursor += 1;
-            self.progress.completed_bytes = self.completed_bytes;
-            self.phase(TransferPhase::Transferring, control);
+            self.meter.next(control);
         }
-        self.phase(TransferPhase::Completed, control);
+        self.meter.phase(TransferPhase::Completed, control);
         Ok(())
     }
     async fn approve(
@@ -310,7 +254,7 @@ impl UploadBatch {
         if !changed && let Some(choice) = self.all_conflicts {
             return Ok(choice == TransferChoice::Overwrite);
         }
-        self.phase(TransferPhase::Waiting, control);
+        self.meter.phase(TransferPhase::Waiting, control);
         let message = match original {
             Some(metadata) => format!(
                 "{}远程项目已存在（{} 字节，修改时间 {:?}）。覆盖会替换这个文件或链接。",
@@ -330,7 +274,7 @@ impl UploadBatch {
         if answer.apply_to_all() && !changed {
             self.all_conflicts = Some(answer.choice());
         }
-        self.phase(TransferPhase::Transferring, control);
+        self.meter.phase(TransferPhase::Transferring, control);
         Ok(answer.choice() == TransferChoice::Overwrite)
     }
     async fn upload_item<F: RemoteFs>(
@@ -346,7 +290,7 @@ impl UploadBatch {
         if item.metadata.kind() == EntryKind::Directory {
             if let Some(record) = &existing_record {
                 record.validate(&self.endpoint, &self.host_key, &item.source, &item.target)?;
-                self.phase(TransferPhase::Waiting, control);
+                self.meter.phase(TransferPhase::Waiting, control);
                 let answer = control
                     .ask(
                         TransferQuestionKind::InvalidResume,
@@ -374,7 +318,7 @@ impl UploadBatch {
         let mut record = if let Some(record) = existing_record {
             record.validate(&self.endpoint, &self.host_key, &item.source, &item.target)?;
             if !self.approved_resumes.contains(&item.target) {
-                self.phase(TransferPhase::Waiting, control);
+                self.meter.phase(TransferPhase::Waiting, control);
                 let answer = control
                     .ask(
                         TransferQuestionKind::Resume,
@@ -411,7 +355,7 @@ impl UploadBatch {
                 record.source_metadata =
                     Some(control.run(SourceMetadata::read(&item.source)).await?);
                 if control.run(fs.metadata(&record.temporary)).await?.is_some() {
-                    self.phase(TransferPhase::Waiting, control);
+                    self.meter.phase(TransferPhase::Waiting, control);
                     let answer = control
                         .ask(
                             TransferQuestionKind::Resume,
@@ -426,7 +370,7 @@ impl UploadBatch {
                         }
                         _ => {}
                     }
-                    self.phase(TransferPhase::Transferring, control);
+                    self.meter.phase(TransferPhase::Transferring, control);
                 }
             } else {
                 record.link_target = Some(
@@ -466,7 +410,7 @@ impl UploadBatch {
         };
         if let Err(error) = uploaded {
             if error.is::<InvalidResume>() {
-                self.phase(TransferPhase::Waiting, control);
+                self.meter.phase(TransferPhase::Waiting, control);
                 let answer = control
                     .ask(
                         TransferQuestionKind::InvalidResume,
@@ -511,10 +455,10 @@ impl UploadBatch {
         let result: Result<()> = async {
             let mut local = tokio::fs::File::open(&item.source).await?;
             local.seek(std::io::SeekFrom::Start(resume_offset)).await?;
-            self.phase(TransferPhase::Transferring, control);
+            self.meter.phase(TransferPhase::Transferring, control);
             let mut next_offset = resume_offset;
             let mut uploaded = resume_offset;
-            self.progress.current_bytes = uploaded;
+            self.meter.progress.current_bytes = uploaded;
             let mut writes = FuturesUnordered::new();
             while next_offset < source_metadata.size || !writes.is_empty() {
                 while next_offset < source_metadata.size && writes.len() < MAX_IN_FLIGHT {
@@ -534,18 +478,8 @@ impl UploadBatch {
                     .next()
                     .await
                     .ok_or_else(|| anyhow!("上传写入流水线意外结束"))??;
-                self.sent_bytes += length;
                 uploaded += length;
-                let now = Instant::now();
-                self.clock.record(now, self.sent_bytes);
-                self.progress.completed_bytes = self.completed_bytes.saturating_add(uploaded);
-                self.progress.current_bytes = uploaded;
-                self.progress.bytes_per_second = self.clock.speed();
-                self.progress.elapsed = self.clock.elapsed(now);
-                if self.last_progress.elapsed() >= Duration::from_millis(50) {
-                    self.emit(control);
-                    self.last_progress = Instant::now();
-                }
+                self.meter.advance(length, uploaded, control);
             }
             control
                 .run(

@@ -7,5 +7,4 @@ mod status_bar;
 mod title_bar;
 mod workspace_view;
 
-pub use recent_sessions::RecentSessions;
 pub use workspace_view::{Workspace, window_options};

@@ -15,13 +15,13 @@ pub(crate) async fn run<F: RemoteFs>(fs: &F, operation: &RemoteOperation) -> Res
         }
         RemoteOperation::Rename { from, to } => {
             if fs.metadata(to).await?.is_some() {
-                bail!("已有名为「{}」的项目", file_name(to));
+                bail!("已有名为「{}」的项目", to.file_name());
             }
             fs.rename(from, to, false).await
         }
         RemoteOperation::CreateDirectory { path } => {
             if fs.metadata(path).await?.is_some() {
-                bail!("已有名为「{}」的项目", file_name(path));
+                bail!("已有名为「{}」的项目", path.file_name());
             }
             fs.mkdir(path).await
         }
@@ -85,8 +85,4 @@ async fn delete_tree<F: RemoteFs>(fs: &F, root: &RemotePath) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn file_name(path: &RemotePath) -> &str {
-    path.as_str().rsplit('/').next().unwrap_or(path.as_str())
 }

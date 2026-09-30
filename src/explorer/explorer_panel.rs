@@ -1,7 +1,6 @@
 use super::{
-    ExplorerId, FilePane, FilePaneEvent, LoadIntent, PaneSide, QueueEntry, QueueId, QueueState,
-    Removal, TransferJob, TransferQueue,
-    pane_operations::{PaneOperation, PendingOperation},
+    ExplorerId, FilePane, FilePaneEvent, LoadIntent, PaneSide, QueueId, QueueState, Removal,
+    TransferJob, TransferQueue, pane_operations::PendingOperation,
 };
 use crate::app::ExplorerDispatch as _;
 use crate::{
@@ -13,8 +12,8 @@ use crate::{
     session::{BookmarkSide, ConnectionState, SessionId, SessionStore},
     sftp::{
         DownloadRequest, RemotePath, SftpCommand, SftpEvent, SharedLocalDirectoryProvider,
-        SharedSftpTransportProvider, TransferDirection, TransferPhase, TransferProgress,
-        TransferQuestion, UploadRequest,
+        SharedSftpTransportProvider, TransferDirection, TransferPhase, TransferQuestion,
+        UploadRequest,
     },
     shared::{ClosableTabTitle, HostMark, RenamableTab, close_tab_items},
 };
@@ -253,15 +252,6 @@ impl ExplorerPanel {
     pub fn pane(&self, remote: bool) -> &Entity<FilePane> {
         if remote { &self.remote } else { &self.local }
     }
-    /// The pane whose file list holds keyboard focus.
-    pub fn focused_pane(&self, window: &Window, cx: &App) -> Option<bool> {
-        [false, true].into_iter().find(|remote| {
-            self.pane(*remote)
-                .read(cx)
-                .focus_handle(cx)
-                .contains_focused(window, cx)
-        })
-    }
     pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
         self.focus_handle.contains_focused(window, cx)
     }
@@ -310,7 +300,7 @@ impl ExplorerPanel {
         } else {
             format!("{reason}。正在自动重新连接，请稍候。")
         };
-        let (dispatch, sid, generation) = (self.dispatch.clone(), self.id, self.generation);
+        let sender = self.sender();
         let focus = window.focused(cx);
         window.open_alert_dialog(cx, move |dialog, _, _| {
             let restore = {
@@ -335,14 +325,9 @@ impl ExplorerPanel {
                     .show_cancel(true)
                     .on_cancel(restore.clone())
                     .on_ok({
-                        let (dispatch, restore) = (dispatch.clone(), restore.clone());
+                        let (sender, restore) = (sender.clone(), restore.clone());
                         move |event, window, cx| {
-                            dispatch.dispatch_explorer_action(
-                                &ExplorerAction::new(sid, ExplorerCommand::Reconnect)
-                                    .with_generation(generation),
-                                window,
-                                cx,
-                            );
+                            sender.send(ExplorerCommand::Reconnect, window, cx);
                             restore(event, window, cx)
                         }
                     })
@@ -353,12 +338,13 @@ impl ExplorerPanel {
             }
         });
     }
-    /// The engine's last report on the batch at the head of the queue.
-    pub fn progress(&self) -> Option<&TransferProgress> {
-        self.queue.head().and_then(QueueEntry::progress)
-    }
-    pub fn queue(&self) -> &TransferQueue {
-        &self.queue
+    /// What this tab's dialogs send their commands through.
+    pub(super) fn sender(&self) -> ExplorerSender {
+        ExplorerSender {
+            dispatch: self.dispatch.clone(),
+            explorer: self.id,
+            generation: self.generation,
+        }
     }
     /// The direction of the batch at the head, or the next one to go.
     pub fn transfer_direction(&self) -> TransferDirection {
@@ -418,12 +404,13 @@ impl ExplorerPanel {
         self.state = ConnectionState::Disconnected;
         self.remote
             .update(cx, |pane, cx| pane.disconnected("SFTP 已断开".into(), cx));
-        self.close_upload_dialog(window, cx);
+        self.close_transfer_dialog(window, cx);
         self.sync_available(cx);
         cx.emit(ExplorerPanelEvent::StateChanged(self.id, self.session_id));
         cx.notify();
     }
-    pub fn close_upload_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Close this tab's transfer confirmation or question, if one is open.
+    fn close_transfer_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.dialog_open {
             self.dialog_open = false;
             self.question = None;
@@ -445,8 +432,8 @@ impl ExplorerPanel {
         self.remote
             .update(cx, |pane, cx| pane.set_available(state, transfer, cx));
     }
-    /// WinSCP's current pane: the one used last, whose path label stands out
-    /// and which takes focus back when the tab is shown again.
+    /// WinSCP's current pane: the one used last, which takes focus back when
+    /// the tab is shown again.
     fn set_current_pane(&mut self, remote: bool, cx: &mut Context<Self>) {
         self.last_remote = remote;
         self.local
@@ -465,8 +452,7 @@ impl ExplorerPanel {
                 self.state = ConnectionState::Connected;
                 self.remote
                     .update(cx, |pane, _| pane.set_home(home.to_string()));
-                let path = self.remote.read(cx).path();
-                self.navigate(true, path, LoadIntent::Reload, window, cx);
+                self.reload(true, window, cx);
                 cx.emit(ExplorerPanelEvent::StateChanged(self.id, self.session_id));
             }
             SftpEvent::Disconnected(message) => {
@@ -500,20 +486,14 @@ impl ExplorerPanel {
                     .is_some_and(|head| head.state() == QueueState::Active);
                 if !running {
                     if self.question_shown {
-                        self.close_upload_dialog(window, cx);
+                        self.close_transfer_dialog(window, cx);
                     }
                     self.question = None;
                 }
                 // Show what arrived: the remote pane after an upload, the local
                 // one after a download.
                 if complete {
-                    match direction {
-                        TransferDirection::Download => self.reload(false, window, cx),
-                        TransferDirection::Upload if self.state == ConnectionState::Connected => {
-                            self.reload(true, window, cx)
-                        }
-                        TransferDirection::Upload => {}
-                    }
+                    self.reload(direction == TransferDirection::Upload, window, cx);
                 }
             }
             SftpEvent::Question(question) => {
@@ -709,56 +689,14 @@ impl ExplorerPanel {
             ExplorerCommand::DownloadPaths { paths, target } => {
                 self.open_download(paths.clone(), target.clone(), window, cx)
             }
-            ExplorerCommand::BeginDownload { paths, target } => self.enqueue(
-                TransferJob::Download {
-                    paths: paths.clone(),
-                    target: target.clone(),
-                },
-                window,
-                cx,
-            ),
+            ExplorerCommand::Enqueue(job) => self.enqueue(job.clone(), window, cx),
             ExplorerCommand::Delete { remote } => self.confirm_delete(*remote, window, cx),
-            ExplorerCommand::BeginDelete { remote, names } => {
-                self.start_operation(*remote, PaneOperation::Delete(names.clone()), window, cx)
-            }
             ExplorerCommand::Rename { remote } => self.open_rename(*remote, window, cx),
-            ExplorerCommand::CommitRename { remote, from, to } => self.start_operation(
-                *remote,
-                PaneOperation::Rename {
-                    from: from.clone(),
-                    to: to.clone(),
-                },
-                window,
-                cx,
-            ),
             ExplorerCommand::New { remote, kind } => self.open_new(*remote, *kind, window, cx),
-            ExplorerCommand::CommitNew { remote, kind, name } => self.start_operation(
-                *remote,
-                PaneOperation::Create {
-                    kind: *kind,
-                    name: name.clone(),
-                },
-                window,
-                cx,
-            ),
             ExplorerCommand::Properties { remote } => self.open_properties(*remote, window, cx),
-            ExplorerCommand::ApplyPermissions {
-                remote,
-                names,
-                edit,
-                recursive,
-                add_x_to_dirs,
-            } => self.start_operation(
-                *remote,
-                PaneOperation::Permissions {
-                    names: names.clone(),
-                    edit: *edit,
-                    recursive: *recursive,
-                    add_x_to_dirs: *add_x_to_dirs,
-                },
-                window,
-                cx,
-            ),
+            ExplorerCommand::Operate { remote, operation } => {
+                self.start_operation(*remote, operation.clone(), window, cx)
+            }
             ExplorerCommand::ChooseFiles => {
                 if self.state != ConnectionState::Connected {
                     return;
@@ -789,14 +727,6 @@ impl ExplorerPanel {
             ExplorerCommand::UploadPaths { paths, target } => {
                 self.open_upload(paths.clone(), target.clone(), window, cx)
             }
-            ExplorerCommand::BeginUpload { paths, target } => self.enqueue(
-                TransferJob::Upload {
-                    paths: paths.clone(),
-                    target: target.clone(),
-                },
-                window,
-                cx,
-            ),
             ExplorerCommand::Answer { request_id, answer } => {
                 if self
                     .question
@@ -870,7 +800,7 @@ impl BasePanel for ExplorerPanel {
     fn panel_name(&self) -> &'static str {
         "ExplorerPanel"
     }
-    /// Closing goes through `CloseExplorer`, which asks first while an upload
+    /// Closing goes through `CloseExplorer`, which asks first while a transfer
     /// runs. The dock's own 「关闭」 would skip that question.
     fn closable(&self, _: &App) -> bool {
         false
@@ -983,20 +913,36 @@ fn needs_connection(command: &ExplorerCommand) -> bool {
         | C::Open { remote }
         | C::OpenDirectory { remote }
         | C::Delete { remote }
-        | C::BeginDelete { remote, .. }
         | C::Rename { remote }
-        | C::CommitRename { remote, .. }
         | C::New { remote, .. }
-        | C::CommitNew { remote, .. }
         | C::Properties { remote }
-        | C::ApplyPermissions { remote, .. } => *remote,
+        | C::Operate { remote, .. } => *remote,
         C::Transfer { .. }
         | C::DownloadPaths { .. }
-        | C::BeginDownload { .. }
         | C::ChooseFiles
         | C::UploadPaths { .. }
-        | C::BeginUpload { .. } => true,
+        | C::Enqueue(_) => true,
         _ => false,
+    }
+}
+
+/// Sends an SFTP tab's commands from its dialogs. They go through the
+/// workspace stamped with the connection the dialog was opened on, so a
+/// dialog that outlives that connection does nothing.
+#[derive(Clone)]
+pub(super) struct ExplorerSender {
+    dispatch: FocusHandle,
+    explorer: ExplorerId,
+    generation: u64,
+}
+
+impl ExplorerSender {
+    pub(super) fn send(&self, command: ExplorerCommand, window: &mut Window, cx: &mut App) {
+        self.dispatch.dispatch_explorer_action(
+            &ExplorerAction::new(self.explorer, command).with_generation(self.generation),
+            window,
+            cx,
+        );
     }
 }
 

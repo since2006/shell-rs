@@ -9,11 +9,11 @@ use crate::app::ExplorerDispatch as _;
 use crate::{
     app::{CatalogIcon, ExplorerAction, ExplorerCommand},
     session::{BookmarkSide, SessionId, SessionStore},
+    shared::{commit_footer, form_error},
 };
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariants as _},
-    dialog::{DialogAction, DialogClose, DialogFooter},
+    button::Button,
     form::{Field, Form},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -324,14 +324,7 @@ impl Render for OpenDirectoryForm {
                     ),
             )
             .when_some(self.error.clone(), |this, error| {
-                this.child(
-                    div()
-                        .id("form-error")
-                        .test_support()
-                        .text_sm()
-                        .text_color(cx.theme().danger)
-                        .child(error),
-                )
+                this.child(form_error(error, cx))
             })
     }
 }
@@ -378,17 +371,7 @@ impl ExplorerPanel {
             dialog
                 .title("打开目录")
                 .child(form.clone())
-                .footer(
-                    DialogFooter::new()
-                        .child(DialogClose::new().trigger(|button| button.label("取消")))
-                        .child(
-                            DialogAction::new().child(
-                                Button::new("open-directory-confirm")
-                                    .primary()
-                                    .label("打开"),
-                            ),
-                        ),
-                )
+                .footer(commit_footer("open-directory-confirm", "打开"))
                 .on_ok({
                     let form = form.clone();
                     move |_, window, cx| form.update(cx, |form, cx| form.open(window, cx))

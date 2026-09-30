@@ -150,10 +150,8 @@ impl SessionPanel {
     fn on_store_changed(&mut self, cx: &mut Context<Self>) {
         let created = self.take_created_node(cx);
         self.rebuild_tree(cx);
-        match created {
-            Some(SessionNode::Group(id)) => self.select_group(id, cx),
-            Some(SessionNode::Session(id)) => self.select_session(id, cx),
-            None => {}
+        if let Some(node) = created {
+            self.select_node(node, cx);
         }
     }
 
@@ -176,19 +174,9 @@ impl SessionPanel {
                         .find(|session| !self.known_sessions.contains(&session.id))
                         .map(|session| SessionNode::Session(session.id))
                 });
-            let ancestors = match created {
-                Some(SessionNode::Group(id)) => store.ancestor_groups(id),
-                Some(SessionNode::Session(id)) => store
-                    .session(id)
-                    .and_then(|session| session.group)
-                    .map(|group| {
-                        let mut chain = store.ancestor_groups(group);
-                        chain.push(group);
-                        chain
-                    })
-                    .unwrap_or_default(),
-                None => Vec::new(),
-            };
+            let ancestors = created
+                .map(|node| groups_above(store, node))
+                .unwrap_or_default();
             (
                 created,
                 ancestors,
@@ -235,21 +223,11 @@ impl SessionPanel {
         cx.notify();
     }
 
-    /// Select (and reveal) a session row, for example a fresh duplicate.
-    pub fn select_session(&mut self, id: SessionId, cx: &mut Context<Self>) {
+    /// Select (and reveal) a row, for example a fresh duplicate or a group
+    /// just created.
+    pub fn select_node(&mut self, node: SessionNode, cx: &mut Context<Self>) {
         self.rebuild_tree(cx);
-        let row_id = SessionNode::Session(id).id();
-        self.tree_state.update(cx, |state, cx| {
-            state.reveal_item(&row_id, ScrollStrategy::Center, cx);
-            let ix = state.index_of(&row_id);
-            state.set_selected_index(ix, cx);
-        });
-    }
-
-    /// Select (and reveal) a group row, for example one just created.
-    pub fn select_group(&mut self, id: GroupId, cx: &mut Context<Self>) {
-        self.rebuild_tree(cx);
-        let row_id = SessionNode::Group(id).id();
+        let row_id = node.id();
         self.tree_state.update(cx, |state, cx| {
             state.reveal_item(&row_id, ScrollStrategy::Center, cx);
             let ix = state.index_of(&row_id);
@@ -259,25 +237,9 @@ impl SessionPanel {
 
     /// Keep the moved row visible even when it was dropped into a closed group.
     pub fn reveal_node(&mut self, node: SessionNode, cx: &mut Context<Self>) {
-        let ancestors = {
-            let store = self.store.read(cx);
-            let parent = match node {
-                SessionNode::Group(id) => store.group(id).and_then(|group| group.parent),
-                SessionNode::Session(id) => store.session(id).and_then(|session| session.group),
-            };
-            parent
-                .map(|id| {
-                    let mut chain = store.ancestor_groups(id);
-                    chain.push(id);
-                    chain
-                })
-                .unwrap_or_default()
-        };
+        let ancestors = groups_above(self.store.read(cx), node);
         self.expanded.extend(ancestors);
-        match node {
-            SessionNode::Group(id) => self.select_group(id, cx),
-            SessionNode::Session(id) => self.select_session(id, cx),
-        }
+        self.select_node(node, cx);
     }
 
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -351,6 +313,22 @@ impl SessionPanel {
     }
 }
 
+/// Every group a node sits in, at any depth: the folders that have to be
+/// open for its row to show.
+fn groups_above(store: &SessionStore, node: SessionNode) -> Vec<GroupId> {
+    let parent = match node {
+        SessionNode::Group(id) => store.group(id).and_then(|group| group.parent),
+        SessionNode::Session(id) => store.session(id).and_then(|session| session.group),
+    };
+    parent
+        .map(|id| {
+            let mut chain = store.ancestor_groups(id);
+            chain.push(id);
+            chain
+        })
+        .unwrap_or_default()
+}
+
 impl EventEmitter<PanelEvent> for SessionPanel {}
 
 impl Focusable for SessionPanel {
@@ -405,9 +383,8 @@ impl Panel for SessionPanel {
 
 impl Render for SessionPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // A plain snapshot for the row renderer: render callbacks must not
+        // Plain snapshots for the row renderer: render callbacks must not
         // read entities.
-        // Same reason: the marks in front of the rows are a snapshot too.
         let host_os: Rc<HashMap<SessionId, HostOs>> = Rc::new(
             self.store
                 .read(cx)

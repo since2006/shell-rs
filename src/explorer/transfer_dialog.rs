@@ -1,14 +1,16 @@
-use super::{ExplorerId, ExplorerPanel};
+use super::{ExplorerId, ExplorerPanel, TransferJob};
 use crate::app::ExplorerDispatch as _;
 use crate::{
     app::{ExplorerAction, ExplorerCommand},
+    session::ConnectionState,
     sftp::{TransferAnswer, TransferChoice, TransferDirection, TransferQuestionKind},
+    shared::commit_footer,
 };
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
-    dialog::{DialogAction, DialogClose, DialogFooter},
+    dialog::{DialogAction, DialogFooter},
     form::{Field, Form},
     h_flex,
     input::{Input, InputState},
@@ -25,6 +27,7 @@ use std::{
 };
 
 impl ExplorerPanel {
+    /// 上传: confirm the local items and the remote directory they go to.
     pub(super) fn open_upload(
         &mut self,
         paths: Vec<PathBuf>,
@@ -32,85 +35,19 @@ impl ExplorerPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if paths.is_empty()
-            || self.connection_state() != crate::session::ConnectionState::Connected
-            || window.has_active_dialog(cx)
-        {
+        if paths.is_empty() || !self.can_confirm_transfer(window, cx) {
             return;
         }
-        let target_input = cx.new(|cx| InputState::new(window, cx).default_value(&target));
         let sources = self.transfer_sources(
             false,
             paths.iter().map(|path| path.to_string_lossy().into_owned()),
             cx,
         );
-        let queued = self.is_transferring();
-        let form = cx.new(|_| UploadForm {
-            queued,
-            sources,
-            target: target_input.clone(),
-            endpoint: self.endpoint().into(),
-            error: None,
-        });
-        let dispatch = self.dispatch.clone();
-        let sid = self.id();
-        let generation = self.generation();
-        let focus = window.focused(cx).unwrap_or_else(|| self.focus_handle(cx));
-        let owner = cx.entity().downgrade();
-        self.dialog_open = true;
-        window.open_dialog(cx, move |dialog, _, _| {
-            dialog
-                .title("上传文件")
-                .child(form.clone())
-                .overlay_closable(false)
-                .footer(
-                    DialogFooter::new()
-                        .child(DialogClose::new().trigger(|b| b.label("取消")))
-                        .child(
-                            DialogAction::new()
-                                .child(Button::new("upload-confirm").primary().label("上传")),
-                        ),
-                )
-                .on_ok({
-                    let form = form.clone();
-                    let dispatch = dispatch.clone();
-                    let paths = paths.clone();
-                    move |_, window, cx| {
-                        let target = form.read(cx).target.read(cx).value().to_string();
-                        if target.is_empty() {
-                            form.update(cx, |form, cx| {
-                                form.error = Some("请输入目标目录".into());
-                                cx.notify();
-                            });
-                            return false;
-                        }
-                        dispatch.dispatch_explorer_action(
-                            &ExplorerAction::new(
-                                sid,
-                                ExplorerCommand::BeginUpload {
-                                    paths: paths.clone(),
-                                    target,
-                                },
-                            )
-                            .with_generation(generation),
-                            window,
-                            cx,
-                        );
-                        true
-                    }
-                })
-                .on_close({
-                    let focus = focus.clone();
-                    let owner = owner.clone();
-                    move |_, window, cx| {
-                        let owner = owner.clone();
-                        window.defer(cx, move |_, cx| {
-                            let _ = owner.update(cx, |panel, _| panel.dialog_open = false);
-                        });
-                        window.focus(&focus, cx);
-                    }
-                })
-        });
+        let job = move |target| TransferJob::Upload {
+            paths: paths.clone(),
+            target,
+        };
+        self.open_transfer(TransferDirection::Upload, sources, target, job, window, cx);
     }
     /// 下载: confirm the remote items and choose the local directory, which
     /// starts as the local pane's.
@@ -121,66 +58,82 @@ impl ExplorerPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if paths.is_empty()
-            || self.connection_state() != crate::session::ConnectionState::Connected
-            || window.has_active_dialog(cx)
-        {
+        if paths.is_empty() || !self.can_confirm_transfer(window, cx) {
             return;
         }
-        let target_input = cx.new(|cx| InputState::new(window, cx).default_value(&target));
         let sources = self.transfer_sources(true, paths.iter().cloned(), cx);
-        let queued = self.is_transferring();
-        let form = cx.new(|_| DownloadForm {
-            queued,
+        let job = move |target| TransferJob::Download {
+            paths: paths.clone(),
+            target,
+        };
+        self.open_transfer(
+            TransferDirection::Download,
             sources,
-            target: target_input,
+            target,
+            job,
+            window,
+            cx,
+        );
+    }
+    fn can_confirm_transfer(&self, window: &mut Window, cx: &mut App) -> bool {
+        self.connection_state() == ConnectionState::Connected && !window.has_active_dialog(cx)
+    }
+    /// The confirmation both directions share. `job` makes the batch out of
+    /// the directory the user settled on.
+    fn open_transfer(
+        &mut self,
+        direction: TransferDirection,
+        sources: TransferSources,
+        target: String,
+        job: impl Fn(String) -> TransferJob + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = cx.new(|cx| InputState::new(window, cx).default_value(&target));
+        let form = cx.new(|_| TransferForm {
+            direction,
+            queued: self.is_transferring(),
+            sources,
+            target,
             endpoint: self.endpoint().into(),
             error: None,
         });
-        let dispatch = self.dispatch.clone();
-        let sid = self.id();
-        let generation = self.generation();
+        let (title, confirm_id, confirm_label) = match direction {
+            TransferDirection::Upload => ("上传文件", "upload-confirm", "上传"),
+            TransferDirection::Download => ("下载", "download-confirm", "下载"),
+        };
+        let sender = self.sender();
+        let job = Rc::new(job);
         let focus = window.focused(cx).unwrap_or_else(|| self.focus_handle(cx));
         let owner = cx.entity().downgrade();
         self.dialog_open = true;
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
-                .title("下载")
+                .title(title)
                 .child(form.clone())
                 .overlay_closable(false)
-                .footer(
-                    DialogFooter::new()
-                        .child(DialogClose::new().trigger(|b| b.label("取消")))
-                        .child(
-                            DialogAction::new()
-                                .child(Button::new("download-confirm").primary().label("下载")),
-                        ),
-                )
+                .footer(commit_footer(confirm_id, confirm_label))
                 .on_ok({
-                    let form = form.clone();
-                    let dispatch = dispatch.clone();
-                    let paths = paths.clone();
+                    let (form, sender, job) = (form.clone(), sender.clone(), job.clone());
                     move |_, window, cx| {
                         let target = form.read(cx).target.read(cx).value().to_string();
-                        if !std::path::Path::new(&target).is_absolute() {
+                        let problem = match direction {
+                            TransferDirection::Upload if target.is_empty() => {
+                                Some("请输入目标目录")
+                            }
+                            TransferDirection::Download if !Path::new(&target).is_absolute() => {
+                                Some("请输入本机目录的完整路径")
+                            }
+                            _ => None,
+                        };
+                        if let Some(problem) = problem {
                             form.update(cx, |form, cx| {
-                                form.error = Some("请输入本机目录的完整路径".into());
+                                form.error = Some(problem.into());
                                 cx.notify();
                             });
                             return false;
                         }
-                        dispatch.dispatch_explorer_action(
-                            &ExplorerAction::new(
-                                sid,
-                                ExplorerCommand::BeginDownload {
-                                    paths: paths.clone(),
-                                    target,
-                                },
-                            )
-                            .with_generation(generation),
-                            window,
-                            cx,
-                        );
+                        sender.send(ExplorerCommand::Enqueue(job(target)), window, cx);
                         true
                     }
                 })
@@ -235,9 +188,12 @@ impl ExplorerPanel {
             kind: question.kind(),
         });
         let answered = Rc::new(Cell::new(false));
-        let dispatch = self.dispatch.clone();
-        let sid = self.id();
-        let generation = self.generation();
+        let sender = self.sender();
+        let request_id = question.id();
+        let answer = move |choice, all, window: &mut Window, cx: &mut App| {
+            let answer = TransferAnswer::new(choice, all);
+            sender.send(ExplorerCommand::Answer { request_id, answer }, window, cx);
+        };
         let focus = window.focused(cx).unwrap_or_else(|| self.focus_handle(cx));
         self.dialog_open = true;
         self.question_shown = true;
@@ -269,25 +225,10 @@ impl ExplorerPanel {
         let restart_label: SharedString = format!("重新{verb}").into();
         window.open_dialog(cx, move |dialog, _, _| {
             let answer_button = |id: &'static str, label: SharedString, choice: TransferChoice| {
-                let answered = answered.clone();
-                let dispatch = dispatch.clone();
-                let form = form.clone();
-                let request_id = question.id();
+                let (answered, answer, form) = (answered.clone(), answer.clone(), form.clone());
                 Button::new(id).label(label).on_click(move |_, window, cx| {
                     answered.set(true);
-                    let all = form.read(cx).apply_all;
-                    dispatch.dispatch_explorer_action(
-                        &ExplorerAction::new(
-                            sid,
-                            ExplorerCommand::Answer {
-                                request_id,
-                                answer: TransferAnswer::new(choice, all),
-                            },
-                        )
-                        .with_generation(generation),
-                        window,
-                        cx,
-                    );
+                    answer(choice, form.read(cx).apply_all, window, cx);
                     window.close_dialog(cx);
                 })
             };
@@ -329,47 +270,19 @@ impl ExplorerPanel {
                         ),
                 )
                 .on_ok({
-                    let answered = answered.clone();
-                    let dispatch = dispatch.clone();
-                    let form = form.clone();
-                    let request_id = question.id();
+                    let (answered, answer, form) = (answered.clone(), answer.clone(), form.clone());
                     move |_, window, cx| {
                         answered.set(true);
-                        let all = form.read(cx).apply_all;
-                        dispatch.dispatch_explorer_action(
-                            &ExplorerAction::new(
-                                sid,
-                                ExplorerCommand::Answer {
-                                    request_id,
-                                    answer: TransferAnswer::new(primary_choice, all),
-                                },
-                            )
-                            .with_generation(generation),
-                            window,
-                            cx,
-                        );
+                        answer(primary_choice, form.read(cx).apply_all, window, cx);
                         true
                     }
                 })
                 .on_close({
-                    let answered = answered.clone();
-                    let dispatch = dispatch.clone();
-                    let request_id = question.id();
-                    let focus = focus.clone();
+                    let (answered, answer, focus) =
+                        (answered.clone(), answer.clone(), focus.clone());
                     move |_, window, cx| {
                         if !answered.replace(true) {
-                            dispatch.dispatch_explorer_action(
-                                &ExplorerAction::new(
-                                    sid,
-                                    ExplorerCommand::Answer {
-                                        request_id,
-                                        answer: TransferAnswer::new(TransferChoice::Cancel, false),
-                                    },
-                                )
-                                .with_generation(generation),
-                                window,
-                                cx,
-                            );
+                            answer(TransferChoice::Cancel, false, window, cx);
                         }
                         window.focus(&focus, cx);
                     }
@@ -527,7 +440,9 @@ fn summary(text: String) -> impl IntoElement {
         .child(text)
 }
 
-struct UploadForm {
+/// The confirmation of an upload or a download.
+struct TransferForm {
+    direction: TransferDirection,
     /// Another batch runs; this one will wait its turn.
     queued: bool,
     sources: TransferSources,
@@ -535,45 +450,8 @@ struct UploadForm {
     endpoint: String,
     error: Option<String>,
 }
-impl Render for UploadForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .gap_3()
-            .child(summary(format!(
-                "上传 {}到 {}",
-                self.sources.count(),
-                self.endpoint
-            )))
-            .child(self.sources.render("upload-source-list", cx))
-            .when(self.queued, |this| this.child(queued_note(cx)))
-            .child(
-                Form::new().child(
-                    Field::new()
-                        .label("目标目录")
-                        .required(true)
-                        .child(Input::new(&self.target).id("upload-target").small()),
-                ),
-            )
-            .when_some(self.error.clone(), |this, error| {
-                this.child(
-                    div()
-                        .id("upload-form-error")
-                        .test_support()
-                        .text_color(cx.theme().danger)
-                        .child(error),
-                )
-            })
-    }
-}
-struct DownloadForm {
-    /// Another batch runs; this one will wait its turn.
-    queued: bool,
-    sources: TransferSources,
-    target: Entity<InputState>,
-    endpoint: String,
-    error: Option<String>,
-}
-impl DownloadForm {
+impl TransferForm {
+    /// Pick the local directory a download goes to.
     fn browse(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let choice = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -597,43 +475,52 @@ impl DownloadForm {
         .detach();
     }
 }
-impl Render for DownloadForm {
+impl Render for TransferForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let count = self.sources.count();
+        let (text, list_id, label, error_id, target) = match self.direction {
+            TransferDirection::Upload => (
+                format!("上传 {count}到 {}", self.endpoint),
+                "upload-source-list",
+                "目标目录",
+                "upload-form-error",
+                Input::new(&self.target)
+                    .id("upload-target")
+                    .small()
+                    .into_any_element(),
+            ),
+            TransferDirection::Download => (
+                format!("从 {} 下载 {count}", self.endpoint),
+                "download-source-list",
+                "下载到",
+                "download-form-error",
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Input::new(&self.target)
+                            .id("download-target")
+                            .small()
+                            .flex_1(),
+                    )
+                    .child(
+                        Button::new("download-browse")
+                            .small()
+                            .label("浏览…")
+                            .on_click(cx.listener(|this, _, window, cx| this.browse(window, cx))),
+                    )
+                    .into_any_element(),
+            ),
+        };
         v_flex()
             .gap_3()
-            .child(summary(format!(
-                "从 {} 下载 {}",
-                self.endpoint,
-                self.sources.count()
-            )))
-            .child(self.sources.render("download-source-list", cx))
+            .child(summary(text))
+            .child(self.sources.render(list_id, cx))
             .when(self.queued, |this| this.child(queued_note(cx)))
-            .child(
-                Form::new().child(
-                    Field::new().label("下载到").required(true).child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Input::new(&self.target)
-                                    .id("download-target")
-                                    .small()
-                                    .flex_1(),
-                            )
-                            .child(
-                                Button::new("download-browse")
-                                    .small()
-                                    .label("浏览…")
-                                    .on_click(
-                                        cx.listener(|this, _, window, cx| this.browse(window, cx)),
-                                    ),
-                            ),
-                    ),
-                ),
-            )
+            .child(Form::new().child(Field::new().label(label).required(true).child(target)))
             .when_some(self.error.clone(), |this, error| {
                 this.child(
                     div()
-                        .id("download-form-error")
+                        .id(error_id)
                         .test_support()
                         .text_color(cx.theme().danger)
                         .child(error),
@@ -660,7 +547,8 @@ impl Render for ConflictForm {
         })
     }
 }
-/// Session-scoped close confirmation dispatches through the same workspace handler.
+/// Ask before closing an SFTP tab with transfers under way. Confirming goes
+/// through the workspace like the tab's other commands.
 pub fn confirm_close_transfer(
     explorer: ExplorerId,
     generation: u64,

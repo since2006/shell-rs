@@ -1,12 +1,12 @@
 //! The delete confirmation and the name form shared by 重命名 and 新建.
 
-use super::{ExplorerPanel, NewEntryKind};
-use crate::app::ExplorerDispatch as _;
-use crate::app::{ExplorerAction, ExplorerCommand};
+use super::{ExplorerPanel, NewEntryKind, PaneOperation};
+use crate::app::ExplorerCommand;
+use crate::shared::{commit_footer, form_error};
 use gpui_kit::component::{
-    ActiveTheme as _, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariant, ButtonVariants as _},
-    dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter},
+    Sizable as _, WindowExt as _,
+    button::ButtonVariant,
+    dialog::DialogButtonProps,
     form::{Field, Form},
     input::{Input, InputState},
     v_flex,
@@ -64,14 +64,7 @@ impl Render for NameForm {
                 ),
             )
             .when_some(self.error.clone(), |this, error| {
-                this.child(
-                    div()
-                        .id("form-error")
-                        .test_support()
-                        .text_sm()
-                        .text_color(cx.theme().danger)
-                        .child(error),
-                )
+                this.child(form_error(error, cx))
             })
     }
 }
@@ -99,7 +92,7 @@ impl ExplorerPanel {
         } else {
             "项目会移到废纸篓。"
         };
-        let (dispatch, sid, generation) = (self.dispatch.clone(), self.id(), self.generation());
+        let sender = self.sender();
         let focus = window.focused(cx);
         window.open_alert_dialog(cx, move |dialog, _, _| {
             dialog
@@ -122,20 +115,10 @@ impl ExplorerPanel {
                     }
                 })
                 .on_ok({
-                    let (dispatch, focus, names) = (dispatch.clone(), focus.clone(), names.clone());
+                    let (sender, focus, names) = (sender.clone(), focus.clone(), names.clone());
                     move |_, window, cx| {
-                        dispatch.dispatch_explorer_action(
-                            &ExplorerAction::new(
-                                sid,
-                                ExplorerCommand::BeginDelete {
-                                    remote,
-                                    names: names.clone(),
-                                },
-                            )
-                            .with_generation(generation),
-                            window,
-                            cx,
-                        );
+                        let operation = PaneOperation::Delete(names.clone());
+                        sender.send(ExplorerCommand::Operate { remote, operation }, window, cx);
                         if let Some(focus) = &focus {
                             window.focus(focus, cx);
                         }
@@ -205,24 +188,17 @@ impl ExplorerPanel {
             label,
             error: None,
         });
-        let (dispatch, sid, generation) = (self.dispatch.clone(), self.id(), self.generation());
+        let sender = self.sender();
         let focus = window.focused(cx);
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(title.clone())
                 .child(form.clone())
-                .footer(
-                    DialogFooter::new()
-                        .child(DialogClose::new().trigger(|button| button.label("取消")))
-                        .child(
-                            DialogAction::new()
-                                .child(Button::new("commit").primary().label(commit)),
-                        ),
-                )
+                .footer(commit_footer("commit", commit))
                 .on_ok({
-                    let (form, dispatch, intent, existing) = (
+                    let (form, sender, intent, existing) = (
                         form.clone(),
-                        dispatch.clone(),
+                        sender.clone(),
                         intent.clone(),
                         existing.clone(),
                     );
@@ -239,23 +215,14 @@ impl ExplorerPanel {
                             });
                             return false;
                         }
-                        let command = match &intent {
-                            NameIntent::Rename(from) => ExplorerCommand::CommitRename {
-                                remote,
+                        let operation = match &intent {
+                            NameIntent::Rename(from) => PaneOperation::Rename {
                                 from: from.clone(),
                                 to: name,
                             },
-                            NameIntent::New(kind) => ExplorerCommand::CommitNew {
-                                remote,
-                                kind: *kind,
-                                name,
-                            },
+                            NameIntent::New(kind) => PaneOperation::Create { kind: *kind, name },
                         };
-                        dispatch.dispatch_explorer_action(
-                            &ExplorerAction::new(sid, command).with_generation(generation),
-                            window,
-                            cx,
-                        );
+                        sender.send(ExplorerCommand::Operate { remote, operation }, window, cx);
                         true
                     }
                 })

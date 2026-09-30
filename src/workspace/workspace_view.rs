@@ -7,8 +7,8 @@ use std::{
 
 use gpui_kit::component::{
     ActiveTheme as _, Root, Sizable as _, Theme, TitleBar, WindowExt as _,
-    button::{Button, ButtonVariant, ButtonVariants as _},
-    dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter},
+    button::ButtonVariant,
+    dialog::DialogButtonProps,
     dock::{DockArea, DockEvent, DockLayout, DockPlacement, PanelId, TabGroup, panel_handle},
     form::{Field, Form},
     input::{Input, InputContentType, InputState},
@@ -31,11 +31,15 @@ use crate::app::{
     SetFileSizeFormat, ToggleSessionPanel, ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::cli::{CliIntegration, CliServer, CliTarget, IntegrationPaths, SshCliBackend};
-use crate::connection::SharedConnectionTester;
+use crate::connection::{
+    ConnectionPrompt, ConnectionPromptField, ConnectionPromptKind, ConnectionPromptReply,
+    ConnectionSecret, SharedConnectionTester,
+};
 use crate::explorer::{ExplorerId, ExplorerPanel, ExplorerPanelEvent, confirm_close_transfer};
 use crate::session::{
-    ConnectionState, GroupId, SessionId, SessionPanel, SessionStore, SessionStoreEvent,
-    confirm_delete_group, confirm_delete_session, open_group_dialog, open_session_dialog,
+    ConnectionState, GroupId, SessionId, SessionNode, SessionPanel, SessionStore,
+    SessionStoreEvent, confirm_delete_group, confirm_delete_session, open_group_dialog,
+    open_session_dialog,
 };
 use crate::settings::{
     Appearance, SettingsPanel, SettingsPanelEvent, SettingsStore, SettingsStoreEvent,
@@ -44,12 +48,11 @@ use crate::sftp::{
     SharedLocalDirectoryProvider, SharedSftpTransportProvider, SshSftpTransportProvider,
     SystemLocalDirectoryProvider,
 };
-use crate::shared::open_rename_tab_dialog;
+use crate::shared::{commit_footer, open_rename_tab_dialog};
 use crate::terminal::{
     LocalPtyTransportFactory, LocalTerminalId, LocalTerminalPanel, LocalTerminalPanelEvent,
     RemoteTerminalId, SearchDirection, SharedRemoteTerminalTransportProvider,
     SharedTerminalTransportFactory, TerminalLifecycle, TerminalPanel, TerminalPanelEvent,
-    TerminalPrompt, TerminalPromptField, TerminalPromptKind, TerminalPromptReply, TerminalSecret,
     TerminalView,
 };
 
@@ -128,7 +131,7 @@ pub struct Workspace {
     next_explorer_id: u64,
     /// The center tab displayed most recently; `CloseActiveTab` closes it.
     active_tab: Option<CenterTab>,
-    prompt_queue: VecDeque<(PromptOwner, SessionId, TerminalPrompt)>,
+    prompt_queue: VecDeque<(PromptOwner, SessionId, ConnectionPrompt)>,
     active_prompt: Option<(PromptOwner, SessionId, u64)>,
     /// Dispatch target for the title bar and start page: actions sent to it
     /// reach the workspace handlers whatever is focused.
@@ -143,22 +146,6 @@ impl Workspace {
     pub fn new(
         store: Entity<SessionStore>,
         settings: Entity<SettingsStore>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self::new_with_local_terminal_factory(
-            store,
-            settings,
-            Arc::new(LocalPtyTransportFactory),
-            window,
-            cx,
-        )
-    }
-
-    pub fn new_with_local_terminal_factory(
-        store: Entity<SessionStore>,
-        settings: Entity<SettingsStore>,
-        local_terminal_factory: SharedTerminalTransportFactory,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -179,7 +166,7 @@ impl Workspace {
             store,
             settings,
             remote,
-            local_terminal_factory,
+            Arc::new(LocalPtyTransportFactory),
             sftp.clone(),
             Arc::new(SystemLocalDirectoryProvider),
             tester,
@@ -211,39 +198,6 @@ impl Workspace {
             server.set_enabled(self.settings.read(cx).settings().external_cli.enabled);
             server.set_targets(CliTarget::all(self.store.read(cx)));
         }
-    }
-
-    /// Fully injectable constructor used by UI tests: remote sessions never
-    /// touch the network, while production uses the SSH provider above.
-    pub fn new_with_transport_providers(
-        store: Entity<SessionStore>,
-        settings: Entity<SettingsStore>,
-        remote_terminal_provider: SharedRemoteTerminalTransportProvider,
-        local_terminal_factory: SharedTerminalTransportFactory,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let connector = crate::ssh::SshConnector::new(
-            crate::app::data_dir().join("known_hosts"),
-            store.read(cx).secrets(),
-        );
-        let tester = Arc::new(crate::ssh::SshConnectionTester::new(connector.clone()));
-        let sftp = Arc::new(SshSftpTransportProvider::new(
-            connector,
-            crate::app::data_dir().join("upload-resume"),
-            crate::app::data_dir().join("download-resume"),
-        ));
-        Self::new_with_services(
-            store,
-            settings,
-            remote_terminal_provider,
-            local_terminal_factory,
-            sftp,
-            Arc::new(SystemLocalDirectoryProvider),
-            tester,
-            window,
-            cx,
-        )
     }
 
     /// Inject every filesystem and transport service; tests require neither a server nor a keychain.
@@ -293,12 +247,7 @@ impl Workspace {
                         window.push_notification(Notification::error(message.clone()), cx);
                     }
                     SessionStoreEvent::ConnectionSettingsChanged(id) => {
-                        let panels: Vec<_> = this
-                            .terminals
-                            .values()
-                            .filter(|panel| panel.read(cx).session_id() == *id)
-                            .cloned()
-                            .collect();
+                        let panels: Vec<_> = this.terminals_of(*id, cx).cloned().collect();
                         if !panels.is_empty() {
                             for panel in &panels {
                                 this.cancel_prompts_for_terminal(panel.read(cx).id(), window, cx);
@@ -434,10 +383,18 @@ impl Workspace {
     }
 
     pub fn terminal_count(&self, id: SessionId, cx: &App) -> usize {
+        self.terminals_of(id, cx).count()
+    }
+
+    /// A session's terminal tabs, in no particular order.
+    fn terminals_of<'a>(
+        &'a self,
+        session: SessionId,
+        cx: &'a App,
+    ) -> impl Iterator<Item = &'a Entity<TerminalPanel>> {
         self.terminals
             .values()
-            .filter(|panel| panel.read(cx).session_id() == id)
-            .count()
+            .filter(move |panel| panel.read(cx).session_id() == session)
     }
 
     pub fn explorer(&self, id: ExplorerId) -> Option<&Entity<ExplorerPanel>> {
@@ -456,6 +413,20 @@ impl Workspace {
             .into_iter()
             .map(|(_, panel)| panel.clone())
             .collect()
+    }
+
+    /// Whether a session has any tab open in the center.
+    fn has_tabs(&self, session: SessionId, cx: &App) -> bool {
+        self.terminals_of(session, cx).next().is_some()
+            || !self.explorers_of(session, cx).is_empty()
+    }
+
+    /// How many of a session's SFTP tabs are in the middle of a transfer.
+    fn transfers_of(&self, session: SessionId, cx: &App) -> usize {
+        self.explorers_of(session, cx)
+            .iter()
+            .filter(|panel| panel.read(cx).is_transferring())
+            .count()
     }
 
     pub fn local_terminal(&self, id: LocalTerminalId) -> Option<&Entity<LocalTerminalPanel>> {
@@ -494,7 +465,7 @@ impl Workspace {
         &mut self,
         terminal_id: PromptOwner,
         session_id: SessionId,
-        prompt: TerminalPrompt,
+        prompt: ConnectionPrompt,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -537,8 +508,16 @@ impl Workspace {
         let request_id = prompt.request_id();
         self.active_prompt = Some((terminal_id, session_id, request_id));
         let workspace = cx.entity().downgrade();
+        // Every button of a prompt ends it the same way, with its own reply.
+        let answer = move |reply: ConnectionPromptReply, cx: &mut App| {
+            workspace
+                .update(cx, |this, cx| {
+                    this.finish_prompt(terminal_id, request_id, reply, cx)
+                })
+                .ok();
+        };
         match prompt.kind().clone() {
-            TerminalPromptKind::UnknownHost(prompt) => {
+            ConnectionPromptKind::UnknownHost(prompt) => {
                 let description = prompt.description();
                 window.open_alert_dialog(cx, move |alert, _, _| {
                     alert
@@ -551,46 +530,26 @@ impl Workspace {
                         )
                         .show_cancel(true)
                         .on_ok({
-                            let workspace = workspace.clone();
+                            let answer = answer.clone();
                             move |_, _, cx| {
-                                resolve_prompt(
-                                    &workspace,
-                                    terminal_id,
-                                    request_id,
-                                    TerminalPromptReply::TrustAndSave,
-                                    cx,
-                                );
+                                answer(ConnectionPromptReply::TrustAndSave, cx);
                                 true
                             }
                         })
                         .on_cancel({
-                            let workspace = workspace.clone();
+                            let answer = answer.clone();
                             move |_, _, cx| {
-                                resolve_prompt(
-                                    &workspace,
-                                    terminal_id,
-                                    request_id,
-                                    TerminalPromptReply::Cancel,
-                                    cx,
-                                );
+                                answer(ConnectionPromptReply::Cancel, cx);
                                 true
                             }
                         })
                         .on_close({
-                            let workspace = workspace.clone();
-                            move |_, _, cx| {
-                                resolve_prompt(
-                                    &workspace,
-                                    terminal_id,
-                                    request_id,
-                                    TerminalPromptReply::Cancel,
-                                    cx,
-                                );
-                            }
+                            let answer = answer.clone();
+                            move |_, _, cx| answer(ConnectionPromptReply::Cancel, cx)
                         })
                 });
             }
-            TerminalPromptKind::HostKeyChanged(prompt) => {
+            ConnectionPromptKind::HostKeyChanged(prompt) => {
                 let old = prompt.old_fingerprints().join("、");
                 let description = format!(
                     "主机：{}:{}\n算法：{}\n已保存指纹：{old}\n服务器当前指纹：{}\n\n连接已阻断。请核验服务器身份后手动处理：{}",
@@ -610,33 +569,19 @@ impl Workspace {
                                 .ok_variant(ButtonVariant::Danger),
                         )
                         .on_ok({
-                            let workspace = workspace.clone();
+                            let answer = answer.clone();
                             move |_, _, cx| {
-                                resolve_prompt(
-                                    &workspace,
-                                    terminal_id,
-                                    request_id,
-                                    TerminalPromptReply::Cancel,
-                                    cx,
-                                );
+                                answer(ConnectionPromptReply::Cancel, cx);
                                 true
                             }
                         })
                         .on_close({
-                            let workspace = workspace.clone();
-                            move |_, _, cx| {
-                                resolve_prompt(
-                                    &workspace,
-                                    terminal_id,
-                                    request_id,
-                                    TerminalPromptReply::Cancel,
-                                    cx,
-                                );
-                            }
+                            let answer = answer.clone();
+                            move |_, _, cx| answer(ConnectionPromptReply::Cancel, cx)
                         })
                 });
             }
-            TerminalPromptKind::Authentication(prompt) => {
+            ConnectionPromptKind::Authentication(prompt) => {
                 let title = prompt.title().to_string();
                 let instructions = prompt.instructions().to_string();
                 let fields = prompt.fields().to_vec();
@@ -646,73 +591,40 @@ impl Workspace {
                     title.clone().into()
                 };
                 let form = cx.new(|cx| AuthenticationPromptForm::new(fields, window, cx));
-                window.open_dialog(cx, {
-                    let workspace_for_ok = workspace.clone();
-                    let workspace_for_cancel = workspace.clone();
-                    let form_for_ok = form.clone();
-                    move |dialog, _, _| {
-                        dialog
-                            .title(dialog_title.clone())
-                            .child(
-                                v_flex()
-                                    .gap_3()
-                                    .when(!instructions.trim().is_empty(), |view| {
-                                        view.child(div().text_sm().child(instructions.clone()))
-                                    })
-                                    .child(form.clone()),
-                            )
-                            .footer(
-                                DialogFooter::new()
-                                    .child(
-                                        DialogClose::new().trigger(|button| button.label("取消")),
-                                    )
-                                    .child(DialogAction::new().child(
-                                        Button::new("ssh-auth-submit").primary().label("继续"),
-                                    )),
-                            )
-                            .on_ok({
-                                let workspace = workspace_for_ok.clone();
-                                let form = form_for_ok.clone();
-                                move |_, window, cx| {
-                                    let answers =
-                                        form.update(cx, |form, cx| form.take_answers(window, cx));
-                                    resolve_prompt(
-                                        &workspace,
-                                        terminal_id,
-                                        request_id,
-                                        TerminalPromptReply::Answers(answers),
-                                        cx,
-                                    );
-                                    true
-                                }
-                            })
-                            .on_cancel({
-                                let workspace = workspace_for_cancel.clone();
-                                move |_, _, cx| {
-                                    resolve_prompt(
-                                        &workspace,
-                                        terminal_id,
-                                        request_id,
-                                        TerminalPromptReply::Cancel,
-                                        cx,
-                                    );
-                                    true
-                                }
-                            })
-                            .on_close({
-                                let workspace = workspace.clone();
-                                move |_, _, cx| {
-                                    resolve_prompt(
-                                        &workspace,
-                                        terminal_id,
-                                        request_id,
-                                        TerminalPromptReply::Cancel,
-                                        cx,
-                                    );
-                                }
-                            })
-                            .overlay_closable(false)
-                    }
+                window.open_dialog(cx, move |dialog, _, _| {
+                    dialog
+                        .title(dialog_title.clone())
+                        .child(
+                            v_flex()
+                                .gap_3()
+                                .when(!instructions.trim().is_empty(), |view| {
+                                    view.child(div().text_sm().child(instructions.clone()))
+                                })
+                                .child(form.clone()),
+                        )
+                        .footer(commit_footer("ssh-auth-submit", "继续"))
+                        .on_ok({
+                            let answer = answer.clone();
+                            let form = form.clone();
+                            move |_, window, cx| {
+                                let answers =
+                                    form.update(cx, |form, cx| form.take_answers(window, cx));
+                                answer(ConnectionPromptReply::Answers(answers), cx);
+                                true
+                            }
+                        })
+                        .on_cancel({
+                            let answer = answer.clone();
+                            move |_, _, cx| {
+                                answer(ConnectionPromptReply::Cancel, cx);
+                                true
+                            }
+                        })
+                        .on_close({
+                            let answer = answer.clone();
+                            move |_, _, cx| answer(ConnectionPromptReply::Cancel, cx)
+                        })
+                        .overlay_closable(false)
                 });
             }
         }
@@ -722,7 +634,7 @@ impl Workspace {
         &mut self,
         terminal_id: PromptOwner,
         request_id: u64,
-        reply: TerminalPromptReply,
+        reply: ConnectionPromptReply,
         cx: &mut Context<Self>,
     ) {
         let Some((active_terminal, session_id, active_request)) = self.active_prompt else {
@@ -732,7 +644,7 @@ impl Workspace {
             return;
         }
         self.active_prompt = None;
-        let canceled = matches!(&reply, TerminalPromptReply::Cancel);
+        let canceled = matches!(&reply, ConnectionPromptReply::Cancel);
         self.reply_to_owner(terminal_id, request_id, reply, cx);
         if canceled
             && let PromptOwner::Terminal(id) = terminal_id
@@ -757,7 +669,7 @@ impl Workspace {
         &self,
         owner: PromptOwner,
         request_id: u64,
-        reply: TerminalPromptReply,
+        reply: ConnectionPromptReply,
         cx: &App,
     ) {
         match owner {
@@ -787,7 +699,7 @@ impl Workspace {
             && id == owner
         {
             self.active_prompt = None;
-            self.reply_to_owner(id, request_id, TerminalPromptReply::Cancel, cx);
+            self.reply_to_owner(id, request_id, ConnectionPromptReply::Cancel, cx);
             if window.has_active_dialog(cx) {
                 window.close_dialog(cx);
             }
@@ -818,11 +730,7 @@ impl Workspace {
     fn refresh_session_connection_state(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
         let mut has_starting = false;
         let mut has_running = false;
-        for panel in self
-            .terminals
-            .values()
-            .filter(|panel| panel.read(cx).session_id() == session_id)
-        {
+        for panel in self.terminals_of(session_id, cx) {
             match panel.read(cx).lifecycle(cx) {
                 TerminalLifecycle::Running => has_running = true,
                 TerminalLifecycle::Starting => has_starting = true,
@@ -1498,12 +1406,7 @@ impl Workspace {
         self.store.update(cx, |store, cx| {
             store.set_state(id, ConnectionState::Disconnected, cx);
         });
-        let terminals: Vec<_> = self
-            .terminals
-            .values()
-            .filter(|panel| panel.read(cx).session_id() == id)
-            .cloned()
-            .collect();
+        let terminals: Vec<_> = self.terminals_of(id, cx).cloned().collect();
         for terminal in terminals {
             terminal.update(cx, |terminal, cx| terminal.disconnect(cx));
         }
@@ -1566,8 +1469,9 @@ impl Workspace {
             .store
             .update(cx, |store, cx| store.duplicate(action.0, cx));
         if let Some(copy) = copy {
-            self.session_panel
-                .update(cx, |panel, cx| panel.select_session(copy, cx));
+            self.session_panel.update(cx, |panel, cx| {
+                panel.select_node(SessionNode::Session(copy), cx)
+            });
         }
     }
 
@@ -1596,20 +1500,10 @@ impl Workspace {
         let Some(session) = self.store.read(cx).session(id).cloned() else {
             return;
         };
-        let closes_tabs = self
-            .terminals
-            .values()
-            .any(|panel| panel.read(cx).session_id() == id)
-            || !self.explorers_of(id, cx).is_empty();
-        let transfers = self
-            .explorers_of(id, cx)
-            .iter()
-            .filter(|panel| panel.read(cx).is_transferring())
-            .count();
         let workspace = cx.entity().downgrade();
         confirm_delete_session(
             &session,
-            (closes_tabs, transfers),
+            (self.has_tabs(id, cx), self.transfers_of(id, cx)),
             Rc::new(move |window, cx| {
                 workspace
                     .update(cx, |this, cx| this.remove_session(id, window, cx))
@@ -1632,12 +1526,7 @@ impl Workspace {
     /// this, the latter for every session in the subtree.
     fn close_session_tabs(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
         self.cancel_prompts_for_session(id, window, cx);
-        let terminals: Vec<_> = self
-            .terminals
-            .values()
-            .filter(|panel| panel.read(cx).session_id() == id)
-            .cloned()
-            .collect();
+        let terminals: Vec<_> = self.terminals_of(id, cx).cloned().collect();
         for terminal in terminals {
             self.dock_area
                 .update(cx, |area, cx| area.remove_panel(terminal, window, cx));
@@ -1730,25 +1619,14 @@ impl Workspace {
         let name = group.name.to_string();
         let subgroups = store.descendant_groups(id).len();
         let doomed = store.sessions_under(id);
-        let closes_tabs = doomed.iter().any(|id| {
-            self.terminals
-                .values()
-                .any(|panel| panel.read(cx).session_id() == *id)
-                || !self.explorers_of(*id, cx).is_empty()
-        });
+        let closes_tabs = doomed.iter().any(|id| self.has_tabs(*id, cx));
+        let transfers = doomed.iter().map(|id| self.transfers_of(*id, cx)).sum();
         let workspace = cx.entity().downgrade();
         confirm_delete_group(
             &name,
             doomed.len(),
             subgroups,
-            (
-                closes_tabs,
-                doomed
-                    .iter()
-                    .flat_map(|id| self.explorers_of(*id, cx))
-                    .filter(|panel| panel.read(cx).is_transferring())
-                    .count(),
-            ),
+            (closes_tabs, transfers),
             Rc::new(move |window, cx| {
                 workspace
                     .update(cx, |this, cx| this.remove_group(id, window, cx))
@@ -1872,11 +1750,7 @@ fn new_terminal_panel(
                     this.active_tab = None;
                 }
                 this.refresh_session_connection_state(*session_id, cx);
-                if !this
-                    .terminals
-                    .values()
-                    .any(|panel| panel.read(cx).session_id() == *session_id)
-                    && this.explorers_of(*session_id, cx).is_empty()
+                if !this.has_tabs(*session_id, cx)
                     && this.store.read(cx).active().map(|session| session.id) == Some(*session_id)
                 {
                     this.store
@@ -1905,26 +1779,16 @@ fn new_terminal_panel(
     (panel, subscription)
 }
 
-fn resolve_prompt(
-    workspace: &WeakEntity<Workspace>,
-    terminal_id: PromptOwner,
-    request_id: u64,
-    reply: TerminalPromptReply,
-    cx: &mut App,
-) {
-    workspace
-        .update(cx, |workspace, cx| {
-            workspace.finish_prompt(terminal_id, request_id, reply, cx)
-        })
-        .ok();
-}
-
 struct AuthenticationPromptForm {
-    fields: Vec<(TerminalPromptField, Entity<InputState>)>,
+    fields: Vec<(ConnectionPromptField, Entity<InputState>)>,
 }
 
 impl AuthenticationPromptForm {
-    fn new(fields: Vec<TerminalPromptField>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        fields: Vec<ConnectionPromptField>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let fields = fields
             .into_iter()
             .map(|field| {
@@ -1936,11 +1800,15 @@ impl AuthenticationPromptForm {
         Self { fields }
     }
 
-    fn take_answers(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<TerminalSecret> {
+    fn take_answers(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<ConnectionSecret> {
         self.fields
             .iter()
             .map(|(_, input)| {
-                let answer = TerminalSecret::new(input.read(cx).value().to_string());
+                let answer = ConnectionSecret::new(input.read(cx).value().to_string());
                 input.update(cx, |input, cx| input.set_value("", window, cx));
                 answer
             })
@@ -2060,19 +1928,19 @@ impl Render for Workspace {
             Some(CenterTab::LocalTerminal(id)) => self
                 .local_terminals
                 .get(&id)
-                .map(|panel| WorkspaceStatus::local(panel.read(cx).status(cx)))
-                .unwrap_or_else(|| WorkspaceStatus::session(active)),
+                .map(|panel| WorkspaceStatus::Local(panel.read(cx).status(cx)))
+                .unwrap_or_else(|| WorkspaceStatus::Session(active)),
             // An SFTP tab tells its own connection, not the session's, and
             // what went wrong in it.
             Some(CenterTab::Explorer(id)) => match self.explorers.get(&id) {
                 Some(panel) => {
                     let panel = panel.read(cx);
                     let session = self.store.read(cx).session(panel.session_id()).cloned();
-                    WorkspaceStatus::explorer(session, panel.status(cx))
+                    WorkspaceStatus::Explorer(session, panel.status(cx))
                 }
-                None => WorkspaceStatus::session(active),
+                None => WorkspaceStatus::Session(active),
             },
-            _ => WorkspaceStatus::session(active),
+            _ => WorkspaceStatus::Session(active),
         };
         let sessions_visible = self.dock_area.read(cx).is_dock_open(DockPlacement::Left);
 
