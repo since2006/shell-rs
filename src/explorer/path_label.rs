@@ -68,19 +68,16 @@ impl FilePane {
     ) -> AnyElement {
         let remote = self.side == PaneSide::Remote;
         let theme = cx.theme();
-        // The current pane's label is underlined, as WinSCP marks its
-        // active one.
+        // Both labels look alike: an underline for the current pane read as
+        // "this side is active" and fell behind where commands went.
         let background = theme.list_active;
-        let border = if self.current {
-            theme.list_active_border
-        } else {
-            theme.border
-        };
+        let border = theme.border;
         let bar = h_flex()
             .id(self.side.path_id())
             .test_support()
             .aria_label(format!("{}路径", self.side.label()))
-            // Marks WinSCP's current pane, the one the underline shows.
+            // WinSCP's current pane, which takes focus back when the tab
+            // is shown again; nothing marks it on screen.
             .aria_selected(self.current)
             // The directory shown, once its listing is in.
             .when(!self.loading, |this| this.aria_value(self.path.clone()))
@@ -90,7 +87,7 @@ impl FilePane {
             .border_b_1()
             .border_color(border);
 
-        let enabled = self.is_connected();
+        let enabled = self.takes_commands();
         let parts = self.shown_parts(window);
         let hot = self
             .hovered_part

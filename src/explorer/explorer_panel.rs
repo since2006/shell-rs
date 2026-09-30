@@ -21,10 +21,11 @@ use crate::{
 use gpui_kit::component::{
     Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::Button,
+    dialog::DialogButtonProps,
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     menu::PopupMenu,
     notification::Notification,
-    resizable::{h_resizable, resizable_panel, v_resizable},
+    resizable::{ResizableState, h_resizable, resizable_panel, v_resizable},
     v_flex,
 };
 use gpui_kit::*;
@@ -77,6 +78,11 @@ pub struct ExplorerPanel {
     custom_title: Option<SharedString>,
     /// The pane that held focus last, which takes it back on activation.
     last_remote: bool,
+    /// Where the user put the divider between the panes, and the one above
+    /// the queue. Kept here, not in element state, which goes the first
+    /// frame another tab is shown instead: coming back would reset them.
+    panes_split: Entity<ResizableState>,
+    queue_split: Entity<ResizableState>,
     _subscriptions: Vec<Subscription>,
     _events: Task<()>,
 }
@@ -217,6 +223,8 @@ impl ExplorerPanel {
             tab_group: None,
             custom_title: None,
             last_remote: true,
+            panes_split: cx.new(|_| ResizableState::default()),
+            queue_split: cx.new(|_| ResizableState::default()),
             _subscriptions: subscriptions,
             _events: events_task,
         }
@@ -275,6 +283,75 @@ impl ExplorerPanel {
     /// stopped (that one goes on with its own 继续).
     pub fn can_reconnect(&self) -> bool {
         self.state != ConnectionState::Connecting && !self.engine_busy && !self.head_stopped()
+    }
+    /// Tell the user the remote side is disconnected, and why, with 重新连接
+    /// right there. When the queue owns reconnecting (a stopped batch waits
+    /// for 继续, or a transfer is reconnecting by itself), say so instead.
+    fn offer_reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.has_active_dialog(cx) {
+            return;
+        }
+        let name = self
+            .store
+            .read(cx)
+            .session(self.session_id)
+            .map_or_else(|| "服务器".into(), |session| session.name.clone());
+        let reason = self
+            .remote
+            .read(cx)
+            .problem()
+            .unwrap_or("SFTP 已断开")
+            .to_string();
+        let can_reconnect = self.can_reconnect();
+        let description = if can_reconnect {
+            format!("{reason}。重新连接后再操作远程文件。")
+        } else if self.head_stopped() {
+            format!("{reason}。传输队列里有停止的批次，点它的「继续」会重新连接并接着传输。")
+        } else {
+            format!("{reason}。正在自动重新连接，请稍候。")
+        };
+        let (dispatch, sid, generation) = (self.dispatch.clone(), self.id, self.generation);
+        let focus = window.focused(cx);
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let restore = {
+                let focus = focus.clone();
+                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    if let Some(focus) = &focus {
+                        window.focus(focus, cx);
+                    }
+                    true
+                }
+            };
+            let dialog = dialog
+                .title(format!("与 {name} 的 SFTP 连接已断开"))
+                .description(description.clone());
+            if can_reconnect {
+                dialog
+                    .button_props(
+                        DialogButtonProps::default()
+                            .ok_text("重新连接")
+                            .cancel_text("取消"),
+                    )
+                    .show_cancel(true)
+                    .on_cancel(restore.clone())
+                    .on_ok({
+                        let (dispatch, restore) = (dispatch.clone(), restore.clone());
+                        move |event, window, cx| {
+                            dispatch.dispatch_explorer_action(
+                                &ExplorerAction::new(sid, ExplorerCommand::Reconnect)
+                                    .with_generation(generation),
+                                window,
+                                cx,
+                            );
+                            restore(event, window, cx)
+                        }
+                    })
+            } else {
+                dialog
+                    .button_props(DialogButtonProps::default().ok_text("知道了"))
+                    .on_ok(restore)
+            }
+        });
     }
     /// The engine's last report on the batch at the head of the queue.
     pub fn progress(&self) -> Option<&TransferProgress> {
@@ -359,7 +436,9 @@ impl ExplorerPanel {
     fn sync_available(&mut self, cx: &mut Context<Self>) {
         let state = self.state;
         // A batch confirmed while another runs waits its turn in the queue.
-        let transfer = state == ConnectionState::Connected;
+        // Disconnected, transfers are still asked for, and answered with the
+        // offer to reconnect; only while connecting do they wait.
+        let transfer = state != ConnectionState::Connecting;
         self.local.update(cx, |pane, cx| {
             pane.set_available(ConnectionState::Connected, transfer, cx)
         });
@@ -516,6 +595,12 @@ impl ExplorerPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Disconnected, a command for the remote side says why nothing
+        // happens and offers to reconnect, rather than doing nothing.
+        if self.state == ConnectionState::Disconnected && needs_connection(command) {
+            self.offer_reconnect(window, cx);
+            return;
+        }
         match command {
             ExplorerCommand::Navigate { remote, path } => {
                 self.navigate(*remote, path.clone(), LoadIntent::Visit, window, cx)
@@ -882,6 +967,39 @@ impl RenamableTab for ExplorerPanel {
         cx.notify();
     }
 }
+/// Whether a command needs the SFTP connection: whatever reads or changes
+/// the remote side, and every transfer. Selecting, bookmarks, copying a
+/// path and the queue's own buttons do not.
+fn needs_connection(command: &ExplorerCommand) -> bool {
+    use ExplorerCommand as C;
+    match command {
+        C::Navigate { remote, .. }
+        | C::Up { remote }
+        | C::Refresh { remote }
+        | C::Root { remote }
+        | C::Home { remote }
+        | C::Back { remote }
+        | C::Forward { remote }
+        | C::Open { remote }
+        | C::OpenDirectory { remote }
+        | C::Delete { remote }
+        | C::BeginDelete { remote, .. }
+        | C::Rename { remote }
+        | C::CommitRename { remote, .. }
+        | C::New { remote, .. }
+        | C::CommitNew { remote, .. }
+        | C::Properties { remote }
+        | C::ApplyPermissions { remote, .. } => *remote,
+        C::Transfer { .. }
+        | C::DownloadPaths { .. }
+        | C::BeginDownload { .. }
+        | C::ChooseFiles
+        | C::UploadPaths { .. }
+        | C::BeginUpload { .. } => true,
+        _ => false,
+    }
+}
+
 /// The status of an SFTP tab for the window's status line.
 pub struct ExplorerStatus {
     pub state: ConnectionState,
@@ -974,17 +1092,23 @@ impl Render for ExplorerPanel {
             .child(
                 div().flex_1().min_h_0().child(
                     v_resizable(("explorer-queue", sid.0))
+                        .with_state(&self.queue_split)
                         .child(
                             resizable_panel().child(
                                 h_resizable(("explorer-panes", sid.0))
+                                    .with_state(&self.panes_split)
                                     .child(
+                                        // Half and half when the tab opens; the
+                                        // state then keeps where the user puts
+                                        // the divider.
                                         resizable_panel()
-                                            .size(px(480.))
+                                            .flex_basis(relative(0.5))
                                             .size_range(px(320.)..Pixels::MAX)
                                             .child(self.local.clone()),
                                     )
                                     .child(
                                         resizable_panel()
+                                            .flex_basis(relative(0.5))
                                             .size_range(px(280.)..Pixels::MAX)
                                             .child(self.remote.clone()),
                                     ),
@@ -1014,5 +1138,40 @@ fn transfer_command(job: &TransferJob) -> anyhow::Result<SftpCommand> {
             .collect::<anyhow::Result<Vec<_>>>()
             .and_then(|paths| DownloadRequest::new(paths, target.into()))
             .map(SftpCommand::Download),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::needs_connection;
+    use crate::app::ExplorerCommand;
+
+    #[test]
+    fn remote_side_and_transfers_need_the_connection() {
+        assert!(needs_connection(&ExplorerCommand::Refresh { remote: true }));
+        assert!(!needs_connection(&ExplorerCommand::Refresh {
+            remote: false
+        }));
+        assert!(needs_connection(&ExplorerCommand::Delete { remote: true }));
+        assert!(!needs_connection(&ExplorerCommand::Delete {
+            remote: false
+        }));
+        // Either way a transfer goes over it.
+        assert!(needs_connection(&ExplorerCommand::Transfer {
+            remote: false
+        }));
+        assert!(needs_connection(&ExplorerCommand::ChooseFiles));
+        // Choosing, bookmarks and the queue do not.
+        assert!(!needs_connection(&ExplorerCommand::SelectAll {
+            remote: true
+        }));
+        assert!(!needs_connection(&ExplorerCommand::CopyPath {
+            remote: true
+        }));
+        assert!(!needs_connection(&ExplorerCommand::AddBookmark {
+            remote: true,
+            path: None
+        }));
+        assert!(!needs_connection(&ExplorerCommand::Reconnect));
     }
 }

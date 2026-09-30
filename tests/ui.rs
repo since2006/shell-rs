@@ -3280,6 +3280,40 @@ fn both_tabs_of_one_session_stay_closable(cx: &mut TestAppContext) {
     });
 }
 
+/// Double-clicking a tab's title shows or hides the session sidebar; a
+/// single click only selects the tab.
+#[gpui_kit::test]
+async fn double_clicking_a_tab_toggles_the_session_sidebar(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    cx.run_until_parked();
+    let sidebar_shown = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find("session-search")
+                .is_some_and(|search| search.visible())
+        })
+        .unwrap()
+    };
+    assert!(sidebar_shown(cx));
+    for shown in [false, true] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.double_click(("terminal-tab", INITIAL_WEB_TERMINAL), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(sidebar_shown(cx), shown);
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("terminal-tab", INITIAL_STAGING_TERMINAL), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(sidebar_shown(cx));
+}
+
 #[gpui_kit::test]
 async fn a_terminal_tab_can_be_renamed_and_follow_the_session_again(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
@@ -3910,6 +3944,9 @@ struct FakeSftpProvider {
     hold_connection: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
     /// Connections made again on 重新连接 (a bare 继续).
     reconnects: Arc<Mutex<usize>>,
+    /// The remote home is `/slow`, which never answers: a network too slow
+    /// for the first directory to arrive.
+    slow_home: bool,
 }
 impl SftpTransportProvider for FakeSftpProvider {
     fn create(&self, _: &shellrs::session::Session) -> Box<dyn SftpTransport> {
@@ -3920,6 +3957,11 @@ impl SftpTransportProvider for FakeSftpProvider {
             events: self.events.clone(),
             hold: self.hold_connection.lock().unwrap().take(),
             reconnects: self.reconnects.clone(),
+            home: if self.slow_home {
+                "/slow"
+            } else {
+                "/home/tester"
+            },
         })
     }
 }
@@ -3930,6 +3972,7 @@ struct FakeSftpTransport {
     events: Arc<Mutex<Vec<async_channel::Sender<SftpEvent>>>>,
     hold: Option<mpsc::Receiver<()>>,
     reconnects: Arc<Mutex<usize>>,
+    home: &'static str,
 }
 impl SftpTransport for FakeSftpTransport {
     fn run(
@@ -3943,7 +3986,7 @@ impl SftpTransport for FakeSftpTransport {
             let _ = hold.recv();
         }
         events.send_blocking(SftpEvent::Connected {
-            home: RemotePath::new("/home/tester")?,
+            home: RemotePath::new(self.home)?,
         })?;
         // As in the real engine, 继续 goes on with a stopped batch, and with
         // none it only reconnects.
@@ -5380,6 +5423,168 @@ async fn sftp_path_label_folds_the_middle_of_a_long_path(cx: &mut TestAppContext
 /// the session, and 重新连接 connects again, from a dropped connection or a
 /// live one. Its connection, and why it dropped, show in red at the window's
 /// bottom left, so the list is never pushed around.
+/// A new SFTP tab splits its width half and half between the panes, with
+/// every toolbar button of each showing and the two lists level.
+#[gpui_kit::test]
+async fn sftp_panes_open_half_and_half(cx: &mut TestAppContext) {
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, _) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let local = window.find(("local-pane", SFTP_TAB)).bounds();
+        let remote = window.find(("remote-pane", SFTP_TAB)).bounds();
+        assert!(
+            (local.size.width - remote.size.width).abs() <= px(1.),
+            "{local:?} {remote:?}"
+        );
+        for (pane, transfer) in [("local-pane", "upload"), ("remote-pane", "download")] {
+            let scope = window.within((pane, SFTP_TAB));
+            for id in ["path-select", "forward", transfer, "new"] {
+                assert!(scope.find(id).visible(), "{pane} {id}");
+            }
+        }
+        let top = |pane: &'static str, window: &mut gpui_kit::Window| {
+            window.within((pane, SFTP_TAB)).find("table").bounds().top()
+        };
+        assert_eq!(top("local-pane", window), top("remote-pane", window));
+    })
+    .unwrap();
+}
+
+/// Where the user drags the divider between the panes stays while another
+/// tab is shown and this one comes back.
+#[gpui_kit::test]
+async fn sftp_panes_keep_their_split_across_tab_switches(cx: &mut TestAppContext) {
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, _) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let local_width = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.find(("local-pane", SFTP_TAB)).bounds().size.width
+        })
+        .unwrap()
+    };
+    let opened = local_width(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let local = window.find(("local-pane", SFTP_TAB)).bounds();
+        let divider = gpui_kit::point(local.right(), local.center().y);
+        window.drag(divider, divider - gpui_kit::point(px(120.), px(0.)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let dragged = local_width(cx);
+    assert!(dragged < opened - px(100.), "{opened:?} → {dragged:?}");
+
+    // Another SFTP tab of the session comes to the front, then this one.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(OpenExplorer(SessionId(DB_01))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("local-pane", SFTP_TAB)).is_none());
+        window.click(("explorer-tab", SFTP_TAB), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(local_width(cx), dragged);
+}
+
+/// Disconnected, anything asked of the remote side says so in a dialog with
+/// 重新连接, instead of doing nothing. 取消 leaves it as it is; local work
+/// goes on without asking.
+#[gpui_kit::test]
+async fn sftp_remote_commands_while_disconnected_offer_to_reconnect(cx: &mut TestAppContext) {
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, _) = open_workspace_with_sftp(cx, provider.clone());
+    open_test_explorer(cx, handle).await;
+    let events = provider.events.lock().unwrap()[0].clone();
+    events
+        .send_blocking(SftpEvent::Disconnected("SFTP 连接中断，请重新连接".into()))
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("status-connection").label() == Some("未连接 db-01：SFTP 连接中断，请重新连接")
+    })
+    .await;
+
+    // A toolbar button still answers, with the dialog.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .click("refresh", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("ok").visible());
+        window.click("cancel", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("ok").is_none());
+        assert!(
+            window
+                .find("status-connection")
+                .label()
+                .is_some_and(|status| status.starts_with("未连接"))
+        );
+    })
+    .unwrap();
+    assert_eq!(*provider.reconnects.lock().unwrap(), 0);
+
+    // Local work does not ask.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::Refresh { remote: false },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("ok").is_none());
+    })
+    .unwrap();
+
+    // A key or menu command asks too, and 重新连接 there reconnects.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::Up { remote: true },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("ok", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("status-connection").label() == Some("已连接 db-01")
+    })
+    .await;
+    assert_eq!(*provider.reconnects.lock().unwrap(), 1);
+}
+
 #[gpui_kit::test]
 async fn sftp_tab_reconnects_from_its_tab_bar_and_reports_at_the_bottom_left(
     cx: &mut TestAppContext,
@@ -5423,7 +5628,8 @@ async fn sftp_tab_reconnects_from_its_tab_bar_and_reports_at_the_bottom_left(
         window.render_frame(cx);
         let remote = window.within(("remote-pane", SFTP_TAB));
         assert_eq!(remote.find("table").bounds(), table);
-        assert!(!enabled(&remote.find("refresh")));
+        // Still there to click: it answers with the offer to reconnect.
+        assert!(enabled(&remote.find("refresh")));
         assert_ne!(remote.find("pane-status").label(), Some("连接已断开"));
         window.click(reconnect, cx);
     })
@@ -6308,6 +6514,69 @@ async fn sftp_connecting_shows_under_the_list_without_moving_it(cx: &mut TestApp
     .unwrap();
 }
 
+/// Until a directory has been read the list does not claim to be empty: it
+/// says it is connecting, then reading, as a slow network makes it wait.
+/// A directory read with nothing in it lists only `..`.
+#[gpui_kit::test]
+async fn sftp_list_says_what_it_waits_for_before_saying_empty(cx: &mut TestAppContext) {
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
+    let (release, hold) = mpsc::channel();
+    let provider = Arc::new(FakeSftpProvider {
+        hold_connection: Arc::new(Mutex::new(Some(hold))),
+        slow_home: true,
+        ..Default::default()
+    });
+    let (handle, _) = open_workspace_with_sftp(cx, provider);
+    let placeholder_is = |expected: &'static str| {
+        move |window: &mut gpui_kit::Window, cx: &mut App| {
+            window.render_frame(cx);
+            window
+                .within(("remote-pane", SFTP_TAB))
+                .try_find("list-placeholder")
+                .is_some_and(|placeholder| placeholder.label() == Some(expected))
+        }
+    };
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(OpenExplorer(SessionId(DB_01))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(placeholder_is("正在连接 SFTP…")(window, cx));
+    })
+    .unwrap();
+
+    // Connected; the home directory takes its time.
+    release.send(()).unwrap();
+    cx.wait_for(
+        handle.into(),
+        Duration::from_secs(2),
+        placeholder_is("正在读取目录…"),
+    )
+    .await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::Navigate {
+                    remote: true,
+                    path: "/empty".into(),
+                },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        let remote = window.within(("remote-pane", SFTP_TAB));
+        remote.try_find("file:..").is_some() && remote.try_find("list-placeholder").is_none()
+    })
+    .await;
+}
+
 #[gpui_kit::test]
 async fn sftp_reading_a_directory_never_moves_the_list(cx: &mut TestAppContext) {
     use shellrs::app::{ExplorerAction, ExplorerCommand};
@@ -6439,9 +6708,16 @@ async fn sftp_controls_fit_small_window_in_light_dark_and_zoom(cx: &mut TestAppC
             cx.run_until_parked();
             cx.update_window(handle.into(), |_, window, cx| {
                 window.render_frame(cx);
+                // Toolbars stay one line high: the lists start level.
+                let mut top = |pane: &'static str| {
+                    window.within((pane, SFTP_TAB)).find("table").bounds().top()
+                };
+                let (local, remote) = (top("local-pane"), top("remote-pane"));
+                assert_eq!(local, remote, "zoom {zoom}");
                 for (pane, transfer) in [("local-pane", "upload"), ("remote-pane", "download")] {
                     let bounds = window.find((pane, SFTP_TAB)).bounds();
                     let scope = window.within((pane, SFTP_TAB));
+                    assert!(scope.find("path-select").visible(), "{pane} at zoom {zoom}");
                     for id in [
                         "path-select",
                         "bookmarks",
@@ -6457,7 +6733,13 @@ async fn sftp_controls_fit_small_window_in_light_dark_and_zoom(cx: &mut TestAppC
                         "properties",
                         "new",
                     ] {
-                        let button = scope.find(id).bounds();
+                        // Shown whole, or not at all when the pane is too
+                        // narrow for it.
+                        let button = scope.find(id);
+                        if !button.visible() {
+                            continue;
+                        }
+                        let button = button.bounds();
                         assert!(
                             button.left() >= bounds.left()
                                 && button.right() <= bounds.right()

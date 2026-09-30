@@ -198,6 +198,9 @@ pub struct FilePane {
     /// What went wrong reading this pane's directory, or why the remote
     /// side dropped: the window's status line shows it, see `problem`.
     error: Option<String>,
+    /// A directory has been read into the list at least once, so an empty
+    /// list is an empty directory.
+    listed: bool,
     connection: ConnectionState,
     transfer_enabled: bool,
     /// A file operation on this pane is running.
@@ -276,6 +279,7 @@ impl FilePane {
             slow_load: false,
             slow_load_timer: None,
             error: None,
+            listed: false,
             connection: if side == PaneSide::Local {
                 ConnectionState::Connected
             } else {
@@ -305,6 +309,12 @@ impl FilePane {
     }
     pub fn is_connected(&self) -> bool {
         self.connection == ConnectionState::Connected
+    }
+    /// Whether the toolbar, menus and path label take commands. Disconnected
+    /// they do: the tab answers with the offer to reconnect. Only while
+    /// connecting is there nothing to do but wait.
+    pub fn takes_commands(&self) -> bool {
+        self.connection != ConnectionState::Connecting
     }
     pub fn is_current(&self) -> bool {
         self.current
@@ -466,11 +476,33 @@ impl FilePane {
             pane: Some(cx.entity().downgrade()),
             menu_hit: self.menu_hit.clone(),
             geometry: self.geometry.clone(),
+            placeholder: self.placeholder().into(),
         };
         self.table.update(cx, |table, cx| {
             table.delegate_mut().configure(context);
             cx.notify();
         });
+    }
+    /// What the list says while it has no rows: 空目录 only once a directory
+    /// has been read, what is going on until then, in the status line's
+    /// words. An empty directory being read again keeps saying 空目录 until
+    /// the read is slow, like the status line, so a quick refresh does not
+    /// flicker.
+    fn placeholder(&self) -> &'static str {
+        if self.connection == ConnectionState::Connecting {
+            "正在连接 SFTP…"
+        } else if self.loading && (!self.listed || self.slow_load) {
+            "正在读取目录…"
+        } else if self.listed {
+            "空目录"
+        } else if self.connection == ConnectionState::Disconnected {
+            "未连接"
+        } else if self.error.is_some() {
+            "无法读取目录"
+        } else {
+            // Before the first read is asked for.
+            "正在读取目录…"
+        }
     }
     fn update_selection(
         &mut self,
@@ -727,6 +759,7 @@ impl FilePane {
         self.pending = None;
         self.finish_loading();
         self.set_error(Some(message), cx);
+        self.sync_listing(cx);
         cx.notify();
     }
     /// What went wrong reading the directory, or why the remote side
@@ -745,6 +778,7 @@ impl FilePane {
         self.pending = Some((self.request_id, intent, self.path.clone()));
         self.loading = true;
         self.set_error(None, cx);
+        self.sync_listing(cx);
         // Most directories arrive at once; saying 正在读取 for those only
         // flickers, so it waits.
         let id = self.request_id;
@@ -754,6 +788,7 @@ impl FilePane {
             let _ = this.update(cx, |this, cx| {
                 if this.loading && this.request_id == id {
                     this.slow_load = true;
+                    this.sync_listing(cx);
                     cx.notify();
                 }
             });
@@ -792,6 +827,7 @@ impl FilePane {
                     self.hovered_part = None;
                 }
                 self.path = listing.path().into();
+                self.listed = true;
                 self.set_error(None, cx);
                 let mut rows: Vec<_> = listing
                     .entries()
@@ -814,6 +850,7 @@ impl FilePane {
             Err(error) => {
                 self.select_after_load = None;
                 self.set_error(Some(error), cx);
+                self.sync_listing(cx);
             }
         }
         cx.notify();
@@ -890,7 +927,7 @@ impl FilePane {
             can_go_forward: self.history.forward_target().is_some(),
             path: self.path.clone(),
             bookmarks: self.bookmarks(cx),
-            can_modify: self.is_connected() && !self.busy,
+            can_modify: self.takes_commands() && !self.busy,
             can_transfer: self.transfer_enabled,
         }
     }
@@ -904,7 +941,7 @@ impl Render for FilePane {
         let context = self.side.key_context();
         let state = self.menu_state(cx);
         let selected = state.targets.len();
-        let navigable = self.is_connected();
+        let navigable = self.takes_commands();
         // A toolbar button dispatches the same command as its key binding,
         // and its tooltip shows that binding.
         let tool = |id: &'static str, icon: Icon, tip: &'static str, command: ExplorerCommand| {
@@ -932,14 +969,18 @@ impl Render for FilePane {
             .iter()
             .filter(|e| !e.is_parent())
             .count();
-        let toolbar = || {
-            h_flex()
-                .flex_wrap()
-                .gap_1()
+        // A row is one line high whatever the pane's width: what does not
+        // fit wraps onto a second line that the height cuts off, so buttons
+        // go whole, from the right, and the list never moves down. Their
+        // commands stay on the menus and keys.
+        let toolbar = || h_flex().flex_wrap().gap_1().h_6().overflow_hidden();
+        let frame = |row: Div| {
+            div()
                 .px_2()
                 .py_1()
                 .border_b_1()
                 .border_color(cx.theme().border)
+                .child(row)
         };
         let navigation = toolbar()
             // `Select` fills its parent (`size_full`), so it needs a sized
@@ -1124,8 +1165,8 @@ impl Render for FilePane {
             .test_support()
             .size_full()
             .min_w_0()
-            .child(navigation)
-            .child(operations)
+            .child(frame(navigation))
+            .child(frame(operations))
             .child(self.render_path_label(window, cx))
             .child(
                 div()

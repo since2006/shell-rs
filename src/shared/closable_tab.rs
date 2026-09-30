@@ -9,6 +9,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::app::ToggleSessionPanel;
+
 type MenuBuilder = Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
 
 /// A dock tab title: a leading mark, the label and, for closable panels, a
@@ -20,9 +22,12 @@ type MenuBuilder = Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) ->
 /// workspace wants every tab closable (an empty center shows the recent
 /// sessions instead) and removes the panel from the dock itself.
 ///
-/// The context menu hangs on the title rather than on the dock's `Tab`, which
-/// the application does not render. The tab's own horizontal padding is
-/// therefore outside it; a right click there does nothing.
+/// Double-clicking the title shows or hides the session sidebar, the way a
+/// double click on an editor tab gives it the room elsewhere.
+///
+/// The context menu and the double click hang on the title rather than on
+/// the dock's `Tab`, which the application does not render. The tab's own
+/// horizontal padding is therefore outside them; clicks there only select.
 #[derive(IntoElement)]
 pub struct ClosableTabTitle {
     id: ElementId,
@@ -89,6 +94,12 @@ impl RenderOnce for ClosableTabTitle {
             });
         div()
             .id(self.id)
+            // The first click selects the tab as usual.
+            .on_click(|event, window, cx| {
+                if event.click_count() == 2 {
+                    window.dispatch_action(Box::new(ToggleSessionPanel), cx);
+                }
+            })
             .test_support()
             .aria_label(self.label)
             .child(match self.menu {

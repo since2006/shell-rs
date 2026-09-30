@@ -32,6 +32,8 @@ pub(super) struct ListingContext {
     pub menu_hit: Rc<RefCell<Option<MenuHit>>>,
     /// Where the rows are, for the selection rectangle.
     pub geometry: Rc<ListGeometry>,
+    /// What the list says while it has no rows.
+    pub placeholder: SharedString,
 }
 
 /// Where the list and its rows are on screen, recorded as they paint, so a
@@ -103,6 +105,7 @@ impl Default for ListingContext {
             pane: None,
             menu_hit: Rc::default(),
             geometry: Rc::default(),
+            placeholder: SharedString::default(),
         }
     }
 }
@@ -117,30 +120,34 @@ pub struct FileListing {
     context: ListingContext,
 }
 
+/// WinSCP's columns for each side. Column widths are an API boundary that
+/// takes `Pixels`.
+fn columns(side: PaneSide) -> Vec<Column> {
+    match side {
+        PaneSide::Local => vec![
+            name_column(px(260.)),
+            Column::new("size", "大小").width(px(100.)).sortable(),
+            Column::new("type", "类型").width(px(100.)).sortable(),
+            Column::new("modified", "修改时间")
+                .width(px(150.))
+                .sortable(),
+        ],
+        PaneSide::Remote => vec![
+            name_column(px(240.)),
+            Column::new("size", "大小").width(px(100.)).sortable(),
+            Column::new("modified", "修改时间")
+                .width(px(150.))
+                .sortable(),
+            Column::new("rights", "权限").width(px(96.)).sortable(),
+            Column::new("owner", "所有者").width(px(80.)).sortable(),
+        ],
+    }
+}
+
 impl FileListing {
     pub fn new(side: PaneSide, rows: Vec<FileEntry>) -> Self {
-        // Column widths are an API boundary that takes `Pixels`.
-        let columns = match side {
-            PaneSide::Local => vec![
-                name_column(px(260.)),
-                Column::new("size", "大小").width(px(100.)).sortable(),
-                Column::new("type", "类型").width(px(100.)).sortable(),
-                Column::new("modified", "修改时间")
-                    .width(px(150.))
-                    .sortable(),
-            ],
-            PaneSide::Remote => vec![
-                name_column(px(240.)),
-                Column::new("size", "大小").width(px(100.)).sortable(),
-                Column::new("modified", "修改时间")
-                    .width(px(150.))
-                    .sortable(),
-                Column::new("rights", "权限").width(px(96.)).sortable(),
-                Column::new("owner", "所有者").width(px(80.)).sortable(),
-            ],
-        };
         let mut listing = Self {
-            columns,
+            columns: columns(side),
             rows: Vec::new(),
             sort: None,
             side,
@@ -602,14 +609,18 @@ impl TableDelegate for FileListing {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
+        let text = self.context.placeholder.clone();
         div()
+            .id("list-placeholder")
             .size_full()
             .flex()
             .items_center()
             .justify_center()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
-            .child("空目录")
+            .child(text.clone())
+            .test_support()
+            .aria_label(text)
     }
 }
 
