@@ -203,7 +203,7 @@ impl DownloadBatch {
                 .begin(item.source.to_string(), target.clone(), size, control);
             let _target_guard = TargetGuard::acquire(
                 format!("local\0{}", item.target.display()),
-                "其他会话正在下载到同一位置，请稍后继续下载",
+                "另一个传输正在下载到同一位置，请稍后继续下载",
             )?;
             let result = if self
                 .blocked_directories

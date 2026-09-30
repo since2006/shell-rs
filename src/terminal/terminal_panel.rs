@@ -386,7 +386,7 @@ impl TabMenu {
                 Box::new(ReconnectTerminal(id)),
             )
             .menu_with_icon(
-                "编辑会话…",
+                "编辑主机…",
                 Icon::new(CatalogIcon::Pencil),
                 Box::new(EditSession(session_id)),
             )

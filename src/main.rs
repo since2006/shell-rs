@@ -2,7 +2,7 @@
 // up a console window as well. Debug builds keep theirs for the logs.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-use gpui_kit::component::{Root, WindowExt as _, notification::Notification};
+use gpui_kit::component::{Root, notification::Notification};
 use gpui_kit::*;
 
 use shellrs::session::{SessionDatabase, SessionStore};
@@ -15,6 +15,12 @@ fn main() {
     #[cfg(any(not(windows), debug_assertions))]
     if let Some(args) = shellrs::cli::command_line_arguments() {
         std::process::exit(shellrs::cli::main(args));
+    }
+    // One ShellRS per data directory. Each keeps the sessions in memory and
+    // writes its changes through, so a second one would write over the
+    // first one's; opened again, ShellRS brings the running one forward.
+    if shellrs::cli::activate_running_app(&shellrs::app::cli_socket_path()) {
+        return;
     }
     gpui_kit::application()
         .with_assets(shellrs::app::AppAssets)
@@ -33,8 +39,13 @@ fn main() {
                     let settings = cx.new(|_| settings);
                     let workspace = cx
                         .new(|cx| shellrs::workspace::Workspace::new(store, settings, window, cx));
+                    // Not pushed here: the window has no `Root` to show it yet.
                     for problem in [problem, settings_problem].into_iter().flatten() {
-                        window.push_notification(Notification::error(problem), cx);
+                        shellrs::workspace::notify_once_open(
+                            Notification::error(problem),
+                            window,
+                            cx,
+                        );
                     }
                     cx.new(|cx| Root::new(workspace, window, cx))
                 })

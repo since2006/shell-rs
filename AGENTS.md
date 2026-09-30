@@ -2,7 +2,9 @@
 
 ## 项目是什么
 
-ShellRS（crate 与二进制都叫 `shellrs`）是一个类似 Xshell / WinSCP 的 SSH 会话管理工具，基于 `gpui-kit` 0.6.1（GPUI + gpui-base + gpui-component）。界面文案用中文，标识符用英文。
+ShellRS（crate 与二进制都叫 `shellrs`）是一个类似 Xshell / WinSCP 的 SSH 主机管理工具，基于 `gpui-kit` 0.6.1（GPUI + gpui-base + gpui-component）。界面文案用中文，标识符用英文。
+
+**界面上叫「主机」，代码里叫 `Session`。** 左侧列表里保存的一项（地址、端口、用户、认证方式）在界面上叫「主机」，量词用「台」；它以前叫「会话」，代码标识符（`Session`、`SessionStore`、`session/` …）没有跟着改，本文件里说的「会话」指的就是它。新写的界面文案一律用「主机」，不要再出现「会话」；填 IP / 域名的那个字段叫「地址」，不叫「主机」（「主机密钥」「首次连接此主机」这些照旧）。协议术语「SSH 会话通道」不算。
 
 会话和分组是**真实持久化**的，存在一个 SQLite 文件里（`~/Library/Application Support/shellrs/shellrs.db`，`SHELLRS_DATA_DIR` 可覆盖目录）。本地终端（`portable-pty` + `alacritty_terminal`）和 SSH 远程连接（`russh`）也都是真的。密码与私钥口令存在系统钥匙串里（`keyring`），**数据库里永远不出现秘密**。SFTP 双栏浏览与上传也已接入真实文件系统，支持断点续传；下载、目录同步和传输队列尚未实现。详见 `README.md`。
 

@@ -161,7 +161,7 @@ impl UploadBatch {
             );
             let _target_guard = TargetGuard::acquire(
                 format!("{}\0{}", self.endpoint, item.target),
-                "其他会话正在上传同一目标，请稍后继续上传",
+                "另一个传输正在上传同一目标，请稍后继续上传",
             )?;
             let result = if self
                 .blocked_directories

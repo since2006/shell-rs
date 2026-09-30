@@ -153,7 +153,7 @@ fn describe_test_failure(error: &anyhow::Error, host_trust: HostTrust) -> String
 
 /// Why a login failed, from the error alone: a credential that was
 /// missing, the network's own answer, or whatever the error says.
-pub(super) fn describe_login_error(error: &anyhow::Error) -> String {
+pub fn describe_login_error(error: &anyhow::Error) -> String {
     for cause in error.chain() {
         if let Some(need) = cause.downcast_ref::<MissingCredential>() {
             return need.to_string();
@@ -249,7 +249,7 @@ mod tests {
 
     #[test]
     fn host_trust_outranks_the_connect_error() {
-        let error = anyhow!("无法建立 SSH 连接，请检查主机、端口和主机密钥");
+        let error = anyhow!("无法建立 SSH 连接，请检查地址、端口和主机密钥");
         let changed = HostTrust {
             key_changed: true,
             ..HostTrust::default()

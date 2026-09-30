@@ -370,6 +370,8 @@ impl ExplorerPanel {
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .title("打开目录")
+                // Closed by its buttons or Escape, not by a click beside it.
+                .overlay_closable(false)
                 .child(form.clone())
                 .footer(commit_footer("open-directory-confirm", "打开"))
                 .on_ok({

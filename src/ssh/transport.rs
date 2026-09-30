@@ -1289,7 +1289,7 @@ mod tests {
                 .as_deref()
                 .map(String::as_str),
             Some("stale-password"),
-            "会话对话框里填的条目不该被静默删除"
+            "主机对话框里填的条目不该被静默删除"
         );
     }
 

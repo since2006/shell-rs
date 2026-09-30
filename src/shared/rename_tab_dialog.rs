@@ -71,6 +71,8 @@ pub fn open_rename_tab_dialog<T: RenamableTab>(
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
             .title("重命名标签")
+            // Closed by its buttons or Escape, not by a click beside it.
+            .overlay_closable(false)
             .child(form.clone())
             .footer(commit_footer("commit", "保存"))
             .on_ok({

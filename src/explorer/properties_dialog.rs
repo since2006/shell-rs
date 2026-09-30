@@ -342,6 +342,8 @@ impl ExplorerPanel {
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(title.clone())
+                // Closed by its buttons or Escape, not by a click beside it.
+                .overlay_closable(false)
                 .child(form.clone())
                 .footer(commit_footer("commit", "应用"))
                 .on_ok({

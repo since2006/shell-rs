@@ -4,6 +4,8 @@
 use std::{
     io::{self, BufReader, Write},
     path::Path,
+    sync::mpsc,
+    time::Duration,
 };
 
 use unicode_width::UnicodeWidthStr as _;
@@ -53,6 +55,52 @@ pub fn run(endpoint: &Path, request: Request, console: &mut Console) -> i32 {
             &format!("与 ShellRS 的连接意外中断：{error}"),
         ),
     }
+}
+
+/// How long a running app gets to say it heard that it should come
+/// forward. One too busy to answer is running all the same.
+const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Ask the ShellRS listening at `endpoint` to bring its window forward;
+/// whether there is one. `false` means nothing is running there and the
+/// caller is free to start.
+///
+/// Whatever takes the connection counts as running, whether or not it
+/// understands the request: an older ShellRS answers with an error, and a
+/// second copy on the same data would be worse than a window left behind.
+pub fn activate_running_app(endpoint: &Path) -> bool {
+    let Ok(stream) = connect(endpoint) else {
+        return false;
+    };
+    // On a thread, because a pipe cannot be read with a timeout and an app
+    // that hangs must not hang the one being opened.
+    let (done, heard) = mpsc::channel();
+    let asked = std::thread::Builder::new()
+        .name("shellrs-activate".into())
+        .spawn(move || {
+            let _ = done.send(ask_to_come_forward(&stream));
+        });
+    if asked.is_ok() {
+        let _ = heard.recv_timeout(ACTIVATION_TIMEOUT);
+    }
+    true
+}
+
+/// Send the request and wait for the answer, whatever it says: by then the
+/// app has the request.
+fn ask_to_come_forward<S>(stream: S) -> io::Result<()>
+where
+    S: Copy + io::Read + Write,
+{
+    let mut writer = stream;
+    write_json(
+        &mut writer,
+        &Envelope {
+            version: PROTOCOL_VERSION,
+            request: Request::Activate,
+        },
+    )?;
+    read_frame(&mut BufReader::new(stream)).map(|_| ())
 }
 
 enum Failure {
@@ -151,6 +199,7 @@ where
                     }
                     Reply::TransferDone(summary) => return Ok(print_summary(&summary, console)?),
                     Reply::Exit { code } => return Ok(code),
+                    Reply::Activated => return Ok(0),
                     Reply::Error { code, message } => return Ok(console.error(code, &message)),
                 }
             }
@@ -195,7 +244,7 @@ fn print_sessions(sessions: &[SessionInfo], console: &mut Console) -> io::Result
         return writeln!(console.stdout);
     }
     if sessions.is_empty() {
-        return writeln!(console.stderr, "没有匹配的会话");
+        return writeln!(console.stderr, "没有匹配的主机");
     }
     let rows: Vec<[String; 5]> = sessions
         .iter()

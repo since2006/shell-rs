@@ -192,7 +192,7 @@ impl Transfer {
         let refused = match prompt.kind() {
             ConnectionPromptKind::UnknownHost(_) => CliError::new(
                 ErrorCode::HostKeyUnknown,
-                "尚未信任这台主机的密钥：请先在 ShellRS 中连接一次这个会话",
+                "尚未信任这台主机的密钥：请先在 ShellRS 中连接一次这台主机",
             ),
             ConnectionPromptKind::HostKeyChanged(_) => CliError::new(
                 ErrorCode::HostKeyChanged,
@@ -200,7 +200,7 @@ impl Transfer {
             ),
             ConnectionPromptKind::Authentication(_) => CliError::new(
                 ErrorCode::MissingCredential,
-                "这个会话没有保存可用的密码或口令：请先在 ShellRS 中连接一次这个会话并保存密码",
+                "这台主机没有保存可用的密码或口令：请先在 ShellRS 中连接一次这台主机并保存密码",
             ),
         };
         self.refused.get_or_insert(refused);

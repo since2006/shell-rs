@@ -101,13 +101,13 @@ impl RecentSessions {
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child("双击会话连接，或新建一个会话"),
+                            .child("双击主机连接，或新建一台主机"),
                     ),
             )
             .child(
                 Button::new("recent-new-session")
                     .icon(IconName::Plus)
-                    .label("新建会话…")
+                    .label("新建主机…")
                     .on_click(move |_, window, cx| target.dispatch_action(&NewSession, window, cx)),
             )
     }
@@ -120,8 +120,8 @@ impl RecentSessions {
             .py_8()
             .text_color(muted)
             .child(Icon::new(CatalogIcon::Server).large())
-            .child(div().text_sm().child("还没有连接过的会话"))
-            .child(div().text_xs().child("双击左侧的会话即可连接"))
+            .child(div().text_sm().child("还没有连接过的主机"))
+            .child(div().text_xs().child("双击左侧的主机即可连接"))
     }
 
     fn on_connect_selected(

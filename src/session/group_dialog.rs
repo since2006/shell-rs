@@ -8,10 +8,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{
-    DeleteHandler, GroupDraft, GroupId, SessionStore, group_options, session_dialog::confirm_delete,
-};
-use crate::shared::{commit_footer, form_error};
+use super::{DeleteHandler, GroupDraft, GroupId, SessionStore, group_options};
+use crate::shared::{commit_footer, confirm_delete, form_error};
 
 /// The label of the row that stands for "no parent" / "no group".
 pub const ROOT_LABEL: &str = "（顶层）";
@@ -176,6 +174,8 @@ pub fn open_group_dialog(
         move |dialog, _, _| {
             dialog
                 .title(title.clone())
+                // Closed by its buttons or Escape, not by a click beside it.
+                .overlay_closable(false)
                 .child(form.clone())
                 .footer(commit_footer("commit", commit_label.clone()))
                 .on_ok({
@@ -187,12 +187,15 @@ pub fn open_group_dialog(
 }
 
 /// Ask before deleting a group. Deleting one takes its subgroups and every
-/// session inside them, so the counts go in the description.
+/// session inside them, and those sessions' port forwards, so the counts go
+/// in the description.
+#[allow(clippy::too_many_arguments)]
 pub fn confirm_delete_group(
     name: &str,
     sessions: usize,
     subgroups: usize,
     affected: (bool, usize),
+    forwards: usize,
     on_delete: DeleteHandler,
     window: &mut Window,
     cx: &mut App,
@@ -208,6 +211,15 @@ pub fn confirm_delete_group(
             .into(),
         );
     }
+    if forwards > 0 {
+        description = Some(
+            format!(
+                "{}这些主机的 {forwards} 条端口转发会一并删除。",
+                description.unwrap_or_default()
+            )
+            .into(),
+        );
+    }
     confirm_delete(name, description, on_delete, window, cx);
 }
 
@@ -217,9 +229,9 @@ fn describe_contents(sessions: usize, subgroups: usize, closes_tabs: bool) -> Op
     let contents = match (sessions, subgroups) {
         (0, 0) => None,
         (0, subgroups) => Some(format!("将同时删除其中的 {subgroups} 个子分组。")),
-        (sessions, 0) => Some(format!("将同时删除其中的 {sessions} 个会话。")),
+        (sessions, 0) => Some(format!("将同时删除其中的 {sessions} 台主机。")),
         (sessions, subgroups) => Some(format!(
-            "将同时删除其中的 {sessions} 个会话和 {subgroups} 个子分组。"
+            "将同时删除其中的 {sessions} 台主机和 {subgroups} 个子分组。"
         )),
     };
     let tabs = closes_tabs.then_some("已打开的终端和 SFTP 标签会一并关闭。");
@@ -242,7 +254,7 @@ mod tests {
         assert_eq!(describe_contents(0, 0, false), None);
         assert_eq!(
             describe_contents(3, 0, false).as_deref(),
-            Some("将同时删除其中的 3 个会话。")
+            Some("将同时删除其中的 3 台主机。")
         );
         assert_eq!(
             describe_contents(0, 2, false).as_deref(),
@@ -250,7 +262,7 @@ mod tests {
         );
         assert_eq!(
             describe_contents(3, 2, true).as_deref(),
-            Some("将同时删除其中的 3 个会话和 2 个子分组。已打开的终端和 SFTP 标签会一并关闭。")
+            Some("将同时删除其中的 3 台主机和 2 个子分组。已打开的终端和 SFTP 标签会一并关闭。")
         );
         assert_eq!(
             describe_contents(0, 0, true).as_deref(),

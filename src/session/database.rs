@@ -10,8 +10,8 @@ use std::{collections::HashSet, path::Path};
 use rusqlite::{Connection, params};
 
 use super::{
-    AuthKind, BookmarkSide, GroupDraft, GroupId, HostOs, PublicId, Session, SessionDraft,
-    SessionGroup, SessionId,
+    AuthKind, BookmarkSide, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule,
+    GroupDraft, GroupId, HostOs, PublicId, Session, SessionDraft, SessionGroup, SessionId,
 };
 
 /// SQLite's only integer type is `i64`, so the `u64` ids cross the boundary
@@ -28,9 +28,37 @@ fn from_sql(id: i64) -> u64 {
 /// The schema's version, stored in `PRAGMA user_version`. A change to the
 /// schema bumps it and gives `migrate` a step from the version before.
 ///
-/// It stands at 7 rather than 1 because the databases of development builds
-/// are already at 7, and have exactly this schema.
-const SCHEMA_VERSION: i64 = 7;
+/// The steps start at 7 rather than 1 because the databases of development
+/// builds were already at 7 when the older steps were folded into `SCHEMA`.
+const SCHEMA_VERSION: i64 = 8;
+
+/// The port-forwarding rules, added in version 8. A macro rather than a
+/// constant so that `SCHEMA` and the step from version 7 are built from the
+/// same text and cannot drift apart.
+///
+/// A rule goes with its session. A dynamic forward has no target; the other
+/// two kinds must have one.
+macro_rules! forwards_table {
+    () => {
+        "\
+CREATE TABLE forwards (
+    id          INTEGER PRIMARY KEY,
+    session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL DEFAULT '',
+    kind        TEXT NOT NULL CHECK (kind IN ('local', 'remote', 'dynamic')),
+    bind_host   TEXT NOT NULL,
+    bind_port   INTEGER NOT NULL CHECK (bind_port BETWEEN 1 AND 65535),
+    target_host TEXT,
+    target_port INTEGER,
+    auto_start  INTEGER NOT NULL DEFAULT 0,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    CHECK ((kind = 'dynamic' AND target_host IS NULL AND target_port IS NULL)
+        OR (kind <> 'dynamic' AND target_host IS NOT NULL
+            AND target_port BETWEEN 1 AND 65535))
+);
+CREATE INDEX forwards_session_id ON forwards(session_id);"
+    };
+}
 
 /// The whole schema, as a new database gets it.
 ///
@@ -40,7 +68,8 @@ const SCHEMA_VERSION: i64 = 7;
 /// a site's bookmarks with the site. `public_id` may be missing, which a row
 /// added by hand is until the next open (see `fill_missing_public_ids`); the
 /// index keeps the ones that are there unique.
-const SCHEMA: &str = "\
+const SCHEMA: &str = concat!(
+    "\
 CREATE TABLE groups (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL,
@@ -71,7 +100,10 @@ CREATE TABLE bookmarks (
     path       TEXT NOT NULL,
     sort_order INTEGER NOT NULL,
     UNIQUE (session_id, side, path)
-);";
+);
+",
+    forwards_table!()
+);
 
 /// Everything one launch reads back from disk.
 pub struct StoredData {
@@ -83,6 +115,8 @@ pub struct StoredData {
     pub recent: Vec<SessionId>,
     /// SFTP bookmarks in the order they were added.
     pub bookmarks: Vec<(SessionId, BookmarkSide, String)>,
+    /// Port-forwarding rules in the order the forward list shows them.
+    pub forwards: Vec<ForwardRule>,
 }
 
 pub struct SessionDatabase {
@@ -194,11 +228,51 @@ impl SessionDatabase {
             })
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        let forwards = self
+            .connection
+            .prepare(
+                "SELECT id, session_id, name, kind, bind_host, bind_port, target_host, \
+                 target_port, auto_start, sort_order FROM forwards ORDER BY sort_order, id",
+            )?
+            .query_map([], |row| {
+                let id: i64 = row.get(0)?;
+                let session: i64 = row.get(1)?;
+                let name: String = row.get(2)?;
+                let kind: String = row.get(3)?;
+                let bind_host: String = row.get(4)?;
+                let bind_port: u16 = row.get(5)?;
+                let target_host: Option<String> = row.get(6)?;
+                let target_port: Option<u16> = row.get(7)?;
+                let auto_start: bool = row.get(8)?;
+                let sort_order: i64 = row.get(9)?;
+                // A kind this build does not know was written by a newer one;
+                // the rule is left out rather than run as something else.
+                Ok(ForwardKind::from_stored(&kind).map(|kind| {
+                    let target = target_host
+                        .zip(target_port)
+                        .map(|(host, port)| ForwardEndpoint::new(host, port));
+                    let draft = ForwardDraft::new(
+                        kind,
+                        SessionId(from_sql(session)),
+                        ForwardEndpoint::new(bind_host, bind_port),
+                        target,
+                    )
+                    .with_name(name)
+                    .with_auto_start(auto_start);
+                    let mut rule = ForwardRule::new(ForwardId(from_sql(id)), draft);
+                    rule.sort_order = sort_order;
+                    rule
+                }))
+            })?
+            .filter_map(Result::transpose)
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
         Ok(StoredData {
             groups,
             sessions,
             recent,
             bookmarks,
+            forwards,
         })
     }
 
@@ -382,6 +456,54 @@ impl SessionDatabase {
         transaction.commit()
     }
 
+    pub fn insert_forward(&self, rule: &ForwardRule) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "INSERT INTO forwards (id, session_id, name, kind, bind_host, bind_port, \
+             target_host, target_port, auto_start, sort_order) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                to_sql(rule.id.0),
+                to_sql(rule.session.0),
+                rule.name.as_ref(),
+                rule.kind.as_str(),
+                rule.bind.host.as_ref(),
+                rule.bind.port,
+                rule.target.as_ref().map(|target| target.host.as_ref()),
+                rule.target.as_ref().map(|target| target.port),
+                rule.auto_start,
+                rule.sort_order,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_forward(&self, rule: &ForwardRule) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE forwards SET session_id = ?2, name = ?3, kind = ?4, bind_host = ?5, \
+             bind_port = ?6, target_host = ?7, target_port = ?8, auto_start = ?9, \
+             sort_order = ?10 WHERE id = ?1",
+            params![
+                to_sql(rule.id.0),
+                to_sql(rule.session.0),
+                rule.name.as_ref(),
+                rule.kind.as_str(),
+                rule.bind.host.as_ref(),
+                rule.bind.port,
+                rule.target.as_ref().map(|target| target.host.as_ref()),
+                rule.target.as_ref().map(|target| target.port),
+                rule.auto_start,
+                rule.sort_order,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_forward(&self, id: ForwardId) -> rusqlite::Result<()> {
+        self.connection
+            .execute("DELETE FROM forwards WHERE id = ?1", params![to_sql(id.0)])?;
+        Ok(())
+    }
+
     /// Record the operating system a probe found on the host. `None` clears
     /// it, which is what a failed probe on a rebuilt host leaves behind.
     pub fn set_host_os(&self, id: SessionId, os: Option<HostOs>) -> rusqlite::Result<()> {
@@ -404,13 +526,20 @@ impl SessionDatabase {
 }
 
 /// Bring the database to `SCHEMA_VERSION`. A new file has version 0 and gets
-/// the schema; there are no steps between versions yet.
+/// the whole schema; an older one is taken forward one version at a time.
+/// Each step is one transaction, so a file is never left between versions.
 fn migrate(connection: &Connection) -> rusqlite::Result<()> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version == 0 {
-        // One transaction: a file is either new or complete.
-        connection.execute_batch(&format!(
+        return connection.execute_batch(&format!(
             "BEGIN;\n{SCHEMA}\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
+        ));
+    }
+    if version == 7 {
+        connection.execute_batch(concat!(
+            "BEGIN;\n",
+            forwards_table!(),
+            "\nPRAGMA user_version = 8;\nCOMMIT;"
         ))?;
     }
     Ok(())
@@ -485,6 +614,164 @@ mod tests {
         assert!(data.groups.is_empty());
         assert!(data.sessions.is_empty());
         assert!(data.recent.is_empty());
+        assert!(data.forwards.is_empty());
+    }
+
+    /// The schema as version 7 had it, frozen here so the step from 7 keeps
+    /// being tested against what is really on people's disks.
+    const SCHEMA_V7: &str = "\
+CREATE TABLE groups (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    parent_id  INTEGER REFERENCES groups(id) ON DELETE CASCADE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    expanded   INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE sessions (
+    id                INTEGER PRIMARY KEY,
+    name              TEXT NOT NULL,
+    host              TEXT NOT NULL,
+    port              INTEGER NOT NULL,
+    username          TEXT NOT NULL,
+    auth              TEXT NOT NULL,
+    group_id          INTEGER REFERENCES groups(id) ON DELETE CASCADE,
+    last_connected_at INTEGER,
+    key_path          TEXT,
+    os                TEXT,
+    sort_order        INTEGER NOT NULL DEFAULT 0,
+    public_id         TEXT
+);
+CREATE INDEX sessions_group_id ON sessions(group_id);
+CREATE UNIQUE INDEX sessions_public_id ON sessions(public_id);
+CREATE TABLE bookmarks (
+    id         INTEGER PRIMARY KEY,
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    side       TEXT NOT NULL CHECK (side IN ('local', 'remote')),
+    path       TEXT NOT NULL,
+    sort_order INTEGER NOT NULL,
+    UNIQUE (session_id, side, path)
+);
+PRAGMA user_version = 7;";
+
+    /// Every table and index, as SQLite recorded its definition.
+    fn schema_of(connection: &Connection) -> Vec<(String, String)> {
+        connection
+            .prepare("SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_version_7_database_gains_the_forwards_table_and_keeps_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(SCHEMA_V7).unwrap();
+            old.execute(
+                "INSERT INTO sessions (id, name, host, port, username, auth, public_id) \
+                 VALUES (1, 'web', 'example.test', 22, 'root', 'auto', 'abcdefgh12345678')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let db = SessionDatabase::open(&path).unwrap();
+        let version: i64 = db
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let data = db.load().unwrap();
+        assert_eq!(data.sessions[0].name.as_ref(), "web");
+        assert!(data.forwards.is_empty());
+        // Upgrading ends with exactly the schema a new file gets.
+        let fresh = SessionDatabase::in_memory().unwrap();
+        assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
+
+        // Opening it again finds nothing left to do.
+        drop(db);
+        assert!(SessionDatabase::open(&path).is_ok());
+    }
+
+    fn forward(id: u64, session: u64, kind: ForwardKind, port: u16) -> ForwardRule {
+        let target = kind
+            .has_target()
+            .then(|| ForwardEndpoint::new("db.internal", 3306));
+        ForwardRule::new(
+            ForwardId(id),
+            ForwardDraft::new(
+                kind,
+                SessionId(session),
+                ForwardEndpoint::new("127.0.0.1", port),
+                target,
+            ),
+        )
+    }
+
+    #[test]
+    fn forwards_round_trip_in_list_order_and_go_with_their_session() {
+        let db = SessionDatabase::in_memory().unwrap();
+        db.insert_group(&group(1, "生产", None)).unwrap();
+        db.insert_session(&session(1, "web", Some(1))).unwrap();
+        db.insert_session(&session(2, "db", None)).unwrap();
+
+        let mut local = forward(1, 1, ForwardKind::Local, 8080);
+        local.name = "数据库".into();
+        local.auto_start = true;
+        local.sort_order = 1;
+        db.insert_forward(&local).unwrap();
+        let socks = forward(2, 2, ForwardKind::Dynamic, 1080);
+        db.insert_forward(&socks).unwrap();
+        let remote = forward(3, 1, ForwardKind::Remote, 9000);
+        db.insert_forward(&remote).unwrap();
+
+        // `sort_order` first, then id: the dynamic and remote rules are at 0.
+        assert_eq!(
+            db.load().unwrap().forwards,
+            [socks.clone(), remote.clone(), local.clone()]
+        );
+
+        let mut edited = local.clone();
+        edited.kind = ForwardKind::Dynamic;
+        edited.target = None;
+        edited.session = SessionId(2);
+        edited.bind = ForwardEndpoint::new("0.0.0.0", 1081);
+        edited.auto_start = false;
+        db.update_forward(&edited).unwrap();
+        assert_eq!(db.load().unwrap().forwards[2], edited);
+
+        db.remove_forward(ForwardId(2)).unwrap();
+        assert_eq!(db.load().unwrap().forwards, [remote, edited.clone()]);
+
+        // Deleting a group takes its sessions, and they take their forwards.
+        db.remove_group(GroupId(1)).unwrap();
+        assert_eq!(db.load().unwrap().forwards, [edited]);
+        db.remove_session(SessionId(2)).unwrap();
+        assert!(db.load().unwrap().forwards.is_empty());
+    }
+
+    #[test]
+    fn the_database_refuses_a_forward_whose_target_does_not_fit_its_kind() {
+        let db = SessionDatabase::in_memory().unwrap();
+        db.insert_session(&session(1, "web", None)).unwrap();
+
+        let mut dynamic_with_target = forward(1, 1, ForwardKind::Dynamic, 1080);
+        dynamic_with_target.target = Some(ForwardEndpoint::new("db", 3306));
+        assert!(db.insert_forward(&dynamic_with_target).is_err());
+
+        let mut local_without_target = forward(2, 1, ForwardKind::Local, 8080);
+        local_without_target.target = None;
+        assert!(db.insert_forward(&local_without_target).is_err());
+
+        // A rule must go through a session that exists.
+        assert!(
+            db.insert_forward(&forward(3, 99, ForwardKind::Local, 8080))
+                .is_err()
+        );
     }
 
     #[test]
@@ -759,15 +1046,30 @@ mod tests {
     #[test]
     fn schema_never_contains_secret_columns() {
         let db = SessionDatabase::in_memory().unwrap();
-        let mut statement = db
+        let tables = db
             .connection
-            .prepare("PRAGMA table_info(sessions)")
-            .unwrap();
-        let columns = statement
-            .query_map([], |row| row.get::<_, String>(1))
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
+        assert!(tables.contains(&"sessions".to_string()));
+        assert!(tables.contains(&"forwards".to_string()));
+        let mut columns = Vec::new();
+        for table in tables {
+            let mut statement = db
+                .connection
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap();
+            columns.extend(
+                statement
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .unwrap()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .unwrap(),
+            );
+        }
         assert!(columns.contains(&"key_path".to_string()));
         assert!(!columns.iter().any(|column| {
             column.contains("password") || column.contains("passphrase") || column.contains("otp")

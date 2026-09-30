@@ -4,7 +4,10 @@ mod exec;
 mod probe;
 mod tester;
 mod transport;
-pub use connection::{SshConnectionConfig, SshConnector, SshHandle, SshPrompts};
+pub use connection::{
+    ForwardedTcpip, MissingCredential, SshConnectionConfig, SshConnector, SshHandle, SshPrompts,
+    is_network_error,
+};
 pub use exec::{ExecError, ExecErrorKind, ExecExit, ExecStream, run_command};
-pub use tester::SshConnectionTester;
+pub use tester::{SshConnectionTester, describe_login_error};
 pub use transport::SshTerminalTransportProvider;

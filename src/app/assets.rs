@@ -35,7 +35,14 @@ icon_assets!(
         SquareTerminal,
         CircleMinus,
         Play,
-        Square
+        Square,
+        ArrowLeftRight,
+        ArrowRightToLine,
+        ArrowLeftToLine,
+        Laptop,
+        Lock,
+        CircleAlert,
+        Target
     ]
 );
 

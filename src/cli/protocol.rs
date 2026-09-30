@@ -124,6 +124,10 @@ pub enum Request {
         source: String,
         destination: PathBuf,
     },
+    /// Bring the app's window forward. Not the `shellrs` command's: ShellRS
+    /// sends it when it is opened while it is already running, so it is
+    /// answered whatever 启用外部 CLI says.
+    Activate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,6 +143,8 @@ pub enum Reply {
     Exit {
         code: i32,
     },
+    /// The app heard [`Request::Activate`].
+    Activated,
     Error {
         code: ErrorCode,
         message: String,

@@ -1,8 +1,8 @@
-use std::{rc::Rc, time::Duration};
+use std::time::Duration;
 
 use gpui_kit::component::{
     ActiveTheme as _, IndexPath, Sizable as _, WindowExt as _,
-    button::{Button, ButtonVariant, ButtonVariants as _},
+    button::{Button, ButtonVariants as _},
     dialog::{Cancel, Confirm, DialogButtonProps, DialogFooter},
     form::{Field, Form},
     h_flex,
@@ -19,13 +19,11 @@ use crate::connection::{LoginTest, SharedConnectionTester, TrustCallback, Unknow
 use crate::secrets::{SecretRef, SharedSecretStore};
 
 use super::{AuthKind, GroupId, Session, SessionDraft, SessionId, SessionStore, group_options};
-use crate::shared::form_error;
+pub use crate::shared::DeleteHandler;
+use crate::shared::{confirm_delete, form_error, parse_port};
 
 /// The label of the row that puts a session at the root of the tree.
 pub const NO_GROUP_LABEL: &str = "（无分组）";
-
-/// What runs when the user confirms deleting a session.
-pub type DeleteHandler = Rc<dyn Fn(&mut Window, &mut App)>;
 
 /// What the keychain had for the session being edited.
 #[derive(Default)]
@@ -305,7 +303,7 @@ impl SessionForm {
         let auth = self.auth(cx);
         let key_path = self.key_path.read(cx).value().trim().to_string();
         let port = match (host.is_empty(), port, user.is_empty()) {
-            (true, _, _) => return Err("请输入主机"),
+            (true, _, _) => return Err("请输入地址"),
             (_, None, _) => return Err("端口必须是 1 到 65535 之间的数字"),
             (_, _, true) => return Err("请输入用户名"),
             (_, Some(port), _) => port,
@@ -419,7 +417,7 @@ impl SessionForm {
         let error = if name.is_empty() {
             Some("请输入名称")
         } else if host.is_empty() {
-            Some("请输入主机")
+            Some("请输入地址")
         } else if port.is_none() {
             Some("端口必须是 1 到 65535 之间的数字")
         } else if auth == AuthKind::Key && key_path.is_empty() {
@@ -531,7 +529,7 @@ impl Render for SessionForm {
                     )
                     .child(
                         Field::new()
-                            .label("主机")
+                            .label("地址")
                             .required(true)
                             .child(Input::new(&self.host).id("session-host").small()),
                     )
@@ -622,11 +620,6 @@ impl Render for SessionForm {
 /// A trust question from the test's worker, with where to send the answer.
 type TrustQuestion = (UnknownHostPrompt, std::sync::mpsc::Sender<bool>);
 
-/// A port field's value, when it is one.
-fn parse_port(port: &str) -> Option<u16> {
-    port.parse::<u16>().ok().filter(|port| *port != 0)
-}
-
 /// Put a first-seen host key to the user, above the session dialog. Closing
 /// the dialog any other way than trusting counts as declining.
 fn ask_to_trust(
@@ -710,9 +703,9 @@ pub fn open_session_dialog(
 ) {
     let form = cx.new(|cx| SessionForm::new(editing, preselect_group, store, tester, window, cx));
     let title: SharedString = if editing.is_some() {
-        "编辑会话"
+        "编辑主机"
     } else {
-        "新建会话"
+        "新建主机"
     }
     .into();
     let commit_label: SharedString = if editing.is_some() {
@@ -727,6 +720,8 @@ pub fn open_session_dialog(
         move |dialog, _, cx| {
             dialog
                 .title(title.clone())
+                // Closed by its buttons or Escape, not by a click beside it.
+                .overlay_closable(false)
                 .child(form.clone())
                 .footer(
                     DialogFooter::new()
@@ -778,72 +773,69 @@ pub fn open_session_dialog(
 }
 
 /// Ask before deleting a session. `on_delete` runs when the user confirms.
+/// `affected` is whether tabs of the session are open and how many of them
+/// are transferring; `forwards` is how many port forwards go through it.
 pub fn confirm_delete_session(
     session: &Session,
     affected: (bool, usize),
+    forwards: usize,
     on_delete: DeleteHandler,
     window: &mut Window,
     cx: &mut App,
 ) {
     let (closes_tabs, uploads) = affected;
-    let description = closes_tabs.then(|| {
-        format!(
-            "会一并关闭该会话已打开的终端和 SFTP 标签。{}",
-            if uploads > 0 {
-                format!("将停止 {uploads} 个传输批次并保留续传进度。")
-            } else {
-                String::new()
-            }
-        )
-        .into()
-    });
-    confirm_delete(&session.name, description, on_delete, window, cx);
+    confirm_delete(
+        &session.name,
+        describe_session_delete(closes_tabs, uploads, forwards),
+        on_delete,
+        window,
+        cx,
+    );
 }
 
-/// The confirmation deleting a session and deleting a group share.
-/// `description` says what goes with it.
-pub(super) fn confirm_delete(
-    name: &str,
-    description: Option<SharedString>,
-    on_delete: DeleteHandler,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let title: SharedString = format!("删除“{name}”？").into();
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        alert
-            .title(title.clone())
-            .when_some(description.clone(), |alert, description| {
-                alert.description(description)
-            })
-            .button_props(
-                DialogButtonProps::default()
-                    .ok_text("删除")
-                    .ok_variant(ButtonVariant::Danger)
-                    .cancel_text("取消"),
-            )
-            .show_cancel(true)
-            .on_ok({
-                let on_delete = on_delete.clone();
-                move |_, window, cx| {
-                    on_delete(window, cx);
-                    true
-                }
-            })
-    });
+/// What the delete dialog says goes with the session. `None` for a session
+/// with nothing open and no port forwards.
+fn describe_session_delete(
+    closes_tabs: bool,
+    uploads: usize,
+    forwards: usize,
+) -> Option<SharedString> {
+    let mut description = String::new();
+    if closes_tabs {
+        description.push_str("会一并关闭该主机已打开的终端和 SFTP 标签。");
+        if uploads > 0 {
+            description.push_str(&format!("将停止 {uploads} 个传输批次并保留续传进度。"));
+        }
+    }
+    if forwards > 0 {
+        description.push_str(&format!("将同时删除经由该主机的 {forwards} 条端口转发。"));
+    }
+    (!description.is_empty()).then(|| description.into())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthKind, parse_port, secret_change, uses_password};
+    use super::{AuthKind, describe_session_delete, secret_change, uses_password};
 
     #[test]
-    fn a_port_field_is_a_number_from_1_to_65535() {
-        assert_eq!(parse_port("22"), Some(22));
-        assert_eq!(parse_port("65535"), Some(65535));
-        for port in ["0", "65536", "ssh", ""] {
-            assert_eq!(parse_port(port), None, "{port:?}");
-        }
+    fn deleting_a_session_says_what_goes_with_it() {
+        assert_eq!(describe_session_delete(false, 0, 0), None);
+        assert_eq!(
+            describe_session_delete(true, 0, 0).as_deref(),
+            Some("会一并关闭该主机已打开的终端和 SFTP 标签。")
+        );
+        assert_eq!(
+            describe_session_delete(true, 2, 0).as_deref(),
+            Some("会一并关闭该主机已打开的终端和 SFTP 标签。将停止 2 个传输批次并保留续传进度。")
+        );
+        assert_eq!(
+            describe_session_delete(false, 0, 3).as_deref(),
+            Some("将同时删除经由该主机的 3 条端口转发。")
+        );
+        assert_eq!(
+            describe_session_delete(true, 0, 1).as_deref(),
+            Some("会一并关闭该主机已打开的终端和 SFTP 标签。将同时删除经由该主机的 1 条端口转发。")
+        );
     }
 
     #[test]

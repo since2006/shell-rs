@@ -6,7 +6,7 @@ use gpui_kit::*;
 use crate::{
     cli::AgentKind,
     explorer::{ExplorerId, FileSizeFormat},
-    session::{GroupId, NodeDrop, SessionId, SessionNode},
+    session::{ForwardId, GroupId, NodeDrop, SessionId, SessionNode},
     terminal::{LocalTerminalId, RemoteTerminalId},
 };
 
@@ -34,11 +34,25 @@ gpui_kit::actions!(
         /// Clear the active terminal's screen and scrollback, keeping the
         /// prompt line.
         ClearTerminal,
-        /// Show or hide the left session dock.
+        /// Show or hide the left dock, whichever list it is showing.
         ToggleSessionPanel,
+        /// Show the session list in the left dock.
+        ShowSessions,
+        /// Show the port-forwarding list in the left dock.
+        ShowForwards,
+        /// Open the new-forward dialog.
+        NewForward,
+        /// Start the forward selected in the forward list, or stop it if it
+        /// is running.
+        ToggleSelectedForward,
+        /// Move the forward list's selection to the row above.
+        SelectPreviousForward,
+        /// Move the forward list's selection to the row below.
+        SelectNextForward,
         /// Switch between the light and dark theme.
         ToggleTheme,
-        /// Move keyboard focus to the session search field.
+        /// Move keyboard focus to the search field of the list the left dock
+        /// is showing.
         FocusSearch,
         /// Connect the session selected in the focused session list.
         ConnectSelected,
@@ -140,6 +154,15 @@ id_actions! {
 
     /// Show the SFTP 大小 column in another format, from its title's menu.
     SetFileSizeFormat(FileSizeFormat);
+
+    /// Start a port forward over a connection of its own.
+    StartForward(ForwardId);
+    /// Stop a running port forward and log out its connection.
+    StopForward(ForwardId);
+    /// Open the edit-forward dialog.
+    EditForward(ForwardId);
+    /// Ask for confirmation, then delete a port-forwarding rule.
+    DeleteForward(ForwardId);
 }
 
 /// Move a session-tree row by dropping it beside a peer or into a group.

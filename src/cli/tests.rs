@@ -327,6 +327,44 @@ fn without_the_app_the_command_says_it_is_not_running() {
 }
 
 #[test]
+fn opening_shellrs_again_brings_the_running_one_forward() {
+    let fixture = fixture();
+    // Whatever 启用外部 CLI says: this is not the external CLI.
+    fixture.server.set_enabled(false);
+    assert!(!fixture.server.take_activation());
+
+    assert!(client::activate_running_app(&fixture.socket));
+    assert!(fixture.server.take_activation());
+    // Heard once, acted on once.
+    assert!(!fixture.server.take_activation());
+    assert!(fixture.backend.calls.lock().unwrap().is_empty());
+
+    // The switch still guards everything else.
+    let (code, _, stderr) = run(&fixture.socket, Request::List { query: None }, true);
+    assert_eq!(code, 255);
+    assert!(
+        String::from_utf8(stderr)
+            .unwrap()
+            .starts_with("shellrs: [not_enabled]")
+    );
+    assert!(!fixture.server.take_activation());
+}
+
+#[test]
+fn with_nothing_running_shellrs_is_free_to_start() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(!client::activate_running_app(&cli_endpoint(dir.path())));
+
+    // Nor does a socket left behind by a crash count as a running app.
+    #[cfg(unix)]
+    {
+        let stale = dir.path().join("stale.sock");
+        drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
+        assert!(!client::activate_running_app(&stale));
+    }
+}
+
+#[test]
 fn a_transfer_reports_its_summary_and_exits_1_when_items_failed() {
     let fixture = fixture();
     let (code, stdout, _) = run(

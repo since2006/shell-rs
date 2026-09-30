@@ -114,6 +114,9 @@ struct Shared {
     enabled: AtomicBool,
     targets: RwLock<Vec<CliTarget>>,
     backend: Arc<dyn CliBackend>,
+    /// Set when ShellRS was opened again while this one runs, until the
+    /// app has brought its window forward.
+    activation: AtomicBool,
 }
 
 /// Listens on the CLI socket until dropped. Always listening, even with
@@ -133,6 +136,7 @@ impl CliServer {
             enabled: AtomicBool::new(false),
             targets: RwLock::new(Vec::new()),
             backend,
+            activation: AtomicBool::new(false),
         });
         let listener = listen(endpoint, shared.clone())?;
         Ok(Self {
@@ -151,6 +155,13 @@ impl CliServer {
             .targets
             .write()
             .unwrap_or_else(|error| error.into_inner()) = targets;
+    }
+
+    /// Whether ShellRS was opened again since this was last asked. The
+    /// request threads cannot reach the window, so the app asks here on a
+    /// timer and brings its window forward when the answer is yes.
+    pub fn take_activation(&self) -> bool {
+        self.shared.activation.swap(false, Ordering::AcqRel)
     }
 }
 
@@ -393,6 +404,12 @@ fn respond(
 ) -> Result<Reply, CliError> {
     let envelope: Envelope = parse_json(payload)
         .map_err(|error| CliError::new(ErrorCode::BadRequest, error.to_string()))?;
+    // Before the checks below: coming forward means the same in every
+    // version, and it is ShellRS being opened again, not the external CLI.
+    if envelope.request == Request::Activate {
+        shared.activation.store(true, Ordering::Release);
+        return Ok(Reply::Activated);
+    }
     if envelope.version != PROTOCOL_VERSION {
         return Err(CliError::new(
             ErrorCode::VersionMismatch,
@@ -464,6 +481,8 @@ fn respond(
                 })
                 .map(Reply::TransferDone)
         }
+        // Answered above, before anything was checked.
+        Request::Activate => Ok(Reply::Activated),
     }
 }
 
@@ -478,7 +497,7 @@ fn find(shared: &Shared, id: &str) -> Result<CliTarget, CliError> {
         .ok_or_else(|| {
             CliError::new(
                 ErrorCode::SessionNotFound,
-                format!("没有 ID 为 {id} 的会话：请用 shellrs list 查看"),
+                format!("没有 ID 为 {id} 的主机：请用 shellrs list 查看"),
             )
         })
 }

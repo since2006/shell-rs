@@ -36,8 +36,12 @@ use crate::connection::{
     ConnectionSecret, SharedConnectionTester,
 };
 use crate::explorer::{ExplorerId, ExplorerPanel, ExplorerPanelEvent, confirm_close_transfer};
+use crate::forward::{
+    ForwardManager, ForwardManagerEvent, ForwardPanel, SharedForwardTransportProvider,
+    SshForwardTransportProvider,
+};
 use crate::session::{
-    ConnectionState, GroupId, SessionId, SessionNode, SessionPanel, SessionStore,
+    ConnectionState, ForwardId, GroupId, SessionId, SessionNode, SessionPanel, SessionStore,
     SessionStoreEvent, confirm_delete_group, confirm_delete_session, open_group_dialog,
     open_session_dialog,
 };
@@ -57,8 +61,8 @@ use crate::terminal::{
 };
 
 use super::{
-    dock_skin::WorkspaceDockSkin, recent_sessions::RecentSessions, status_bar::WorkspaceStatus,
-    title_bar::render_title_bar,
+    dock_skin::WorkspaceDockSkin, recent_sessions::RecentSessions, sidebar::Sidebar,
+    status_bar::WorkspaceStatus, title_bar::render_title_bar,
 };
 
 const DOCK_ID: &str = "shellrs-dock";
@@ -74,6 +78,21 @@ const FONT_SIZE_STEP: f32 = 2.;
 /// above them, and below popups (`POPUP_PRIORITY`), keeps a notification on
 /// top of dialogs without covering an open menu.
 const NOTIFICATION_PRIORITY: usize = 1;
+/// How often the window asks whether ShellRS was opened again; see
+/// [`CliServer::take_activation`].
+const ACTIVATION_POLL: Duration = Duration::from_millis(200);
+
+/// Show a notification from code that runs while the window is still being
+/// built: loading what is on disk, starting the services.
+///
+/// Notifications belong to the window's `Root`, which is only in place once
+/// the closure that builds the window has returned; pushing one before that
+/// panics. Deferred, it arrives as soon as the window is there.
+pub fn notify_once_open(notification: Notification, window: &mut Window, cx: &mut App) {
+    window.defer(cx, move |window, cx| {
+        window.push_notification(notification, cx)
+    });
+}
 
 /// Window options for the main workspace window.
 pub fn window_options(cx: &mut App) -> WindowOptions {
@@ -88,10 +107,14 @@ pub fn window_options(cx: &mut App) -> WindowOptions {
     }
 }
 
+/// Who a connection question belongs to, and so who gets the answer. The
+/// number tells one connection attempt of the owner from the next: an answer
+/// to a question of an attempt that is over is dropped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PromptOwner {
+pub(super) enum PromptOwner {
     Terminal(RemoteTerminalId),
     Sftp(ExplorerId, u64),
+    Forward(ForwardId, u64),
 }
 
 /// The main window content: title bar above the dock, status bar below.
@@ -99,10 +122,14 @@ enum PromptOwner {
 /// Owns the session store, the dock and the registry of open per-session
 /// panels, and handles every application action.
 pub struct Workspace {
-    store: Entity<SessionStore>,
-    dock_area: Entity<DockArea>,
+    pub(super) store: Entity<SessionStore>,
+    pub(super) dock_area: Entity<DockArea>,
     skin: Rc<WorkspaceDockSkin>,
+    /// The left dock's panel: the session tree or the forward list.
+    pub(super) sidebar: Entity<Sidebar>,
     session_panel: Entity<SessionPanel>,
+    /// The port forwards that are running, each on a connection of its own.
+    pub(super) forwards: Entity<ForwardManager>,
     /// The start page the dock skin shows while the center has no tab.
     recent: Entity<RecentSessions>,
     terminals: HashMap<RemoteTerminalId, Entity<TerminalPanel>>,
@@ -131,8 +158,8 @@ pub struct Workspace {
     next_explorer_id: u64,
     /// The center tab displayed most recently; `CloseActiveTab` closes it.
     active_tab: Option<CenterTab>,
-    prompt_queue: VecDeque<(PromptOwner, SessionId, ConnectionPrompt)>,
-    active_prompt: Option<(PromptOwner, SessionId, u64)>,
+    pub(super) prompt_queue: VecDeque<(PromptOwner, SessionId, ConnectionPrompt)>,
+    pub(super) active_prompt: Option<(PromptOwner, SessionId, u64)>,
     /// Dispatch target for the title bar and start page: actions sent to it
     /// reach the workspace handlers whatever is focused.
     focus_handle: FocusHandle,
@@ -162,6 +189,7 @@ impl Workspace {
             crate::app::data_dir().join("upload-resume"),
             crate::app::data_dir().join("download-resume"),
         ));
+        let forward = Arc::new(SshForwardTransportProvider::new(connector.clone()));
         let mut this = Self::new_with_services(
             store,
             settings,
@@ -170,6 +198,7 @@ impl Workspace {
             sftp.clone(),
             Arc::new(SystemLocalDirectoryProvider),
             tester,
+            forward,
             window,
             cx,
         );
@@ -181,14 +210,47 @@ impl Workspace {
             crate::app::cli_socket_path(),
             Arc::new(SshCliBackend::new(connector, sftp)),
         ) {
-            Ok(server) => this.cli_server = Some(server),
-            Err(error) => window.push_notification(
+            Ok(server) => {
+                this.cli_server = Some(server);
+                this.come_forward_when_opened_again(window, cx);
+            }
+            Err(error) => notify_once_open(
                 Notification::error(error.to_string()).title("外部 CLI 无法启动"),
+                window,
                 cx,
             ),
         }
         this.sync_cli_server(cx);
         this
+    }
+
+    /// Bring the window forward whenever ShellRS is opened while it is
+    /// already running. The second copy only passes the word on and exits:
+    /// two of them on one data directory would each keep their own copy of
+    /// the sessions and write over the other's changes.
+    ///
+    /// Asked on a timer, like every other worker: the thread that hears the
+    /// request never wakes the window itself.
+    fn come_forward_when_opened_again(&self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(ACTIVATION_POLL).await;
+                let open = this.update_in(cx, |this, window, cx| {
+                    let asked = this
+                        .cli_server
+                        .as_ref()
+                        .is_some_and(|server| server.take_activation());
+                    if asked {
+                        cx.activate(true);
+                        window.activate_window();
+                    }
+                });
+                if open.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     /// Tell the CLI server what it may use: whether 启用外部 CLI is on, and
@@ -212,6 +274,7 @@ impl Workspace {
         sftp_provider: SharedSftpTransportProvider,
         local_directory_provider: SharedLocalDirectoryProvider,
         connection_tester: SharedConnectionTester,
+        forward_provider: SharedForwardTransportProvider,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -225,6 +288,17 @@ impl Workspace {
             cx,
         );
         let session_panel = cx.new(|cx| SessionPanel::new(store.clone(), window, cx));
+        let forwards = cx.new(|cx| ForwardManager::new(store.clone(), forward_provider, cx));
+        let forward_panel = cx.new(|cx| {
+            ForwardPanel::new(
+                store.clone(),
+                forwards.clone(),
+                focus_handle.clone(),
+                window,
+                cx,
+            )
+        });
+        let sidebar = cx.new(|_| Sidebar::new(session_panel.clone(), forward_panel));
         // Start with focus in the session panel so window-level actions have a
         // dispatch path. The workspace's own handle is never focused: the
         // dialog layer is its child, and a focused ancestor would keep the
@@ -260,6 +334,15 @@ impl Workspace {
                             }
                         }
                     }
+                    // The forward manager restarts the rule itself.
+                    SessionStoreEvent::ForwardSettingsChanged(_) => {}
+                },
+            ),
+            cx.subscribe_in(
+                &forwards,
+                window,
+                |this, _, event: &ForwardManagerEvent, window, cx| {
+                    this.on_forward_event(event, window, cx)
                 },
             ),
             cx.observe_in(&settings, window, |this, settings, window, cx| {
@@ -325,7 +408,7 @@ impl Workspace {
             }
             area.set_dock(
                 DockPlacement::Left,
-                DockLayout::tabs().panel_view(panel_handle(session_panel.clone()), cx),
+                DockLayout::tabs().panel_view(panel_handle(sidebar.clone()), cx),
                 window,
                 cx,
             );
@@ -336,12 +419,17 @@ impl Workspace {
         // Settled before the first `LayoutChanged` arrives, so the handler
         // does not take the initial state for a tab having just closed.
         skin.set_center_empty(terminals.is_empty(), cx);
+        // Rules marked to start with the application. What they need to ask
+        // arrives as events, once the workspace is there to show it.
+        forwards.update(cx, |forwards, cx| forwards.start_automatic(cx));
 
         Self {
             store,
             dock_area,
             skin,
+            sidebar,
             session_panel,
+            forwards,
             recent,
             terminals,
             explorers: HashMap::new(),
@@ -441,6 +529,11 @@ impl Workspace {
         &self.settings
     }
 
+    /// The running port forwards, for tests.
+    pub fn forwards(&self) -> &Entity<ForwardManager> {
+        &self.forwards
+    }
+
     /// Tests hand it a temporary home and bin directory.
     pub fn cli_integration(&self) -> &Entity<CliIntegration> {
         &self.cli_integration
@@ -461,7 +554,7 @@ impl Workspace {
         }
     }
 
-    fn enqueue_prompt(
+    pub(super) fn enqueue_prompt(
         &mut self,
         terminal_id: PromptOwner,
         session_id: SessionId,
@@ -507,6 +600,16 @@ impl Workspace {
         };
         let request_id = prompt.request_id();
         self.active_prompt = Some((terminal_id, session_id, request_id));
+        let origin = match terminal_id {
+            PromptOwner::Forward(id, _) => self.forward_prompt_origin(id, cx),
+            PromptOwner::Terminal(_) | PromptOwner::Sftp(..) => None,
+        };
+        // What a question says first when it needs saying who is asking.
+        let introduced = |text: String| match &origin {
+            Some(origin) if text.trim().is_empty() => origin.clone(),
+            Some(origin) => format!("{origin}\n\n{text}"),
+            None => text,
+        };
         let workspace = cx.entity().downgrade();
         // Every button of a prompt ends it the same way, with its own reply.
         let answer = move |reply: ConnectionPromptReply, cx: &mut App| {
@@ -518,7 +621,7 @@ impl Workspace {
         };
         match prompt.kind().clone() {
             ConnectionPromptKind::UnknownHost(prompt) => {
-                let description = prompt.description();
+                let description = introduced(prompt.description());
                 window.open_alert_dialog(cx, move |alert, _, _| {
                     alert
                         .title("首次连接此主机")
@@ -551,14 +654,14 @@ impl Workspace {
             }
             ConnectionPromptKind::HostKeyChanged(prompt) => {
                 let old = prompt.old_fingerprints().join("、");
-                let description = format!(
+                let description = introduced(format!(
                     "主机：{}:{}\n算法：{}\n已保存指纹：{old}\n服务器当前指纹：{}\n\n连接已阻断。请核验服务器身份后手动处理：{}",
                     prompt.host(),
                     prompt.port(),
                     prompt.algorithm(),
                     prompt.fingerprint(),
                     prompt.known_hosts_path().display(),
-                );
+                ));
                 window.open_alert_dialog(cx, move |alert, _, _| {
                     alert
                         .title("服务器主机密钥已变更")
@@ -583,7 +686,7 @@ impl Workspace {
             }
             ConnectionPromptKind::Authentication(prompt) => {
                 let title = prompt.title().to_string();
-                let instructions = prompt.instructions().to_string();
+                let instructions = introduced(prompt.instructions().to_string());
                 let fields = prompt.fields().to_vec();
                 let dialog_title: SharedString = if title.trim().is_empty() {
                     "SSH 认证".into()
@@ -646,11 +749,21 @@ impl Workspace {
         self.active_prompt = None;
         let canceled = matches!(&reply, ConnectionPromptReply::Cancel);
         self.reply_to_owner(terminal_id, request_id, reply, cx);
-        if canceled
-            && let PromptOwner::Terminal(id) = terminal_id
-            && let Some(panel) = self.terminals.get(&id).cloned()
-        {
-            panel.update(cx, |panel, cx| panel.cancel_connection(cx));
+        if canceled {
+            match terminal_id {
+                PromptOwner::Terminal(id) => {
+                    if let Some(panel) = self.terminals.get(&id).cloned() {
+                        panel.update(cx, |panel, cx| panel.cancel_connection(cx));
+                    }
+                }
+                // Declining the question is declining the forward: it ends
+                // as stopped, not as failed.
+                PromptOwner::Forward(id, _) => {
+                    self.forwards
+                        .update(cx, |forwards, cx| forwards.stop(id, cx));
+                }
+                PromptOwner::Sftp(..) => {}
+            }
         }
         self.refresh_session_connection_state(session_id, cx);
     }
@@ -662,6 +775,9 @@ impl Workspace {
                 .explorers
                 .get(&id)
                 .is_some_and(|p| p.read(cx).generation() == generation),
+            PromptOwner::Forward(id, generation) => {
+                self.forwards.read(cx).generation(id) == Some(generation)
+            }
         }
     }
 
@@ -685,10 +801,15 @@ impl Workspace {
                     panel.read(cx).reply_to_prompt(request_id, reply);
                 }
             }
+            PromptOwner::Forward(id, generation) => {
+                self.forwards
+                    .read(cx)
+                    .reply_to_prompt(id, generation, request_id, reply);
+            }
         }
     }
 
-    fn cancel_prompts_for_owner(
+    pub(super) fn cancel_prompts_for_owner(
         &mut self,
         owner: PromptOwner,
         window: &mut Window,
@@ -719,9 +840,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.prompt_queue.retain(|(_, id, _)| *id != session_id);
+        // A port forward through the session is on its own: what the
+        // session's tabs are told does not reach it. Its questions end when
+        // the forward does.
+        let of_a_tab = |owner: &PromptOwner| !matches!(owner, PromptOwner::Forward(..));
+        self.prompt_queue
+            .retain(|(owner, id, _)| *id != session_id || !of_a_tab(owner));
         if let Some((owner, id, _)) = self.active_prompt
             && id == session_id
+            && of_a_tab(&owner)
         {
             self.cancel_prompts_for_owner(owner, window, cx);
         }
@@ -1501,9 +1628,11 @@ impl Workspace {
             return;
         };
         let workspace = cx.entity().downgrade();
+        let forwards = self.store.read(cx).forwards_of(id).count();
         confirm_delete_session(
             &session,
             (self.has_tabs(id, cx), self.transfers_of(id, cx)),
+            forwards,
             Rc::new(move |window, cx| {
                 workspace
                     .update(cx, |this, cx| this.remove_session(id, window, cx))
@@ -1621,12 +1750,14 @@ impl Workspace {
         let doomed = store.sessions_under(id);
         let closes_tabs = doomed.iter().any(|id| self.has_tabs(*id, cx));
         let transfers = doomed.iter().map(|id| self.transfers_of(*id, cx)).sum();
+        let forwards = doomed.iter().map(|id| store.forwards_of(*id).count()).sum();
         let workspace = cx.entity().downgrade();
         confirm_delete_group(
             &name,
             doomed.len(),
             subgroups,
             (closes_tabs, transfers),
+            forwards,
             Rc::new(move |window, cx| {
                 workspace
                     .update(cx, |this, cx| this.remove_group(id, window, cx))
@@ -1692,8 +1823,8 @@ impl Workspace {
                 area.toggle_dock(DockPlacement::Left, window, cx);
             });
         }
-        self.session_panel
-            .update(cx, |panel, cx| panel.focus_search(window, cx));
+        self.sidebar
+            .update(cx, |sidebar, cx| sidebar.focus_search(window, cx));
     }
 
     fn set_font_size(&mut self, size: f32, window: &mut Window, cx: &mut Context<Self>) {
@@ -1942,7 +2073,8 @@ impl Render for Workspace {
             },
             _ => WorkspaceStatus::Session(active),
         };
-        let sessions_visible = self.dock_area.read(cx).is_dock_open(DockPlacement::Left);
+        let sidebar = self.sidebar_showing(cx);
+        let running_forwards = self.forwards.read(cx).active_count();
 
         div()
             .id("workspace")
@@ -1996,6 +2128,13 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_dismiss_terminal_find))
             .on_action(cx.listener(Self::on_clear_terminal))
             .on_action(cx.listener(Self::on_toggle_session_panel))
+            .on_action(cx.listener(Self::on_show_sessions))
+            .on_action(cx.listener(Self::on_show_forwards))
+            .on_action(cx.listener(Self::on_new_forward))
+            .on_action(cx.listener(Self::on_edit_forward))
+            .on_action(cx.listener(Self::on_delete_forward))
+            .on_action(cx.listener(Self::on_start_forward))
+            .on_action(cx.listener(Self::on_stop_forward))
             .on_action(cx.listener(Self::on_toggle_theme))
             .on_action(cx.listener(Self::on_focus_search))
             .on_action(cx.listener(Self::on_zoom_in))
@@ -2007,7 +2146,12 @@ impl Render for Workspace {
             .flex_col()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(render_title_bar(sessions_visible, &self.focus_handle, cx))
+            .child(render_title_bar(
+                sidebar,
+                running_forwards,
+                &self.focus_handle,
+                cx,
+            ))
             .child(div().flex_1().min_h_0().child(self.dock_area.clone()))
             .child(status)
             .children(Root::render_sheet_layer(window, cx))

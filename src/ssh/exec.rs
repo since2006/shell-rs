@@ -191,7 +191,7 @@ fn describe_failure(
     if seen.unknown {
         return ExecError::new(
             ExecErrorKind::HostKeyUnknown,
-            format!("尚未信任 {endpoint} 的主机密钥：请先在 ShellRS 中连接一次这个会话"),
+            format!("尚未信任 {endpoint} 的主机密钥：请先在 ShellRS 中连接一次这台主机"),
         );
     }
     if let Some(need) = error
@@ -199,7 +199,7 @@ fn describe_failure(
         .find_map(|cause| cause.downcast_ref::<MissingCredential>())
     {
         let what = match need {
-            MissingCredential::Password { rejected: false } => "这个会话没有保存密码",
+            MissingCredential::Password { rejected: false } => "这台主机没有保存密码",
             MissingCredential::Password { rejected: true } => "保存的密码被服务器拒绝",
             MissingCredential::Passphrase { rejected: false } => "私钥已加密，但没有保存口令",
             MissingCredential::Passphrase { rejected: true } => "保存的私钥口令不正确",
@@ -207,7 +207,7 @@ fn describe_failure(
         };
         return ExecError::new(
             ExecErrorKind::MissingCredential,
-            format!("{what}：请先在 ShellRS 中连接一次这个会话并保存密码"),
+            format!("{what}：请先在 ShellRS 中连接一次这台主机并保存密码"),
         );
     }
     ExecError::new(ExecErrorKind::Connect, describe_login_error(error))

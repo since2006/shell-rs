@@ -26,12 +26,12 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use zeroize::Zeroizing;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const AUTH_RETRIES: usize = 3;
-const CONNECT_FAILED: &str = "无法建立 SSH 连接，请检查主机、端口和主机密钥";
+const CONNECT_FAILED: &str = "无法建立 SSH 连接，请检查地址、端口和主机密钥";
 static NEXT_PROMPT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -82,6 +82,23 @@ impl SshConnector {
         self.connect_with(config, broker, &self.secrets).await
     }
 
+    /// Same as [`Self::connect`], for a connection that carries port
+    /// forwards. The receiver yields every channel the server opens for a
+    /// remote forward, and ends when the connection does: the handler that
+    /// feeds it lives exactly as long as the connection, so this is how an
+    /// idle forward learns that its connection is gone.
+    pub async fn connect_forwarding(
+        &self,
+        config: &SshConnectionConfig,
+        broker: Arc<SshPrompts>,
+    ) -> Result<(SshHandle, String, mpsc::UnboundedReceiver<ForwardedTcpip>)> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let (handle, fingerprint) = self
+            .connect_inner(config, broker, &self.secrets, Some(sender))
+            .await?;
+        Ok((handle, fingerprint, receiver))
+    }
+
     /// The keychain this connector reads saved secrets from.
     pub(super) fn secrets(&self) -> &SharedSecretStore {
         &self.secrets
@@ -94,6 +111,16 @@ impl SshConnector {
         broker: Arc<SshPrompts>,
         secrets: &SharedSecretStore,
     ) -> Result<(client::Handle<SshClientHandler>, String)> {
+        self.connect_inner(config, broker, secrets, None).await
+    }
+
+    async fn connect_inner(
+        &self,
+        config: &SshConnectionConfig,
+        broker: Arc<SshPrompts>,
+        secrets: &SharedSecretStore,
+        forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+    ) -> Result<(client::Handle<SshClientHandler>, String)> {
         let fingerprint = Arc::new(Mutex::new(String::new()));
         let handler = SshClientHandler {
             host: config.host.clone(),
@@ -102,6 +129,7 @@ impl SshConnector {
             known_hosts_lock: self.known_hosts_lock.clone(),
             broker: broker.clone(),
             fingerprint: fingerprint.clone(),
+            forwarded,
         };
         let connect = client::connect(
             Arc::new(client::Config {
@@ -317,6 +345,20 @@ pub(super) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|error| error.into_inner())
 }
 
+/// A connection the server opened back to this client for a remote forward
+/// (`ssh -R`): someone connected to the port the server listens on for us.
+#[non_exhaustive]
+pub struct ForwardedTcpip {
+    pub channel: russh::Channel<client::Msg>,
+    /// Accepts or refuses the channel. Dropping it refuses.
+    pub reply: client::ChannelOpenHandle,
+    /// The address and port on the server that was connected to.
+    pub connected_address: String,
+    pub connected_port: u32,
+    pub originator_address: String,
+    pub originator_port: u32,
+}
+
 pub struct SshClientHandler {
     host: String,
     port: u16,
@@ -324,6 +366,9 @@ pub struct SshClientHandler {
     known_hosts_lock: Arc<Mutex<()>>,
     broker: Arc<SshPrompts>,
     fingerprint: Arc<Mutex<String>>,
+    /// Where channels for a remote forward go. Only a forwarding connection
+    /// has one; every other connection refuses such channels.
+    forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
 }
 
 impl client::Handler for SshClientHandler {
@@ -384,6 +429,82 @@ impl client::Handler for SshClientHandler {
             .map_err(|_| anyhow!("无法写入主机信任文件：{}", self.known_hosts_path.display()))?;
         Ok(true)
     }
+
+    /// The server only opens these after a `tcpip-forward` request, which
+    /// nothing but a forwarding connection sends. One that arrives anyway is
+    /// refused rather than accepted and left dangling.
+    #[allow(clippy::too_many_arguments)]
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        connected_address: &str,
+        connected_port: u32,
+        originator_address: &str,
+        originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        match &self.forwarded {
+            // The forward decides: it accepts once it has reached its target.
+            // Should it be gone already, the undelivered `reply` is dropped
+            // with the message, which refuses the channel.
+            Some(forwarded) => {
+                let _ = forwarded.send(ForwardedTcpip {
+                    channel,
+                    reply,
+                    connected_address: connected_address.to_string(),
+                    connected_port,
+                    originator_address: originator_address.to_string(),
+                    originator_port,
+                });
+            }
+            None => {
+                reply
+                    .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                    .await
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether an error means the network or the connection failed, as opposed
+/// to the server refusing a login or the user declining a host key. Only the
+/// first kind is worth retrying without anyone looking.
+pub fn is_network_error(error: &anyhow::Error) -> bool {
+    use std::io::ErrorKind;
+    error.chain().any(|cause| {
+        // A bare I/O error may also be a file that could not be read (the
+        // trust file, a private key), so only the socket's kinds count.
+        cause.downcast_ref::<std::io::Error>().is_some_and(|error| {
+            matches!(
+                error.kind(),
+                ErrorKind::NotConnected
+                    | ErrorKind::ConnectionRefused
+                    | ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::TimedOut
+                    | ErrorKind::UnexpectedEof
+                    | ErrorKind::BrokenPipe
+                    | ErrorKind::HostUnreachable
+                    | ErrorKind::NetworkUnreachable
+                    | ErrorKind::NetworkDown
+            )
+        }) || matches!(
+            cause.downcast_ref::<russh::Error>(),
+            Some(
+                // russh wraps the socket's error instead of chaining it, and
+                // a name that no longer resolves arrives the same way.
+                russh::Error::IO(_)
+                    | russh::Error::Disconnect
+                    | russh::Error::HUP
+                    | russh::Error::ConnectionTimeout
+                    | russh::Error::KeepaliveTimeout
+                    | russh::Error::InactivityTimeout
+                    | russh::Error::SendError
+            )
+        )
+    })
 }
 
 fn read_known_keys(host: &str, port: u16, path: &Path) -> Result<Vec<(usize, PublicKey)>> {
@@ -749,5 +870,38 @@ mod tests {
         std::fs::write(&path, "this is not a key\n").unwrap();
         let error = read_known_keys("example.test", 22, &path).unwrap_err();
         assert!(error.to_string().contains("已损坏"));
+    }
+
+    #[test]
+    fn only_a_failing_network_counts_as_a_network_error() {
+        use super::{MissingCredential, is_network_error};
+        use std::io::{Error, ErrorKind};
+
+        // What a refused or unresolvable connect looks like coming out of
+        // russh: the socket's error wrapped, under the connector's context.
+        let refused =
+            anyhow::Error::from(russh::Error::IO(Error::from(ErrorKind::ConnectionRefused)))
+                .context("无法建立 SSH 连接");
+        assert!(is_network_error(&refused));
+        let unresolved = anyhow::Error::from(russh::Error::IO(Error::other("no such host")));
+        assert!(is_network_error(&unresolved));
+        assert!(is_network_error(&russh::Error::KeepaliveTimeout.into()));
+        assert!(is_network_error(&russh::Error::Disconnect.into()));
+        assert!(is_network_error(
+            &Error::from(ErrorKind::ConnectionReset).into()
+        ));
+
+        // A login the server refuses, a key the user does not trust and a
+        // file that cannot be read all need a person.
+        assert!(!is_network_error(
+            &MissingCredential::Password { rejected: true }.into()
+        ));
+        assert!(!is_network_error(&russh::Error::UnknownKey.into()));
+        assert!(!is_network_error(
+            &Error::from(ErrorKind::PermissionDenied).into()
+        ));
+        assert!(!is_network_error(&anyhow::anyhow!(
+            "认证失败：服务器未接受可用的认证方式"
+        )));
     }
 }

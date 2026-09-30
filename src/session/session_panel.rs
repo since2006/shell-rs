@@ -11,7 +11,7 @@ use gpui_kit::base::{
 };
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    button::Button,
     dock::{BasePanel, Panel, PanelControl, PanelEvent},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -28,8 +28,8 @@ use gpui_kit::*;
 use crate::app::{
     CatalogIcon, CollapseAllGroups, ConnectGroup, ConnectSelected, ConnectSession, CopySessionId,
     DeleteGroup, DeleteSession, DuplicateSession, EditSession, ExpandAllGroups, MoveSessionNode,
-    NewChildGroup, NewGroup, NewSession, NewSessionInGroup, OpenExplorer, OpenSettings,
-    RenameGroup, SESSION_PANEL_CONTEXT,
+    NewChildGroup, NewGroup, NewSession, NewSessionInGroup, OpenExplorer, RenameGroup,
+    SESSION_PANEL_CONTEXT,
 };
 
 use crate::shared::HostMark;
@@ -39,7 +39,9 @@ use super::{
     session_tree_items,
 };
 
-/// The left dock panel: a searchable, grouped tree of sessions.
+/// The session list of the left dock: a searchable, grouped tree of sessions.
+/// The workspace's sidebar shows it, and borrows its title and toolbar for
+/// the dock's title bar while it does.
 ///
 /// Owns the tree and search state; the session data lives in the shared
 /// `SessionStore`, which this panel observes.
@@ -89,7 +91,7 @@ impl SessionPanel {
         let tree_state = cx.new(|cx| TreeState::new(cx).items(items));
         let search = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("搜索会话")
+                .placeholder("搜索主机")
                 .clean_on_escape()
         });
 
@@ -356,7 +358,7 @@ impl Panel for SessionPanel {
         h_flex()
             .gap_1()
             .child(Icon::new(CatalogIcon::Server).small())
-            .child("会话")
+            .child("主机")
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
@@ -367,7 +369,7 @@ impl Panel for SessionPanel {
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(NewGroup), cx)),
             Button::new("new-session-panel")
                 .icon(IconName::Plus)
-                .tooltip("新建会话…")
+                .tooltip("新建主机…")
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(NewSession), cx)),
         ])
     }
@@ -520,24 +522,6 @@ impl Render for SessionPanel {
                     .context_menu(move |menu, _, _| build_context_menu(clicked_menu.get(), menu)),
             )
             .child(self.row_tooltip.clone())
-            .child(
-                // Pinned under the tree, where desktop apps keep settings.
-                h_flex()
-                    .p_2()
-                    .border_t_1()
-                    .border_color(cx.theme().sidebar_border)
-                    .child(
-                        Button::new("open-settings")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(CatalogIcon::Settings))
-                            .label("设置")
-                            .tooltip_with_action("打开设置", &OpenSettings, None)
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(OpenSettings), cx)
-                            }),
-                    ),
-            )
     }
 }
 
@@ -919,7 +903,7 @@ pub fn session_menu(menu: PopupMenu, id: SessionId) -> PopupMenu {
     )
     .separator()
     .menu_with_icon(
-        "编辑会话…",
+        "编辑主机…",
         Icon::new(CatalogIcon::Pencil),
         Box::new(EditSession(id)),
     )
@@ -953,7 +937,7 @@ fn build_context_menu(node: Option<SessionNode>, menu: PopupMenu) -> PopupMenu {
             )
             .separator()
             .menu_with_icon(
-                "新建会话…",
+                "新建主机…",
                 Icon::new(IconName::Plus),
                 Box::new(NewSessionInGroup(id)),
             )
@@ -986,7 +970,7 @@ fn build_context_menu(node: Option<SessionNode>, menu: PopupMenu) -> PopupMenu {
                 Box::new(DeleteGroup(id)),
             ),
         None => menu
-            .menu_with_icon("新建会话…", Icon::new(IconName::Plus), Box::new(NewSession))
+            .menu_with_icon("新建主机…", Icon::new(IconName::Plus), Box::new(NewSession))
             .menu_with_icon(
                 "新建分组…",
                 Icon::new(CatalogIcon::FolderPlus),

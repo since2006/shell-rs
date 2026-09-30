@@ -7,11 +7,13 @@ use crate::secrets::{NoSecretStore, SecretRef, SharedSecretStore};
 
 use super::database::now_seconds;
 use super::{
-    AuthKind, BookmarkSide, ConnectionState, GroupDraft, GroupId, HostOs, NodeDrop, PublicId,
-    Session, SessionDatabase, SessionDraft, SessionGroup, SessionId, SessionNode, StoredData,
+    AuthKind, BookmarkSide, ConnectionState, ForwardDraft, ForwardId, ForwardRule, GroupDraft,
+    GroupId, HostOs, NodeDrop, PublicId, Session, SessionDatabase, SessionDraft, SessionGroup,
+    SessionId, SessionNode, StoredData,
 };
 
-/// The single source of truth for sessions and groups. Created once by the
+/// The single source of truth for sessions, groups and the rules that belong
+/// to sessions (bookmarks, port forwards). Created once by the
 /// workspace and shared with every panel and dialog; consumers observe it.
 ///
 /// Mutators that take a `Context` notify observers and mirror the change into
@@ -36,6 +38,9 @@ pub struct SessionStore {
     recent: Vec<SessionId>,
     /// SFTP bookmarks per session and pane, in the order they were added.
     bookmarks: HashMap<(SessionId, BookmarkSide), Vec<String>>,
+    /// Port-forwarding rules, in the order the forward list shows them.
+    forwards: Vec<ForwardRule>,
+    next_forward_id: u64,
     /// `None` for a memory-only store, as used by tests.
     database: Option<SessionDatabase>,
     /// Where passwords go. Defaults to a store that keeps nothing, so unit
@@ -54,6 +59,9 @@ pub enum SessionStoreEvent {
     /// A live terminal must reconnect because its SSH endpoint or
     /// authentication configuration changed.
     ConnectionSettingsChanged(SessionId),
+    /// A forwarding rule now listens or connects somewhere else, so a
+    /// running forward has to restart to follow it.
+    ForwardSettingsChanged(ForwardId),
 }
 
 impl EventEmitter<SessionStoreEvent> for SessionStore {}
@@ -69,6 +77,8 @@ impl SessionStore {
             active: None,
             recent: Vec::new(),
             bookmarks: HashMap::new(),
+            forwards: Vec::new(),
+            next_forward_id: 1,
             database: None,
             secrets: Arc::new(NoSecretStore),
         }
@@ -89,6 +99,7 @@ impl SessionStore {
             sessions,
             mut recent,
             bookmarks: stored_bookmarks,
+            forwards,
         } = database.load()?;
         recent.truncate(MAX_RECENT);
         let mut bookmarks: HashMap<_, Vec<String>> = HashMap::new();
@@ -98,6 +109,8 @@ impl SessionStore {
         Ok(Self {
             next_group_id: groups.iter().map(|group| group.id.0).max().unwrap_or(0) + 1,
             next_session_id: sessions.iter().map(|s| s.id.0).max().unwrap_or(0) + 1,
+            next_forward_id: forwards.iter().map(|rule| rule.id.0).max().unwrap_or(0) + 1,
+            forwards,
             groups,
             sessions,
             active: None,
@@ -270,7 +283,7 @@ impl SessionStore {
     pub fn insert(&mut self, draft: SessionDraft, cx: &mut Context<Self>) -> SessionId {
         let id = self.insert_unnotified(draft);
         if let Some(session) = self.session(id) {
-            self.persist("新建会话", cx, |db| db.insert_session(session));
+            self.persist("新建主机", cx, |db| db.insert_session(session));
         }
         cx.notify();
         id
@@ -305,7 +318,7 @@ impl SessionStore {
         let updated = self.update_unnotified(id, draft);
         if updated {
             if let Some(session) = self.session(id) {
-                self.persist("保存会话", cx, |db| db.update_session(session));
+                self.persist("保存主机", cx, |db| db.update_session(session));
             }
             // The session moved to another endpoint, so its old keychain
             // entry is an orphan unless another session still logs in there.
@@ -350,7 +363,7 @@ impl SessionStore {
         let endpoint = self.session(id).map(Session::password_secret);
         let removed = self.remove_unnotified(id);
         if removed {
-            self.persist("删除会话", cx, |db| db.remove_session(id));
+            self.persist("删除主机", cx, |db| db.remove_session(id));
             if let Some(endpoint) = endpoint
                 && !password_in_use(&self.sessions, &endpoint)
             {
@@ -365,8 +378,9 @@ impl SessionStore {
         let before = self.sessions.len();
         self.sessions.retain(|s| s.id != id);
         self.recent.retain(|recent| *recent != id);
-        // The database drops them through `ON DELETE CASCADE`.
+        // The database drops both through `ON DELETE CASCADE`.
         self.bookmarks.retain(|(session, _), _| *session != id);
+        self.forwards.retain(|rule| rule.session != id);
         if self.active == Some(id) {
             self.active = None;
         }
@@ -377,8 +391,8 @@ impl SessionStore {
     pub fn duplicate(&mut self, id: SessionId, cx: &mut Context<Self>) -> Option<SessionId> {
         let copy = self.duplicate_unnotified(id)?;
         if let Some(session) = self.session(copy) {
-            self.persist("复制会话", cx, |db| db.insert_session(session));
-            self.persist("保存会话顺序", cx, |db| {
+            self.persist("复制主机", cx, |db| db.insert_session(session));
+            self.persist("保存主机顺序", cx, |db| {
                 db.save_tree_order(&self.groups, &self.sessions)
             });
         }
@@ -579,6 +593,105 @@ impl SessionStore {
         true
     }
 
+    /// Every port-forwarding rule, in list order.
+    pub fn forwards(&self) -> &[ForwardRule] {
+        &self.forwards
+    }
+
+    pub fn forward(&self, id: ForwardId) -> Option<&ForwardRule> {
+        self.forwards.iter().find(|rule| rule.id == id)
+    }
+
+    /// The rules that go through `session`: what deleting it takes along.
+    pub fn forwards_of(&self, session: SessionId) -> impl Iterator<Item = &ForwardRule> {
+        self.forwards
+            .iter()
+            .filter(move |rule| rule.session == session)
+    }
+
+    /// Add a rule at the end of the list. `None` when the draft names a
+    /// session that is not there.
+    pub fn insert_forward(
+        &mut self,
+        draft: ForwardDraft,
+        cx: &mut Context<Self>,
+    ) -> Option<ForwardId> {
+        let id = self.insert_forward_unnotified(draft)?;
+        if let Some(rule) = self.forward(id) {
+            self.persist("新建端口转发", cx, |db| db.insert_forward(rule));
+        }
+        cx.notify();
+        Some(id)
+    }
+
+    pub fn insert_forward_unnotified(&mut self, draft: ForwardDraft) -> Option<ForwardId> {
+        self.session(draft.session)?;
+        let sort_order = self
+            .forwards
+            .iter()
+            .map(|rule| rule.sort_order)
+            .max()
+            .unwrap_or(-1)
+            + 1;
+        let id = ForwardId(self.next_forward_id);
+        self.next_forward_id += 1;
+        let mut rule = ForwardRule::new(id, draft);
+        rule.sort_order = sort_order;
+        self.forwards.push(rule);
+        Some(id)
+    }
+
+    /// Replace the editable fields of a rule; its place in the list is kept.
+    pub fn update_forward(
+        &mut self,
+        id: ForwardId,
+        draft: ForwardDraft,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let needs_restart = self
+            .forward(id)
+            .is_some_and(|rule| rule.needs_restart(&draft));
+        if !self.update_forward_unnotified(id, draft) {
+            return false;
+        }
+        if let Some(rule) = self.forward(id) {
+            self.persist("保存端口转发", cx, |db| db.update_forward(rule));
+        }
+        if needs_restart {
+            cx.emit(SessionStoreEvent::ForwardSettingsChanged(id));
+        }
+        cx.notify();
+        true
+    }
+
+    pub fn update_forward_unnotified(&mut self, id: ForwardId, draft: ForwardDraft) -> bool {
+        if self.session(draft.session).is_none() {
+            return false;
+        }
+        let Some(rule) = self.forwards.iter_mut().find(|rule| rule.id == id) else {
+            return false;
+        };
+        let sort_order = rule.sort_order;
+        *rule = ForwardRule::new(id, draft);
+        rule.sort_order = sort_order;
+        true
+    }
+
+    pub fn remove_forward(&mut self, id: ForwardId, cx: &mut Context<Self>) -> bool {
+        if !self.remove_forward_unnotified(id) {
+            return false;
+        }
+        self.persist("删除端口转发", cx, |db| db.remove_forward(id));
+        cx.notify();
+        true
+    }
+
+    pub fn remove_forward_unnotified(&mut self, id: ForwardId) -> bool {
+        let before = self.forwards.len();
+        self.forwards.retain(|rule| rule.id != id);
+        self.forwards.len() != before
+    }
+
     /// Persist a group's expanded or collapsed state after a tree interaction.
     pub fn set_group_expanded(
         &mut self,
@@ -626,7 +739,7 @@ impl SessionStore {
         if !self.move_node_unnotified(source, drop) {
             return false;
         }
-        self.persist("调整会话顺序", cx, |db| {
+        self.persist("调整主机顺序", cx, |db| {
             db.save_tree_order(&self.groups, &self.sessions)
         });
         cx.notify();
@@ -957,6 +1070,7 @@ fn password_in_use(sessions: &[Session], secret: &SecretRef) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{ForwardEndpoint, ForwardKind};
     use super::*;
 
     fn draft(name: &str, group: Option<GroupId>) -> SessionDraft {
@@ -994,6 +1108,90 @@ mod tests {
         store.remove_group_unnotified(group);
         assert!(store.bookmarks(web, BookmarkSide::Remote).is_empty());
         assert!(store.bookmarks(web, BookmarkSide::Local).is_empty());
+    }
+
+    fn forward_draft(session: SessionId, port: u16) -> ForwardDraft {
+        ForwardDraft::new(
+            ForwardKind::Local,
+            session,
+            ForwardEndpoint::new("127.0.0.1", port),
+            Some(ForwardEndpoint::new("db.internal", 3306)),
+        )
+    }
+
+    #[test]
+    fn forwards_keep_their_order_and_leave_with_their_session() {
+        let mut store = SessionStore::empty();
+        let group = store.insert_group_unnotified(GroupDraft::new("生产", None));
+        let web = store.insert_unnotified(draft("web", Some(group)));
+        let db = store.insert_unnotified(draft("db", None));
+        assert_eq!(
+            store.insert_forward_unnotified(forward_draft(SessionId(99), 1)),
+            None,
+            "a rule needs a session to go through"
+        );
+        let first = store
+            .insert_forward_unnotified(forward_draft(web, 8080))
+            .unwrap();
+        let second = store
+            .insert_forward_unnotified(forward_draft(db, 8081))
+            .unwrap();
+        let third = store
+            .insert_forward_unnotified(forward_draft(web, 8082))
+            .unwrap();
+        assert_eq!([first, second, third].map(|id| id.0), [1, 2, 3]);
+        assert_eq!(
+            store
+                .forwards()
+                .iter()
+                .map(|rule| rule.sort_order)
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(store.forwards_of(web).count(), 2);
+
+        // Editing keeps the rule's place; it cannot move to a missing session.
+        assert!(store.update_forward_unnotified(second, forward_draft(web, 9000)));
+        assert_eq!(store.forward(second).unwrap().bind.port, 9000);
+        assert_eq!(store.forward(second).unwrap().sort_order, 1);
+        assert!(!store.update_forward_unnotified(second, forward_draft(SessionId(99), 1)));
+        assert!(!store.update_forward_unnotified(ForwardId(99), forward_draft(web, 1)));
+
+        assert!(store.remove_forward_unnotified(first));
+        assert!(!store.remove_forward_unnotified(first));
+        // A copy of a session starts without forwards, like bookmarks.
+        let copy = store.duplicate_unnotified(web).unwrap();
+        assert_eq!(store.forwards_of(copy).count(), 0);
+
+        // Removing a group matches the database cascade.
+        store.remove_group_unnotified(group);
+        assert!(store.forwards().is_empty());
+        // Ids are not handed out again within a run.
+        assert_eq!(
+            store.insert_forward_unnotified(forward_draft(db, 1)),
+            Some(ForwardId(4))
+        );
+    }
+
+    #[test]
+    fn load_resumes_the_forward_id_sequence() {
+        let database = SessionDatabase::in_memory().unwrap();
+        database
+            .insert_session(&Session::new(SessionId(1), draft("web", None)))
+            .unwrap();
+        database
+            .insert_forward(&ForwardRule::new(
+                ForwardId(5),
+                forward_draft(SessionId(1), 8080),
+            ))
+            .unwrap();
+
+        let mut store = SessionStore::load(database).unwrap();
+        assert_eq!(store.forwards().len(), 1);
+        assert_eq!(
+            store.insert_forward_unnotified(forward_draft(SessionId(1), 8081)),
+            Some(ForwardId(6))
+        );
     }
 
     #[test]
