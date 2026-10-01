@@ -496,6 +496,18 @@ async fn new_host_dialog_validates_then_inserts(cx: &mut TestAppContext) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find("commit").visible());
+        // The error pops up as a notification over the dialog, not as a line
+        // at the bottom of the form.
+        assert_eq!(window.notifications(cx).len(), 1);
+        assert_eq!(window.find("form-error").label(), Some("请输入名称"));
+        window.click("commit", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // Trying again replaces it instead of stacking another.
+        assert_eq!(window.notifications(cx).len(), 1);
 
         window.click("host-name", cx);
         window.input("db-02", cx);
@@ -507,6 +519,12 @@ async fn new_host_dialog_validates_then_inserts(cx: &mut TestAppContext) {
 
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
         window.try_find("commit").is_none()
+    })
+    .await;
+    // The error was about the dialog, which is gone: so is the error.
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.notifications(cx).is_empty() && window.try_find("form-error").is_none()
     })
     .await;
 

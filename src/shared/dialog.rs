@@ -6,6 +6,7 @@ use gpui_kit::component::{
     ActiveTheme as _, WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter},
+    notification::{Notification, NotificationType},
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -28,6 +29,36 @@ pub fn form_error(
         .text_sm()
         .text_color(cx.theme().danger)
         .child(error.into())
+}
+
+/// Marks the notification a form's error is shown in, so a newer error
+/// replaces the last one rather than stacking under it.
+struct FormErrorNotification;
+
+/// Why a form was not accepted, as an error notification over the dialog
+/// instead of a line under the form. The element keeps the `form-error` id
+/// the line had, with the message as its label. The dialog takes it away
+/// when it closes (`dismiss_form_error`).
+pub fn form_error_notification(error: impl Into<SharedString>) -> Notification {
+    let error = error.into();
+    Notification::new()
+        .with_type(NotificationType::Error)
+        .id::<FormErrorNotification>()
+        .content(move |_, _, _| {
+            div()
+                .id("form-error")
+                .test_support()
+                .aria_label(error.clone())
+                .text_sm()
+                .child(error.clone())
+                .into_any_element()
+        })
+}
+
+/// Take a form's error notification away once its dialog has closed: the
+/// error is about a form that is gone.
+pub fn dismiss_form_error(window: &mut Window, cx: &mut App) {
+    window.remove_notification::<FormErrorNotification>(cx);
 }
 
 /// A port field's value, when it is one: a number from 1 to 65535.

@@ -26,7 +26,10 @@ use super::{
     HostId, HostLogin, HostStore, ProxyKind, ProxySettings, Route, group_options,
 };
 pub use crate::shared::DeleteHandler;
-use crate::shared::{Segment, SegmentedControl, confirm_delete, form_error, parse_port};
+use crate::shared::{
+    Segment, SegmentedControl, confirm_delete, dismiss_form_error, form_error_notification,
+    parse_port,
+};
 
 /// The label of the row that puts a host at the root of the tree.
 pub const NO_GROUP_LABEL: &str = "（无分组）";
@@ -197,7 +200,6 @@ pub struct HostForm {
     /// The proxy's password.
     proxy_secret: Entity<SecretFields>,
     notes: Entity<TextareaState>,
-    error: Option<SharedString>,
     testing_connection: bool,
     /// Logs in with the form's current values for 「测试连接」.
     tester: SharedConnectionTester,
@@ -422,7 +424,6 @@ impl HostForm {
             proxy_user,
             proxy_secret,
             notes,
-            error: None,
             testing_connection: false,
             tester,
             editing_connected,
@@ -433,7 +434,6 @@ impl HostForm {
     fn set_source(&mut self, source: AuthSource, cx: &mut Context<Self>) {
         if self.source != source {
             self.source = source;
-            self.error = None;
             cx.notify();
         }
     }
@@ -441,7 +441,6 @@ impl HostForm {
     fn set_route(&mut self, route: RouteChoice, cx: &mut Context<Self>) {
         if self.route != route {
             self.route = route;
-            self.error = None;
             cx.notify();
         }
     }
@@ -451,7 +450,6 @@ impl HostForm {
     fn add_hop(&mut self, id: HostId, window: &mut Window, cx: &mut Context<Self>) {
         if !self.hops.contains(&Some(id)) {
             self.hops.push(Some(id));
-            self.error = None;
         }
         self.refresh_jump_picker(window, cx);
         cx.notify();
@@ -460,7 +458,6 @@ impl HostForm {
     fn remove_hop(&mut self, position: usize, window: &mut Window, cx: &mut Context<Self>) {
         if position < self.hops.len() {
             self.hops.remove(position);
-            self.error = None;
             self.refresh_jump_picker(window, cx);
             cx.notify();
         }
@@ -671,8 +668,7 @@ impl HostForm {
         let ((host, port), login, route) = match checked {
             Ok(checked) => checked,
             Err(error) => {
-                self.error = Some(error.into());
-                cx.notify();
+                window.push_notification(form_error_notification(error), cx);
                 return false;
             }
         };
@@ -742,7 +738,6 @@ impl HostForm {
         for fields in [&self.fields, &self.proxy_secret] {
             fields.update(cx, |fields, cx| fields.clear(window, cx));
         }
-        self.error = None;
         true
     }
 
@@ -1179,9 +1174,6 @@ impl Render for HostForm {
                         .child("保存后连接设置将立即生效并重连。"),
                 )
             })
-            .when_some(self.error.clone(), |form, error| {
-                form.child(form_error(error.clone(), cx).aria_label(error))
-            })
     }
 }
 
@@ -1353,6 +1345,7 @@ pub fn open_host_dialog(
                     let form = form.clone();
                     move |_, window, cx| form.update(cx, |form, cx| form.commit(window, cx))
                 })
+                .on_close(|_, window, cx| dismiss_form_error(window, cx))
         }
     });
 }
