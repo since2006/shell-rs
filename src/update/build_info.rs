@@ -31,10 +31,14 @@ pub const DOWNLOAD_PAGE: &str = "https://shellrs.com/download";
 /// and a spare kept offline so the first can be replaced. Rotating means
 /// shipping a release that knows the new key before signing with it.
 ///
-/// Empty until the release keys exist (see the release section of
-/// `README.md`); the release workflow refuses to build a release without
-/// them, and a build without them rejects every manifest.
-pub const TRUSTED_KEYS: &[&str] = &[];
+/// The release workflow refuses to build a release while this is empty: a
+/// build without keys rejects every manifest.
+pub const TRUSTED_KEYS: &[&str] = &[
+    // In use: the release workflow signs with it (key id CD239E668A535CB0).
+    "RWSwXFOKZp4jzaKmM9EkpY3iIyI0vMzi4EhFDlXwGy+XYiaHIWZY4ELa",
+    // Spare, kept offline (key id F3B9F08DE80AF399).
+    "RWSZ8wrojfC584RC+h7Frcp/pDW0pd7TaB4pO6bTVVOgSj6mo1KFs0sh",
+];
 
 /// Which stream of releases a copy follows. Beta also gets every stable
 /// release that is not behind it.
