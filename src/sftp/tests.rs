@@ -895,6 +895,19 @@ fn paths_and_journals_reject_unsafe_identity() {
     });
 }
 
+/// On Windows std canonicalizes to `\\?\C:\…`, which the pane showed as is.
+#[test]
+fn local_listing_reports_the_path_people_type() {
+    let tmp = tempfile::tempdir().unwrap();
+    let listing = SystemLocalDirectoryProvider.list(tmp.path()).unwrap();
+    assert!(!listing.path().starts_with(r"\\?\"), "{}", listing.path());
+    // Still the directory asked for, links resolved.
+    assert_eq!(
+        std::fs::canonicalize(listing.path()).unwrap(),
+        std::fs::canonicalize(tmp.path()).unwrap()
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn local_listing_rejects_unrepresentable_names() {

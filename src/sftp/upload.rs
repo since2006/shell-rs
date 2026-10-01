@@ -51,7 +51,8 @@ impl UploadBatch {
             let path = if let (Some(parent), Some(name)) = (absolute.parent(), absolute.file_name())
             {
                 match tokio::fs::canonicalize(parent).await {
-                    Ok(parent) => parent.join(name),
+                    // Without Windows' `\\?\`, as the queue shows it.
+                    Ok(parent) => dunce::simplified(&parent).join(name),
                     Err(_) => absolute,
                 }
             } else {

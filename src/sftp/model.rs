@@ -694,7 +694,10 @@ impl LocalDirectoryProvider for SystemLocalDirectoryProvider {
         .collect()
     }
     fn list(&self, path: &Path) -> Result<DirectoryListing> {
-        let path = std::fs::canonicalize(path)?;
+        // std's canonical form on Windows is `\\?\C:\Users`; the pane shows
+        // and bookmarks the `C:\Users` people type, wherever that means the
+        // same.
+        let path = dunce::canonicalize(path)?;
         let mut entries = Vec::new();
         for entry in std::fs::read_dir(&path)? {
             let entry = entry?;
