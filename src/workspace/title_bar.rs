@@ -1,5 +1,6 @@
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Selectable as _, Sizable as _, TitleBar,
+    badge::Badge,
     button::{Button, ButtonGroup, ButtonVariants as _},
     h_flex,
 };
@@ -8,8 +9,9 @@ use gpui_kit::*;
 
 use crate::app::{
     CatalogIcon, NewLocalTerminal, NewSession, ShowCredentials, ShowForwards, ShowSessions,
-    ToggleSessionPanel, ToggleTheme,
+    ShowUpdate, ToggleSessionPanel, ToggleTheme,
 };
+use crate::update::UpdateBadge;
 
 use super::sidebar::SidebarMode;
 
@@ -19,15 +21,18 @@ use super::sidebar::SidebarMode;
 /// when nothing is focused.
 ///
 /// `sidebar` is what the left dock is showing, or `None` while it is hidden;
-/// `forwards` is how many port forwards are running.
+/// `forwards` is how many port forwards are running; `update` is the
+/// newer ShellRS waiting to be installed, when there is one.
 pub fn render_title_bar(
     sidebar: Option<SidebarMode>,
     forwards: usize,
+    update: Option<UpdateBadge>,
     target: &FocusHandle,
     cx: &App,
 ) -> TitleBar {
     let dark = cx.theme().is_dark();
-    let (mode, toggle, new_session, new_local, theme) = (
+    let (mode, toggle, new_session, new_local, theme, show_update) = (
+        target.clone(),
         target.clone(),
         target.clone(),
         target.clone(),
@@ -140,6 +145,27 @@ pub fn render_title_bar(
                             new_local.dispatch_action(&NewLocalTerminal, window, cx)
                         }),
                 )
+                .children(update.map(|update| {
+                    // A dot on the icon, in the colour of what it says.
+                    Badge::new()
+                        .dot()
+                        .color(if update.trouble {
+                            cx.theme().warning
+                        } else {
+                            cx.theme().success
+                        })
+                        .child(
+                            Button::new("update-available")
+                                .ghost()
+                                .small()
+                                .icon(CatalogIcon::CircleArrowUp)
+                                .tooltip(update.label.clone())
+                                .accessibility_label(update.label)
+                                .on_click(move |_, window, cx| {
+                                    show_update.dispatch_action(&ShowUpdate, window, cx)
+                                }),
+                        )
+                }))
                 .child(
                     Button::new("theme-toggle")
                         .ghost()

@@ -46,7 +46,8 @@ icon_assets!(
         KeyRound,
         RectangleEllipsis,
         FileKey,
-        UserRoundKey
+        UserRoundKey,
+        CircleArrowUp
     ]
 );
 

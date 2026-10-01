@@ -15,6 +15,7 @@ pub struct AppSettings {
     pub appearance: Appearance,
     pub terminal_font: TerminalFontSettings,
     pub external_cli: ExternalCliSettings,
+    pub update: UpdateSettings,
     /// The SFTP 大小 column, switched from the column title's menu rather
     /// than the settings page, as in WinSCP.
     pub file_size_format: FileSizeFormat,
@@ -27,6 +28,21 @@ pub struct ExternalCliSettings {
     /// Whether the `shellrs` command may use the saved sessions. Off until
     /// the user turns it on.
     pub enabled: bool,
+}
+
+/// 关于 → 更新.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    /// Look for a newer ShellRS in the background and download it. On
+    /// unless the user turns it off.
+    pub automatic: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self { automatic: true }
+    }
 }
 
 impl AppSettings {
@@ -228,6 +244,17 @@ mod tests {
         let settings: AppSettings =
             serde_json::from_str(r#"{"file_size_format":"short"}"#).unwrap();
         assert_eq!(settings.file_size_format, FileSizeFormat::Short);
+    }
+
+    #[test]
+    fn automatic_updates_are_on_unless_the_file_says_otherwise() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(settings.update.automatic);
+        let settings: AppSettings = serde_json::from_str(r#"{"update":{}}"#).unwrap();
+        assert!(settings.update.automatic);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"update":{"automatic":false}}"#).unwrap();
+        assert!(!settings.update.automatic);
     }
 
     #[test]

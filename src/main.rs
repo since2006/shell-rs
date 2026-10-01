@@ -26,6 +26,7 @@ fn main() {
         .with_assets(shellrs::app::AppAssets)
         .run(|cx| {
             shellrs::init(cx);
+            shellrs::app::show_logo_when_unbundled(cx);
             cx.activate(true);
 
             let options = shellrs::workspace::window_options(cx);
@@ -53,6 +54,9 @@ fn main() {
             })
             .detach();
         });
+    // On Windows the event loop ends and `run` returns: an update that is
+    // to be installed now starts its setup, which waits for this process.
+    shellrs::update::start_handed_over();
 }
 
 /// Load the sessions saved on disk. If the database cannot be opened the

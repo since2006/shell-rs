@@ -106,7 +106,10 @@ impl IntegrationPaths {
     /// Windows gets a folder of ShellRS's own, added to the user's PATH.
     pub fn system() -> Option<Self> {
         let home = dirs::home_dir()?;
-        let exe = std::env::current_exe().ok()?;
+        let exe = program(
+            std::env::current_exe().ok()?,
+            std::env::var_os("APPIMAGE").map(PathBuf::from),
+        );
         let (bin_link, exe, user_path) = if cfg!(target_os = "macos") {
             (
                 PathBuf::from("/usr/local/bin").join(COMMAND_NAME),
@@ -137,6 +140,16 @@ impl IntegrationPaths {
         let mut file = self.home.clone();
         file.extend(agent.skills_dir());
         file.join(COMMAND_NAME).join(SKILL_FILE)
+    }
+}
+
+/// The file the `shellrs` command runs. Inside an AppImage the executable
+/// lives in a mount that is gone once the app exits, so the command runs
+/// the AppImage itself, which `$APPIMAGE` names.
+fn program(exe: PathBuf, appimage: Option<PathBuf>) -> PathBuf {
+    match appimage {
+        Some(appimage) if cfg!(target_os = "linux") || cfg!(test) => appimage,
+        _ => exe,
     }
 }
 
@@ -352,6 +365,20 @@ pub fn install_skill(paths: &IntegrationPaths, agent: AgentKind) -> io::Result<(
     fs::rename(&temporary, &file)
 }
 
+/// Rewrite the skills that are installed but come from another version of
+/// ShellRS, so that an update reaches the agents too. Skills nobody
+/// installed stay uninstalled. Returns how many were rewritten.
+pub fn update_outdated_skills(paths: &IntegrationPaths) -> io::Result<usize> {
+    let mut updated = 0;
+    for agent in AgentKind::ALL {
+        if skill_status(paths, agent) == SkillStatus::Outdated {
+            install_skill(paths, agent)?;
+            updated += 1;
+        }
+    }
+    Ok(updated)
+}
+
 /// Delete the skill, and its folder once empty. The agent's own
 /// directories stay.
 pub fn remove_skill(paths: &IntegrationPaths, agent: AgentKind) -> io::Result<()> {
@@ -373,6 +400,14 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn inside_an_appimage_the_command_links_to_the_appimage() {
+        let mounted = PathBuf::from("/tmp/.mount_ShellRabc/usr/bin/shellrs");
+        let appimage = PathBuf::from("/home/me/Apps/ShellRS-x86_64.AppImage");
+        assert_eq!(program(mounted.clone(), Some(appimage.clone())), appimage);
+        assert_eq!(program(mounted.clone(), None), mounted);
+    }
 
     fn paths(root: &Path) -> IntegrationPaths {
         let exe = root.join("app").join("shellrs");
@@ -438,6 +473,20 @@ mod tests {
         assert!(other.exists());
         // Removing what is not there is not an error.
         remove_skill(&paths, agent).unwrap();
+    }
+
+    #[test]
+    fn outdated_skills_are_rewritten_and_missing_ones_left_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        let [first, second, ..] = AgentKind::ALL;
+        install_skill(&paths, first).unwrap();
+        fs::write(paths.skill_file(first), "an older skill").unwrap();
+
+        assert_eq!(update_outdated_skills(&paths).unwrap(), 1);
+        assert_eq!(skill_status(&paths, first), SkillStatus::Installed);
+        assert_eq!(skill_status(&paths, second), SkillStatus::Missing);
+        assert_eq!(update_outdated_skills(&paths).unwrap(), 0);
     }
 
     #[cfg(unix)]

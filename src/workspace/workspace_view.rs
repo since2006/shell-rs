@@ -60,6 +60,7 @@ use crate::terminal::{
     SharedTerminalTransportFactory, TerminalLifecycle, TerminalPanel, TerminalPanelEvent,
     TerminalView,
 };
+use crate::update::{UpdateServices, Updater, UpdaterEvent};
 
 use super::{
     dock_skin::WorkspaceDockSkin, recent_sessions::RecentSessions, sidebar::Sidebar,
@@ -133,10 +134,10 @@ pub struct Workspace {
     pub(super) forwards: Entity<ForwardManager>,
     /// The start page the dock skin shows while the center has no tab.
     recent: Entity<RecentSessions>,
-    terminals: HashMap<RemoteTerminalId, Entity<TerminalPanel>>,
+    pub(super) terminals: HashMap<RemoteTerminalId, Entity<TerminalPanel>>,
     /// SFTP tabs; a session can have several, like terminals.
-    explorers: HashMap<ExplorerId, Entity<ExplorerPanel>>,
-    local_terminals: HashMap<LocalTerminalId, Entity<LocalTerminalPanel>>,
+    pub(super) explorers: HashMap<ExplorerId, Entity<ExplorerPanel>>,
+    pub(super) local_terminals: HashMap<LocalTerminalId, Entity<LocalTerminalPanel>>,
     /// The settings tab, while it is open. There is only ever one.
     settings_tab: Option<Entity<SettingsPanel>>,
     /// What the settings tab edits; the workspace applies it to the window.
@@ -148,6 +149,10 @@ pub struct Workspace {
     /// Answers the `shellrs` command. Production only: UI tests never
     /// listen on the real socket.
     cli_server: Option<CliServer>,
+    /// Looks for, downloads and installs newer versions. Without services
+    /// in UI tests, so it never reaches the network unless a test hands it
+    /// fakes.
+    pub(super) updater: Entity<Updater>,
     local_terminal_factory: SharedTerminalTransportFactory,
     remote_terminal_provider: SharedRemoteTerminalTransportProvider,
     sftp_provider: SharedSftpTransportProvider,
@@ -163,7 +168,7 @@ pub struct Workspace {
     pub(super) active_prompt: Option<(PromptOwner, SessionId, u64)>,
     /// Dispatch target for the title bar and start page: actions sent to it
     /// reach the workspace handlers whatever is focused.
-    focus_handle: FocusHandle,
+    pub(super) focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -222,6 +227,11 @@ impl Workspace {
             ),
         }
         this.sync_cli_server(cx);
+        let bundle = cx.app_path().ok();
+        this.updater.update(cx, |updater, cx| {
+            updater.set_services(UpdateServices::system(bundle), cx);
+            updater.start(cx);
+        });
         this
     }
 
@@ -290,6 +300,12 @@ impl Workspace {
         );
         let session_panel = cx.new(|cx| SessionPanel::new(store.clone(), window, cx));
         let forwards = cx.new(|cx| ForwardManager::new(store.clone(), forward_provider, cx));
+        let automatic = settings.read(cx).settings().update.automatic;
+        let updater = cx.new(|cx| {
+            let mut updater = Updater::new();
+            updater.set_automatic(automatic, cx);
+            updater
+        });
         let forward_panel = cx.new(|cx| {
             ForwardPanel::new(
                 store.clone(),
@@ -352,7 +368,15 @@ impl Workspace {
             cx.observe_in(&settings, window, |this, settings, window, cx| {
                 crate::settings::apply(settings.read(cx).settings(), window, cx);
                 this.sync_cli_server(cx);
+                this.sync_updater(cx);
             }),
+            cx.subscribe_in(
+                &updater,
+                window,
+                |this, _, event: &UpdaterEvent, window, cx| {
+                    this.on_updater_event(event, window, cx)
+                },
+            ),
             cx.subscribe_in(
                 &settings,
                 window,
@@ -442,6 +466,7 @@ impl Workspace {
             settings,
             cli_integration: cx.new(|_| CliIntegration::new(None)),
             cli_server: None,
+            updater,
             local_terminal_factory,
             remote_terminal_provider,
             sftp_provider,
@@ -541,6 +566,10 @@ impl Workspace {
     /// Tests hand it a temporary home and bin directory.
     pub fn cli_integration(&self) -> &Entity<CliIntegration> {
         &self.cli_integration
+    }
+
+    pub fn updater(&self) -> &Entity<Updater> {
+        &self.updater
     }
 
     /// Keep the start page and focus in step with the center: once its last
@@ -994,7 +1023,8 @@ impl Workspace {
         let integration = self.cli_integration.clone();
         // Something may have been installed or removed since last time.
         integration.update(cx, |integration, cx| integration.refresh(cx));
-        let panel = cx.new(|cx| SettingsPanel::new(store, integration, cx));
+        let updater = self.updater.clone();
+        let panel = cx.new(|cx| SettingsPanel::new(store, integration, updater, cx));
         let subscription = cx.subscribe(&panel, |this, _, event: &SettingsPanelEvent, cx| {
             match event {
                 SettingsPanelEvent::Activated => {
@@ -2133,6 +2163,11 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_set_file_size_format))
             .on_action(cx.listener(Self::on_remove_agent_skill))
             .on_action(cx.listener(Self::on_refresh_cli_integration))
+            .on_action(cx.listener(Self::on_check_for_updates))
+            .on_action(cx.listener(Self::on_download_update))
+            .on_action(cx.listener(Self::on_show_update))
+            .on_action(cx.listener(Self::on_restart_to_update))
+            .on_action(cx.listener(Self::on_open_download_page))
             .on_action(cx.listener(Self::on_copy_agent_skill))
             .on_action(cx.listener(Self::on_close_settings))
             .on_action(cx.listener(Self::on_close_active_tab))
@@ -2177,6 +2212,7 @@ impl Render for Workspace {
             .child(render_title_bar(
                 sidebar,
                 running_forwards,
+                self.updater.read(cx).snapshot().badge(),
                 &self.focus_handle,
                 cx,
             ))

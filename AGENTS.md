@@ -45,6 +45,7 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 - `explorer/` — 目录与选择快照、`DataTable` 双栏、上传确认 / 冲突对话框、进度和取消 / 恢复展示。`ExplorerAction` 统一路由到工作区；文件扫描与网络操作在后台，目录响应按请求编号丢弃过期结果。
 - `sftp/` — 可注入传输与本地目录接口、`RemotePath`、russh-sftp 3.0.0 协议适配、有界并发分块上传、UUID 临时文件、安全替换、原子 JSON 续传记录和三次自动重连。`ssh/connection.rs` 的 `SshConnector` 与终端共享认证、钥匙串服务及 known_hosts 写锁。
 - `workspace/` — `workspace_view.rs` 持有 `SessionStore`、`DockArea`、按会话登记的面板注册表，以及**全部动作处理器**；`title_bar.rs`、`status_bar.rs`、`recent_sessions.rs`（中间区没有标签页时显示的「最近连接」开始页，**不是** Dock 面板）、`dock_skin.rs`（`WorkspaceDockSkin`：包一层 `DockSkin`，中间区为空时用 `deferred` 把开始页画在空的中间区之上；工作区在 `DockEvent::LayoutChanged` 时同步「中间区是否为空」并在刚变空时把焦点移到开始页）。
+- `update/` — 在线升级：`feed.rs` 从 `dl.shellrs.com` 取已签名的清单和安装包（reqwest，走系统代理），`verify.rs` 先验 minisign 签名（trusted comment 绑定通道和版本）再信清单、按大小和 SHA-256 信安装包，`install*.rs` 按安装方式装（macOS 整包交换、Windows 运行 Inno 安装程序、Linux 覆盖 AppImage），`updater.rs` 的 `Updater` 实体管检查、下载和重启，工作线程的事件由 UI 定时轮询。不依赖 `workspace` 和 `settings`；`new_with_services` 里的 `Updater` 没有服务、从不联网，生产路径才 `set_services` + `start`，UI 测试经 `workspace.updater()` 注入假的。详见 `CLAUDE.md` 和 `README.md` 的「下载与更新」「发布」。
 - `shared/` — 多个功能共用的展示片段（`ClosableTabTitle`、`HostMark`）。
 
 关键流程与不变量：

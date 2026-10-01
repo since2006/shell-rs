@@ -1,0 +1,320 @@
+# A release: push a tag `v<version>` matching Cargo.toml's version.
+#
+#   verify   the tag, the CHANGELOG section, the update keys
+#   macos    universal app: signed, notarized, stapled; update zip and DMG
+#   windows  per-user Inno Setup installer (unsigned for now)
+#   linux    AppImage
+#   publish  (environment `release`, approved by hand) uploads to R2 behind
+#            dl.shellrs.com, creates the GitHub release, and only then
+#            replaces the channel's manifest, which is what clients follow
+#
+# A tag with a pre-release (v0.3.0-beta.1) goes to the beta channel only. A
+# stable release also becomes the beta channel's, unless beta is ahead.
+#
+# Running it by hand (workflow_dispatch) builds and packages from the
+# current commit without publishing, to try the pipeline.
+#
+# Secrets, see README.md › 发布:
+#   repository: APPLE_CERTIFICATE_P12 (base64), APPLE_CERTIFICATE_PASSWORD,
+#               APPLE_SIGNING_IDENTITY, APPLE_TEAM_ID, APPLE_API_KEY_P8
+#               (base64), APPLE_API_KEY_ID, APPLE_API_ISSUER
+#   environment `release`: MINISIGN_SECRET_KEY, MINISIGN_PASSWORD,
+#               R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
+#               R2_BUCKET, CF_ZONE_ID, CF_API_TOKEN
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      channel: ${{ steps.version.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Version and channel
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+          case "$version" in *-*) channel=beta ;; *) channel=stable ;; esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version=${{ steps.version.outputs.version }}
+          awk -v heading="## [$version]" '
+            index($0, heading) == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md | sed -e '/./,$!d' > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no section ## [$version]"
+            exit 1
+          fi
+          cat notes.md
+      - name: The build knows the update keys
+        run: |
+          if grep -q 'pub const TRUSTED_KEYS: &\[&str\] = &\[\];' src/update/build_info.rs; then
+            echo "::error::src/update/build_info.rs has no TRUSTED_KEYS: a release would reject every update"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notes
+          path: notes.md
+
+  macos:
+    needs: verify
+    runs-on: macos-14
+    timeout-minutes: 120
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      SHELLRS_UPDATE_CHANNEL: ${{ needs.verify.outputs.channel }}
+      SHELLRS_COMMIT: ${{ github.sha }}
+      SHELLRS_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build both halves and join them
+        run: |
+          export SHELLRS_BUILD_DATE=$(date -u +%Y-%m-%d)
+          cargo build --release --locked --bin shellrs --target aarch64-apple-darwin
+          cargo build --release --locked --bin shellrs --target x86_64-apple-darwin
+          mkdir -p dist build
+          lipo -create -output build/shellrs \
+            target/aarch64-apple-darwin/release/shellrs \
+            target/x86_64-apple-darwin/release/shellrs
+          packaging/macos/bundle.sh build/shellrs "$VERSION" "$GITHUB_RUN_NUMBER" build
+      - name: Sign
+        env:
+          CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(uuidgen)
+          echo "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          codesign --force --timestamp --options runtime --sign "$IDENTITY" build/ShellRS.app
+          codesign --verify --deep --strict --verbose=2 build/ShellRS.app
+      - name: Notarize and staple
+        env:
+          API_KEY: ${{ secrets.APPLE_API_KEY_P8 }}
+          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          echo "$API_KEY" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          notarize() {
+            xcrun notarytool submit "$1" --key "$RUNNER_TEMP/AuthKey.p8" \
+              --key-id "$API_KEY_ID" --issuer "$API_ISSUER" \
+              --wait --output-format json > "$RUNNER_TEMP/notary.json"
+            cat "$RUNNER_TEMP/notary.json"
+            # --wait returning is not success: the status has to say so.
+            if [ "$(jq -r .status "$RUNNER_TEMP/notary.json")" != Accepted ]; then
+              xcrun notarytool log "$(jq -r .id "$RUNNER_TEMP/notary.json")" \
+                --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$API_KEY_ID" --issuer "$API_ISSUER"
+              exit 1
+            fi
+          }
+          ditto -c -k --keepParent build/ShellRS.app "$RUNNER_TEMP/notarize.zip"
+          notarize "$RUNNER_TEMP/notarize.zip"
+          xcrun stapler staple build/ShellRS.app
+          # The update package: the stapled bundle, zipped the way the
+          # updater unzips it (ditto keeps the signature intact).
+          ditto -c -k --keepParent build/ShellRS.app "dist/ShellRS-$VERSION-macos-universal.app.zip"
+          # The first-install disk image, with the Applications shortcut.
+          mkdir -p "$RUNNER_TEMP/dmg"
+          cp -R build/ShellRS.app "$RUNNER_TEMP/dmg/"
+          ln -s /Applications "$RUNNER_TEMP/dmg/Applications"
+          dmg="dist/ShellRS-$VERSION-macos-universal.dmg"
+          hdiutil create -volname ShellRS -srcfolder "$RUNNER_TEMP/dmg" -ov -format UDZO "$dmg"
+          codesign --force --timestamp --sign "$IDENTITY" "$dmg"
+          notarize "$dmg"
+          xcrun stapler staple "$dmg"
+          spctl -a -vv -t install "$dmg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*
+
+  windows:
+    needs: verify
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      SHELLRS_UPDATE_CHANNEL: ${{ needs.verify.outputs.channel }}
+      SHELLRS_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: ilammy/setup-nasm@v1
+      - name: Build
+        shell: bash
+        run: |
+          export SHELLRS_BUILD_DATE=$(date -u +%Y-%m-%d)
+          cargo build --release --locked --bins
+      - name: Installer
+        shell: pwsh
+        run: |
+          # windows-2025 ships Inno Setup 6.
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y; }
+          & $iscc "/DAppVersion=$env:VERSION" "/DBuildDir=$env:GITHUB_WORKSPACE\target\release" `
+            "/O$env:GITHUB_WORKSPACE\dist" packaging\windows\shellrs.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+
+  linux:
+    needs: verify
+    # Ubuntu 22.04's glibc (2.35) is the oldest the AppImage runs on.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      SHELLRS_UPDATE_CHANNEL: ${{ needs.verify.outputs.channel }}
+      SHELLRS_COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang pkg-config libfontconfig-dev \
+            libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-xcb-dev libxcb1-dev libvulkan-dev libdbus-1-dev libssl-dev
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          export SHELLRS_BUILD_DATE=$(date -u +%Y-%m-%d)
+          cargo build --release --locked --bin shellrs
+      - name: AppImage
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/appimagetool" \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          # No FUSE on the runner: let the tool unpack itself.
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          APPIMAGETOOL="$RUNNER_TEMP/appimagetool" \
+            packaging/linux/appimage.sh target/release/shellrs "$VERSION" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  publish:
+    needs: [verify, macos, windows, linux]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    environment: release
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      CHANNEL: ${{ needs.verify.outputs.channel }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      BUCKET: ${{ secrets.R2_BUCKET }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect
+        run: |
+          mkdir -p dist
+          cp artifacts/macos/* artifacts/windows/* artifacts/linux/* dist/
+          cp artifacts/notes/notes.md notes.md
+          ls -l dist
+      - name: Signing key
+        env:
+          KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y minisign
+          printf '%s\n' "$KEY" > "$RUNNER_TEMP/minisign.key"
+          echo "MINISIGN_KEY_FILE=$RUNNER_TEMP/minisign.key" >> "$GITHUB_ENV"
+      - name: Sign the packages
+        env:
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          cd dist
+          for file in ShellRS-*; do
+            printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$MINISIGN_KEY_FILE" \
+              -m "$file" -t "shellrs $VERSION $file"
+          done
+          sha256sum ShellRS-* > SHA256SUMS
+      - name: Upload the packages
+        run: |
+          aws s3 cp dist "s3://$BUCKET/releases/$VERSION/" --recursive \
+            --endpoint-url "$R2" --cache-control "public, max-age=31536000, immutable"
+      - name: GitHub release
+        run: |
+          prerelease=""
+          [ "$CHANNEL" = beta ] && prerelease="--prerelease"
+          gh release create "v$VERSION" dist/* --title "ShellRS $VERSION" \
+            --notes-file notes.md $prerelease
+      - name: Manifests, last
+        env:
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          publish() {
+            packaging/make-manifest.sh "$VERSION" "$1" notes.md dist "$1.json"
+            aws s3 cp "$1.json" "s3://$BUCKET/update/v1/$1.json" --endpoint-url "$R2" \
+              --content-type application/json --cache-control "public, max-age=300"
+            echo "https://dl.shellrs.com/update/v1/$1.json" >> purge.txt
+          }
+          publish "$CHANNEL"
+          if [ "$CHANNEL" = stable ]; then
+            # Beta follows stable unless it is already ahead.
+            beta=$(curl -fsS https://dl.shellrs.com/update/v1/beta.json | jq -r .manifest | jq -r .version || true)
+            [ -n "$beta" ] || beta=0.0.0
+            if python3 - "$VERSION" "$beta" <<'EOF'
+          import sys
+          def key(version):
+              core, _, pre = version.partition("-")
+              parts = [int(part) for part in core.split(".")]
+              # A release sorts after its pre-releases.
+              return parts, (1,) if not pre else (0, pre)
+          sys.exit(0 if key(sys.argv[1]) > key(sys.argv[2]) else 1)
+          EOF
+            then
+              publish beta
+            fi
+          fi
+      - name: Purge the manifests from the CDN cache
+        env:
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: |
+          files=$(jq -R . purge.txt | jq -s '{files: .}')
+          curl -fsS -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/purge_cache" \
+            -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" \
+            --data "$files"

@@ -29,7 +29,7 @@ pub use client::{Console, FAILURE_EXIT, PARTIAL_EXIT, activate_running_app};
 pub use install::{
     AgentKind, BinaryStatus, IntegrationPaths, SKILL, SkillStatus, UserPath, binary_status,
     install_binary, install_skill, remove_binary, remove_skill, skill_status,
-    update_outdated_binary,
+    update_outdated_binary, update_outdated_skills,
 };
 pub use integration::{CliIntegration, IntegrationStatus};
 pub use protocol::{CliError, ErrorCode, Request, SessionInfo, TransferCounters, TransferSummary};

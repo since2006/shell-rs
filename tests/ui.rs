@@ -12,14 +12,15 @@ use gpui_kit::{
     MouseMoveEvent, TestAppContext, WindowHandle, point, px, size,
 };
 
+use semver::Version;
 use shellrs::app::{
-    CenterTab, ClearTerminal, CloseScope, CloseTabs, CollapseAllGroups, ConnectGroup,
-    ConnectSession, CopyCredentialPublicKey, CopySessionHost, CopySessionId, DeleteCredential,
-    DeleteForward, DeleteGroup, DeleteSession, DisconnectSession, DisconnectTerminal,
-    EditCredential, EditForward, EditSession, ExpandAllGroups, FindInTerminal, FindNextInTerminal,
-    FindPreviousInTerminal, FocusSearch, InstallCliCommand, NewLocalTerminal, NewSessionInGroup,
-    OpenExplorer, ReconnectTerminal, RemoveAgentSkill, RenameGroup, RenameTerminal, StartForward,
-    StopForward, ToggleSessionPanel,
+    CenterTab, CheckForUpdates, ClearTerminal, CloseScope, CloseTabs, CollapseAllGroups,
+    ConnectGroup, ConnectSession, CopyCredentialPublicKey, CopySessionHost, CopySessionId,
+    DeleteCredential, DeleteForward, DeleteGroup, DeleteSession, DisconnectSession,
+    DisconnectTerminal, EditCredential, EditForward, EditSession, ExpandAllGroups, FindInTerminal,
+    FindNextInTerminal, FindPreviousInTerminal, FocusSearch, InstallCliCommand, NewLocalTerminal,
+    NewSessionInGroup, OpenExplorer, ReconnectTerminal, RemoveAgentSkill, RenameGroup,
+    RenameTerminal, StartForward, StopForward, ToggleSessionPanel,
 };
 use shellrs::cli::{AgentKind, IntegrationPaths};
 use shellrs::connection::{
@@ -47,6 +48,10 @@ use shellrs::terminal::{
     RemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalFont,
     TerminalLifecycle, TerminalSize, TerminalTransport, TerminalTransportCommand,
     TerminalTransportEvent, TerminalTransportFactory,
+};
+use shellrs::update::{
+    Channel, InstallKind, Installer, Relaunch, Release, Staged, TrustedKeys, Unsupported,
+    UpdateError, UpdateFeed, UpdateServices,
 };
 use shellrs::workspace::Workspace;
 
@@ -9414,4 +9419,531 @@ async fn a_segment_that_cannot_be_chosen_stays_unchosen(cx: &mut TestAppContext)
         assert!(window.find("credential-key-path").visible());
         assert!(window.try_find("credential-key-text").is_none());
     });
+}
+
+// ---------------------------------------------------------------------------
+// 在线升级
+// ---------------------------------------------------------------------------
+
+/// The version the update tests run as, whatever `Cargo.toml` says.
+const RUNNING_VERSION: &str = "0.1.0";
+/// Where the fake installer says the restart goes.
+const INSTALLED_BUNDLE: &str = "/Applications/ShellRS.app";
+
+/// Serves one signed manifest and one package, and counts the requests.
+struct FakeUpdateFeed {
+    envelope: Mutex<Result<Vec<u8>, UpdateError>>,
+    package: Vec<u8>,
+    fetches: AtomicUsize,
+    downloads: AtomicUsize,
+}
+
+impl UpdateFeed for FakeUpdateFeed {
+    fn fetch(&self, _: Channel) -> Result<Vec<u8>, UpdateError> {
+        self.fetches.fetch_add(1, Ordering::SeqCst);
+        self.envelope.lock().unwrap().clone()
+    }
+
+    fn download(
+        &self,
+        _: &[String],
+        size: u64,
+        dest: &std::path::Path,
+        progress: &mut dyn FnMut(u64),
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), UpdateError> {
+        self.downloads.fetch_add(1, Ordering::SeqCst);
+        if cancel.load(Ordering::SeqCst) {
+            return Err(UpdateError::Cancelled);
+        }
+        progress(size / 2);
+        std::fs::write(dest, &self.package)?;
+        progress(size);
+        Ok(())
+    }
+}
+
+/// Records what it was asked to stage and apply; installs nothing.
+struct FakeInstaller {
+    kind: InstallKind,
+    staged: Mutex<Vec<Version>>,
+    applied: Mutex<Vec<bool>>,
+}
+
+impl FakeInstaller {
+    fn new(kind: InstallKind) -> Arc<Self> {
+        Arc::new(Self {
+            kind,
+            staged: Mutex::default(),
+            applied: Mutex::default(),
+        })
+    }
+
+    fn applied(&self) -> Vec<bool> {
+        self.applied.lock().unwrap().clone()
+    }
+}
+
+impl Installer for FakeInstaller {
+    fn kind(&self) -> &InstallKind {
+        &self.kind
+    }
+
+    fn stage(&self, package: &std::path::Path, release: &Release) -> Result<Staged, UpdateError> {
+        self.staged.lock().unwrap().push(release.version.clone());
+        Ok(Staged {
+            version: release.version.clone(),
+            path: package.to_path_buf(),
+        })
+    }
+
+    fn apply(&self, _: &Staged, relaunch: bool) -> Result<Relaunch, UpdateError> {
+        self.applied.lock().unwrap().push(relaunch);
+        Ok(if relaunch {
+            Relaunch::Restart(INSTALLED_BUNDLE.into())
+        } else {
+            Relaunch::Nothing
+        })
+    }
+
+    fn clean_up(&self) {}
+}
+
+/// A copy of ShellRS that can install updates itself.
+fn installable() -> InstallKind {
+    InstallKind::MacBundle {
+        bundle: INSTALLED_BUNDLE.into(),
+    }
+}
+
+/// The update server's side of a test: what it serves, and the fakes the
+/// updater was given.
+struct UpdateFixture {
+    feed: Arc<FakeUpdateFeed>,
+    installer: Arc<FakeInstaller>,
+    folder: tempfile::TempDir,
+}
+
+impl UpdateFixture {
+    fn fetches(&self) -> usize {
+        self.feed.fetches.load(Ordering::SeqCst)
+    }
+
+    fn downloads(&self) -> usize {
+        self.feed.downloads.load(Ordering::SeqCst)
+    }
+}
+
+/// A stable manifest offering `version` for this platform, signed by `pair`.
+fn signed_manifest(pair: &minisign::KeyPair, version: &str, package: &[u8]) -> Vec<u8> {
+    use sha2::Digest as _;
+    let platform = shellrs::update::platform::platform_key();
+    let sha256: String = sha2::Sha256::digest(package)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let manifest = serde_json::json!({
+        "schema": 1,
+        "channel": "stable",
+        "version": version,
+        "published_at": "2026-10-20T08:00:00Z",
+        "notes": "### 新增\n\n- 在线升级：新版本在后台下载好后，标题栏会提示。",
+        "assets": {
+            platform: {
+                "urls": ["https://dl.shellrs.com/releases/package"],
+                "size": package.len(),
+                "sha256": sha256,
+            }
+        },
+        "installers": { platform: "https://dl.shellrs.com/releases/installer" },
+    })
+    .to_string();
+    let signature = minisign::sign(
+        Some(&pair.pk),
+        &pair.sk,
+        std::io::Cursor::new(manifest.as_bytes()),
+        Some(&format!("shellrs-manifest stable {version}")),
+        None,
+    )
+    .unwrap()
+    .into_string();
+    serde_json::to_vec(&serde_json::json!({ "manifest": manifest, "signature": signature }))
+        .unwrap()
+}
+
+/// Give the workspace's updater a fake server offering `offered` (or
+/// answering `error`) and a fake installer of `kind`, as a stable 0.1.0.
+fn serve_updates(
+    cx: &mut TestAppContext,
+    workspace: &Entity<Workspace>,
+    offered: Result<&str, UpdateError>,
+    kind: InstallKind,
+) -> UpdateFixture {
+    let pair = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let package = b"the new ShellRS".to_vec();
+    let envelope = offered.map(|version| signed_manifest(&pair, version, &package));
+    let feed = Arc::new(FakeUpdateFeed {
+        envelope: Mutex::new(envelope),
+        package,
+        fetches: AtomicUsize::new(0),
+        downloads: AtomicUsize::new(0),
+    });
+    let installer = FakeInstaller::new(kind);
+    let folder = tempfile::tempdir().unwrap();
+    let services = UpdateServices {
+        feed: feed.clone(),
+        installer: installer.clone(),
+        keys: TrustedKeys::new([pair.pk.to_base64().as_str()]),
+        channel: Some(Channel::Stable),
+        current: Version::parse(RUNNING_VERSION).unwrap(),
+        folder: folder.path().to_path_buf(),
+        draw: 0.5,
+    };
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .updater()
+            .update(cx, |updater, cx| updater.set_services(services, cx));
+    });
+    UpdateFixture {
+        feed,
+        installer,
+        folder,
+    }
+}
+
+/// Open 设置 › 关于.
+fn open_about_settings(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-3", cx)
+    });
+}
+
+async fn wait_for_update_status(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Root>,
+    wanted: impl Fn(&str) -> bool,
+) {
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("update-status")
+            .and_then(|status| status.label().map(&wanted))
+            .unwrap_or(false)
+    })
+    .await;
+}
+
+fn update_status(cx: &mut TestAppContext, handle: WindowHandle<Root>) -> String {
+    in_frame(cx, handle, |window, _| {
+        window
+            .find("update-status")
+            .label()
+            .unwrap_or_default()
+            .to_string()
+    })
+}
+
+fn set_automatic_updates(cx: &mut TestAppContext, workspace: &Entity<Workspace>, on: bool) {
+    workspace.update(cx, |workspace, cx| {
+        workspace.settings().update(cx, |settings, cx| {
+            settings.update(|settings| settings.update.automatic = on, cx)
+        });
+    });
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn a_development_build_does_not_check(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    open_about_settings(cx, handle);
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("update-status").label(),
+            Some("开发构建，不检查更新")
+        );
+        assert!(window.try_find("check-for-updates").is_none());
+        let version = window
+            .find("about-version")
+            .label()
+            .unwrap_or_default()
+            .to_string();
+        assert!(version.starts_with(env!("CARGO_PKG_VERSION")), "{version}");
+        assert!(window.try_find("update-available").is_none());
+    });
+}
+
+#[gpui_kit::test]
+async fn checking_by_hand_says_when_shellrs_is_up_to_date(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let fixture = serve_updates(cx, &workspace, Ok(RUNNING_VERSION), installable());
+    open_about_settings(cx, handle);
+    assert_eq!(update_status(cx, handle), "尚未检查更新");
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("check-for-updates", cx)
+    });
+    wait_for_update_status(cx, handle, |status| {
+        status.starts_with("已是最新版本 · 上次检查 ")
+    })
+    .await;
+    assert_eq!(fixture.fetches(), 1);
+    assert_eq!(fixture.downloads(), 0);
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("update-available").is_none());
+    });
+}
+
+#[gpui_kit::test]
+async fn a_found_update_downloads_by_itself_and_the_title_bar_offers_it(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let fixture = serve_updates(cx, &workspace, Ok("0.2.0"), installable());
+    open_about_settings(cx, handle);
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("check-for-updates", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("update-available")
+            .is_some_and(|button| button.label() == Some("新版本 0.2.0 已就绪"))
+    })
+    .await;
+    assert_eq!(fixture.downloads(), 1);
+    assert_eq!(
+        *fixture.installer.staged.lock().unwrap(),
+        [Version::new(0, 2, 0)]
+    );
+    assert_eq!(
+        update_status(cx, handle),
+        "0.2.0 已就绪，退出或重启 ShellRS 时安装"
+    );
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("show-update").is_some());
+        // The release notes are on the page too.
+        assert!(window.try_find("download-update").is_none());
+    });
+}
+
+#[gpui_kit::test]
+async fn with_automatic_updates_off_a_found_update_waits_for_download(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    set_automatic_updates(cx, &workspace, false);
+    let fixture = serve_updates(cx, &workspace, Ok("0.2.0"), installable());
+    open_about_settings(cx, handle);
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("check-for-updates", cx)
+    });
+    wait_for_update_status(cx, handle, |status| status == "发现新版本 0.2.0").await;
+    assert_eq!(fixture.downloads(), 0);
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("update-available").is_none());
+    });
+
+    in_frame(cx, handle, |window, cx| window.click("download-update", cx));
+    wait_for_update_status(cx, handle, |status| status.starts_with("0.2.0 已就绪")).await;
+    assert_eq!(fixture.downloads(), 1);
+}
+
+#[gpui_kit::test]
+async fn the_update_dialog_shows_the_notes_and_restarts_into_the_new_version(
+    cx: &mut TestAppContext,
+) {
+    let (handle, workspace) = open_workspace(cx);
+    let fixture = serve_updates(cx, &workspace, Ok("0.2.0"), installable());
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(CheckForUpdates), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("update-available").is_some()
+    })
+    .await;
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("update-available", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        let notes = window
+            .find("update-notes")
+            .label()
+            .unwrap_or_default()
+            .to_string();
+        assert!(notes.contains("在线升级"), "{notes}");
+        assert!(window.try_find("restart-to-update").is_some());
+    });
+
+    let restart = cx.expect_restart();
+    in_frame(cx, handle, |window, cx| {
+        window.click("restart-to-update", cx)
+    });
+    let (path, _) = restart.await.expect("restarted");
+    assert_eq!(path, Some(INSTALLED_BUNDLE.into()));
+    assert_eq!(fixture.installer.applied(), [true]);
+    // The note the new version reads to say it was updated.
+    let note = std::fs::read_to_string(fixture.folder.path().join("applied.json")).unwrap();
+    assert!(
+        note.contains("0.2.0") && note.contains(RUNNING_VERSION),
+        "{note}"
+    );
+
+    // Already installed: quitting does not install it again.
+    cx.update(|cx| cx.shutdown());
+    assert_eq!(fixture.installer.applied(), [true]);
+}
+
+#[gpui_kit::test]
+async fn the_update_dialog_says_what_restarting_interrupts(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let _fixture = serve_updates(cx, &workspace, Ok("0.2.0"), installable());
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(CheckForUpdates), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("update-available").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("update-available", cx)
+    });
+    // web-01 and staging-api start out connected, each with a terminal.
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("update-restart-note")
+            .and_then(|note| note.label().map(|label| label.contains("2 个远程终端")))
+            .unwrap_or(false)
+    })
+    .await;
+
+    // The status bar is outside the dialog, under its backdrop.
+    in_frame(cx, handle, |window, cx| {
+        window.click("status-connection", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window.try_find("update-dialog").is_some(),
+            "a click beside the update dialog closed it"
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn a_ready_update_is_installed_on_quit_once(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let fixture = serve_updates(cx, &workspace, Ok("0.2.0"), installable());
+    workspace.update(cx, |workspace, cx| {
+        workspace.updater().update(cx, |updater, cx| {
+            updater.start(cx);
+            updater.check(cx);
+        });
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("update-available").is_some()
+    })
+    .await;
+    assert!(fixture.installer.applied().is_empty());
+
+    cx.update(|cx| cx.shutdown());
+    assert_eq!(fixture.installer.applied(), [false]);
+    cx.update(|cx| cx.shutdown());
+    assert_eq!(fixture.installer.applied(), [false]);
+}
+
+#[gpui_kit::test]
+async fn an_unsupported_install_offers_the_download_page(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let fixture = serve_updates(
+        cx,
+        &workspace,
+        Ok("0.2.0"),
+        InstallKind::Unsupported(Unsupported::NotAppImage),
+    );
+    open_about_settings(cx, handle);
+    in_frame(cx, handle, |window, cx| {
+        window.click("check-for-updates", cx)
+    });
+    wait_for_update_status(cx, handle, |status| {
+        status == "发现新版本 0.2.0。这份 ShellRS 不是 AppImage，请用安装它的方式更新"
+    })
+    .await;
+    assert_eq!(fixture.downloads(), 0);
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("open-download-page").is_some());
+        assert!(window.try_find("download-update").is_none());
+        assert_eq!(
+            window.find("update-available").label(),
+            Some("新版本 0.2.0 可用")
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn a_failed_check_says_why_on_the_about_page(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let fixture = serve_updates(cx, &workspace, Err(UpdateError::Http(503)), installable());
+    open_about_settings(cx, handle);
+    in_frame(cx, handle, |window, cx| {
+        window.click("check-for-updates", cx)
+    });
+    wait_for_update_status(cx, handle, |status| {
+        status == "检查失败：更新服务器返回 HTTP 503"
+    })
+    .await;
+    assert_eq!(fixture.fetches(), 1);
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("update-available").is_none());
+        assert!(window.notifications(cx).is_empty());
+    });
+}
+
+#[gpui_kit::test]
+async fn turning_automatic_updates_off_stops_the_schedule(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let fixture = serve_updates(cx, &workspace, Ok(RUNNING_VERSION), installable());
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .updater()
+            .update(cx, |updater, cx| updater.start(cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(fixture.fetches(), 0, "nothing before the first wait");
+
+    cx.executor().advance_clock(Duration::from_secs(31));
+    open_about_settings(cx, handle);
+    wait_for_update_status(cx, handle, |status| status.starts_with("已是最新版本")).await;
+    assert_eq!(fixture.fetches(), 1);
+
+    set_automatic_updates(cx, &workspace, false);
+    cx.executor()
+        .advance_clock(Duration::from_secs(7 * 60 * 60));
+    cx.run_until_parked();
+    assert_eq!(fixture.fetches(), 1);
+
+    set_automatic_updates(cx, &workspace, true);
+    cx.executor()
+        .advance_clock(Duration::from_secs(7 * 60 * 60));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, _| {
+        fixture.fetches() == 2
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn the_first_start_after_an_update_says_so(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let fixture = serve_updates(cx, &workspace, Ok(RUNNING_VERSION), installable());
+    std::fs::write(
+        fixture.folder.path().join("applied.json"),
+        r#"{"from":"0.0.9","to":"0.1.0"}"#,
+    )
+    .unwrap();
+    workspace.update(cx, |workspace, cx| {
+        workspace
+            .updater()
+            .update(cx, |updater, cx| updater.start(cx));
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.notifications(cx).len() == 1
+    })
+    .await;
+    assert!(!fixture.folder.path().join("applied.json").exists());
 }

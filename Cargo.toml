@@ -43,6 +43,28 @@ unicode-width = "0.2"
 zeroize = "1"
 keyring = "4"
 trash = "5"
+# Online update: the signed manifest, its versions and the downloads. The
+# default features keep rustls with the OS trust store and the system proxy
+# (a GUI app started from Finder or the Start menu has no HTTPS_PROXY).
+minisign-verify = "0.2"
+reqwest = { version = "0.13", features = ["blocking"] }
+semver = { version = "1", features = ["serde"] }
+
+[target.'cfg(unix)'.dependencies]
+# `access(2)`: whether the folder ShellRS runs from can take its update.
+libc = "0.2"
+
+# The Dock icon when running outside an app bundle (`cargo run`). GPUI
+# already builds these crates.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSImage",
+    "NSResponder",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-registry = "0.6"
@@ -56,10 +78,22 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# The icon in the Windows executables (build.rs).
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["process", "test-util"] }
 gpui-kit = { version = "0.6.1", features = ["test-support"] }
 tempfile = "3"
+minisign = "0.7"
+
+# What the release workflow ships: smaller and faster than the default, at
+# the cost of a longer build.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
 
 # Optimize the rendering stack in debug builds (per gpui-kit's installation
 # guide); shellrs itself stays unoptimized and debuggable.

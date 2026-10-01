@@ -903,14 +903,32 @@ fn write_route(connection: &Connection, session: &Session) -> rusqlite::Result<(
 }
 
 /// Bring the database to `SCHEMA_VERSION`. A new file has version 0 and gets
-/// the whole schema; an older one is taken forward one version at a time.
-/// Each step is one transaction, so a file is never left between versions.
+/// the whole schema; an older one is backed up, then taken forward one
+/// version at a time. Each step is one transaction, so a file is never left
+/// between versions.
+///
+/// A file from a newer ShellRS is refused and left as it is: this version
+/// does not know what the newer tables mean, and writing to them could lose
+/// what the newer version saved. That happens after going back to an older
+/// version by hand, the one way an update can be undone.
 fn migrate(connection: &Connection) -> rusqlite::Result<()> {
     let mut version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version == 0 {
         return connection.execute_batch(&format!(
             "BEGIN;\n{SCHEMA}\nPRAGMA user_version = {SCHEMA_VERSION};\nCOMMIT;"
         ));
+    }
+    if version > SCHEMA_VERSION {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+            Some(format!(
+                "数据库来自更新版本的 ShellRS（结构版本 {version}，本版本支持到 \
+                 {SCHEMA_VERSION}），请安装最新版本"
+            )),
+        ));
+    }
+    if version < SCHEMA_VERSION {
+        back_up(connection, version);
     }
     for (from, step) in STEPS {
         if version == from {
@@ -922,6 +940,22 @@ fn migrate(connection: &Connection) -> rusqlite::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Copy the database to `<file>.v<version>.bak` before migrating it, so the
+/// version that wrote it can still open its data. `VACUUM INTO` writes a
+/// consistent copy; copying the file would miss what is still in the WAL.
+/// A failed backup does not stop the migration: the data is still there,
+/// only the way back is not.
+fn back_up(connection: &Connection, version: i64) {
+    let Some(path) = connection.path().filter(|path| !path.is_empty()) else {
+        return;
+    };
+    let backup = format!("{path}.v{version}.bak");
+    let _ = std::fs::remove_file(&backup);
+    if let Err(error) = connection.execute("VACUUM INTO ?1", [&backup]) {
+        eprintln!("shellrs: 迁移前无法备份数据库：{error}");
+    }
 }
 
 /// The step from version 9: a host logs in on its own with a password or
@@ -1303,6 +1337,75 @@ PRAGMA user_version = 9;";
         drop(db);
         let again = SessionDatabase::open(&path).unwrap().load().unwrap();
         assert_eq!(again.credentials.len(), 3);
+    }
+
+    #[test]
+    fn a_database_from_a_newer_shellrs_is_refused_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        drop(SessionDatabase::open(&path).unwrap());
+        let newer = SCHEMA_VERSION + 1;
+        Connection::open(&path)
+            .unwrap()
+            .pragma_update(None, "user_version", newer)
+            .unwrap();
+
+        let Err(error) = SessionDatabase::open(&path) else {
+            panic!("a newer database opened");
+        };
+        assert!(error.to_string().contains("更新版本的 ShellRS"), "{error}");
+        let version: i64 = Connection::open(&path)
+            .unwrap()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, newer);
+        assert!(!dir.path().join(format!("shellrs.db.v{newer}.bak")).exists());
+    }
+
+    #[test]
+    fn an_older_database_is_backed_up_before_it_is_migrated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(SCHEMA_V7).unwrap();
+            old.execute_batch(SCHEMA_V8_FORWARDS).unwrap();
+            old.execute_batch(SCHEMA_V9_CREDENTIALS).unwrap();
+            old.execute_batch(
+                "INSERT INTO sessions (id, name, host, port, username, auth, public_id) \
+                 VALUES (1, 'web', 'example.test', 22, 'root', 'password', 'abcdefgh12345678');
+                 PRAGMA user_version = 10;",
+            )
+            .unwrap();
+        }
+        drop(SessionDatabase::open(&path).unwrap());
+
+        let backup = Connection::open(dir.path().join("shellrs.db.v10.bak")).unwrap();
+        let version: i64 = backup
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 10);
+        let name: String = backup
+            .query_row("SELECT name FROM sessions WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "web");
+    }
+
+    #[test]
+    fn a_new_or_current_database_needs_no_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        drop(SessionDatabase::open(&path).unwrap());
+        drop(SessionDatabase::open(&path).unwrap());
+        let files: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".bak"))
+            .collect();
+        assert!(files.is_empty(), "{files:?}");
     }
 
     /// The route tables version 11 added, frozen like `SCHEMA_V7`.

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ShellRS
+Comment=SSH 主机管理：终端、SFTP 与端口转发
+Exec=shellrs
+Icon=shellrs
+Terminal=false
+Categories=Network;RemoteAccess;Development;
+StartupWMClass=shellrs

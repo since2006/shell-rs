@@ -4,17 +4,20 @@ use gpui_kit::component::{
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     group_box::GroupBoxVariant,
     h_flex,
+    link::Link,
     menu::PopupMenu,
     separator::Separator,
     setting::{NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
+    text::TextView,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CenterTab, CloseSettings, CopyAgentSkill, InstallAgentSkill, InstallCliCommand,
-    RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand,
+    CatalogIcon, CenterTab, CheckForUpdates, CloseSettings, CopyAgentSkill, DownloadUpdate,
+    InstallAgentSkill, InstallCliCommand, OpenDownloadPage, RefreshCliIntegration,
+    RemoveAgentSkill, RemoveCliCommand, ShowUpdate,
 };
 use crate::cli::{AgentKind, BinaryStatus, CliIntegration, IntegrationStatus, SkillStatus};
 use crate::shared::{ClosableTabTitle, close_tab_items};
@@ -22,6 +25,7 @@ use crate::terminal::{
     FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalFontPreview, is_font_installed,
     monospace_font_families,
 };
+use crate::update::{Phase, Tone, UpdateSnapshot, Updater, build_info, platform};
 
 use super::{AppSettings, Choice, SettingsStore};
 
@@ -42,12 +46,14 @@ pub struct SettingsPanel {
     store: Entity<SettingsStore>,
     /// What of the external CLI is installed, for 外部 CLI.
     integration: Entity<CliIntegration>,
+    /// Where updating stands, for 关于.
+    updater: Entity<Updater>,
     /// The monospace families to choose the terminal font from; empty until
     /// the scan in the background comes back.
     font_families: &'static [SharedString],
     focus_handle: FocusHandle,
     tab_group: Option<WeakEntity<TabGroup>>,
-    _subscriptions: [Subscription; 2],
+    _subscriptions: [Subscription; 3],
     _font_scan: Task<()>,
 }
 
@@ -55,11 +61,13 @@ impl SettingsPanel {
     pub fn new(
         store: Entity<SettingsStore>,
         integration: Entity<CliIntegration>,
+        updater: Entity<Updater>,
         cx: &mut Context<Self>,
     ) -> Self {
         let subscriptions = [
             cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe(&integration, |_, _, cx| cx.notify()),
+            cx.observe(&updater, |_, _, cx| cx.notify()),
         ];
         // Loading every family takes a moment the first time; the process
         // keeps the answer, so later tabs have it at once.
@@ -76,6 +84,7 @@ impl SettingsPanel {
         Self {
             store,
             integration,
+            updater,
             font_families: &[],
             focus_handle: cx.focus_handle(),
             tab_group: None,
@@ -191,7 +200,7 @@ struct Category {
 type CategoryGroups = fn(&SettingsPanel, &App) -> Vec<SettingGroup>;
 
 /// The categories, in the order the left column lists them.
-const CATEGORIES: [Category; 3] = [
+const CATEGORIES: [Category; 4] = [
     Category {
         title: "外观",
         icon: CatalogIcon::Palette,
@@ -206,6 +215,11 @@ const CATEGORIES: [Category; 3] = [
         title: "外部 CLI",
         icon: CatalogIcon::SquareTerminal,
         groups: external_cli_groups,
+    },
+    Category {
+        title: "关于",
+        icon: CatalogIcon::Info,
+        groups: about_groups,
     },
 ];
 
@@ -358,6 +372,195 @@ fn external_cli_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
                 skills_item(skill_files, status),
             ]),
     ]
+}
+
+/// 关于: which ShellRS this is, and updating it.
+fn about_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
+    let snapshot = panel.updater.read(cx).snapshot();
+    let (reader, writer) = (panel.store.clone(), panel.store.clone());
+    let notes = snapshot
+        .release
+        .as_ref()
+        .filter(|release| !release.notes.trim().is_empty())
+        .map(|release| (release.version.to_string(), release.notes.clone()));
+    let mut groups = vec![
+        SettingGroup::new().title("ShellRS").items([version_item()]),
+        SettingGroup::new().title("更新").items([
+            update_status_item(snapshot),
+            SettingItem::new(
+                "自动检查并下载更新",
+                SettingField::switch(
+                    move |cx| reader.read(cx).settings().update.automatic,
+                    move |automatic, cx| {
+                        writer.update(cx, |store, cx| {
+                            store.update(|settings| settings.update.automatic = automatic, cx)
+                        });
+                    },
+                )
+                .default_value(true),
+            )
+            .description(
+                "在后台检查新版本并下载，下载完成后在标题栏右上角提示，退出或重启时安装。\
+                 检查时只发送 ShellRS 的版本号、系统和架构。",
+            ),
+        ]),
+    ];
+    if let Some((version, notes)) = notes {
+        groups.push(
+            SettingGroup::new()
+                .title(format!("{version} 更新内容"))
+                .items([SettingItem::render(move |_, _, _| {
+                    div().w_full().child(
+                        TextView::markdown(
+                            SharedString::from(format!("about-notes-{version}")),
+                            notes.clone(),
+                        )
+                        .selectable(true),
+                    )
+                })]),
+        );
+    }
+    groups
+}
+
+/// 版本, 构建 and 平台, with where to read more.
+fn version_item() -> SettingItem {
+    SettingItem::render(|_, _, cx| {
+        let channel = match crate::update::Channel::of_this_build() {
+            Some(channel) => channel.key().to_string(),
+            None => "开发构建".into(),
+        };
+        let version = format!("{}（{channel}）", build_info::VERSION);
+        let build = match (build_info::COMMIT, build_info::BUILD_DATE) {
+            (Some(commit), Some(date)) => {
+                format!("{} · {date}", commit.get(..7).unwrap_or(commit))
+            }
+            (Some(commit), None) => commit.get(..7).unwrap_or(commit).to_string(),
+            _ => "本机构建".into(),
+        };
+        let row = |label: &'static str, value: String, id: &'static str| {
+            h_flex()
+                .gap_3()
+                .text_sm()
+                .child(
+                    div()
+                        .w(rems(4.))
+                        .flex_shrink_0()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .id(id)
+                        .test_support()
+                        .aria_label(value.clone())
+                        .child(value),
+                )
+        };
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(row("版本", version, "about-version"))
+            .child(row("构建", build, "about-build"))
+            .child(row(
+                "平台",
+                platform::platform_label().to_string(),
+                "about-platform",
+            ))
+            .child(
+                h_flex()
+                    .gap_4()
+                    .text_sm()
+                    .child(
+                        Link::new("about-website")
+                            .href("https://shellrs.com")
+                            .child("官网"),
+                    )
+                    .child(
+                        Link::new("about-changelog")
+                            .href("https://shellrs.com/changelog")
+                            .child("更新日志"),
+                    ),
+            )
+    })
+    .keywords(["版本", "关于", "ShellRS"])
+}
+
+/// Where updating stands, with 检查更新 and the step that applies.
+fn update_status_item(snapshot: UpdateSnapshot) -> SettingItem {
+    SettingItem::render(move |_, _, cx| {
+        let (text, tone) = snapshot.status_line();
+        let color = match tone {
+            Tone::Plain => cx.theme().muted_foreground,
+            Tone::Success => cx.theme().success,
+            Tone::Warning => cx.theme().warning,
+            Tone::Danger => cx.theme().danger,
+        };
+        let step: Option<(&'static str, &'static str, Box<dyn Action>)> =
+            if snapshot.phase == Phase::Ready {
+                Some(("show-update", "重启更新…", Box::new(ShowUpdate)))
+            } else if snapshot.needs_download_page() {
+                Some((
+                    "open-download-page",
+                    "前往下载页",
+                    Box::new(OpenDownloadPage),
+                ))
+            } else if snapshot.can_download() {
+                let label = if matches!(snapshot.phase, Phase::Failed { .. }) {
+                    "重试下载"
+                } else {
+                    "下载"
+                };
+                Some(("download-update", label, Box::new(DownloadUpdate)))
+            } else {
+                None
+            };
+        h_flex()
+            .w_full()
+            .justify_between()
+            .items_center()
+            .gap_3()
+            .child(
+                v_flex()
+                    .gap_1()
+                    .min_w_0()
+                    .child(div().text_sm().child("状态："))
+                    .child(
+                        div()
+                            .id("update-status")
+                            .test_support()
+                            .aria_label(text.clone())
+                            .text_sm()
+                            .text_color(color)
+                            .child(text),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .flex_shrink_0()
+                    .when(snapshot.phase != Phase::Off, |buttons| {
+                        buttons.child(
+                            Button::new("check-for-updates")
+                                .outline()
+                                .small()
+                                .icon(Icon::new(CatalogIcon::RefreshCw))
+                                .label("检查更新")
+                                .loading(snapshot.phase == Phase::Checking)
+                                .disabled(!snapshot.can_check())
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(CheckForUpdates), cx)
+                                }),
+                        )
+                    })
+                    .children(step.map(|(id, label, action)| {
+                        Button::new(id).primary().small().label(label).on_click(
+                            move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx),
+                        )
+                    })),
+            )
+    })
+    .keywords(["更新", "升级", "版本", "下载"])
 }
 
 /// Where the `shellrs` command stands, with the one thing to do about it.

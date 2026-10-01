@@ -1,12 +1,16 @@
 //! Application-level wiring: actions, key bindings, assets.
 
 mod actions;
+mod app_icon;
 mod assets;
 mod paths;
 
 pub use actions::*;
+pub use app_icon::show_logo_when_unbundled;
 pub use assets::{AppAssets, CatalogIcon};
-pub use paths::{cli_endpoint, cli_socket_path, data_dir, database_path, keys_dir, settings_path};
+pub use paths::{
+    cli_endpoint, cli_socket_path, data_dir, database_path, keys_dir, settings_path, updates_dir,
+};
 
 use gpui_kit::component::{Theme, dock::ToggleZoom};
 use gpui_kit::*;

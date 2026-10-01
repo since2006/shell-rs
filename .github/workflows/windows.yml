@@ -1,6 +1,6 @@
 # The Windows build, which the Macs this is developed on cannot compile:
-# the whole crate through clippy, and the external CLI's tests, including
-# the named pipe between two processes.
+# the whole crate through clippy, the external CLI's tests, including the
+# named pipe between two processes, and the updater's.
 name: windows
 
 on:
@@ -24,4 +24,5 @@ jobs:
       - uses: ilammy/setup-nasm@v1
       - run: cargo clippy --all-targets -- -D warnings
       - run: "cargo test --lib cli::"
+      - run: "cargo test --lib update::"
       - run: cargo test --test cli_bin

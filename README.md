@@ -83,12 +83,13 @@ ShellRS 同一时间只运行一个：已经开着时再打开一次，会把已
 
 ## 设置
 
-侧栏最下方的「设置」按钮（或 ⌘,，其他平台 Ctrl+,）在中间区打开「设置」标签页；已经打开时切换到该标签，不会重复打开。设置页分两栏：左边是分类（外观、终端、外部 CLI），上方可搜索，栏宽可拖动；右边是所选分类的设置。设置改动立即生效并保存在数据目录的 `settings.json` 里。
+侧栏最下方的「设置」按钮（或 ⌘,，其他平台 Ctrl+,）在中间区打开「设置」标签页；已经打开时切换到该标签，不会重复打开。设置页分两栏：左边是分类（外观、终端、外部 CLI、关于），上方可搜索，栏宽可拖动；右边是所选分类的设置。设置改动立即生效并保存在数据目录的 `settings.json` 里。
 
 - **外观 → 常规 → 界面语言**：跟随系统、简体中文、English，默认简体中文。英文界面尚在翻译中，目前只有 GPUI Kit 组件自带的文字（如搜索框提示）会切换。
 - **外观 → 常规 → 应用外观**：深色、浅色、跟随系统，默认跟随系统；选「跟随系统」时随系统的深浅色切换。标题栏的主题按钮也会改写这一项。
 - **终端 → 字体配置**：字体（只列出本机安装的等宽字体，默认是系统的等宽字体，macOS 上为 Menlo）、字号（8–32 像素，默认 13）、行高（字号的 1.0–2.0 倍，默认 1.54，即原来的 20 像素行高）。改动立即作用于所有已打开的终端。下方的预览按终端的排法显示字母、数字、易混字符、符号、中文、制表符和一行命令。设置文件里的字体在本机没有安装时，使用默认字体。
 - **外部 CLI**：见下一节。
+- **关于**：版本、构建和平台，以及在线升级，见「下载与更新」。
 
 ## 外部 CLI
 
@@ -262,6 +263,45 @@ shellrs download <ID> <远程路径> <本地路径>
 
 **尚未实现：目录同步、前台传输进度对话框、队列排序、过滤、查找文件、目录树和 Dock 布局持久化。**
 
+## 下载与更新
+
+安装包在 [shellrs.com/download](https://shellrs.com/download)：
+
+| 系统 | 首次安装 | 自动更新 |
+|---|---|---|
+| macOS（Apple Silicon 和 Intel 共用一个包） | DMG，把 ShellRS 拖进「应用程序」 | 支持 |
+| Windows x64 | 安装程序，按当前用户安装到 `%LOCALAPPDATA%\Programs\ShellRS`，不需要管理员 | 支持 |
+| Linux x64 | AppImage | 支持 |
+
+ShellRS 启动 30 秒后检查一次有没有新版本，之后每 6 小时检查一次。有新版本就在后台下载并校验，完成后标题栏右上角出现更新图标。点开可以看更新内容，点「重启更新」就换成新版本并重新打开；不点也没关系，退出 ShellRS 时会装好，下次打开就是新版本。重启会断开已打开的连接、停止传输（续传进度保留）和端口转发，对话框里会写明具体有哪些。
+
+「设置 › 关于」可以随时检查更新，看下载进度和更新内容，也可以关掉「自动检查并下载更新」。关掉之后只在手动检查时才联网，发现新版本时由你决定是否下载。
+
+- **校验**：更新清单由 ShellRS 的发布密钥签名，安装包按清单里的大小和 SHA-256 核对，任何一步对不上都不会安装。macOS 上还会核对新版本的开发者签名。
+- **隐私**：检查更新只发送 ShellRS 的版本号、操作系统和 CPU 架构，不发送任何能识别这台电脑或用户的信息。
+- **不能自动更新的情况**：从 DMG 里直接运行、没有放进「应用程序」文件夹、对安装位置没有写权限、Linux 上不是用 AppImage 运行，或者是自己编译的开发构建。这时「关于」页会说明原因，有新版本时给出「前往下载页」。
+- **退回旧版本**：数据库在升级到新结构之前会备份成 `shellrs.db.v<旧版本>.bak`。旧版本打开新结构的数据库时会拒绝打开，以免把新版本保存的数据弄乱；需要退回时，把备份改名回 `shellrs.db`。
+
+## 发布
+
+在 `CHANGELOG.md` 里写好 `## [x.y.z]` 一节，把 `Cargo.toml` 的版本改成 `x.y.z`，提交后推送 tag `vx.y.z`。`.github/workflows/release.yml` 依次：
+
+1. 核对 tag 与 `Cargo.toml` 一致，截出更新说明，确认代码里有发布公钥；
+2. 构建并打包：macOS 合成 universal，签名、公证、staple，产出升级用的 `.app.zip` 和首次安装用的 `.dmg`；Windows 用 Inno Setup 打安装程序；Linux 打 AppImage；
+3. 在 `release` 环境里人工批准后：给每个包签名，上传到 R2（`dl.shellrs.com/releases/<版本>/`），建 GitHub Release，**最后**才替换更新清单 `dl.shellrs.com/update/v1/<通道>.json` 并清 CDN 缓存。
+
+版本号带 `-` 的（如 `0.3.0-beta.1`）只发到 beta 通道；正式版同时成为 beta 通道的最新版。在 Actions 里手动运行这个 workflow 只构建打包、不发布，用来演练。客户端只接受比自己新的版本，所以发错的版本撤不回来：把清单改回上一版能阻止更多人升级，修复要发新的补丁版。
+
+一次性准备：
+
+- **更新签名密钥**：`minisign -G -p shellrs-update.pub -s shellrs-update.key` 生成两对（一对日常用，一对离线保存备用），把两个公钥（`.pub` 文件的第二行）填进 `src/update/build_info.rs` 的 `TRUSTED_KEYS`。私钥和口令只放进 GitHub 的 `release` 环境，另外离线备份；丢了私钥，已发出去的 ShellRS 就再也收不到更新。换钥匙时先发一版带上新公钥，再换签名用的私钥。
+- **Cloudflare**：shellrs.com 的 DNS 托管在 Cloudflare；建 R2 bucket，绑定自定义域 `dl.shellrs.com`，关闭 `r2.dev` 地址；Cache Rules 让 `/releases/*` 和 `/update/*` 按源站的 Cache-Control 缓存（默认不缓存 `.json`、`.AppImage`）；一个只能写这个 bucket 的 R2 API Token，一个只能清这个 zone 缓存的 API Token。
+- **Apple**：Developer ID Application 证书（导出 .p12）和 notarytool 用的 App Store Connect API Key。`packaging/macos/Info.plist.in` 里的 bundle id `com.shellrs.ShellRS` 和签名的 Team ID 一经发布就不能再改：钥匙串按它们授权，改了之后每条保存的密码都要重新允许。
+- **图标**：`assets/logo/` 里的 `shellrs.icns`（macOS）、`shellrs.png`（1024×1024，Linux，macOS 没有 icns 时也由它生成）和 `shellrs.ico`（Windows 安装程序）。
+- **GitHub secrets**：仓库级的 `APPLE_CERTIFICATE_P12`（base64）、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`、`APPLE_TEAM_ID`、`APPLE_API_KEY_P8`（base64）、`APPLE_API_KEY_ID`、`APPLE_API_ISSUER`；`release` 环境（设为需要审批）里的 `MINISIGN_SECRET_KEY`、`MINISIGN_PASSWORD`、`R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`、`R2_BUCKET`、`CF_ZONE_ID`、`CF_API_TOKEN`。
+
+清单格式见 `packaging/manifest.example.json`，由 `packaging/make-manifest.sh` 生成：一个文件里是清单原文和它的 minisign 签名，签名的 trusted comment 写明通道和版本。格式只增加字段、不改已有的；已发出去的 ShellRS 一直按 `/update/v1/` 这个地址检查。
+
 ## 运行和验证
 
 工具链固定 Rust 1.98.1，`russh-sftp` 固定 3.0.0；保持仓库锁定的 GPUI 与 russh 版本。
@@ -279,6 +319,8 @@ cargo fmt --check
 
 `src/forward/protocol_tests.rs` 用进程内的 SSH 服务器和本机的回显服务测试真实的转发工作线程：三种转发的往返、目标不可达、服务器禁止转发、端口被占用、空闲断线后重连、重试耗尽和停止后的清理，同样只监听 `127.0.0.1` 的随机端口。
 
-`tests/ui.rs` 驱动真实 `Workspace`，通过 `Workspace::new_with_services` 注入 SFTP、本地目录、终端和端口转发服务，不连接用户服务器或真实钥匙串。Finder 的系统原生拖放仍需在真实 macOS 窗口中补充人工验收；无头测试覆盖原生文件拖入事件和面板内部拖放。
+`tests/ui.rs` 驱动真实 `Workspace`，通过 `Workspace::new_with_services` 注入 SFTP、本地目录、终端和端口转发服务，不连接用户服务器或真实钥匙串；在线升级的测试给 `workspace.updater()` 注入假的更新服务器和安装器，不联网、不改任何安装。Finder 的系统原生拖放仍需在真实 macOS 窗口中补充人工验收；无头测试覆盖原生文件拖入事件和面板内部拖放。
+
+开发构建（`cargo run`）不检查更新。要在本机走一遍更新流程，用 debug 构建加环境变量 `SHELLRS_UPDATE_CHANNEL=beta` 编译，运行时用 `SHELLRS_UPDATE_URL=http://127.0.0.1:8000/{channel}.json` 指向本地的静态服务器（`python3 -m http.server`），清单用 `packaging/make-manifest.sh` 和自己生成的测试密钥签名，测试公钥放在环境变量 `SHELLRS_UPDATE_PUBLIC_KEY` 里。release 构建不认这两个环境变量。
 
 上传交互参考 [WinSCP 上传流程](https://winscp.net/eng/docs/task_upload)，协议适配参考 [russh-sftp 请求接口](https://docs.rs/russh-sftp/3.0.0/russh_sftp/client/struct.RawSftpSession.html) 与 [OpenSSH 扩展规范](https://raw.githubusercontent.com/openssh/openssh-portable/master/PROTOCOL)。

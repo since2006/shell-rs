@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "channel": "stable",
+  "version": "0.2.0",
+  "published_at": "2026-10-20T08:00:00Z",
+  "minimum_version": null,
+  "rollout": 1.0,
+  "notes": "### 新增\n\n- 在线升级：设置 › 关于 可以检查更新，新版本在后台下载好后，标题栏右上角会提示。\n",
+  "notes_url": "https://shellrs.com/changelog#0.2.0",
+  "assets": {
+    "macos-aarch64": {
+      "urls": ["https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-macos-universal.app.zip"],
+      "size": 41234567,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "macos-x86_64": {
+      "urls": ["https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-macos-universal.app.zip"],
+      "size": 41234567,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "windows-x86_64": {
+      "urls": ["https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-windows-x86_64-setup.exe"],
+      "size": 18234567,
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "linux-x86_64": {
+      "urls": ["https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-linux-x86_64.AppImage"],
+      "size": 28234567,
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  },
+  "installers": {
+    "macos-aarch64": "https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-macos-universal.dmg",
+    "macos-x86_64": "https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-macos-universal.dmg",
+    "windows-x86_64": "https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-windows-x86_64-setup.exe",
+    "linux-x86_64": "https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-linux-x86_64.AppImage"
+  }
+}

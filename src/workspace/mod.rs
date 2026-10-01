@@ -8,6 +8,7 @@ mod recent_sessions;
 mod sidebar;
 mod status_bar;
 mod title_bar;
+mod updates;
 mod workspace_view;
 
 pub use workspace_view::{Workspace, notify_once_open, window_options};
