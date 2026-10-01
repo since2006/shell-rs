@@ -1,0 +1,555 @@
+//! Connecting a host: login questions, its connection state, the tabs it
+//! opens, and the system and latency found on the way.
+
+use crate::support::*;
+
+#[derive(Clone, Copy)]
+enum PromptBehavior {
+    Authentication,
+    UnknownHost,
+}
+
+struct PromptTerminalFactory {
+    behavior: PromptBehavior,
+    accepted: Arc<AtomicUsize>,
+    canceled: Arc<AtomicUsize>,
+}
+
+impl PromptTerminalFactory {
+    fn new(behavior: PromptBehavior) -> Self {
+        Self {
+            behavior,
+            accepted: Arc::new(AtomicUsize::new(0)),
+            canceled: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl TerminalTransportFactory for PromptTerminalFactory {
+    fn create(&self) -> Box<dyn TerminalTransport> {
+        Box::new(PromptTerminalTransport {
+            behavior: self.behavior,
+            accepted: self.accepted.clone(),
+            canceled: self.canceled.clone(),
+        })
+    }
+}
+
+struct PromptTerminalTransport {
+    behavior: PromptBehavior,
+    accepted: Arc<AtomicUsize>,
+    canceled: Arc<AtomicUsize>,
+}
+
+impl TerminalTransport for PromptTerminalTransport {
+    fn run(
+        self: Box<Self>,
+        _: TerminalSize,
+        commands: mpsc::Receiver<TerminalTransportCommand>,
+        events: async_channel::Sender<TerminalTransportEvent>,
+    ) -> anyhow::Result<()> {
+        let request_id = 9001;
+        let kind = match self.behavior {
+            PromptBehavior::Authentication => ConnectionPromptKind::authentication(
+                "SSH 登录",
+                "请输入密码",
+                vec![ConnectionPromptField::new("密码", false)],
+            ),
+            PromptBehavior::UnknownHost => ConnectionPromptKind::unknown_host(
+                "example.test",
+                22,
+                "ssh-ed25519",
+                "SHA256:test-fingerprint",
+            ),
+        };
+        events.send_blocking(TerminalTransportEvent::Prompt(ConnectionPrompt::new(
+            request_id, kind,
+        )))?;
+        loop {
+            match commands.recv()? {
+                TerminalTransportCommand::PromptReply {
+                    request_id: reply_id,
+                    reply,
+                } if reply_id == request_id => match reply {
+                    ConnectionPromptReply::TrustAndSave
+                        if matches!(self.behavior, PromptBehavior::UnknownHost) =>
+                    {
+                        self.accepted.fetch_add(1, Ordering::SeqCst);
+                        break;
+                    }
+                    ConnectionPromptReply::Answers(answers)
+                        if matches!(self.behavior, PromptBehavior::Authentication)
+                            && answers.len() == 1 =>
+                    {
+                        self.accepted.fetch_add(1, Ordering::SeqCst);
+                        break;
+                    }
+                    ConnectionPromptReply::Cancel => {
+                        self.canceled.fetch_add(1, Ordering::SeqCst);
+                        events
+                            .send_blocking(TerminalTransportEvent::Failed("认证已取消".into()))?;
+                        return Ok(());
+                    }
+                    _ => {}
+                },
+                TerminalTransportCommand::Shutdown => return Ok(()),
+                _ => {}
+            }
+        }
+        events.send_blocking(TerminalTransportEvent::Started)?;
+        while let Ok(command) = commands.recv() {
+            if matches!(command, TerminalTransportCommand::Shutdown) {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[gpui_kit::test]
+async fn authentication_prompt_is_masked_and_drives_connected_state(cx: &mut TestAppContext) {
+    let (store, id) = one_host_store(AuthKind::Password);
+    let factory = Arc::new(PromptTerminalFactory::new(PromptBehavior::Authentication));
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("ssh-auth-submit").is_some()
+    })
+    .await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("status-connection", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("ssh-auth-submit").is_some(),
+            "点击对话框外部不应取消认证"
+        );
+    })
+    .unwrap();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let password = window.find(("ssh-auth-answer", 0usize));
+        assert_eq!(
+            password.value(),
+            None,
+            "masked input must not expose its value"
+        );
+        window.click(("ssh-auth-answer", 0usize), cx);
+        window.input("test-password", cx);
+        window.click("ssh-auth-submit", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("status-connection").label() == Some("已连接 prompt-host")
+    })
+    .await;
+
+    assert_eq!(factory.accepted.load(Ordering::SeqCst), 1);
+    assert!(workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .store()
+            .read(cx)
+            .host(id)
+            .unwrap()
+            .state
+            .is_connected()
+    }));
+}
+
+#[gpui_kit::test]
+async fn canceling_unknown_host_prompt_keeps_host_disconnected(cx: &mut TestAppContext) {
+    let (store, id) = one_host_store(AuthKind::Password);
+    let factory = Arc::new(PromptTerminalFactory::new(PromptBehavior::UnknownHost));
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("cancel").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("status-connection", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("cancel").is_some(),
+            "点击对话框外部不应取消主机指纹确认"
+        );
+    })
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("cancel", cx);
+    })
+    .unwrap();
+    // The window says so at once; the transport hears of the cancel on its
+    // own thread, a moment later.
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("status-connection").label() == Some("未连接 prompt-host")
+            && factory.canceled.load(Ordering::SeqCst) == 1
+    })
+    .await;
+
+    assert_eq!(factory.accepted.load(Ordering::SeqCst), 0);
+    assert_eq!(factory.canceled.load(Ordering::SeqCst), 1);
+    assert!(!workspace.read_with(cx, |workspace, cx| {
+        workspace
+            .store()
+            .read(cx)
+            .host(id)
+            .unwrap()
+            .state
+            .is_connected()
+    }));
+
+    // The failed terminal tab remains visible, but connecting the host
+    // again must start a fresh transport instead of only activating that tab.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("cancel").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("cancel", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        factory.canceled.load(Ordering::SeqCst) == 2
+    })
+    .await;
+
+    // The context-menu item dispatches this same command, so it must also
+    // restart the exited transport instead of merely activating the tab.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(ConnectHost(id)), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("cancel").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("cancel", cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn opening_sftp_updates_connection_state_without_terminal(cx: &mut TestAppContext) {
+    let (store, id) = one_host_store(AuthKind::Password);
+    let (handle, workspace) = open_workspace_with_store(cx, store);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(OpenExplorer(id)), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        workspace.read(cx).store().read(cx).host(id).unwrap().state == ConnectionState::Connected
+    })
+    .await;
+
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.explorers_of(id, cx).len(), 1);
+        assert_eq!(
+            workspace.store().read(cx).host(id).unwrap().state,
+            shellrs::host::ConnectionState::Connected
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn double_click_on_host_opens_terminal_and_updates_status(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        // Hosts seeded as connected already have terminal tabs.
+        assert!(window.find(("terminal", INITIAL_WEB_TERMINAL)).visible());
+        assert!(window.try_find(("terminal", FIRST_NEW_TERMINAL)).is_none());
+
+        window
+            .within("host-tree")
+            .double_click(("host-row", DB_01), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("status-connection").label() == Some("已连接 db-01")
+    })
+    .await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find(("terminal", FIRST_NEW_TERMINAL)).visible());
+        assert_eq!(
+            window.find("status-connection").label(),
+            Some("已连接 db-01")
+        );
+    })
+    .unwrap();
+
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert!(workspace.terminal(HostId(DB_01), cx).is_some());
+        let store = workspace.store().read(cx);
+        assert!(store.host(HostId(DB_01)).unwrap().state.is_connected());
+    });
+}
+
+#[gpui_kit::test]
+async fn connected_host_opens_an_independent_terminal_each_time(cx: &mut TestAppContext) {
+    let (store, id) = one_host_store(AuthKind::Password);
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        factory.starts() == 1
+    })
+    .await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        factory.starts() == 2
+    })
+    .await;
+
+    // The right-click menu's “连接” item dispatches this same action.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(ConnectHost(id)), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        factory.starts() == 3
+            && workspace
+                .read(cx)
+                .store()
+                .read(cx)
+                .host(id)
+                .unwrap()
+                .state
+                .is_connected()
+    })
+    .await;
+
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.terminal_count(id, cx), 3);
+        assert!(workspace.remote_terminal(RemoteTerminalId(1)).is_some());
+        assert!(workspace.remote_terminal(RemoteTerminalId(2)).is_some());
+        assert!(workspace.remote_terminal(RemoteTerminalId(3)).is_some());
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("close-terminal", 3_u64), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        let workspace = workspace.read(cx);
+        workspace.terminal_count(id, cx) == 2
+            && workspace
+                .store()
+                .read(cx)
+                .host(id)
+                .unwrap()
+                .state
+                .is_connected()
+    })
+    .await;
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert_eq!(workspace.terminal_count(id, cx), 2);
+        assert!(
+            workspace
+                .store()
+                .read(cx)
+                .host(id)
+                .unwrap()
+                .state
+                .is_connected()
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn disconnecting_one_tab_leaves_the_other_tabs_of_its_host(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let second = RemoteTerminalId(FIRST_NEW_TERMINAL);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(ConnectHost(HostId(WEB_01))), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        remote_lifecycle(&workspace, second, cx) == TerminalLifecycle::Running
+    })
+    .await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(DisconnectTerminal(second)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        assert!(!remote_lifecycle(&workspace, second, cx).accepts_input());
+        assert_eq!(
+            remote_lifecycle(&workspace, RemoteTerminalId(INITIAL_WEB_TERMINAL), cx),
+            TerminalLifecycle::Running
+        );
+        let workspace = workspace.read(cx);
+        let store = workspace.store().read(cx);
+        assert_eq!(
+            store.host(HostId(WEB_01)).unwrap().state,
+            ConnectionState::Connected
+        );
+        let screen = workspace
+            .remote_terminal(second)
+            .unwrap()
+            .read(cx)
+            .terminal()
+            .read(cx)
+            .screen_text(cx);
+        assert!(screen.contains("已断开连接"));
+    });
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(ReconnectTerminal(second)), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        remote_lifecycle(&workspace, second, cx) == TerminalLifecycle::Running
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn connecting_marks_the_host_with_the_host_operating_system(cx: &mut TestAppContext) {
+    let (store, id) = one_host_store(AuthKind::Password);
+    let factory = Arc::new(FakeTerminalFactory::reports_os(HostOs::Fedora));
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("host-os", id.0)).label(), Some("未探测到系统"));
+        window
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
+    })
+    .unwrap();
+    // The engine batches transport events on a 16ms timer, so the mark
+    // changes a frame or two after the tab opens.
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find(("host-os", id.0)).label() == Some("Fedora")
+    })
+    .await;
+
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(store.host(id).unwrap().os, Some(HostOs::Fedora));
+    });
+}
+
+#[gpui_kit::test]
+async fn the_tab_bar_shows_the_connection_latency_while_it_runs(cx: &mut TestAppContext) {
+    let (store, id) = one_host_store(AuthKind::Password);
+    let factory = Arc::new(FakeTerminalFactory::reports_latency(Latency::Measured(
+        Duration::from_millis(32),
+    )));
+    let (handle, _) = open_workspace_with_remote_factory(cx, store, factory);
+    // The first terminal of a store with nothing connected.
+    let terminal = 1_u64;
+    let latency = ("terminal-latency", terminal);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
+    })
+    .unwrap();
+    // Transport events reach the engine on its 16ms batching timer.
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(latency)
+            .is_some_and(|element| element.label() == Some("32 ms"))
+    })
+    .await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("close-terminal", terminal), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(latency).is_none());
+    })
+    .unwrap();
+}
