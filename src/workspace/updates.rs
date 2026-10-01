@@ -104,11 +104,13 @@ impl Workspace {
         }
     }
 
-    /// 自动检查并下载更新, from the settings.
+    /// 自动升级 and 更新渠道, from the settings.
     pub(super) fn sync_updater(&self, cx: &mut App) {
-        let automatic = self.settings().read(cx).settings().update.automatic;
-        self.updater
-            .update(cx, |updater, cx| updater.set_automatic(automatic, cx));
+        let settings = self.settings().read(cx).settings().update.clone();
+        self.updater.update(cx, |updater, cx| {
+            updater.set_automatic(settings.automatic, cx);
+            updater.set_channel(settings.channel, cx);
+        });
     }
 
     /// What restarting now would close or stop.

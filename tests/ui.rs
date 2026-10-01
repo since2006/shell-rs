@@ -567,9 +567,7 @@ async fn a_host_without_a_password_says_what_it_tries_and_is_saved_as_such(
         assert!(window.try_find("host-credential").is_none());
         assert_eq!(
             window.find("host-no-password-note").label(),
-            Some(
-                "依次尝试服务器免认证、SSH Agent 和 ~/.ssh 中的默认私钥；服务器要求密码时连接失败，不会询问。"
-            )
+            Some("依次尝试服务器免认证、SSH Agent 和 ~/.ssh 中的默认私钥。")
         );
         window.click("commit", cx);
     });
@@ -642,9 +640,7 @@ async fn a_host_goes_through_the_jump_hosts_it_lists_in_order(cx: &mut TestAppCo
         assert_eq!(chain(window).as_deref(), Some("本机 → 当前主机"));
         assert_eq!(
             window.find("host-route-note").label(),
-            Some(
-                "依次经过跳板主机连接到当前主机，可添加多台。跳板主机自己的「连接方式」在这里不生效。"
-            )
+            Some("依次经过跳板主机连接到当前主机，可添加多台。")
         );
         window.click("commit", cx);
     });
@@ -9416,18 +9412,32 @@ const RUNNING_VERSION: &str = "0.1.0";
 /// Where the fake installer says the restart goes.
 const INSTALLED_BUNDLE: &str = "/Applications/ShellRS.app";
 
-/// Serves one signed manifest and one package, and counts the requests.
+/// Serves each channel's manifest, signed when asked for, and one package,
+/// and counts the requests.
 struct FakeUpdateFeed {
-    envelope: Mutex<Result<Vec<u8>, UpdateError>>,
+    pair: minisign::KeyPair,
+    /// What each channel offers, or the error asking for it gives. A
+    /// channel not listed answers 404.
+    offers: Mutex<Vec<(Channel, Result<String, UpdateError>)>>,
     package: Vec<u8>,
     fetches: AtomicUsize,
+    /// The channels asked for, in order.
+    channels: Mutex<Vec<Channel>>,
     downloads: AtomicUsize,
 }
 
 impl UpdateFeed for FakeUpdateFeed {
-    fn fetch(&self, _: Channel) -> Result<Vec<u8>, UpdateError> {
+    fn fetch(&self, channel: Channel) -> Result<Vec<u8>, UpdateError> {
         self.fetches.fetch_add(1, Ordering::SeqCst);
-        self.envelope.lock().unwrap().clone()
+        self.channels.lock().unwrap().push(channel);
+        let offer = self
+            .offers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(offered, _)| *offered == channel)
+            .map_or(Err(UpdateError::Http(404)), |(_, offer)| offer.clone());
+        offer.map(|version| signed_manifest(&self.pair, channel, &version, &self.package))
     }
 
     fn download(
@@ -9518,10 +9528,27 @@ impl UpdateFixture {
     fn downloads(&self) -> usize {
         self.feed.downloads.load(Ordering::SeqCst)
     }
+
+    fn channels(&self) -> Vec<Channel> {
+        self.feed.channels.lock().unwrap().clone()
+    }
+
+    /// Have `channel` offer `version` from now on.
+    fn offer(&self, channel: Channel, version: &str) {
+        let mut offers = self.feed.offers.lock().unwrap();
+        offers.retain(|(offered, _)| *offered != channel);
+        offers.push((channel, Ok(version.to_string())));
+    }
 }
 
-/// A stable manifest offering `version` for this platform, signed by `pair`.
-fn signed_manifest(pair: &minisign::KeyPair, version: &str, package: &[u8]) -> Vec<u8> {
+/// `channel`'s manifest offering `version` for this platform, signed by
+/// `pair`.
+fn signed_manifest(
+    pair: &minisign::KeyPair,
+    channel: Channel,
+    version: &str,
+    package: &[u8],
+) -> Vec<u8> {
     use sha2::Digest as _;
     let platform = shellrs::update::platform::platform_key();
     let sha256: String = sha2::Sha256::digest(package)
@@ -9530,7 +9557,7 @@ fn signed_manifest(pair: &minisign::KeyPair, version: &str, package: &[u8]) -> V
         .collect();
     let manifest = serde_json::json!({
         "schema": 1,
-        "channel": "stable",
+        "channel": channel.key(),
         "version": version,
         "published_at": "2026-10-20T08:00:00Z",
         "notes": "### 新增\n\n- 在线升级：新版本在后台下载好后，标题栏会提示。",
@@ -9548,7 +9575,7 @@ fn signed_manifest(pair: &minisign::KeyPair, version: &str, package: &[u8]) -> V
         Some(&pair.pk),
         &pair.sk,
         std::io::Cursor::new(manifest.as_bytes()),
-        Some(&format!("shellrs-manifest stable {version}")),
+        Some(&format!("shellrs-manifest {} {version}", channel.key())),
         None,
     )
     .unwrap()
@@ -9557,8 +9584,9 @@ fn signed_manifest(pair: &minisign::KeyPair, version: &str, package: &[u8]) -> V
         .unwrap()
 }
 
-/// Give the workspace's updater a fake server offering `offered` (or
-/// answering `error`) and a fake installer of `kind`, as a stable 0.1.0.
+/// Give the workspace's updater a fake server whose stable channel offers
+/// `offered` (or answers `error`) and a fake installer of `kind`, as a
+/// release build of 0.1.0.
 fn serve_updates(
     cx: &mut TestAppContext,
     workspace: &Entity<Workspace>,
@@ -9566,12 +9594,16 @@ fn serve_updates(
     kind: InstallKind,
 ) -> UpdateFixture {
     let pair = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
-    let package = b"the new ShellRS".to_vec();
-    let envelope = offered.map(|version| signed_manifest(&pair, version, &package));
+    let keys = TrustedKeys::new([pair.pk.to_base64().as_str()]);
     let feed = Arc::new(FakeUpdateFeed {
-        envelope: Mutex::new(envelope),
-        package,
+        pair,
+        offers: Mutex::new(vec![(
+            Channel::Stable,
+            offered.map(|version| version.to_string()),
+        )]),
+        package: b"the new ShellRS".to_vec(),
         fetches: AtomicUsize::new(0),
+        channels: Mutex::default(),
         downloads: AtomicUsize::new(0),
     });
     let installer = FakeInstaller::new(kind);
@@ -9579,8 +9611,8 @@ fn serve_updates(
     let services = UpdateServices {
         feed: feed.clone(),
         installer: installer.clone(),
-        keys: TrustedKeys::new([pair.pk.to_base64().as_str()]),
-        channel: Some(Channel::Stable),
+        keys,
+        release_build: true,
         current: Version::parse(RUNNING_VERSION).unwrap(),
         folder: folder.path().to_path_buf(),
         draw: 0.5,
@@ -9638,6 +9670,22 @@ fn set_automatic_updates(cx: &mut TestAppContext, workspace: &Entity<Workspace>,
     cx.run_until_parked();
 }
 
+/// Write 更新渠道 the way its dropdown does (menus are not driven here, see
+/// `appearance_dropdown`).
+fn set_update_channel(cx: &mut TestAppContext, workspace: &Entity<Workspace>, channel: Channel) {
+    workspace.update(cx, |workspace, cx| {
+        workspace.settings().update(cx, |settings, cx| {
+            settings.update(|settings| settings.update.channel = channel, cx)
+        });
+    });
+    cx.run_until_parked();
+}
+
+/// The 更新渠道 dropdown's label on 设置 › 关于.
+fn update_channel_label(cx: &mut TestAppContext, handle: WindowHandle<Root>) -> Option<String> {
+    in_frame(cx, handle, |window, _| appearance_dropdown(window, 1))
+}
+
 #[gpui_kit::test]
 fn a_development_build_does_not_check(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
@@ -9645,15 +9693,13 @@ fn a_development_build_does_not_check(cx: &mut TestAppContext) {
     in_frame(cx, handle, |window, _| {
         assert_eq!(
             window.find("update-status").label(),
-            Some("开发构建，不检查更新")
+            Some("开发构建，不检查更新。")
         );
         assert!(window.try_find("check-for-updates").is_none());
-        let version = window
-            .find("about-version")
-            .label()
-            .unwrap_or_default()
-            .to_string();
-        assert!(version.starts_with(env!("CARGO_PKG_VERSION")), "{version}");
+        assert_eq!(
+            window.find("about-version").label(),
+            Some(format!("v{}", env!("CARGO_PKG_VERSION")).as_str())
+        );
         assert!(window.try_find("update-available").is_none());
     });
 }
@@ -9663,15 +9709,12 @@ async fn checking_by_hand_says_when_shellrs_is_up_to_date(cx: &mut TestAppContex
     let (handle, workspace) = open_workspace(cx);
     let fixture = serve_updates(cx, &workspace, Ok(RUNNING_VERSION), installable());
     open_about_settings(cx, handle);
-    assert_eq!(update_status(cx, handle), "尚未检查更新");
+    assert_eq!(update_status(cx, handle), "尚未检查更新。");
 
     in_frame(cx, handle, |window, cx| {
         window.click("check-for-updates", cx)
     });
-    wait_for_update_status(cx, handle, |status| {
-        status.starts_with("已是最新版本 · 上次检查 ")
-    })
-    .await;
+    wait_for_update_status(cx, handle, |status| status == "当前已是最新版本。").await;
     assert_eq!(fixture.fetches(), 1);
     assert_eq!(fixture.downloads(), 0);
     in_frame(cx, handle, |window, _| {
@@ -9701,11 +9744,12 @@ async fn a_found_update_downloads_by_itself_and_the_title_bar_offers_it(cx: &mut
     );
     assert_eq!(
         update_status(cx, handle),
-        "0.2.0 已就绪，退出或重启 ShellRS 时安装"
+        "新版本 0.2.0 已下载，重启 ShellRS 即可完成更新。"
     );
     in_frame(cx, handle, |window, _| {
+        // One button: restarting takes the place of 检查更新.
         assert!(window.try_find("show-update").is_some());
-        // The release notes are on the page too.
+        assert!(window.try_find("check-for-updates").is_none());
         assert!(window.try_find("download-update").is_none());
     });
 }
@@ -9720,14 +9764,17 @@ async fn with_automatic_updates_off_a_found_update_waits_for_download(cx: &mut T
     in_frame(cx, handle, |window, cx| {
         window.click("check-for-updates", cx)
     });
-    wait_for_update_status(cx, handle, |status| status == "发现新版本 0.2.0").await;
+    wait_for_update_status(cx, handle, |status| status == "发现新版本 0.2.0。").await;
     assert_eq!(fixture.downloads(), 0);
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find("update-available").is_none());
     });
 
     in_frame(cx, handle, |window, cx| window.click("download-update", cx));
-    wait_for_update_status(cx, handle, |status| status.starts_with("0.2.0 已就绪")).await;
+    wait_for_update_status(cx, handle, |status| {
+        status.starts_with("新版本 0.2.0 已下载")
+    })
+    .await;
     assert_eq!(fixture.downloads(), 1);
 }
 
@@ -9848,7 +9895,7 @@ async fn an_unsupported_install_offers_the_download_page(cx: &mut TestAppContext
         window.click("check-for-updates", cx)
     });
     wait_for_update_status(cx, handle, |status| {
-        status == "发现新版本 0.2.0。这份 ShellRS 不是 AppImage，请用安装它的方式更新"
+        status == "发现新版本 0.2.0。这份 ShellRS 不是 AppImage，请用安装它的方式更新。"
     })
     .await;
     assert_eq!(fixture.downloads(), 0);
@@ -9871,7 +9918,7 @@ async fn a_failed_check_says_why_on_the_about_page(cx: &mut TestAppContext) {
         window.click("check-for-updates", cx)
     });
     wait_for_update_status(cx, handle, |status| {
-        status == "检查失败：更新服务器返回 HTTP 503"
+        status == "检查更新失败：更新服务器返回 HTTP 503"
     })
     .await;
     assert_eq!(fixture.fetches(), 1);
@@ -9895,7 +9942,7 @@ async fn turning_automatic_updates_off_stops_the_schedule(cx: &mut TestAppContex
 
     cx.executor().advance_clock(Duration::from_secs(31));
     open_about_settings(cx, handle);
-    wait_for_update_status(cx, handle, |status| status.starts_with("已是最新版本")).await;
+    wait_for_update_status(cx, handle, |status| status == "当前已是最新版本。").await;
     assert_eq!(fixture.fetches(), 1);
 
     set_automatic_updates(cx, &workspace, false);
@@ -9911,6 +9958,42 @@ async fn turning_automatic_updates_off_stops_the_schedule(cx: &mut TestAppContex
         fixture.fetches() == 2
     })
     .await;
+}
+
+#[gpui_kit::test]
+async fn switching_the_update_channel_looks_at_that_channel(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let fixture = serve_updates(cx, &workspace, Ok(RUNNING_VERSION), installable());
+    fixture.offer(Channel::Beta, "0.2.0-beta.1");
+    open_about_settings(cx, handle);
+    assert_eq!(update_channel_label(cx, handle).as_deref(), Some("稳定版"));
+    in_frame(cx, handle, |window, cx| {
+        window.click("check-for-updates", cx)
+    });
+    wait_for_update_status(cx, handle, |status| status == "当前已是最新版本。").await;
+
+    // With 自动升级 on, the other channel is looked at right away.
+    set_update_channel(cx, &workspace, Channel::Beta);
+    wait_for_update_status(cx, handle, |status| {
+        status == "新版本 0.2.0-beta.1 已下载，重启 ShellRS 即可完成更新。"
+    })
+    .await;
+    assert_eq!(fixture.channels(), [Channel::Stable, Channel::Beta]);
+    assert_eq!(update_channel_label(cx, handle).as_deref(), Some("Beta"));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("update-available").is_some());
+    });
+
+    // Back on stable, the beta downloaded is no longer offered.
+    set_update_channel(cx, &workspace, Channel::Stable);
+    wait_for_update_status(cx, handle, |status| status == "当前已是最新版本。").await;
+    assert_eq!(
+        fixture.channels(),
+        [Channel::Stable, Channel::Beta, Channel::Stable]
+    );
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("update-available").is_none());
+    });
 }
 
 #[gpui_kit::test]

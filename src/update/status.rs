@@ -17,9 +17,19 @@ pub struct UpdateBadge {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
     Plain,
-    Success,
     Warning,
     Danger,
+}
+
+/// The one thing to do about the version on offer, when there is one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateStep {
+    /// Restart into the version downloaded.
+    Restart,
+    /// Download it by hand from the website.
+    DownloadPage,
+    /// Download it here; `retry` after a download that failed.
+    Download { retry: bool },
 }
 
 impl UpdateSnapshot {
@@ -40,55 +50,68 @@ impl UpdateSnapshot {
         self.manual.is_some() || (self.release.is_some() && self.unsupported.is_some())
     }
 
-    /// The line under 更新 on 设置 › 关于.
+    /// The line under 当前版本 on 设置 › 关于.
     pub fn status_line(&self) -> (String, Tone) {
         let offered = self.offered_version().unwrap_or_default();
         match &self.phase {
             Phase::Off => (
-                self.unsupported
-                    .as_ref()
-                    .map(|reason| reason.reason())
-                    .unwrap_or_else(|| "不检查更新".into()),
+                format!(
+                    "{}。",
+                    self.unsupported
+                        .as_ref()
+                        .map(|reason| reason.reason())
+                        .unwrap_or_else(|| "不检查更新".into())
+                ),
                 Tone::Plain,
             ),
-            Phase::Idle => ("尚未检查更新".into(), Tone::Plain),
+            Phase::Idle => ("尚未检查更新。".into(), Tone::Plain),
             Phase::Checking => ("正在检查更新…".into(), Tone::Plain),
-            Phase::UpToDate => (
-                match self.checked_at {
-                    Some(at) => format!("已是最新版本 · 上次检查 {}", at.format("%H:%M")),
-                    None => "已是最新版本".into(),
-                },
-                Tone::Success,
-            ),
+            Phase::UpToDate => ("当前已是最新版本。".into(), Tone::Plain),
             Phase::Available if self.manual.is_some() => (
-                format!("新版本 {offered} 需要从官网下载安装"),
+                format!("发现新版本 {offered}，需要从官网下载安装。"),
                 Tone::Warning,
             ),
             Phase::Available => match &self.unsupported {
                 Some(reason) => (
-                    format!("发现新版本 {offered}。{}", reason.reason()),
+                    format!("发现新版本 {offered}。{}。", reason.reason()),
                     Tone::Warning,
                 ),
-                None => (format!("发现新版本 {offered}"), Tone::Plain),
+                None => (format!("发现新版本 {offered}。"), Tone::Plain),
             },
             Phase::Downloading { done, total } => (
-                format!("正在下载 {offered} · {}%", percent(*done, *total)),
+                format!("正在下载新版本 {offered}… {}%", percent(*done, *total)),
                 Tone::Plain,
             ),
-            Phase::Verifying => (format!("正在校验 {offered}…"), Tone::Plain),
+            Phase::Verifying => (format!("正在校验新版本 {offered}…"), Tone::Plain),
             Phase::Ready => (
-                format!("{offered} 已就绪，退出或重启 ShellRS 时安装"),
-                Tone::Success,
+                format!("新版本 {offered} 已下载，重启 ShellRS 即可完成更新。"),
+                Tone::Plain,
             ),
-            Phase::Installing => (format!("正在安装 {offered}…"), Tone::Plain),
+            Phase::Installing => (format!("正在安装新版本 {offered}…"), Tone::Plain),
             Phase::Failed { stage, error } => (
                 match stage {
-                    Stage::Check => format!("检查失败：{error}"),
-                    Stage::Download => format!("下载 {offered} 失败：{error}"),
-                    Stage::Install => format!("安装 {offered} 失败：{error}"),
+                    Stage::Check => format!("检查更新失败：{error}"),
+                    Stage::Download => format!("下载新版本 {offered} 失败：{error}"),
+                    Stage::Install => format!("安装新版本 {offered} 失败：{error}"),
                 },
                 Tone::Danger,
             ),
+        }
+    }
+
+    /// What the version on offer needs next, for the button next to the
+    /// version and the update dialog's.
+    pub fn step(&self) -> Option<UpdateStep> {
+        if self.phase == Phase::Ready {
+            Some(UpdateStep::Restart)
+        } else if self.needs_download_page() {
+            Some(UpdateStep::DownloadPage)
+        } else if self.can_download() {
+            Some(UpdateStep::Download {
+                retry: matches!(self.phase, Phase::Failed { .. }),
+            })
+        } else {
+            None
         }
     }
 
@@ -219,7 +242,6 @@ mod tests {
                 installer: None,
             }),
             manual: None,
-            checked_at: None,
             unsupported: None,
             automatic: true,
             download_failures: 0,
@@ -257,17 +279,22 @@ mod tests {
     fn each_phase_has_its_line() {
         assert_eq!(snapshot(Phase::Checking).status_line().0, "正在检查更新…");
         assert_eq!(
+            snapshot(Phase::UpToDate).status_line(),
+            ("当前已是最新版本。".into(), Tone::Plain)
+        );
+        assert_eq!(
             snapshot(Phase::Downloading {
                 done: 45,
                 total: 100
             })
             .status_line()
             .0,
-            "正在下载 0.2.0 · 45%"
+            "正在下载新版本 0.2.0… 45%"
         );
-        let (ready, tone) = snapshot(Phase::Ready).status_line();
-        assert_eq!(ready, "0.2.0 已就绪，退出或重启 ShellRS 时安装");
-        assert_eq!(tone, Tone::Success);
+        assert_eq!(
+            snapshot(Phase::Ready).status_line().0,
+            "新版本 0.2.0 已下载，重启 ShellRS 即可完成更新。"
+        );
         let failed = snapshot(Phase::Failed {
             stage: Stage::Download,
             error: UpdateError::Http(503),
@@ -275,13 +302,37 @@ mod tests {
         assert_eq!(
             failed.status_line(),
             (
-                "下载 0.2.0 失败：更新服务器返回 HTTP 503".into(),
+                "下载新版本 0.2.0 失败：更新服务器返回 HTTP 503".into(),
                 Tone::Danger
             )
         );
         let mut off = snapshot(Phase::Off);
         off.unsupported = Some(Unsupported::DevelopmentBuild);
-        assert_eq!(off.status_line().0, "开发构建，不检查更新");
+        assert_eq!(off.status_line().0, "开发构建，不检查更新。");
+    }
+
+    #[test]
+    fn one_step_applies_at_a_time() {
+        assert_eq!(snapshot(Phase::Ready).step(), Some(UpdateStep::Restart));
+        assert_eq!(
+            snapshot(Phase::Available).step(),
+            Some(UpdateStep::Download { retry: false })
+        );
+        let failed = snapshot(Phase::Failed {
+            stage: Stage::Download,
+            error: UpdateError::Stalled,
+        });
+        assert_eq!(failed.step(), Some(UpdateStep::Download { retry: true }));
+        assert_eq!(
+            snapshot(Phase::Downloading { done: 1, total: 2 }).step(),
+            None
+        );
+        let mut unsupported = snapshot(Phase::Available);
+        unsupported.unsupported = Some(Unsupported::NotAppImage);
+        assert_eq!(unsupported.step(), Some(UpdateStep::DownloadPage));
+        let mut up_to_date = snapshot(Phase::UpToDate);
+        up_to_date.release = None;
+        assert_eq!(up_to_date.step(), None);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # 更新日志
 
-每个版本一节，标题写成 `## [版本号]`，可以在后面加日期。发布流程（`.github/workflows/release.yml`）把与 tag 同版本的那一节原样作为更新说明：显示在 GitHub Release、ShellRS 的更新对话框和 设置 › 关于 里，用 Markdown 书写，面向使用者。
+每个版本一节，标题写成 `## [版本号]`，可以在后面加日期。发布流程（`.github/workflows/release.yml`）把与 tag 同版本的那一节原样作为更新说明：显示在 GitHub Release 和 ShellRS 的更新对话框里，用 Markdown 书写，面向使用者。
 
 ## [0.1.0]
 

@@ -2,9 +2,10 @@
 //!
 //! Only the release workflow sets `SHELLRS_UPDATE_CHANNEL`, so a `cargo run`
 //! build has no channel and never looks for updates: it is not something a
-//! published package could replace.
+//! published package could replace. A release build starts on its own
+//! channel; 设置 › 关于 › 更新渠道 switches it.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// This build's version, from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -35,8 +36,9 @@ pub const DOWNLOAD_PAGE: &str = "https://shellrs.com/download";
 /// them, and a build without them rejects every manifest.
 pub const TRUSTED_KEYS: &[&str] = &[];
 
-/// Which stream of releases a build follows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+/// Which stream of releases a copy follows. Beta also gets every stable
+/// release that is not behind it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Channel {
     Stable,

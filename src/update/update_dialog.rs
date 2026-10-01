@@ -20,7 +20,7 @@ use gpui_kit::*;
 
 use crate::app::{DownloadUpdate, OpenDownloadPage, RestartToUpdate};
 
-use super::status::{RestartImpact, percent, restart_note};
+use super::status::{RestartImpact, UpdateStep, percent, restart_note};
 use super::updater::{Phase, Stage, UpdateSnapshot, Updater};
 
 /// The dialog's width, in rems.
@@ -196,24 +196,23 @@ pub fn open_update_dialog(
 /// 稍后, and the one step that applies now.
 fn footer(snapshot: &UpdateSnapshot, dispatch: FocusHandle) -> DialogFooter {
     let action: Option<(&'static str, &'static str, Box<dyn Action>)> =
-        if snapshot.phase == Phase::Ready {
-            Some(("restart-to-update", "重启更新", Box::new(RestartToUpdate)))
-        } else if snapshot.needs_download_page() {
-            Some((
-                "open-download-page",
-                "前往下载页",
-                Box::new(OpenDownloadPage),
-            ))
-        } else if snapshot.can_download() {
-            let label = if matches!(snapshot.phase, Phase::Failed { .. }) {
-                "重试"
-            } else {
-                "下载"
-            };
-            Some(("download-update", label, Box::new(DownloadUpdate)))
-        } else {
-            None
-        };
+        snapshot.step().map(|step| -> (_, _, Box<dyn Action>) {
+            match step {
+                UpdateStep::Restart => {
+                    ("restart-to-update", "重启并安装", Box::new(RestartToUpdate))
+                }
+                UpdateStep::DownloadPage => (
+                    "open-download-page",
+                    "前往下载页",
+                    Box::new(OpenDownloadPage),
+                ),
+                UpdateStep::Download { retry } => (
+                    "download-update",
+                    if retry { "重试" } else { "下载" },
+                    Box::new(DownloadUpdate),
+                ),
+            }
+        });
     let close = if action.is_some() { "稍后" } else { "关闭" };
     DialogFooter::new()
         .child(DialogClose::new().trigger(move |button| button.label(close)))

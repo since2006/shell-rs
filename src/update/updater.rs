@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_channel::{Receiver, Sender, TryRecvError};
-use chrono::{DateTime, Local};
 use gpui_kit::*;
 use rand::Rng as _;
 use semver::Version;
@@ -46,8 +45,8 @@ pub struct UpdateServices {
     pub feed: Arc<dyn UpdateFeed>,
     pub installer: Arc<dyn Installer>,
     pub keys: TrustedKeys,
-    /// `None` for a development build, which never looks.
-    pub channel: Option<Channel>,
+    /// `false` for a development build, which never looks.
+    pub release_build: bool,
     pub current: Version,
     /// Downloads, and the note the next start reads.
     pub folder: PathBuf,
@@ -63,7 +62,7 @@ impl UpdateServices {
             feed: Arc::new(HttpFeed::system()),
             installer: system_installer(bundle),
             keys: TrustedKeys::builtin(),
-            channel: Channel::of_this_build(),
+            release_build: Channel::of_this_build().is_some(),
             current: build_info::version(),
             draw: rollout_draw(&folder),
             folder,
@@ -137,7 +136,6 @@ pub struct UpdateSnapshot {
     pub current: Version,
     pub release: Option<Release>,
     pub manual: Option<ManualUpdate>,
-    pub checked_at: Option<DateTime<Local>>,
     /// Why this copy cannot install updates itself, when it cannot.
     pub unsupported: Option<Unsupported>,
     pub automatic: bool,
@@ -178,8 +176,8 @@ pub struct Updater {
     release: Option<Release>,
     manual: Option<ManualUpdate>,
     staged: Option<Staged>,
-    checked_at: Option<DateTime<Local>>,
     automatic: bool,
+    channel: Channel,
     download_failures: u32,
     job: Option<Job>,
     polling: bool,
@@ -205,8 +203,8 @@ impl Updater {
             release: None,
             manual: None,
             staged: None,
-            checked_at: None,
             automatic: true,
+            channel: Channel::Stable,
             download_failures: 0,
             job: None,
             polling: false,
@@ -217,7 +215,7 @@ impl Updater {
 
     pub fn set_services(&mut self, services: UpdateServices, cx: &mut Context<Self>) {
         self.cancel_job();
-        self.phase = if services.channel.is_some() {
+        self.phase = if services.release_build {
             Phase::Idle
         } else {
             Phase::Off
@@ -267,7 +265,6 @@ impl Updater {
                 .map_or_else(build_info::version, |services| services.current.clone()),
             release: self.release.clone(),
             manual: self.manual.clone(),
-            checked_at: self.checked_at,
             unsupported: self.unsupported(),
             automatic: self.automatic,
             download_failures: self.download_failures,
@@ -283,7 +280,7 @@ impl Updater {
         let Some(services) = &self.services else {
             return Some(Unsupported::DevelopmentBuild);
         };
-        if services.channel.is_none() {
+        if !services.release_build {
             return Some(Unsupported::DevelopmentBuild);
         }
         match services.installer.kind() {
@@ -296,8 +293,9 @@ impl Updater {
         self.unsupported().is_none()
     }
 
-    /// 自动检查并下载更新. Turning it off stops a download in progress;
-    /// turning it on downloads a version already found.
+    /// 自动升级: look on a schedule and download what is found. Turning it
+    /// off stops a download in progress; turning it on downloads a version
+    /// already found.
     pub fn set_automatic(&mut self, automatic: bool, cx: &mut Context<Self>) {
         if self.automatic == automatic {
             return;
@@ -308,6 +306,29 @@ impl Updater {
             self.phase = Phase::Available;
         } else if automatic && self.phase == Phase::Available {
             self.download(cx);
+        }
+        self.changed(cx);
+    }
+
+    /// 更新渠道. The other channel offers other versions, so what was found,
+    /// downloaded or is downloading is dropped, and the new channel is looked
+    /// at right away when looking is automatic.
+    pub fn set_channel(&mut self, channel: Channel, cx: &mut Context<Self>) {
+        if self.channel == channel {
+            return;
+        }
+        self.channel = channel;
+        if matches!(self.phase, Phase::Off | Phase::Installing) {
+            return;
+        }
+        self.cancel_job();
+        self.release = None;
+        self.manual = None;
+        self.staged = None;
+        self.download_failures = 0;
+        self.phase = Phase::Idle;
+        if self.automatic {
+            self.check(cx);
         }
         self.changed(cx);
     }
@@ -327,9 +348,10 @@ impl Updater {
         let Some(services) = self.services.clone() else {
             return;
         };
-        let Some(channel) = services.channel else {
+        if !services.release_build {
             return;
-        };
+        }
+        let channel = self.channel;
         self.phase = Phase::Checking;
         self.run(cx, move |events, _| {
             let opened = services
@@ -603,7 +625,6 @@ impl Updater {
     }
 
     fn on_checked(&mut self, result: Result<Opened, UpdateError>, cx: &mut Context<Self>) {
-        self.checked_at = Some(Local::now());
         let Some(services) = &self.services else {
             return;
         };

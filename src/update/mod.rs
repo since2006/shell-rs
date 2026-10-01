@@ -30,7 +30,7 @@ pub use error::UpdateError;
 pub use feed::{HttpFeed, UpdateFeed};
 pub use install::{InstallKind, Installer, Launch, Relaunch, Staged, Unsupported};
 pub use manifest::{Manifest, Offer, Release};
-pub use status::{RestartImpact, Tone, UpdateBadge, restart_note};
+pub use status::{RestartImpact, Tone, UpdateBadge, UpdateStep, restart_note};
 pub use update_dialog::{ImpactCounter, open_update_dialog};
 pub use updater::{
     ManualUpdate, Phase, Stage, UpdateServices, UpdateSnapshot, Updater, UpdaterEvent,

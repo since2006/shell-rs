@@ -299,10 +299,11 @@ impl Workspace {
         );
         let host_panel = cx.new(|cx| HostPanel::new(store.clone(), window, cx));
         let forwards = cx.new(|cx| ForwardManager::new(store.clone(), forward_provider, cx));
-        let automatic = settings.read(cx).settings().update.automatic;
+        let update_settings = settings.read(cx).settings().update.clone();
         let updater = cx.new(|cx| {
             let mut updater = Updater::new();
-            updater.set_automatic(automatic, cx);
+            updater.set_automatic(update_settings.automatic, cx);
+            updater.set_channel(update_settings.channel, cx);
             updater
         });
         let forward_panel = cx.new(|cx| {

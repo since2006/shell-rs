@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::explorer::FileSizeFormat;
 use crate::terminal::{DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, LINE_HEIGHT_RANGE};
+use crate::update::Channel;
 
 /// Everything the settings page changes. Each field falls back to its
 /// default when the file does not mention it, so a file written by an older
@@ -30,18 +31,38 @@ pub struct ExternalCliSettings {
     pub enabled: bool,
 }
 
-/// 关于 → 更新.
+/// 关于 → 应用更新.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdateSettings {
-    /// Look for a newer ShellRS in the background and download it. On
-    /// unless the user turns it off.
+    /// 自动升级: look for a newer ShellRS in the background and download
+    /// it. On unless the user turns it off.
     pub automatic: bool,
+    /// 更新渠道. A release build starts on the channel it was built for.
+    pub channel: Channel,
 }
 
 impl Default for UpdateSettings {
     fn default() -> Self {
-        Self { automatic: true }
+        Self {
+            automatic: true,
+            channel: Channel::of_this_build().unwrap_or(Channel::Stable),
+        }
+    }
+}
+
+impl Choice for Channel {
+    const ALL: &'static [Self] = &[Self::Stable, Self::Beta];
+
+    fn key(self) -> &'static str {
+        Channel::key(self)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Stable => "稳定版",
+            Self::Beta => "Beta",
+        }
     }
 }
 
@@ -255,6 +276,21 @@ mod tests {
         let settings: AppSettings =
             serde_json::from_str(r#"{"update":{"automatic":false}}"#).unwrap();
         assert!(!settings.update.automatic);
+    }
+
+    #[test]
+    fn the_update_channel_is_the_builds_until_one_is_chosen() {
+        // A development build has no channel of its own.
+        let settings: AppSettings = serde_json::from_str(r#"{"update":{}}"#).unwrap();
+        assert_eq!(settings.update.channel, Channel::Stable);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"update":{"channel":"beta"}}"#).unwrap();
+        assert_eq!(settings.update.channel, Channel::Beta);
+        assert_eq!(
+            serde_json::to_value(&settings.update).unwrap()["channel"],
+            "beta"
+        );
+        assert_eq!(Channel::from_key("beta"), Some(Channel::Beta));
     }
 
     #[test]

@@ -76,8 +76,7 @@ impl AuthSource {
 }
 
 /// What 「无密码」 tries, under the choice.
-const NO_PASSWORD_NOTE: &str =
-    "依次尝试服务器免认证、SSH Agent 和 ~/.ssh 中的默认私钥；服务器要求密码时连接失败，不会询问。";
+const NO_PASSWORD_NOTE: &str = "依次尝试服务器免认证、SSH Agent 和 ~/.ssh 中的默认私钥。";
 
 /// How a host is reached, as the form's 「连接方式」 offers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,8 +108,7 @@ impl RouteChoice {
 }
 
 /// What the jump-host box says above the chain.
-const JUMP_NOTE: &str =
-    "依次经过跳板主机连接到当前主机，可添加多台。跳板主机自己的「连接方式」在这里不生效。";
+const JUMP_NOTE: &str = "依次经过跳板主机连接到当前主机，可添加多台。";
 
 /// What the proxy box says under its fields.
 const PROXY_NOTE: &str = "目标地址由代理服务器解析；代理不需要认证时，用户名和密码留空。";
