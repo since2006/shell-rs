@@ -1,6 +1,6 @@
 [package]
 name = "shellrs"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 edition = "2024"
 publish = false
 description = "SSH session manager with local terminal support"
