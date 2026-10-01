@@ -389,12 +389,18 @@ impl Render for HostPanel {
                 .filter_map(|host| host.os.map(|os| (host.id, os)))
                 .collect(),
         );
-        let addresses: Rc<HashMap<HostId, SharedString>> = Rc::new(
+        let tooltips: Rc<HashMap<HostId, RowTooltip>> = Rc::new(
             self.store
                 .read(cx)
                 .hosts()
                 .iter()
-                .map(|host| (host.id, host.endpoint().into()))
+                .map(|host| {
+                    let tooltip = RowTooltip {
+                        endpoint: host.endpoint().into(),
+                        notes: host.notes.clone(),
+                    };
+                    (host.id, tooltip)
+                })
                 .collect(),
         );
         let group_parents: Rc<HashMap<GroupId, Option<GroupId>>> = Rc::new(
@@ -421,7 +427,7 @@ impl Render for HostPanel {
             right_clicked: clicked_row,
             drop_target,
             can_reorder,
-            addresses,
+            tooltips,
             tooltip: self.row_tooltip.clone(),
             tooltip_owner: self.row_tooltip_owner.clone(),
         });
@@ -536,27 +542,61 @@ struct RowInteractions {
     right_clicked: Rc<Cell<Option<HostNode>>>,
     drop_target: Rc<Cell<Option<(HostNode, NodeDrop)>>>,
     can_reorder: bool,
-    /// `user@host:port` of every host, for the row tooltips.
-    addresses: Rc<HashMap<HostId, SharedString>>,
+    /// What every host's row tooltip says.
+    tooltips: Rc<HashMap<HostId, RowTooltip>>,
     tooltip: Entity<TooltipOverlay>,
     tooltip_owner: Rc<Cell<Option<HostId>>>,
 }
 
-/// A host row's tooltip: where the host logs in, as `user@host:port`.
+/// What a host row's tooltip says.
+#[derive(Clone, Default)]
+struct RowTooltip {
+    /// Where the host logs in, as `user@address:port`.
+    endpoint: SharedString,
+    /// The host's notes; empty for none.
+    notes: SharedString,
+}
+
+/// The longest notes a row tooltip shows, in lines; longer ones are cut
+/// with an ellipsis. The host form shows them all.
+const TOOLTIP_NOTE_LINES: usize = 6;
+
+/// A host row's tooltip: where the host logs in, as `user@address:port`,
+/// and below it the host's notes, if it has any.
 ///
 /// Drawn in the theme's inverse, dark on the light theme and light on the
 /// dark one, so it stands out against the sidebar and the terminal in both.
 /// Only this tooltip: gpui-kit's others share the popover colour with menus.
-fn host_tooltip(address: SharedString) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+fn host_tooltip(tooltip: RowTooltip) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     move |window, cx| {
-        let address = address.clone();
+        let RowTooltip { endpoint, notes } = tooltip.clone();
         let (background, foreground) = (cx.theme().foreground, cx.theme().background);
         Tooltip::element(move |_, _| {
-            div()
-                .id("host-tooltip")
-                .test_support()
-                .aria_label(address.clone())
-                .child(address.clone())
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .id("host-tooltip")
+                        .test_support()
+                        .aria_label(endpoint.clone())
+                        .child(endpoint.clone()),
+                )
+                .when(!notes.is_empty(), |content| {
+                    // Wraps rather than widening the tooltip across the
+                    // window; a step quieter than the address above it.
+                    content.child(
+                        div()
+                            .id("host-tooltip-notes")
+                            .test_support()
+                            .aria_label(notes.clone())
+                            .max_w(rems(20.))
+                            .whitespace_normal()
+                            .line_clamp(TOOLTIP_NOTE_LINES)
+                            .text_xs()
+                            .text_color(foreground.opacity(0.75))
+                            .child(notes.clone()),
+                    )
+                })
         })
         .bg(background)
         .border_color(background)
@@ -629,7 +669,7 @@ fn render_row(
         right_clicked,
         drop_target,
         can_reorder,
-        addresses,
+        tooltips,
         tooltip,
         tooltip_owner,
     } = interactions;
@@ -697,9 +737,7 @@ fn render_row(
             })
         })
         .when_some(host_id, |row, id| {
-            let content = Rc::new(host_tooltip(
-                addresses.get(&id).cloned().unwrap_or_default(),
-            ));
+            let content = Rc::new(host_tooltip(tooltips.get(&id).cloned().unwrap_or_default()));
             let bounds = Rc::new(Cell::new(Bounds::default()));
             let (bounds_for_prepaint, show, hide) =
                 (bounds.clone(), tooltip.clone(), tooltip.clone());

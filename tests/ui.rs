@@ -3933,6 +3933,51 @@ fn hovering_a_host_row_shows_its_address_beside_the_row(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
+fn a_host_rows_tooltip_shows_its_notes_under_the_address(cx: &mut TestAppContext) {
+    let mut store = HostStore::seed();
+    let web = HostId(WEB_01);
+    let draft = store
+        .host(web)
+        .unwrap()
+        .draft()
+        .with_notes("机房 A\n负责人：张三");
+    store.update_unnotified(web, draft);
+    let (handle, _) = open_workspace_with_store(cx, store);
+    let hover = |cx: &mut TestAppContext, id: u64| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.hover(("host-row", id), cx);
+        })
+        .unwrap();
+        cx.executor().advance_clock(Duration::from_millis(1000));
+        cx.run_until_parked();
+    };
+
+    hover(cx, WEB_01);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let address = window.find("host-tooltip");
+        let notes = window.find("host-tooltip-notes");
+        assert_eq!(address.label(), Some("root@10.0.1.12:22"));
+        assert_eq!(notes.label(), Some("机房 A\n负责人：张三"));
+        assert!(notes.bounds().top() >= address.bounds().bottom());
+    })
+    .unwrap();
+
+    // A host without notes shows its address alone.
+    hover(cx, WEB_02);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("host-tooltip").label(),
+            Some("root@10.0.1.13:22")
+        );
+        assert!(window.try_find("host-tooltip-notes").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn the_row_tooltip_follows_the_pointer_down_the_list(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
     let move_to = |cx: &mut TestAppContext, id: u64| {
