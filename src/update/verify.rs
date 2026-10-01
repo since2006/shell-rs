@@ -335,7 +335,6 @@ pub(crate) mod tests {
             .arg(&out)
             .env("MINISIGN_KEY_FILE", &secret)
             .env_remove("MINISIGN_PASSWORD")
-            .env_remove("SHELLRS_RELEASE_BASE")
             // As the release workflow sets it.
             .env(
                 "SHELLRS_MIRROR_BASE",
