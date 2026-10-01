@@ -152,7 +152,18 @@ jobs:
           cp -R build/ShellRS.app "$RUNNER_TEMP/dmg/"
           ln -s /Applications "$RUNNER_TEMP/dmg/Applications"
           dmg="dist/ShellRS-$VERSION-macos-universal.dmg"
-          hdiutil create -volname ShellRS -srcfolder "$RUNNER_TEMP/dmg" -ov -format UDZO "$dmg"
+          # hdiutil's own estimate of the image size once came out too small
+          # for the app ("No space left on device"), so the size is given,
+          # with room to spare; the compressed image is about half the app.
+          # It also fails now and then with "Resource busy" on the runners.
+          df -h "$RUNNER_TEMP" .
+          size=$(( $(du -sm "$RUNNER_TEMP/dmg" | cut -f1) * 2 + 20 ))
+          for attempt in 1 2 3; do
+            hdiutil create -volname ShellRS -srcfolder "$RUNNER_TEMP/dmg" -ov \
+              -fs HFS+ -size "${size}m" -format UDZO "$dmg" && break
+            [ "$attempt" = 3 ] && exit 1
+            sleep 10
+          done
           codesign --force --timestamp --sign "$IDENTITY" "$dmg"
           notarize "$dmg"
           xcrun stapler staple "$dmg"
