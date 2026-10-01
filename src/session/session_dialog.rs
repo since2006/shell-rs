@@ -8,7 +8,7 @@ use gpui_kit::component::{
     dialog::{Cancel, Confirm, DialogButtonProps, DialogFooter},
     form::{Field, Form},
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputState, Textarea, TextareaState},
     notification::Notification,
     searchable_list::{SearchableListItem, SearchableVec},
     select::{Select, SelectState},
@@ -199,6 +199,7 @@ pub struct SessionForm {
     proxy_user: Entity<InputState>,
     /// The proxy's password.
     proxy_secret: Entity<SecretFields>,
+    notes: Entity<TextareaState>,
     error: Option<SharedString>,
     testing_connection: bool,
     /// Logs in with the form's current values for 「测试连接」.
@@ -367,6 +368,12 @@ impl SessionForm {
             proxy_secret.update(cx, |fields, cx| fields.load_saved(Some(secret), None, cx));
         }
 
+        let notes = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(2, 6)
+                .default_value(draft.notes.clone())
+        });
+
         let subscriptions = vec![
             cx.observe(&credential, |_, _, cx| cx.notify()),
             cx.observe(&fields, |_, _, cx| cx.notify()),
@@ -417,6 +424,7 @@ impl SessionForm {
             proxy_port,
             proxy_user,
             proxy_secret,
+            notes,
             error: None,
             testing_connection: false,
             tester,
@@ -713,7 +721,8 @@ impl SessionForm {
             }),
             _ => None,
         };
-        let draft = draft.with_route(route);
+        let notes = self.notes.read(cx).value().trim().to_string();
+        let draft = draft.with_route(route).with_notes(notes);
 
         let editing = self.editing;
         self.store.update(cx, |store, cx| {
@@ -1153,7 +1162,16 @@ impl Render for SessionForm {
                         .col_span(4)
                         .child(Select::new(&self.group).small()),
                 )
-                .child(self.route_field(cx)),
+                .child(self.route_field(cx))
+                .child(
+                    Field::new().label("备注").col_span(4).child(
+                        div()
+                            .id("session-notes")
+                            .test_support()
+                            .w_full()
+                            .child(Textarea::new(&self.notes).text_sm()),
+                    ),
+                ),
             )
             .when(source == AuthSource::Password, |form| {
                 form.child(

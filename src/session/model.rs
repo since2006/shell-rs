@@ -400,6 +400,8 @@ pub struct Session {
     /// How a connection reaches it.
     pub route: Route,
     pub group: Option<GroupId>,
+    /// Whatever the user wants to remember about it; empty for none.
+    pub notes: SharedString,
     /// Order among sessions in the same group.
     pub sort_order: i64,
     pub state: ConnectionState,
@@ -424,6 +426,7 @@ impl Session {
             credential: draft.credential,
             route: draft.route,
             group: draft.group,
+            notes: draft.notes,
             sort_order: 0,
             state: ConnectionState::Disconnected,
             os: None,
@@ -459,6 +462,7 @@ impl Session {
             credential: self.credential,
             route: self.route.clone(),
             group: self.group,
+            notes: self.notes.clone(),
         }
     }
 }
@@ -520,6 +524,7 @@ pub struct SessionDraft {
     pub credential: Option<CredentialId>,
     pub route: Route,
     pub group: Option<GroupId>,
+    pub notes: SharedString,
 }
 
 impl SessionDraft {
@@ -540,6 +545,7 @@ impl SessionDraft {
             credential: None,
             route: Route::Direct,
             group,
+            notes: SharedString::default(),
         }
     }
 
@@ -553,6 +559,11 @@ impl SessionDraft {
     /// Reach the host some other way than directly.
     pub fn with_route(mut self, route: Route) -> Self {
         self.route = route;
+        self
+    }
+
+    pub fn with_notes(mut self, notes: impl Into<SharedString>) -> Self {
+        self.notes = notes.into();
         self
     }
 

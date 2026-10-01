@@ -2084,6 +2084,19 @@ mod tests {
         assert_eq!(store.session(copy).unwrap().route, jump_through(&[jump]));
     }
 
+    #[test]
+    fn notes_stay_through_an_edit_and_go_with_a_copy() {
+        let mut store = SessionStore::empty();
+        let id = store.insert_unnotified(draft("db", None).with_notes("只读副本"));
+        store.update_unnotified(id, draft("db-01", None).with_notes("只读副本，勿写"));
+        assert_eq!(store.session(id).unwrap().notes.as_ref(), "只读副本，勿写");
+        let copy = store.duplicate_unnotified(id).unwrap();
+        assert_eq!(
+            store.session(copy).unwrap().notes.as_ref(),
+            "只读副本，勿写"
+        );
+    }
+
     #[gpui_kit::test]
     fn editing_a_jump_host_reconnects_the_hosts_behind_it_but_renaming_does_not(
         cx: &mut gpui_kit::TestAppContext,

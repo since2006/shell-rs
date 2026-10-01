@@ -35,7 +35,7 @@ fn from_sql(id: i64) -> u64 {
 ///
 /// The steps start at 7 rather than 1 because the databases of development
 /// builds were already at 7 when the older steps were folded into `SCHEMA`.
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 /// The port-forwarding rules, added in version 8. A macro rather than a
 /// constant so that `SCHEMA` and the step from version 7 are built from the
@@ -123,6 +123,19 @@ CREATE TABLE session_proxies (
     };
 }
 
+/// A session's notes, added in version 12. Built like `forwards_table!`,
+/// for the same reason, and kept off `sessions` for the reason
+/// `credential_tables!` gives. Only a session with notes has a row.
+macro_rules! notes_table {
+    () => {
+        "\
+CREATE TABLE session_notes (
+    session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    notes      TEXT NOT NULL
+);"
+    };
+}
+
 /// One step from a version to the next: one transaction that ends by
 /// recording the version it reached.
 enum Step {
@@ -133,7 +146,7 @@ enum Step {
 }
 
 /// The steps from each older version to the next, in order.
-const STEPS: [(i64, Step); 4] = [
+const STEPS: [(i64, Step); 5] = [
     (
         7,
         Step::Sql(concat!(
@@ -157,6 +170,14 @@ const STEPS: [(i64, Step); 4] = [
             "BEGIN;\n",
             route_tables!(),
             "\nPRAGMA user_version = 11;\nCOMMIT;"
+        )),
+    ),
+    (
+        11,
+        Step::Sql(concat!(
+            "BEGIN;\n",
+            notes_table!(),
+            "\nPRAGMA user_version = 12;\nCOMMIT;"
         )),
     ),
 ];
@@ -207,7 +228,9 @@ CREATE TABLE bookmarks (
     "\n",
     credential_tables!(),
     "\n",
-    route_tables!()
+    route_tables!(),
+    "\n",
+    notes_table!()
 );
 
 /// Everything one launch reads back from disk.
@@ -307,6 +330,7 @@ impl SessionDatabase {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         self.load_routes(&mut sessions)?;
+        self.load_notes(&mut sessions)?;
 
         let recent = self
             .connection
@@ -474,6 +498,23 @@ impl SessionDatabase {
         Ok(())
     }
 
+    /// Give each of `sessions` its notes.
+    fn load_notes(&self, sessions: &mut [Session]) -> rusqlite::Result<()> {
+        let mut notes: HashMap<SessionId, String> = self
+            .connection
+            .prepare("SELECT session_id, notes FROM session_notes")?
+            .query_map([], |row| {
+                Ok((SessionId(from_sql(row.get(0)?)), row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        for session in sessions {
+            if let Some(text) = notes.remove(&session.id) {
+                session.notes = text.into();
+            }
+        }
+        Ok(())
+    }
+
     pub fn insert_group(&self, group: &SessionGroup) -> rusqlite::Result<()> {
         self.connection.execute(
             "INSERT INTO groups (id, name, parent_id, sort_order, expanded) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -548,6 +589,7 @@ impl SessionDatabase {
         )?;
         link_credential(&transaction, session)?;
         write_route(&transaction, session)?;
+        write_notes(&transaction, session)?;
         transaction.commit()
     }
 
@@ -577,6 +619,7 @@ impl SessionDatabase {
         )?;
         link_credential(&transaction, session)?;
         write_route(&transaction, session)?;
+        write_notes(&transaction, session)?;
         transaction.commit()
     }
 
@@ -801,6 +844,21 @@ fn link_credential(connection: &Connection, session: &Session) -> rusqlite::Resu
         connection.execute(
             "INSERT INTO session_credentials (session_id, credential_id) VALUES (?1, ?2)",
             params![to_sql(session.id.0), to_sql(credential.0)],
+        )?;
+    }
+    Ok(())
+}
+
+/// Record `session`'s notes, in place of whatever was recorded.
+fn write_notes(connection: &Connection, session: &Session) -> rusqlite::Result<()> {
+    connection.execute(
+        "DELETE FROM session_notes WHERE session_id = ?1",
+        params![to_sql(session.id.0)],
+    )?;
+    if !session.notes.is_empty() {
+        connection.execute(
+            "INSERT INTO session_notes (session_id, notes) VALUES (?1, ?2)",
+            params![to_sql(session.id.0), session.notes.as_ref()],
         )?;
     }
     Ok(())
@@ -1245,6 +1303,100 @@ PRAGMA user_version = 9;";
         drop(db);
         let again = SessionDatabase::open(&path).unwrap().load().unwrap();
         assert_eq!(again.credentials.len(), 3);
+    }
+
+    /// The route tables version 11 added, frozen like `SCHEMA_V7`.
+    const SCHEMA_V11_ROUTES: &str = "
+CREATE TABLE session_jumps (
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    position   INTEGER NOT NULL,
+    jump_id    INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+    PRIMARY KEY (session_id, position),
+    CHECK (jump_id <> session_id)
+);
+CREATE INDEX session_jumps_jump_id ON session_jumps(jump_id);
+CREATE TABLE session_proxies (
+    session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL CHECK (kind IN ('http', 'socks5')),
+    host       TEXT NOT NULL,
+    port       INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+    username   TEXT
+);
+PRAGMA user_version = 11;";
+
+    #[test]
+    fn a_version_11_database_gains_the_notes_table_and_keeps_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(SCHEMA_V7).unwrap();
+            old.execute_batch(SCHEMA_V8_FORWARDS).unwrap();
+            old.execute_batch(SCHEMA_V9_CREDENTIALS).unwrap();
+            old.execute_batch(SCHEMA_V11_ROUTES).unwrap();
+            old.execute_batch(
+                "INSERT INTO sessions (id, name, host, port, username, auth, public_id) VALUES
+                 (1, 'jump', 'a.test', 22, 'root', 'password', 'p000000000000001'),
+                 (2, 'db', 'b.test', 22, 'root', 'password', 'p000000000000002');
+                 INSERT INTO session_jumps (session_id, position, jump_id) VALUES (2, 0, 1);",
+            )
+            .unwrap();
+        }
+
+        let db = SessionDatabase::open(&path).unwrap();
+        let version: i64 = db
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let data = db.load().unwrap();
+        assert_eq!(
+            data.sessions[1].route,
+            Route::Jump(vec![Some(SessionId(1))])
+        );
+        assert!(data.sessions.iter().all(|session| session.notes.is_empty()));
+        let fresh = SessionDatabase::in_memory().unwrap();
+        assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
+
+        drop(db);
+        assert!(SessionDatabase::open(&path).is_ok());
+    }
+
+    #[test]
+    fn notes_round_trip_and_go_with_their_session() {
+        let db = SessionDatabase::in_memory().unwrap();
+        let mut noted = session(1, "web", None);
+        noted.notes = "机房 A，到期 2027-03\n负责人：张三".into();
+        db.insert_session(&noted).unwrap();
+        db.insert_session(&session(2, "db", None)).unwrap();
+        let notes = |db: &SessionDatabase| -> Vec<String> {
+            db.load()
+                .unwrap()
+                .sessions
+                .into_iter()
+                .map(|session| session.notes.to_string())
+                .collect()
+        };
+        assert_eq!(
+            notes(&db),
+            [
+                "机房 A，到期 2027-03\n负责人：张三".to_string(),
+                String::new()
+            ]
+        );
+
+        // Emptied notes leave no row behind.
+        db.update_session(&session(1, "web", None)).unwrap();
+        assert_eq!(notes(&db), [String::new(), String::new()]);
+        let mut noted = session(2, "db", None);
+        noted.notes = "只读副本".into();
+        db.update_session(&noted).unwrap();
+        db.remove_session(SessionId(2)).unwrap();
+        let rows: i64 = db
+            .connection
+            .query_row("SELECT COUNT(*) FROM session_notes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
     #[test]
@@ -1831,6 +1983,7 @@ PRAGMA user_version = 9;";
             "session_credentials",
             "session_jumps",
             "session_proxies",
+            "session_notes",
         ] {
             assert!(tables.contains(&table.to_string()), "{table}");
         }

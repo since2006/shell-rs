@@ -778,6 +778,52 @@ async fn testing_a_connection_through_a_jump_host_sends_its_login(cx: &mut TestA
 }
 
 #[gpui_kit::test]
+async fn a_hosts_notes_take_several_lines_and_come_back_when_edited(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace_with_store(cx, SessionStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("new-session", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("session-name", cx);
+        window.input("db", cx);
+        window.click("session-host", cx);
+        window.input("10.0.9.9", cx);
+        window.click("session-notes", cx);
+        window.input("机房 A", cx);
+        // Enter starts a new line; it does not submit the dialog.
+        window.press("enter", cx);
+        window.input("负责人：张三", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("commit").visible());
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    let id = cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let session = &store.sessions()[0];
+        assert_eq!(session.notes.as_ref(), "机房 A\n负责人：张三");
+        session.id
+    });
+
+    // Edited, the notes are there to change. The closed dialog took the
+    // focus with it, so the list takes it back first.
+    in_frame(cx, handle, |window, cx| {
+        window.click(("session-row", id.0), cx);
+        window.dispatch_action(Box::new(EditSession(id)), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("session-notes", cx);
+        window.press("cmd-a", cx);
+        window.input("已下线", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(store.session(id).unwrap().notes.as_ref(), "已下线");
+    });
+}
+
+#[gpui_kit::test]
 async fn deleting_a_jump_host_leaves_the_connection_behind_it_alone(cx: &mut TestAppContext) {
     let (mut store, [aliyun, _, inner]) = store_with_jump_hosts();
     store.update_unnotified(
