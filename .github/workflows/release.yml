@@ -16,7 +16,7 @@
 # Running it by hand (workflow_dispatch) builds and packages from the
 # current commit without publishing, to try the pipeline.
 #
-# Secrets, see README.md › 发布:
+# Secrets, see docs/release.md:
 #   repository: APPLE_CERTIFICATE_P12 (base64), APPLE_CERTIFICATE_PASSWORD,
 #               APPLE_SIGNING_IDENTITY, APPLE_TEAM_ID, APPLE_API_KEY_P8
 #               (base64), APPLE_API_KEY_ID, APPLE_API_ISSUER

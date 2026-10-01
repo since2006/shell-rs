@@ -6,7 +6,7 @@ ShellRS（crate 与二进制都叫 `shellrs`）是一个类似 Xshell / WinSCP �
 
 **保存的一项叫「主机」，代码里叫 `Host`。** 左侧列表里保存的一项（地址、端口、用户、认证方式）在界面上叫「主机」，量词用「台」，代码和数据库里一律叫 host（`Host`、`HostId`、`HostStore`、`host/` 模块、`hosts` 表）。它以前叫「会话」/ `Session`，界面、代码和表名都已改掉，新写的文案和标识符不要再用「会话」/ session 指它。填 IP / 域名的那个字段叫「地址」（`Host.address`、`hosts.address`），不叫「主机」（「主机密钥」「首次连接此主机」这些照旧）。SSH 协议里的 session 不在此列：「SSH 会话通道」、russh 的 `client::Session` / `server::Session`、`channel_open_session`、SFTP 会话照旧。
 
-主机和分组是**真实持久化**的，存在一个 SQLite 文件里（`~/Library/Application Support/shellrs/shellrs.db`，`SHELLRS_DATA_DIR` 可覆盖目录）。本地终端（`portable-pty` + `alacritty_terminal`）和 SSH 远程连接（`russh`）也都是真的。密码与私钥口令存在系统钥匙串里（`keyring`），**数据库里永远不出现秘密**。SFTP 双栏浏览与上传也已接入真实文件系统，支持断点续传；下载、目录同步和传输队列尚未实现。详见 `README.md`。
+主机和分组是**真实持久化**的，存在一个 SQLite 文件里（`~/Library/Application Support/shellrs/shellrs.db`，`SHELLRS_DATA_DIR` 可覆盖目录）。本地终端（`portable-pty` + `alacritty_terminal`）和 SSH 远程连接（`russh`）也都是真的。密码与私钥口令存在系统钥匙串里（`keyring`），**数据库里永远不出现秘密**。SFTP 双栏浏览与上传也已接入真实文件系统，支持断点续传；下载、目录同步和传输队列尚未实现。详见 `docs/manual.md`。
 
 已确认的产品决定：WinSCP 式双栏文件浏览器是每个主机独立的「SFTP」Dock 标签页；暂不做传输队列和 Dock 布局持久化；首次启动是空库，不预置任何分组或主机；分组支持任意层级嵌套，主机也可以不属于任何分组（渲染在树的根层级）；删除分组会连同其子分组和里面的主机一起删，删除前确认并写明数量。
 
@@ -45,7 +45,7 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 - `explorer/` — 目录与选择快照、`DataTable` 双栏、上传确认 / 冲突对话框、进度和取消 / 恢复展示。`ExplorerAction` 统一路由到工作区；文件扫描与网络操作在后台，目录响应按请求编号丢弃过期结果。
 - `sftp/` — 可注入传输与本地目录接口、`RemotePath`、russh-sftp 3.0.0 协议适配、有界并发分块上传、UUID 临时文件、安全替换、原子 JSON 续传记录和三次自动重连。`ssh/connection.rs` 的 `SshConnector` 与终端共享认证、钥匙串服务及 known_hosts 写锁。
 - `workspace/` — `workspace_view.rs` 持有 `HostStore`、`DockArea`、按主机登记的面板注册表，以及**全部动作处理器**；`title_bar.rs`、`status_bar.rs`、`recent_hosts.rs`（中间区没有标签页时显示的「最近连接」开始页，**不是** Dock 面板）、`dock_skin.rs`（`WorkspaceDockSkin`：包一层 `DockSkin`，中间区为空时用 `deferred` 把开始页画在空的中间区之上；工作区在 `DockEvent::LayoutChanged` 时同步「中间区是否为空」并在刚变空时把焦点移到开始页）。
-- `update/` — 在线升级：`feed.rs` 从 `dl.shellrs.com` 取已签名的清单和安装包（reqwest，走系统代理），`verify.rs` 先验 minisign 签名（trusted comment 绑定通道和版本）再信清单、按大小和 SHA-256 信安装包，`install*.rs` 按安装方式装（macOS 整包交换、Windows 运行 Inno 安装程序、Linux 覆盖 AppImage），`updater.rs` 的 `Updater` 实体管检查、下载和重启，工作线程的事件由 UI 定时轮询。不依赖 `workspace` 和 `settings`；`new_with_services` 里的 `Updater` 没有服务、从不联网，生产路径才 `set_services` + `start`，UI 测试经 `workspace.updater()` 注入假的。详见 `CLAUDE.md` 和 `README.md` 的「下载与更新」「发布」。
+- `update/` — 在线升级：`feed.rs` 从 `dl.shellrs.com` 取已签名的清单和安装包（reqwest，走系统代理），`verify.rs` 先验 minisign 签名（trusted comment 绑定通道和版本）再信清单、按大小和 SHA-256 信安装包，`install*.rs` 按安装方式装（macOS 整包交换、Windows 运行 Inno 安装程序、Linux 覆盖 AppImage），`updater.rs` 的 `Updater` 实体管检查、下载和重启，工作线程的事件由 UI 定时轮询。不依赖 `workspace` 和 `settings`；`new_with_services` 里的 `Updater` 没有服务、从不联网，生产路径才 `set_services` + `start`，UI 测试经 `workspace.updater()` 注入假的。详见 `CLAUDE.md`、`docs/manual.md` 的「下载与更新」和 `docs/release.md`。
 - `shared/` — 多个功能共用的展示片段（`ClosableTabTitle`、`HostMark`）。
 
 关键流程与不变量：
