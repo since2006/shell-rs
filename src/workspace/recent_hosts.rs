@@ -119,7 +119,6 @@ impl RecentHosts {
             .text_color(muted)
             .child(Icon::new(CatalogIcon::Server).large())
             .child(div().text_sm().child("还没有连接过的主机"))
-            .child(div().text_xs().child("双击左侧的主机即可连接"))
     }
 
     fn on_connect_selected(
