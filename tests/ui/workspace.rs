@@ -655,6 +655,55 @@ async fn a_click_beside_a_dialog_does_not_close_it(cx: &mut TestAppContext) {
     }
 }
 
+/// Every add and edit dialog says why it refused in an error notification,
+/// not in a line under its form, and takes the notification with it when it
+/// closes.
+#[gpui_kit::test]
+async fn a_dialog_says_what_is_wrong_in_a_notification_that_goes_with_it(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace_with_forwards(
+        cx,
+        HostStore::seed(),
+        Arc::new(FakeForwardProvider::default()),
+    );
+    cx.run_until_parked();
+
+    for (open, field, error) in [
+        ("new-host", "host-name", "请输入名称"),
+        ("new-group", "group-name", "请输入分组名称"),
+        ("new-forward", "forward-name", "请选择端口转发经由的主机"),
+        ("new-credential", "credential-name", "请输入名称"),
+    ] {
+        if open == "new-forward" {
+            show_forwards(cx, handle).await;
+        }
+        if open == "new-credential" {
+            show_credentials(cx, handle).await;
+        }
+        in_frame(cx, handle, |window, cx| window.click(open, cx));
+        in_frame(cx, handle, |window, cx| {
+            window.click(field, cx);
+            window.click("commit", cx);
+        });
+        cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+            window.render_frame(cx);
+            window.try_find("form-error").is_some()
+        })
+        .await;
+        in_frame(cx, handle, |window, cx| {
+            assert_eq!(window.find("form-error").label(), Some(error), "{open}");
+            assert_eq!(window.notifications(cx).len(), 1, "{open}");
+            assert!(window.try_find("commit").is_some(), "{open}: still open");
+            window.click(field, cx);
+            window.press("escape", cx);
+        });
+        cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+            window.render_frame(cx);
+            window.try_find("commit").is_none() && window.notifications(cx).is_empty()
+        })
+        .await;
+    }
+}
+
 /// What goes wrong while the window is being built (a database that will
 /// not open, a service that will not start) is said in a notification, and
 /// the window has no `Root` to show one yet. Pushing it there and then

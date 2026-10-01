@@ -1136,8 +1136,9 @@ async fn sftp_file_commands_confirm_validate_and_send_one_operation(cx: &mut Tes
         cx.run_until_parked();
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
-            assert_eq!(window.find("form-error").label(), None);
-            assert!(window.find("form-error").visible(), "{error}");
+            // Said in a notification, one at a time.
+            assert_eq!(window.find("form-error").label(), Some(error));
+            assert_eq!(window.notifications(cx).len(), 1);
         })
         .unwrap();
     }

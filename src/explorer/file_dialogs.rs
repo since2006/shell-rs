@@ -2,7 +2,7 @@
 
 use super::{ExplorerPanel, NewEntryKind, PaneOperation};
 use crate::app::ExplorerCommand;
-use crate::shared::{commit_footer, form_error};
+use crate::shared::{commit_footer, dismiss_form_error, form_error_notification};
 use gpui_kit::component::{
     Sizable as _, WindowExt as _,
     button::ButtonVariant,
@@ -11,7 +11,6 @@ use gpui_kit::component::{
     input::{Input, InputState},
     v_flex,
 };
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 /// Check a name typed for a new or renamed item. `existing` is the current
@@ -49,23 +48,17 @@ enum NameIntent {
 struct NameForm {
     input: Entity<InputState>,
     label: &'static str,
-    error: Option<String>,
 }
 impl Render for NameForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .gap_2()
-            .child(
-                Form::new().child(
-                    Field::new()
-                        .label(self.label)
-                        .required(true)
-                        .child(Input::new(&self.input).id("entry-name").small()),
-                ),
-            )
-            .when_some(self.error.clone(), |this, error| {
-                this.child(form_error(error, cx))
-            })
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        v_flex().gap_2().child(
+            Form::new().child(
+                Field::new()
+                    .label(self.label)
+                    .required(true)
+                    .child(Input::new(&self.input).id("entry-name").small()),
+            ),
+        )
     }
 }
 
@@ -183,11 +176,7 @@ impl ExplorerPanel {
             ),
         };
         let input = cx.new(|cx| InputState::new(window, cx).default_value(initial));
-        let form = cx.new(|_| NameForm {
-            input,
-            label,
-            error: None,
-        });
+        let form = cx.new(|_| NameForm { input, label });
         let sender = self.sender();
         let focus = window.focused(cx);
         window.open_dialog(cx, move |dialog, _, _| {
@@ -211,10 +200,7 @@ impl ExplorerPanel {
                             NameIntent::New(_) => None,
                         };
                         if let Err(error) = validate_entry_name(&name, original, &existing) {
-                            form.update(cx, |form, cx| {
-                                form.error = Some(error);
-                                cx.notify();
-                            });
+                            window.push_notification(form_error_notification(error), cx);
                             return false;
                         }
                         let operation = match &intent {
@@ -231,6 +217,7 @@ impl ExplorerPanel {
                 .on_close({
                     let focus = focus.clone();
                     move |_, window, cx| {
+                        dismiss_form_error(window, cx);
                         if let Some(focus) = &focus {
                             window.focus(focus, cx);
                         }

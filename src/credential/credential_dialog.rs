@@ -18,7 +18,9 @@ use crate::host::{
     KeyAlgorithm, PastedKey, PastedKeyError, SecretFields, read_public_key,
 };
 use crate::secrets::SecretRef;
-use crate::shared::{Segment, SegmentedControl, commit_footer, form_error};
+use crate::shared::{
+    Segment, SegmentedControl, commit_footer, dismiss_form_error, form_error_notification,
+};
 
 /// Where the SSH agent is found, as the form explains it.
 #[cfg(windows)]
@@ -112,7 +114,6 @@ pub struct CredentialForm {
     connected: usize,
     /// A commit is encrypting the new key with its passphrase.
     saving: bool,
-    error: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -237,7 +238,6 @@ impl CredentialForm {
             hosts,
             connected,
             saving: false,
-            error: None,
             _subscriptions: subscriptions,
         };
         form.look_up_file_public_key(cx);
@@ -255,7 +255,6 @@ impl CredentialForm {
     fn set_kind(&mut self, kind: CredentialKind, cx: &mut Context<Self>) {
         if self.kind != kind {
             self.kind = kind;
-            self.error = None;
             cx.notify();
         }
     }
@@ -265,7 +264,6 @@ impl CredentialForm {
             return;
         }
         self.source = source;
-        self.error = None;
         // A passphrase belongs to one key; whatever the field held was for
         // the key the form showed before.
         let placeholder = match source {
@@ -285,7 +283,6 @@ impl CredentialForm {
     fn set_algorithm(&mut self, algorithm: KeyAlgorithm, cx: &mut Context<Self>) {
         if self.algorithm != algorithm {
             self.algorithm = algorithm;
-            self.error = None;
             self.generate(cx);
             cx.notify();
         }
@@ -395,7 +392,7 @@ impl CredentialForm {
         .validated();
         let draft = match draft {
             Ok(draft) => draft,
-            Err(error) => return self.fail(error.to_string(), cx),
+            Err(error) => return self.fail(error.to_string(), window, cx),
         };
         // Secrets never ride along in the draft, which derives `Debug`.
         let password_change = password_change.filter(|_| draft.kind == CredentialKind::Password);
@@ -407,7 +404,7 @@ impl CredentialForm {
         if self.source == KeySource::Paste {
             let pasted = match PastedKey::parse(&self.key_text.read(cx).value()) {
                 Ok(pasted) => pasted,
-                Err(error) => return self.fail(error.to_string(), cx),
+                Err(error) => return self.fail(error.to_string(), window, cx),
             };
             // Only an encrypted key has a passphrase to keep; an empty one
             // clears what a key replaced in place had.
@@ -419,20 +416,19 @@ impl CredentialForm {
 
         let key = match &self.generated {
             Some((algorithm, Generated::Ready(key))) if *algorithm == self.algorithm => key.clone(),
-            Some((_, Generated::Failed(error))) => return self.fail(error.clone(), cx),
-            _ => return self.fail("密钥还在生成，请稍候", cx),
+            Some((_, Generated::Failed(error))) => return self.fail(error.clone(), window, cx),
+            _ => return self.fail("密钥还在生成，请稍候", window, cx),
         };
         let comment = draft.name.clone();
         if passphrase.is_empty() {
             return match key.encode(&comment, "") {
                 Ok(text) => self.save(draft, Some(text), None, Some(None), window, cx),
-                Err(error) => self.fail(format!("无法保存私钥：{error}"), cx),
+                Err(error) => self.fail(format!("无法保存私钥：{error}"), window, cx),
             };
         }
         // Deriving the encryption key from a passphrase is slow on purpose,
         // so it happens off the UI thread with the dialog kept open.
         self.saving = true;
-        self.error = None;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let secret = passphrase.clone();
@@ -447,9 +443,11 @@ impl CredentialForm {
                         let passphrase = Some(Some(passphrase.to_string()));
                         this.save(draft, Some(text), None, passphrase, window, cx)
                     }
-                    Err(error) => this.fail(format!("无法加密私钥：{error}"), cx),
+                    Err(error) => this.fail(format!("无法加密私钥：{error}"), window, cx),
                 };
                 if saved {
+                    // Closing it from here skips the dialog's `on_close`.
+                    dismiss_form_error(window, cx);
                     window.close_dialog(cx);
                 }
             })
@@ -461,9 +459,8 @@ impl CredentialForm {
 
     /// Say what stands in the way of saving. Returns `false`, so the
     /// dialog stays open.
-    fn fail(&mut self, error: impl Into<SharedString>, cx: &mut Context<Self>) -> bool {
-        self.error = Some(error.into());
-        cx.notify();
+    fn fail(&self, error: impl Into<SharedString>, window: &mut Window, cx: &mut App) -> bool {
+        window.push_notification(form_error_notification(error), cx);
         false
     }
 
@@ -482,7 +479,7 @@ impl CredentialForm {
         if let Some(text) = key_text {
             match self.store.read(cx).save_private_key(editing, &text) {
                 Ok(path) => draft.key_path = Some(path),
-                Err(error) => return self.fail(format!("私钥未能保存：{error}"), cx),
+                Err(error) => return self.fail(format!("私钥未能保存：{error}"), window, cx),
             }
         }
         let passphrase_change = passphrase_change
@@ -512,7 +509,6 @@ impl CredentialForm {
             .update(cx, |text, cx| text.set_value("", window, cx));
         self.pasted = None;
         self.generated = None;
-        self.error = None;
         true
     }
 
@@ -839,9 +835,6 @@ impl Render for CredentialForm {
                         .child("正在用口令加密私钥…"),
                 )
             })
-            .when_some(self.error.clone(), |view, error| {
-                view.child(form_error(error.clone(), cx).aria_label(error))
-            })
     }
 }
 
@@ -875,6 +868,7 @@ pub fn open_credential_dialog(
                     let form = form.clone();
                     move |_, window, cx| form.update(cx, |form, cx| form.commit(window, cx))
                 })
+                .on_close(|_, window, cx| dismiss_form_error(window, cx))
         }
     });
     // Focused in the same update that opened the dialog, which is the one

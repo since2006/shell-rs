@@ -18,7 +18,7 @@ use super::{
 use crate::host::{
     DEFAULT_BIND_HOST, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, HostId, HostStore,
 };
-use crate::shared::{commit_footer, form_error, parse_port};
+use crate::shared::{commit_footer, dismiss_form_error, form_error_notification, parse_port};
 
 /// The dialog's width in rems: room for the three stops of the diagram side
 /// by side, and for three kind cards that each hold their line of purpose
@@ -59,7 +59,6 @@ pub struct ForwardForm {
     target_host: Entity<InputState>,
     target_port: Entity<InputState>,
     auto_start: bool,
-    error: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -162,7 +161,6 @@ impl ForwardForm {
             target_host,
             target_port,
             auto_start: draft.as_ref().is_some_and(|draft| draft.auto_start),
-            error: None,
             _subscriptions: subscriptions,
         }
     }
@@ -179,7 +177,6 @@ impl ForwardForm {
         }
         self.kind = kind;
         self.flow += 1;
-        self.error = None;
         self.bind_port.update(cx, |input, cx| {
             input.set_placeholder(bind_port_placeholder(kind), window, cx)
         });
@@ -227,7 +224,7 @@ impl ForwardForm {
     }
 
     /// Validate and write to the store. Returns whether the dialog may close.
-    pub fn commit(&mut self, _: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let draft = match self.draft(cx) {
             Some(draft) => draft.validated().map_err(|error| error.to_string()),
             None => Err("请选择端口转发经由的主机".to_string()),
@@ -235,8 +232,7 @@ impl ForwardForm {
         let draft = match draft {
             Ok(draft) => draft,
             Err(error) => {
-                self.error = Some(error.into());
-                cx.notify();
+                window.push_notification(form_error_notification(error), cx);
                 return false;
             }
         };
@@ -247,11 +243,9 @@ impl ForwardForm {
         });
         if !saved {
             // The host, or the rule itself, was deleted meanwhile.
-            self.error = Some("所选主机已不存在，请重新选择".into());
-            cx.notify();
+            window.push_notification(form_error_notification("所选主机已不存在，请重新选择"), cx);
             return false;
         }
-        self.error = None;
         true
     }
 
@@ -510,9 +504,6 @@ impl Render for ForwardForm {
                         .children(notes.iter().map(|note| div().child(*note))),
                 )
             })
-            .when_some(self.error.clone(), |form, error| {
-                form.child(form_error(error.clone(), cx).aria_label(error))
-            })
     }
 }
 
@@ -557,6 +548,7 @@ pub fn open_forward_dialog(
                     let form = form.clone();
                     move |_, window, cx| form.update(cx, |form, cx| form.commit(window, cx))
                 })
+                .on_close(|_, window, cx| dismiss_form_error(window, cx))
         }
     });
     // Must follow `open_dialog` in the same update: the dialog host takes

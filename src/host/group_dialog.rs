@@ -5,11 +5,10 @@ use gpui_kit::component::{
     select::{Select, SelectState},
     v_flex,
 };
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::{DeleteHandler, Dependents, GroupDraft, GroupId, HostStore, group_options};
-use crate::shared::{commit_footer, confirm_delete, form_error};
+use crate::shared::{commit_footer, confirm_delete, dismiss_form_error, form_error_notification};
 
 /// The label of the row that stands for "no parent" / "no group".
 pub const ROOT_LABEL: &str = "（顶层）";
@@ -23,7 +22,6 @@ pub struct GroupForm {
     parent: Entity<SelectState<Vec<SharedString>>>,
     /// Parallel to the parent select's rows; `None` is the top level.
     parent_ids: Vec<Option<GroupId>>,
-    error: Option<SharedString>,
 }
 
 impl GroupForm {
@@ -73,12 +71,11 @@ impl GroupForm {
             name,
             parent,
             parent_ids,
-            error: None,
         }
     }
 
     /// Validate and write to the store. Returns whether the dialog may close.
-    pub fn commit(&mut self, _: &mut Window, cx: &mut Context<Self>) -> bool {
+    pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let name = self.name.read(cx).value().trim().to_string();
         let parent = self
             .parent
@@ -99,8 +96,7 @@ impl GroupForm {
             None
         };
         if let Some(error) = error {
-            self.error = Some(error.into());
-            cx.notify();
+            window.push_notification(form_error_notification(error), cx);
             return false;
         }
 
@@ -113,37 +109,29 @@ impl GroupForm {
             }
         });
         if !committed {
-            self.error = Some("无法把分组移动到它自己的下级".into());
-            cx.notify();
+            window.push_notification(form_error_notification("无法把分组移动到它自己的下级"), cx);
             return false;
         }
-        self.error = None;
         true
     }
 }
 
 impl Render for GroupForm {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .gap_3()
-            .w_full()
-            .child(
-                Form::new()
-                    .child(
-                        Field::new()
-                            .label("名称")
-                            .required(true)
-                            .child(Input::new(&self.name).id("group-name").small()),
-                    )
-                    .child(
-                        Field::new()
-                            .label("上级分组")
-                            .child(Select::new(&self.parent).small()),
-                    ),
-            )
-            .when_some(self.error.clone(), |form, error| {
-                form.child(form_error(error.clone(), cx).aria_label(error))
-            })
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        v_flex().gap_3().w_full().child(
+            Form::new()
+                .child(
+                    Field::new()
+                        .label("名称")
+                        .required(true)
+                        .child(Input::new(&self.name).id("group-name").small()),
+                )
+                .child(
+                    Field::new()
+                        .label("上级分组")
+                        .child(Select::new(&self.parent).small()),
+                ),
+        )
     }
 }
 
@@ -182,6 +170,7 @@ pub fn open_group_dialog(
                     let form = form.clone();
                     move |_, window, cx| form.update(cx, |form, cx| form.commit(window, cx))
                 })
+                .on_close(|_, window, cx| dismiss_form_error(window, cx))
         }
     });
 }

@@ -9,14 +9,14 @@ use crate::app::ExplorerDispatch as _;
 use crate::{
     app::{CatalogIcon, ExplorerAction, ExplorerCommand},
     host::{BookmarkSide, HostId, HostStore},
-    shared::{commit_footer, form_error},
+    shared::{commit_footer, dismiss_form_error, form_error_notification},
 };
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Sizable as _, WindowExt as _,
     button::Button,
     form::{Field, Form},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputState},
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -34,7 +34,6 @@ struct OpenDirectoryForm {
     /// The pane's directory and home, which `~` and relative paths use.
     current: String,
     home: String,
-    error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -63,7 +62,6 @@ impl OpenDirectoryForm {
     fn select(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
         self.input
             .update(cx, |input, cx| input.set_value(path, window, cx));
-        self.error = None;
         cx.notify();
     }
     fn command(&self, command: ExplorerCommand, window: &mut Window, cx: &mut App) {
@@ -77,8 +75,7 @@ impl OpenDirectoryForm {
     fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let path = self.directory(cx);
         if path.is_empty() {
-            self.error = Some("请输入要打开的目录".into());
-            cx.notify();
+            window.push_notification(form_error_notification("请输入要打开的目录"), cx);
             return false;
         }
         let remote = self.remote;
@@ -251,81 +248,75 @@ impl Render for OpenDirectoryForm {
         let selected = self.selected(cx);
         let typed = !self.directory(cx).is_empty();
         let button = |id: &'static str, label: &'static str| Button::new(id).small().label(label);
-        v_flex()
-            .gap_3()
-            .child(
-                Form::new()
-                    .child(
-                        Field::new().label("目录").child(
-                            h_flex()
-                                .gap_2()
-                                .child(
-                                    Input::new(&self.input)
-                                        .id("open-directory-path")
-                                        .small()
-                                        .flex_1(),
-                                )
-                                .when(!self.remote, |this| {
-                                    this.child(button("open-directory-browse", "浏览…").on_click(
-                                        cx.listener(|this, _, window, cx| this.browse(window, cx)),
-                                    ))
-                                }),
-                        ),
-                    )
-                    .child(
-                        Field::new().label("书签").child(
-                            h_flex()
-                                .gap_2()
-                                .items_start()
-                                .child(self.render_list(&bookmarks, selected, window, cx))
-                                .child(
-                                    v_flex()
-                                        .gap_1()
-                                        .w(rems(5.))
-                                        .flex_shrink_0()
-                                        .child(
-                                            button("bookmark-add", "添加")
-                                                .w_full()
-                                                .disabled(!typed || selected.is_some())
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.add(window, cx)
-                                                })),
-                                        )
-                                        .child(
-                                            button("bookmark-remove", "删除")
-                                                .w_full()
-                                                .disabled(selected.is_none())
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.remove(window, cx)
-                                                })),
-                                        )
-                                        .child(div().h_4())
-                                        .child(
-                                            button("bookmark-up", "上移")
-                                                .w_full()
-                                                .disabled(selected.is_none_or(|ix| ix == 0))
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.shift(-1, window, cx)
-                                                })),
-                                        )
-                                        .child(
-                                            button("bookmark-down", "下移")
-                                                .w_full()
-                                                .disabled(
-                                                    selected
-                                                        .is_none_or(|ix| ix + 1 >= bookmarks.len()),
-                                                )
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.shift(1, window, cx)
-                                                })),
-                                        ),
-                                ),
-                        ),
+        v_flex().gap_3().child(
+            Form::new()
+                .child(
+                    Field::new().label("目录").child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Input::new(&self.input)
+                                    .id("open-directory-path")
+                                    .small()
+                                    .flex_1(),
+                            )
+                            .when(!self.remote, |this| {
+                                this.child(button("open-directory-browse", "浏览…").on_click(
+                                    cx.listener(|this, _, window, cx| this.browse(window, cx)),
+                                ))
+                            }),
                     ),
-            )
-            .when_some(self.error.clone(), |this, error| {
-                this.child(form_error(error, cx))
-            })
+                )
+                .child(
+                    Field::new().label("书签").child(
+                        h_flex()
+                            .gap_2()
+                            .items_start()
+                            .child(self.render_list(&bookmarks, selected, window, cx))
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .w(rems(5.))
+                                    .flex_shrink_0()
+                                    .child(
+                                        button("bookmark-add", "添加")
+                                            .w_full()
+                                            .disabled(!typed || selected.is_some())
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.add(window, cx)
+                                            })),
+                                    )
+                                    .child(
+                                        button("bookmark-remove", "删除")
+                                            .w_full()
+                                            .disabled(selected.is_none())
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.remove(window, cx)
+                                            })),
+                                    )
+                                    .child(div().h_4())
+                                    .child(
+                                        button("bookmark-up", "上移")
+                                            .w_full()
+                                            .disabled(selected.is_none_or(|ix| ix == 0))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.shift(-1, window, cx)
+                                            })),
+                                    )
+                                    .child(
+                                        button("bookmark-down", "下移")
+                                            .w_full()
+                                            .disabled(
+                                                selected.is_none_or(|ix| ix + 1 >= bookmarks.len()),
+                                            )
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.shift(1, window, cx)
+                                            })),
+                                    ),
+                            ),
+                    ),
+                ),
+        )
     }
 }
 
@@ -356,16 +347,7 @@ impl ExplorerPanel {
             list_focus: cx.focus_handle().tab_stop(true),
             current,
             home,
-            error: None,
-            _subscriptions: vec![
-                cx.observe(&self.store, |_, _, cx| cx.notify()),
-                cx.subscribe(&input, |form: &mut OpenDirectoryForm, _, event, cx| {
-                    if matches!(event, InputEvent::Change) {
-                        form.error = None;
-                        cx.notify();
-                    }
-                }),
-            ],
+            _subscriptions: vec![cx.observe(&self.store, |_, _, cx| cx.notify())],
         });
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
@@ -381,7 +363,10 @@ impl ExplorerPanel {
                 // Back to the pane the directory was opened in.
                 .on_close({
                     let pane_focus = pane_focus.clone();
-                    move |_, window, cx| window.focus(&pane_focus, cx)
+                    move |_, window, cx| {
+                        dismiss_form_error(window, cx);
+                        window.focus(&pane_focus, cx)
+                    }
                 })
         });
         // As in WinSCP the directory is ready to be typed over.

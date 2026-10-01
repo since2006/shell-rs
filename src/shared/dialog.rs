@@ -3,7 +3,7 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, WindowExt as _,
+    WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter},
     notification::{Notification, NotificationType},
@@ -18,27 +18,15 @@ pub fn commit_footer(id: &'static str, label: impl Into<SharedString>) -> Dialog
         .child(DialogAction::new().child(Button::new(id).primary().label(label)))
 }
 
-/// The line under a form that says why it was not accepted.
-pub fn form_error(
-    error: impl Into<SharedString>,
-    cx: &App,
-) -> gpui_kit::base::ObservedElement<Stateful<Div>> {
-    div()
-        .id("form-error")
-        .test_support()
-        .text_sm()
-        .text_color(cx.theme().danger)
-        .child(error.into())
-}
-
 /// Marks the notification a form's error is shown in, so a newer error
 /// replaces the last one rather than stacking under it.
 struct FormErrorNotification;
 
-/// Why a form was not accepted, as an error notification over the dialog
-/// instead of a line under the form. The element keeps the `form-error` id
-/// the line had, with the message as its label. A click puts it away, and
-/// so does the dialog when it closes (`dismiss_form_error`).
+/// Why a form was not accepted, as an error notification over the dialog:
+/// every add and edit dialog says it this way, not in a line under the form.
+/// Its text has the `form-error` id, with the message as its label. A click
+/// puts it away, and so does the dialog when it closes (each dialog calls
+/// `dismiss_form_error` from its `on_close`).
 pub fn form_error_notification(error: impl Into<SharedString>) -> Notification {
     let error = error.into();
     Notification::new()
