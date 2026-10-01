@@ -6,7 +6,9 @@
 #   linux    AppImage
 #   publish  (environment `release`, approved by hand) uploads to R2 behind
 #            dl.shellrs.com, creates the GitHub release, and only then
-#            replaces the channel's manifest, which is what clients follow
+#            replaces the channel's manifest, which is what clients follow;
+#            the manifest lists the GitHub release as each package's
+#            second address
 #
 # A tag with a pre-release (v0.3.0-beta.1) goes to the beta channel only. A
 # stable release also becomes the beta channel's, unless beta is ahead.
@@ -284,6 +286,10 @@ jobs:
       - name: Manifests, last
         env:
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          # The GitHub release just created: clients try it when
+          # dl.shellrs.com fails. The repository is public, so it needs no
+          # sign-in.
+          SHELLRS_MIRROR_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/v${{ needs.verify.outputs.version }}
         run: |
           publish() {
             packaging/make-manifest.sh "$VERSION" "$1" notes.md dist "$1.json"

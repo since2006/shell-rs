@@ -9,22 +9,34 @@
   "notes_url": "https://shellrs.com/changelog#0.2.0",
   "assets": {
     "macos-aarch64": {
-      "urls": ["https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-macos-universal.app.zip"],
+      "urls": [
+        "https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-macos-universal.app.zip",
+        "https://github.com/since2006/shell-rs/releases/download/v0.2.0/ShellRS-0.2.0-macos-universal.app.zip"
+      ],
       "size": 41234567,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     "macos-x86_64": {
-      "urls": ["https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-macos-universal.app.zip"],
+      "urls": [
+        "https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-macos-universal.app.zip",
+        "https://github.com/since2006/shell-rs/releases/download/v0.2.0/ShellRS-0.2.0-macos-universal.app.zip"
+      ],
       "size": 41234567,
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     "windows-x86_64": {
-      "urls": ["https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-windows-x86_64-setup.exe"],
+      "urls": [
+        "https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-windows-x86_64-setup.exe",
+        "https://github.com/since2006/shell-rs/releases/download/v0.2.0/ShellRS-0.2.0-windows-x86_64-setup.exe"
+      ],
       "size": 18234567,
       "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
     },
     "linux-x86_64": {
-      "urls": ["https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-linux-x86_64.AppImage"],
+      "urls": [
+        "https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-linux-x86_64.AppImage",
+        "https://github.com/since2006/shell-rs/releases/download/v0.2.0/ShellRS-0.2.0-linux-x86_64.AppImage"
+      ],
       "size": 28234567,
       "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
     }

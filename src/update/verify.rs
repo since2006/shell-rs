@@ -335,6 +335,12 @@ pub(crate) mod tests {
             .arg(&out)
             .env("MINISIGN_KEY_FILE", &secret)
             .env_remove("MINISIGN_PASSWORD")
+            .env_remove("SHELLRS_RELEASE_BASE")
+            // As the release workflow sets it.
+            .env(
+                "SHELLRS_MIRROR_BASE",
+                "https://github.com/since2006/shell-rs/releases/download/v0.2.0",
+            )
             .output()
             .unwrap();
         assert!(made.status.success(), "{made:?}");
@@ -349,9 +355,13 @@ pub(crate) mod tests {
         assert_eq!(manifest.notes, "### 新增\n\n- 在线升级\n");
         let mac = &manifest.assets["macos-aarch64"];
         assert_eq!(mac, &manifest.assets["macos-x86_64"]);
+        // dl.shellrs.com first, the GitHub release only when it fails.
         assert_eq!(
             mac.urls,
-            ["https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-macos-universal.app.zip"]
+            [
+                "https://dl.shellrs.com/releases/0.2.0/ShellRS-0.2.0-macos-universal.app.zip",
+                "https://github.com/since2006/shell-rs/releases/download/v0.2.0/ShellRS-0.2.0-macos-universal.app.zip",
+            ]
         );
         let package = dist.join("ShellRS-0.2.0-linux-x86_64.AppImage");
         assert_eq!(
