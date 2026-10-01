@@ -2060,11 +2060,18 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.store.read(cx).active().cloned();
         let status = match self.active_tab {
+            Some(CenterTab::Terminal(id)) => {
+                let terminal = self
+                    .terminals
+                    .get(&id)
+                    .map(|panel| panel.read(cx).status(cx));
+                WorkspaceStatus::Session(active, terminal)
+            }
             Some(CenterTab::LocalTerminal(id)) => self
                 .local_terminals
                 .get(&id)
                 .map(|panel| WorkspaceStatus::Local(panel.read(cx).status(cx)))
-                .unwrap_or_else(|| WorkspaceStatus::Session(active)),
+                .unwrap_or_else(|| WorkspaceStatus::Session(active, None)),
             // An SFTP tab tells its own connection, not the session's, and
             // what went wrong in it.
             Some(CenterTab::Explorer(id)) => match self.explorers.get(&id) {
@@ -2073,9 +2080,9 @@ impl Render for Workspace {
                     let session = self.store.read(cx).session(panel.session_id()).cloned();
                     WorkspaceStatus::Explorer(session, panel.status(cx))
                 }
-                None => WorkspaceStatus::Session(active),
+                None => WorkspaceStatus::Session(active, None),
             },
-            _ => WorkspaceStatus::Session(active),
+            _ => WorkspaceStatus::Session(active, None),
         };
         let sidebar = self.sidebar_showing(cx);
         let running_forwards = self.forwards.read(cx).active_count();
@@ -2141,7 +2148,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_stop_forward))
             .on_action(cx.listener(Self::on_show_credentials))
             .on_action(cx.listener(Self::on_new_credential))
+            .on_action(cx.listener(Self::on_generate_credential_key))
             .on_action(cx.listener(Self::on_edit_credential))
+            .on_action(cx.listener(Self::on_copy_credential_public_key))
             .on_action(cx.listener(Self::on_delete_credential))
             .on_action(cx.listener(Self::on_toggle_theme))
             .on_action(cx.listener(Self::on_focus_search))

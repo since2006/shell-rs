@@ -65,13 +65,16 @@ impl SecretFields {
         });
         // A passphrase belongs to a key file, so picking another key makes
         // whatever is in the field meaningless. Clearing it is also the
-        // visible cue that the new key needs its own passphrase.
+        // visible cue that the new key needs its own passphrase. Observers
+        // hear of the new path, which the credential form reads the public
+        // key from.
         let key_path_subscription = cx.subscribe_in(
             &key_path,
             window,
             |this, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.forget_loaded_passphrase(window, cx);
+                    cx.notify();
                 }
             },
         );
@@ -157,6 +160,28 @@ impl SecretFields {
         self.passphrase
             .update(cx, |input, cx| input.set_value("", window, cx));
         cx.notify();
+    }
+
+    /// Empty the passphrase field, as a key from elsewhere needs a
+    /// passphrase of its own. Committing an empty field afterwards leaves
+    /// whatever the keychain has alone.
+    pub fn clear_passphrase(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.passphrase_loaded = false;
+        self.passphrase
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        cx.notify();
+    }
+
+    /// What the empty passphrase field says leaving it empty does.
+    pub fn set_passphrase_placeholder(
+        &mut self,
+        placeholder: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.passphrase.update(cx, |input, cx| {
+            input.set_placeholder(placeholder, window, cx)
+        });
     }
 
     /// Ask for a private key file with the system's picker.

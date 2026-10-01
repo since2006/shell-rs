@@ -53,6 +53,8 @@ gpui_kit::actions!(
         ShowCredentials,
         /// Open the new-credential dialog.
         NewCredential,
+        /// Open the new-credential dialog at a key it generates.
+        GenerateCredentialKey,
         /// Open the edit dialog of the credential selected in the credential
         /// list.
         EditSelectedCredential,
@@ -177,6 +179,9 @@ id_actions! {
 
     /// Open the edit-credential dialog.
     EditCredential(CredentialId);
+    /// Copy the public half of a key credential's key, for a server's
+    /// `authorized_keys`.
+    CopyCredentialPublicKey(CredentialId);
     /// Ask for confirmation, then delete a credential. The hosts using it
     /// go back to logging in on their own.
     DeleteCredential(CredentialId);

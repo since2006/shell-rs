@@ -1,16 +1,23 @@
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, WindowExt as _,
+    clipboard::Clipboard,
     form::{Field, Form},
-    input::{Input, InputState},
+    h_flex,
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     radio::{Radio, RadioGroup},
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use zeroize::Zeroizing;
 
 use crate::secrets::SecretRef;
 use crate::session::{
-    CredentialDraft, CredentialId, CredentialKind, DEFAULT_USER, SecretFields, SessionStore,
+    CredentialDraft, CredentialId, CredentialKind, DEFAULT_USER, GeneratedKey, KeyAlgorithm,
+    PastedKey, PastedKeyError, SecretFields, SessionStore, read_public_key,
 };
 use crate::shared::{commit_footer, form_error};
 
@@ -19,6 +26,67 @@ use crate::shared::{commit_footer, form_error};
 const AGENT_NOTE: &str = "登录时使用 Windows 的 OpenSSH Authentication Agent 服务中的密钥。";
 #[cfg(not(windows))]
 const AGENT_NOTE: &str = "登录时使用 SSH Agent（SSH_AUTH_SOCK 所指）中的密钥。";
+
+/// What an empty passphrase field means for a key that already exists, and
+/// for one about to be generated.
+const ASK_FOR_PASSPHRASE: &str = "留空则每次连接都询问";
+const NO_PASSPHRASE: &str = "留空则不加密";
+
+/// Which credential dialog to open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialDialog {
+    New,
+    /// A new credential, at a key it generates: 「生成密钥…」.
+    GenerateKey,
+    Edit(CredentialId),
+}
+
+/// Where a key credential's private key comes from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum KeySource {
+    /// A file of the user's, which the credential refers to.
+    #[default]
+    File,
+    /// Text pasted into the form, which ShellRS keeps in a file of its own.
+    Paste,
+    /// A new key pair, which ShellRS makes and keeps.
+    Generate,
+}
+
+impl KeySource {
+    const ALL: [KeySource; 3] = [KeySource::File, KeySource::Paste, KeySource::Generate];
+
+    fn label(self) -> &'static str {
+        match self {
+            KeySource::File => "本机文件",
+            KeySource::Paste => "粘贴",
+            KeySource::Generate => "生成新密钥",
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            KeySource::File => "file",
+            KeySource::Paste => "paste",
+            KeySource::Generate => "generate",
+        }
+    }
+}
+
+/// The key the form is generating or has generated.
+enum Generated {
+    Working,
+    Ready(Arc<GeneratedKey>),
+    Failed(SharedString),
+}
+
+/// What the form shows as the key's public half.
+enum PublicKeyView {
+    Line(SharedString),
+    Generating,
+    Failed(SharedString),
+    Unknown,
+}
 
 /// The body of the new/edit credential dialog.
 pub struct CredentialForm {
@@ -29,22 +97,46 @@ pub struct CredentialForm {
     user: Entity<InputState>,
     /// The password, key file and passphrase, shared with the host form.
     fields: Entity<SecretFields>,
+    source: KeySource,
+    key_text: Entity<TextareaState>,
+    /// What the pasted text is, read again whenever it changes.
+    pasted: Option<Result<PastedKey, PastedKeyError>>,
+    algorithm: KeyAlgorithm,
+    /// The key made for the algorithm it names. A request is numbered, so
+    /// the answer to an earlier choice of algorithm is dropped.
+    generated: Option<(KeyAlgorithm, Generated)>,
+    generation: u64,
+    /// The key file the form points at and its public half, which is read
+    /// off the UI thread.
+    file_public_key: Option<(String, Option<SharedString>)>,
+    /// Where ShellRS keeps keys. Without it nothing can be pasted or
+    /// generated.
+    key_dir: Option<PathBuf>,
+    /// The key file of the credential being edited, when ShellRS keeps it:
+    /// saving the credential with any other key deletes it.
+    kept_key: Option<SharedString>,
     /// How many hosts use the credential being edited, and how many of them
     /// are connected right now.
     hosts: usize,
     connected: usize,
+    /// A commit is encrypting the new key with its passphrase.
+    saving: bool,
     error: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl CredentialForm {
     pub fn new(
-        editing: Option<CredentialId>,
+        dialog: CredentialDialog,
         store: Entity<SessionStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (credential, secrets, hosts, connected) = {
+        let editing = match dialog {
+            CredentialDialog::Edit(id) => Some(id),
+            CredentialDialog::New | CredentialDialog::GenerateKey => None,
+        };
+        let (credential, secrets, key_dir, kept_key, hosts, connected) = {
             let read = store.read(cx);
             let credential = editing.and_then(|id| read.credential(id)).cloned();
             let using: Vec<_> = editing
@@ -54,12 +146,36 @@ impl CredentialForm {
                 .iter()
                 .filter(|session| session.state.is_connected())
                 .count();
-            (credential, read.secrets(), using.len(), connected)
+            let kept_key = credential
+                .as_ref()
+                .filter(|credential| credential.keeps_key_in(read.key_dir()))
+                .and_then(|credential| credential.key_path.clone());
+            (
+                credential,
+                read.secrets(),
+                read.key_dir().map(Path::to_path_buf),
+                kept_key,
+                using.len(),
+                connected,
+            )
         };
         let draft = credential
             .as_ref()
             .map(|credential| credential.draft())
             .unwrap_or_else(|| CredentialDraft::new("", CredentialKind::default(), DEFAULT_USER));
+        // Without a place to keep it, 「生成密钥…」 still opens at a key,
+        // one that has to be a file.
+        let generate = dialog == CredentialDialog::GenerateKey;
+        let source = if generate && key_dir.is_some() {
+            KeySource::Generate
+        } else {
+            KeySource::File
+        };
+        let kind = if generate {
+            CredentialKind::Key
+        } else {
+            draft.kind
+        };
 
         let name = cx.new(|cx| {
             InputState::new(window, cx)
@@ -82,19 +198,62 @@ impl CredentialForm {
                 )
             });
         }
-        let subscriptions = vec![cx.observe(&fields, |_, _, cx| cx.notify())];
-        Self {
+        if source == KeySource::Generate {
+            fields.update(cx, |fields, cx| {
+                fields.set_passphrase_placeholder(NO_PASSPHRASE, window, cx)
+            });
+        }
+        let key_text = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(4, 8)
+                .placeholder("粘贴私钥，以 -----BEGIN 开头")
+        });
+        let subscriptions = vec![
+            cx.observe(&fields, |this, _, cx| {
+                this.look_up_file_public_key(cx);
+                cx.notify();
+            }),
+            cx.subscribe(&key_text, |this, state, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let text = state.read(cx).value();
+                    this.pasted = (!text.trim().is_empty()).then(|| PastedKey::parse(&text));
+                    cx.notify();
+                }
+            }),
+            // The generated key's comment is the credential's name.
+            cx.subscribe(&name, |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
+        ];
+        let mut form = Self {
             store,
             editing,
-            kind: draft.kind,
+            kind,
             name,
             user,
             fields,
+            source,
+            key_text,
+            pasted: None,
+            algorithm: KeyAlgorithm::default(),
+            generated: None,
+            generation: 0,
+            file_public_key: None,
+            key_dir,
+            kept_key,
             hosts,
             connected,
+            saving: false,
             error: None,
             _subscriptions: subscriptions,
+        };
+        form.look_up_file_public_key(cx);
+        if source == KeySource::Generate {
+            form.generate(cx);
         }
+        form
     }
 
     /// Put the keyboard where a new credential starts: its name.
@@ -110,36 +269,233 @@ impl CredentialForm {
         }
     }
 
-    /// Validate and write to the store. Returns whether the dialog may close.
+    fn set_source(&mut self, source: KeySource, window: &mut Window, cx: &mut Context<Self>) {
+        if self.source == source {
+            return;
+        }
+        self.source = source;
+        self.error = None;
+        // A passphrase belongs to one key; whatever the field held was for
+        // the key the form showed before.
+        let placeholder = match source {
+            KeySource::Generate => NO_PASSPHRASE,
+            KeySource::File | KeySource::Paste => ASK_FOR_PASSPHRASE,
+        };
+        self.fields.update(cx, |fields, cx| {
+            fields.clear_passphrase(window, cx);
+            fields.set_passphrase_placeholder(placeholder, window, cx);
+        });
+        if source == KeySource::Generate {
+            self.generate(cx);
+        }
+        cx.notify();
+    }
+
+    fn set_algorithm(&mut self, algorithm: KeyAlgorithm, cx: &mut Context<Self>) {
+        if self.algorithm != algorithm {
+            self.algorithm = algorithm;
+            self.error = None;
+            self.generate(cx);
+            cx.notify();
+        }
+    }
+
+    /// Make a key for the chosen algorithm, unless one is made or being
+    /// made already. Off the UI thread: an RSA key takes a moment.
+    fn generate(&mut self, cx: &mut Context<Self>) {
+        let algorithm = self.algorithm;
+        if self
+            .generated
+            .as_ref()
+            .is_some_and(|(made_for, generated)| {
+                *made_for == algorithm && !matches!(generated, Generated::Failed(_))
+            })
+        {
+            return;
+        }
+        self.generation += 1;
+        let generation = self.generation;
+        self.generated = Some((algorithm, Generated::Working));
+        cx.spawn(async move |this, cx| {
+            let made = cx
+                .background_executor()
+                .spawn(async move { GeneratedKey::generate(algorithm) })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                let generated = match made {
+                    Ok(key) => Generated::Ready(Arc::new(key)),
+                    Err(error) => Generated::Failed(format!("无法生成密钥：{error}").into()),
+                };
+                this.generated = Some((algorithm, generated));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Read the public half of the key file the form points at, if it
+    /// changed since the last look. The file system is read off the UI
+    /// thread.
+    fn look_up_file_public_key(&mut self, cx: &mut Context<Self>) {
+        let path = self.fields.read(cx).key_path(cx);
+        if self
+            .file_public_key
+            .as_ref()
+            .is_some_and(|(looked_up, _)| *looked_up == path)
+        {
+            return;
+        }
+        self.file_public_key = Some((path.clone(), None));
+        if path.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let file = path.clone();
+            let line = cx
+                .background_executor()
+                .spawn(async move { read_public_key(Path::new(&file)) })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Some((looked_up, found)) = &mut this.file_public_key
+                    && *looked_up == path
+                {
+                    *found = line.map(Into::into);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Validate and write to the store. Returns whether the dialog may
+    /// close; a key that is still being encrypted closes it when done.
     pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let fields = self.fields.read(cx);
+        if self.saving {
+            return false;
+        }
+        let key_from_text = self.kind == CredentialKind::Key && self.source != KeySource::File;
+        let (key_file, password_change, passphrase_change, passphrase) = {
+            let fields = self.fields.read(cx);
+            (
+                fields.key_path(cx),
+                fields.password_change(cx),
+                fields.passphrase_change(cx),
+                Zeroizing::new(fields.passphrase(cx)),
+            )
+        };
+        // A pasted or generated key's file is only written once everything
+        // else checks out; until then the draft stands in for it.
+        let key_path = if key_from_text {
+            "（新私钥）".to_string()
+        } else {
+            key_file
+        };
         let draft = CredentialDraft::new(
             self.name.read(cx).value().to_string(),
             self.kind,
             self.user.read(cx).value().to_string(),
         )
-        .with_key_path(fields.key_path(cx))
+        .with_key_path(key_path)
         .validated();
         let draft = match draft {
             Ok(draft) => draft,
-            Err(error) => {
-                self.error = Some(error.to_string().into());
-                cx.notify();
-                return false;
-            }
+            Err(error) => return self.fail(error.to_string(), cx),
         };
         // Secrets never ride along in the draft, which derives `Debug`.
-        let password_change = (draft.kind == CredentialKind::Password)
-            .then(|| fields.password_change(cx))
-            .flatten();
-        let passphrase_change = draft.key_path.as_ref().and_then(|path| {
-            Some((
-                SecretRef::passphrase(path.as_ref()),
-                fields.passphrase_change(cx)?,
-            ))
-        });
+        let password_change = password_change.filter(|_| draft.kind == CredentialKind::Password);
+        if !key_from_text {
+            let passphrase_change = passphrase_change.filter(|_| draft.key_path.is_some());
+            return self.save(draft, None, password_change, passphrase_change, window, cx);
+        }
 
+        if self.source == KeySource::Paste {
+            let pasted = match PastedKey::parse(&self.key_text.read(cx).value()) {
+                Ok(pasted) => pasted,
+                Err(error) => return self.fail(error.to_string(), cx),
+            };
+            // Only an encrypted key has a passphrase to keep; an empty one
+            // clears what a key replaced in place had.
+            let passphrase =
+                (pasted.is_encrypted() && !passphrase.is_empty()).then(|| passphrase.to_string());
+            let text = Zeroizing::new(pasted.text().to_string());
+            return self.save(draft, Some(text), None, Some(passphrase), window, cx);
+        }
+
+        let key = match &self.generated {
+            Some((algorithm, Generated::Ready(key))) if *algorithm == self.algorithm => key.clone(),
+            Some((_, Generated::Failed(error))) => return self.fail(error.clone(), cx),
+            _ => return self.fail("密钥还在生成，请稍候", cx),
+        };
+        let comment = draft.name.clone();
+        if passphrase.is_empty() {
+            return match key.encode(&comment, "") {
+                Ok(text) => self.save(draft, Some(text), None, Some(None), window, cx),
+                Err(error) => self.fail(format!("无法保存私钥：{error}"), cx),
+            };
+        }
+        // Deriving the encryption key from a passphrase is slow on purpose,
+        // so it happens off the UI thread with the dialog kept open.
+        self.saving = true;
+        self.error = None;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let secret = passphrase.clone();
+            let encoded = cx
+                .background_executor()
+                .spawn(async move { key.encode(&comment, &secret) })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.saving = false;
+                let saved = match encoded {
+                    Ok(text) => {
+                        let passphrase = Some(Some(passphrase.to_string()));
+                        this.save(draft, Some(text), None, passphrase, window, cx)
+                    }
+                    Err(error) => this.fail(format!("无法加密私钥：{error}"), cx),
+                };
+                if saved {
+                    window.close_dialog(cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+        false
+    }
+
+    /// Say what stands in the way of saving. Returns `false`, so the
+    /// dialog stays open.
+    fn fail(&mut self, error: impl Into<SharedString>, cx: &mut Context<Self>) -> bool {
+        self.error = Some(error.into());
+        cx.notify();
+        false
+    }
+
+    /// Write the key file for a pasted or generated key, then the
+    /// credential, then its secrets. Returns whether the dialog may close.
+    fn save(
+        &mut self,
+        mut draft: CredentialDraft,
+        key_text: Option<Zeroizing<String>>,
+        password_change: Option<Option<String>>,
+        passphrase_change: Option<Option<String>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let editing = self.editing;
+        if let Some(text) = key_text {
+            match self.store.read(cx).save_private_key(editing, &text) {
+                Ok(path) => draft.key_path = Some(path),
+                Err(error) => return self.fail(format!("私钥未能保存：{error}"), cx),
+            }
+        }
+        let passphrase_change = passphrase_change
+            .and_then(|change| Some((SecretRef::passphrase(draft.key_path.as_deref()?), change)));
         self.store.update(cx, |store, cx| {
             // The credential first: an edit that reconnects its hosts reads
             // the keychain later, on the connection's own thread.
@@ -161,6 +517,10 @@ impl CredentialForm {
         // plaintext now rather than waiting for the entity.
         self.fields
             .update(cx, |fields, cx| fields.clear(window, cx));
+        self.key_text
+            .update(cx, |text, cx| text.set_value("", window, cx));
+        self.pasted = None;
+        self.generated = None;
         self.error = None;
         true
     }
@@ -171,25 +531,246 @@ impl CredentialForm {
             return None;
         }
         let mut note = format!("有 {} 台主机使用此凭据。", self.hosts);
+        // A new key is no use to them until their servers know it.
+        if self.kind == CredentialKind::Key && self.source != KeySource::File {
+            note.push_str("换成新私钥后，要把它的公钥加到这些主机上，它们才能再登录。");
+        }
         if self.connected > 0 {
             note.push_str("修改用户名、类型或私钥文件后，其中已连接的主机会重新连接。");
         }
         Some(note)
     }
+
+    /// Whether saving now would delete the key ShellRS keeps for the
+    /// credential being edited: it is set to log in some other way, or with
+    /// another file. Pasting or generating writes over the kept file instead.
+    fn drops_kept_key(&self, cx: &App) -> bool {
+        let Some(kept) = &self.kept_key else {
+            return false;
+        };
+        match (self.kind, self.source) {
+            (CredentialKind::Key, KeySource::File) => {
+                self.fields.read(cx).key_path(cx) != kept.as_ref()
+            }
+            (CredentialKind::Key, KeySource::Paste | KeySource::Generate) => false,
+            (CredentialKind::Password | CredentialKind::Agent, _) => true,
+        }
+    }
+
+    /// The public half of the key the form shows.
+    fn public_key(&self, cx: &App) -> PublicKeyView {
+        match self.source {
+            KeySource::File => {
+                let path = self.fields.read(cx).key_path(cx);
+                match &self.file_public_key {
+                    Some((looked_up, Some(line))) if *looked_up == path => {
+                        PublicKeyView::Line(line.clone())
+                    }
+                    _ => PublicKeyView::Unknown,
+                }
+            }
+            KeySource::Paste => match &self.pasted {
+                Some(Ok(pasted)) => pasted
+                    .public_key_line()
+                    .map_or(PublicKeyView::Unknown, |line| {
+                        PublicKeyView::Line(line.into())
+                    }),
+                _ => PublicKeyView::Unknown,
+            },
+            KeySource::Generate => match &self.generated {
+                Some((algorithm, Generated::Ready(key))) if *algorithm == self.algorithm => {
+                    let name = self.name.read(cx).value();
+                    PublicKeyView::Line(key.public_key_line(&name).into())
+                }
+                Some((_, Generated::Failed(error))) => PublicKeyView::Failed(error.clone()),
+                _ => PublicKeyView::Generating,
+            },
+        }
+    }
+
+    /// The key fields: where the key comes from, the key itself, its public
+    /// half and its passphrase.
+    fn key_fields(&self, form: Form, cx: &Context<Self>) -> Form {
+        let source = self.source;
+        let theme = cx.theme();
+        let muted = theme.muted_foreground;
+        let can_keep = self.key_dir.is_some();
+        let fields = self.fields.read(cx);
+        let kept_here = source == KeySource::File
+            && self
+                .kept_key
+                .as_ref()
+                .is_some_and(|kept| fields.key_path(cx) == kept.as_ref());
+
+        let sources = RadioGroup::horizontal("credential-key-source")
+            .selected_index(KeySource::ALL.iter().position(|each| *each == source))
+            .on_change(cx.listener(|this, ix: &usize, window, cx| {
+                if let Some(source) = KeySource::ALL.get(*ix) {
+                    this.set_source(*source, window, cx);
+                }
+            }))
+            .children(KeySource::ALL.map(|each| {
+                Radio::new(each.id()).label(each.label()).small().when(
+                    each != KeySource::File && !can_keep,
+                    |radio| {
+                        radio
+                            .disabled(true)
+                            .tooltip("本地数据库没有打开，这次运行无法保存私钥")
+                    },
+                )
+            }));
+        // A generated key has nothing to fill in under the choice.
+        let key = match source {
+            KeySource::File => Some(
+                SecretFields::key_path_input(
+                    &self.fields,
+                    "credential-key-path",
+                    "choose-credential-key",
+                    cx,
+                )
+                .into_any_element(),
+            ),
+            KeySource::Paste => Some(
+                div()
+                    .id("credential-key-text")
+                    .test_support()
+                    .w_full()
+                    .child(
+                        Textarea::new(&self.key_text)
+                            .font_family(theme.mono_font_family.clone())
+                            .text_xs(),
+                    )
+                    .into_any_element(),
+            ),
+            KeySource::Generate => None,
+        };
+        let mut form = form.child(
+            Field::new()
+                .label("私钥")
+                .required(true)
+                .child(v_flex().w_full().gap_2().child(sources).children(key))
+                .when(kept_here, |field| {
+                    field.description("这把私钥由 ShellRS 保存，删除凭据时会一起删除。")
+                }),
+        );
+        if source == KeySource::Generate {
+            form = form.child(
+                Field::new()
+                    .label("算法")
+                    .child(
+                        RadioGroup::horizontal("credential-key-algorithm")
+                            .selected_index(
+                                KeyAlgorithm::ALL
+                                    .iter()
+                                    .position(|each| *each == self.algorithm),
+                            )
+                            .on_change(cx.listener(|this, ix: &usize, _, cx| {
+                                if let Some(algorithm) = KeyAlgorithm::ALL.get(*ix) {
+                                    this.set_algorithm(*algorithm, cx);
+                                }
+                            }))
+                            .children(
+                                KeyAlgorithm::ALL.map(|each| {
+                                    Radio::new(each.label()).label(each.label()).small()
+                                }),
+                            ),
+                    )
+                    .when(self.algorithm == KeyAlgorithm::Rsa, |field| {
+                        field.description("只在服务器不支持 Ed25519 时选它（OpenSSH 6.5 以前）。")
+                    }),
+            );
+        }
+        form = match self.public_key(cx) {
+            PublicKeyView::Line(line) => form.child(
+                Field::new()
+                    .label("公钥")
+                    .child(public_key_box(line, cx))
+                    .when(source == KeySource::Generate, |field| {
+                        field.description(
+                            "把公钥加到服务器的 ~/.ssh/authorized_keys，就能用这把密钥登录。",
+                        )
+                    }),
+            ),
+            PublicKeyView::Generating => form.child(
+                Field::new().label("公钥").child(
+                    div()
+                        .id("credential-public-key-pending")
+                        .test_support()
+                        .text_sm()
+                        .text_color(muted)
+                        .child("正在生成密钥…"),
+                ),
+            ),
+            PublicKeyView::Failed(error) => form.child(
+                Field::new().label("公钥").child(
+                    div()
+                        .id("credential-generate-error")
+                        .test_support()
+                        .aria_label(error.clone())
+                        .text_sm()
+                        .text_color(theme.danger)
+                        .child(error),
+                ),
+            ),
+            PublicKeyView::Unknown => form,
+        };
+        // A pasted key without a passphrase has nothing to ask for.
+        let encrypted_paste = matches!(&self.pasted, Some(Ok(pasted)) if pasted.is_encrypted());
+        if source != KeySource::Paste || encrypted_paste {
+            form = form.child(
+                Field::new()
+                    .label("私钥口令")
+                    .child(fields.passphrase_input("credential-passphrase")),
+            );
+        }
+        form
+    }
+}
+
+/// The public half of a key, cut short to fit, with a button that copies
+/// all of it.
+fn public_key_box(line: SharedString, cx: &App) -> impl IntoElement + use<> {
+    let theme = cx.theme();
+    h_flex()
+        .w_full()
+        .gap_1()
+        .child(
+            div()
+                .id("credential-public-key")
+                .test_support()
+                .aria_label(line.clone())
+                .flex_1()
+                .min_w_0()
+                .h_6()
+                .px_2()
+                .flex()
+                .items_center()
+                .rounded(theme.radius)
+                .border_1()
+                .border_color(theme.border)
+                .bg(theme.muted)
+                .font_family(theme.mono_font_family.clone())
+                .text_xs()
+                .child(div().w_full().truncate().child(line.clone())),
+        )
+        .child(
+            Clipboard::new("copy-public-key")
+                .value(line)
+                .tooltip("复制公钥"),
+        )
 }
 
 impl Render for CredentialForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let kind = self.kind;
-        let fields = self.fields.read(cx);
         let muted = cx.theme().muted_foreground;
+        let keychain = self.fields.read(cx).keychain_available();
         let secret_note = match kind {
             CredentialKind::Agent => None,
-            _ if fields.keychain_available() => {
-                Some("密码和口令保存在系统钥匙串，不会写入 ShellRS 的数据库。")
-            }
+            _ if keychain => Some("密码和口令保存在系统钥匙串，不会写入 ShellRS 的数据库。"),
             _ => Some("系统钥匙串不可用，这台机器上无法保存密码，每次连接都会询问。"),
         };
+        let drops_kept_key = self.drops_kept_key(cx);
         let form = Form::new()
             .child(
                 Field::new().label("类型").child(
@@ -221,22 +802,9 @@ impl Render for CredentialForm {
             CredentialKind::Password => form.child(
                 Field::new()
                     .label("密码")
-                    .child(fields.password_input("credential-password")),
+                    .child(self.fields.read(cx).password_input("credential-password")),
             ),
-            CredentialKind::Key => form
-                .child(Field::new().label("私钥文件").required(true).child(
-                    SecretFields::key_path_input(
-                        &self.fields,
-                        "credential-key-path",
-                        "choose-credential-key",
-                        cx,
-                    ),
-                ))
-                .child(
-                    Field::new()
-                        .label("私钥口令")
-                        .child(fields.passphrase_input("credential-passphrase")),
-                ),
+            CredentialKind::Key => self.key_fields(form, cx),
             CredentialKind::Agent => form,
         };
         v_flex()
@@ -257,6 +825,18 @@ impl Render for CredentialForm {
             .when_some(secret_note, |view, note| {
                 view.child(div().text_sm().text_color(muted).child(note))
             })
+            .when(drops_kept_key, |view| {
+                let note = "保存后，ShellRS 保存的原私钥会被删除。";
+                view.child(
+                    div()
+                        .id("credential-kept-key-note")
+                        .test_support()
+                        .aria_label(note)
+                        .text_sm()
+                        .text_color(cx.theme().warning)
+                        .child(note),
+                )
+            })
             .when_some(self.usage_note(), |view, note| {
                 view.child(
                     div()
@@ -268,32 +848,39 @@ impl Render for CredentialForm {
                         .child(note),
                 )
             })
+            .when(self.saving, |view| {
+                view.child(
+                    div()
+                        .id("credential-saving")
+                        .test_support()
+                        .text_sm()
+                        .text_color(muted)
+                        .child("正在用口令加密私钥…"),
+                )
+            })
             .when_some(self.error.clone(), |view, error| {
                 view.child(form_error(error.clone(), cx).aria_label(error))
             })
     }
 }
 
-/// Open the new-credential (`editing == None`) or edit-credential dialog.
+/// Open a credential dialog: a new credential, one at a generated key, or
+/// the edit dialog of an existing one.
 pub fn open_credential_dialog(
-    editing: Option<CredentialId>,
+    dialog: CredentialDialog,
     store: Entity<SessionStore>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let form = cx.new(|cx| CredentialForm::new(editing, store, window, cx));
-    let title: SharedString = if editing.is_some() {
+    let form = cx.new(|cx| CredentialForm::new(dialog, store, window, cx));
+    let editing = matches!(dialog, CredentialDialog::Edit(_));
+    let title: SharedString = if editing {
         "编辑凭据"
     } else {
         "新建凭据"
     }
     .into();
-    let commit_label: SharedString = if editing.is_some() {
-        "保存"
-    } else {
-        "创建"
-    }
-    .into();
+    let commit_label: SharedString = if editing { "保存" } else { "创建" }.into();
     window.open_dialog(cx, {
         let form = form.clone();
         move |dialog, _, _| {
@@ -311,7 +898,7 @@ pub fn open_credential_dialog(
     });
     // Focused in the same update that opened the dialog, which is the one
     // that sticks: a later request loses to the dialog's own focus.
-    if editing.is_none() {
+    if !editing {
         form.update(cx, |form, cx| form.focus_name(window, cx));
     }
 }

@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui_kit::component::{
@@ -68,6 +69,9 @@ pub struct SessionForm {
     /// credential select's rows. The dialog is modal, so nothing can change
     /// them while it is open.
     credentials: Vec<Credential>,
+    /// Where ShellRS keeps pasted and generated keys, to name those in the
+    /// credential's summary.
+    key_dir: Option<PathBuf>,
     group: Entity<SelectState<Vec<SharedString>>>,
     /// Parallel to the group select's rows; `None` is the root of the tree.
     group_ids: Vec<Option<GroupId>>,
@@ -89,12 +93,13 @@ impl SessionForm {
         cx: &mut Context<Self>,
     ) -> Self {
         let secrets = store.read(cx).secrets();
-        let (draft, options, credentials, editing_connected) = {
+        let (draft, options, credentials, key_dir, editing_connected) = {
             let read = store.read(cx);
             (
                 editing.and_then(|id| read.session(id)).map(Session::draft),
                 group_options(read.groups(), &[]),
                 read.credentials().to_vec(),
+                read.key_dir().map(Path::to_path_buf),
                 editing
                     .and_then(|id| read.session(id))
                     .is_some_and(|session| session.state != super::ConnectionState::Disconnected),
@@ -157,7 +162,7 @@ impl SessionForm {
             SelectState::new(
                 credentials
                     .iter()
-                    .map(credential_option)
+                    .map(|credential| credential_option(credential, key_dir.as_deref()))
                     .collect::<Vec<_>>(),
                 credential_ix.map(IndexPath::new),
                 window,
@@ -203,6 +208,7 @@ impl SessionForm {
             fields,
             credential,
             credentials,
+            key_dir,
             group,
             group_ids,
             error: None,
@@ -514,7 +520,7 @@ impl SessionForm {
     /// The field that picks a saved credential, with what it logs in as.
     fn credential_field(&self, cx: &App) -> Field {
         let summary = match self.selected_credential(cx) {
-            Some(credential) => Some(credential_summary(credential)),
+            Some(credential) => Some(credential_summary(credential, self.key_dir.as_deref())),
             None if self.credentials.is_empty() => {
                 Some("还没有凭据，可在侧栏的「凭据」中新建".into())
             }
@@ -648,14 +654,17 @@ enum CommittedLogin {
 }
 
 /// A credential as the host form's select lists it: `运维（root · 密码）`.
-fn credential_option(credential: &Credential) -> SharedString {
-    format!("{}（{}）", credential.name, credential.summary()).into()
+fn credential_option(credential: &Credential, key_dir: Option<&Path>) -> SharedString {
+    format!("{}（{}）", credential.name, credential.summary(key_dir)).into()
 }
 
 /// What a host using `credential` logs in as and with.
-fn credential_summary(credential: &Credential) -> SharedString {
+fn credential_summary(credential: &Credential, key_dir: Option<&Path>) -> SharedString {
     let with = match credential.kind {
         CredentialKind::Password => "使用凭据保存的密码".to_string(),
+        CredentialKind::Key if credential.keeps_key_in(key_dir) => {
+            "使用 ShellRS 保存的私钥".to_string()
+        }
         CredentialKind::Key => format!(
             "使用私钥 {}",
             credential.key_path.as_deref().unwrap_or_default()

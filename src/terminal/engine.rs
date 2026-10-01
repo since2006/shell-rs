@@ -397,12 +397,10 @@ impl TerminalEngine {
     }
 
     pub fn status(&self) -> TerminalStatus {
-        let term = self.runtime.term.lock();
-        let cursor = term.grid().cursor.point;
         TerminalStatus::new(
             self.lifecycle.clone(),
-            cursor.line.0.max(0) as usize,
-            cursor.column.0,
+            self.size.columns(),
+            self.size.rows(),
         )
     }
 

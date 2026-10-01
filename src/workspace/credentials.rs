@@ -1,12 +1,18 @@
 //! The workspace's share of credentials: the sidebar's switch and the
 //! commands of the credential list.
 
+use std::path::PathBuf;
 use std::rc::Rc;
 
+use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::*;
 
-use crate::app::{DeleteCredential, EditCredential, NewCredential, ShowCredentials};
-use crate::credential::open_credential_dialog;
+use crate::app::{
+    CopyCredentialPublicKey, DeleteCredential, EditCredential, GenerateCredentialKey,
+    NewCredential, ShowCredentials,
+};
+use crate::credential::{CredentialDialog, open_credential_dialog};
+use crate::session::read_public_key;
 use crate::shared::confirm_delete;
 
 use super::{sidebar::SidebarMode, workspace_view::Workspace};
@@ -27,7 +33,21 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        open_credential_dialog(None, self.store.clone(), window, cx);
+        open_credential_dialog(CredentialDialog::New, self.store.clone(), window, cx);
+    }
+
+    pub(super) fn on_generate_credential_key(
+        &mut self,
+        _: &GenerateCredentialKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        open_credential_dialog(
+            CredentialDialog::GenerateKey,
+            self.store.clone(),
+            window,
+            cx,
+        );
     }
 
     pub(super) fn on_edit_credential(
@@ -37,8 +57,48 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.store.read(cx).credential(action.0).is_some() {
-            open_credential_dialog(Some(action.0), self.store.clone(), window, cx);
+            open_credential_dialog(
+                CredentialDialog::Edit(action.0),
+                self.store.clone(),
+                window,
+                cx,
+            );
         }
+    }
+
+    /// Copy the public half of a key credential's key, read from its file
+    /// off the UI thread, and say whether that worked.
+    pub(super) fn on_copy_credential_public_key(
+        &mut self,
+        action: &CopyCredentialPublicKey,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self
+            .store
+            .read(cx)
+            .credential(action.0)
+            .and_then(|credential| credential.key_path.clone())
+        else {
+            return;
+        };
+        cx.spawn_in(window, async move |_, cx| {
+            let file = PathBuf::from(path.as_ref());
+            let line = cx
+                .background_executor()
+                .spawn(async move { read_public_key(&file) })
+                .await;
+            cx.update(|window, cx| match line {
+                Some(line) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(line));
+                    window.push_notification(Notification::success("已复制公钥"), cx);
+                }
+                None => window
+                    .push_notification(Notification::error(format!("无法从 {path} 读出公钥")), cx),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Ask, naming the hosts that use the credential, then delete it. Those

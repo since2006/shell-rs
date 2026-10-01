@@ -14,11 +14,12 @@ use gpui_kit::{
 
 use shellrs::app::{
     CenterTab, ClearTerminal, CloseScope, CloseTabs, CollapseAllGroups, ConnectGroup,
-    ConnectSession, CopySessionHost, CopySessionId, DeleteCredential, DeleteForward, DeleteGroup,
-    DeleteSession, DisconnectSession, DisconnectTerminal, EditCredential, EditForward, EditSession,
-    ExpandAllGroups, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch,
-    InstallCliCommand, NewLocalTerminal, NewSessionInGroup, OpenExplorer, ReconnectTerminal,
-    RemoveAgentSkill, RenameGroup, RenameTerminal, StartForward, StopForward, ToggleSessionPanel,
+    ConnectSession, CopyCredentialPublicKey, CopySessionHost, CopySessionId, DeleteCredential,
+    DeleteForward, DeleteGroup, DeleteSession, DisconnectSession, DisconnectTerminal,
+    EditCredential, EditForward, EditSession, ExpandAllGroups, FindInTerminal, FindNextInTerminal,
+    FindPreviousInTerminal, FocusSearch, InstallCliCommand, NewLocalTerminal, NewSessionInGroup,
+    OpenExplorer, ReconnectTerminal, RemoveAgentSkill, RenameGroup, RenameTerminal, StartForward,
+    StopForward, ToggleSessionPanel,
 };
 use shellrs::cli::{AgentKind, IntegrationPaths};
 use shellrs::connection::{
@@ -32,8 +33,9 @@ use shellrs::forward::{
 use shellrs::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
 use shellrs::session::{
     AuthKind, ConnectionState, CredentialDraft, CredentialId, CredentialKind, ForwardDraft,
-    ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft, GroupId, HostOs, LoginMethod,
-    SessionDatabase, SessionDraft, SessionId, SessionLogin, SessionStore,
+    ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GeneratedKey, GroupDraft, GroupId,
+    HostOs, KeyAlgorithm, LoginMethod, PastedKey, SessionDatabase, SessionDraft, SessionId,
+    SessionLogin, SessionStore, read_public_key,
 };
 use shellrs::settings::{Appearance, InterfaceLanguage, SettingsStore};
 use shellrs::sftp::{
@@ -77,12 +79,17 @@ fn open_workspace_with_store(
 }
 
 /// Same, with the session dialog's connection test answered by `tester`.
+///
+/// Motion is reduced, as in the other fixtures: dialogs would otherwise
+/// slide in over real time, and under a loaded test run a field or button
+/// can move between being found and being clicked.
 fn open_workspace_with_tester(
     cx: &mut TestAppContext,
     store: SessionStore,
     tester: Arc<FakeConnectionTester>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
     cx.update(shellrs::init);
+    cx.update(|cx| cx.set_reduce_motion(true));
     let mut workspace = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
         let store = cx.new(|_| store);
@@ -982,8 +989,7 @@ async fn new_session_dialog_validates_then_inserts(cx: &mut TestAppContext) {
         window.click("commit", cx);
     })
     .unwrap();
-    // The dialog slides in over real time, and the error line is its last
-    // row: under a loaded test run it can take a few frames to come into view.
+    // The commit action is dispatched deferred; wait for its error line.
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
         window
             .try_find("form-error")
@@ -2915,6 +2921,87 @@ async fn clearing_a_terminal_keeps_only_the_prompt_line(cx: &mut TestAppContext)
     );
     // Clearing happens on this side; the shell is not sent anything.
     assert_eq!(factory.written_text(), "root@localhost:~# ");
+}
+
+#[gpui_kit::test]
+async fn the_status_bar_shows_the_size_of_the_terminal_in_front(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let terminal = RemoteTerminalId(FIRST_NEW_TERMINAL);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(ConnectSession(SessionId(WEB_01))), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        remote_lifecycle(&workspace, terminal, cx) == TerminalLifecycle::Running
+    })
+    .await;
+    let columns = |cx: &App| {
+        workspace
+            .read(cx)
+            .remote_terminal(terminal)
+            .expect("terminal exists")
+            .read(cx)
+            .status(cx)
+            .columns()
+    };
+    // Whether the status bar shows the terminal's screen as it is now.
+    let shows_its_size = |window: &mut gpui_kit::Window, cx: &mut App| {
+        let status = workspace
+            .read(cx)
+            .remote_terminal(terminal)
+            .expect("terminal exists")
+            .read(cx)
+            .status(cx);
+        let size = format!("{}×{}", status.columns(), status.rows());
+        window
+            .try_find("status-terminal-size")
+            .is_some_and(|element| element.label() == Some(size.as_str()))
+    };
+    // Laid out in the window, not the 80 columns it starts with.
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        columns(cx) > 80 && shows_its_size(window, cx)
+    })
+    .await;
+    let wide = cx.update(|cx| columns(cx));
+
+    // A smaller window, a smaller terminal, and the status bar follows.
+    cx.simulate_window_resize(handle.into(), size(px(900.), px(600.)));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        columns(cx) < wide && shows_its_size(window, cx)
+    })
+    .await;
+
+    // An SFTP tab has no terminal, so no size either.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(OpenExplorer(SessionId(WEB_01))), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window
+            .try_find(("explorer", SFTP_TAB))
+            .is_some_and(|explorer| explorer.visible())
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("status-connection").visible());
+        assert!(window.try_find("status-terminal-size").is_none());
+        window.click("new-local-terminal", cx);
+    });
+
+    // A local terminal shows its own.
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        let Some(local) = workspace.read(cx).local_terminal(LocalTerminalId(1)) else {
+            return false;
+        };
+        let status = local.read(cx).status(cx);
+        let size = format!("{}×{}", status.columns(), status.rows());
+        // Laid out, so no longer the 80×24 it starts with.
+        size != "80×24"
+            && window
+                .try_find("status-terminal-size")
+                .is_some_and(|element| element.label() == Some(size.as_str()))
+    })
+    .await;
 }
 
 #[gpui_kit::test]
@@ -7924,9 +8011,11 @@ async fn the_three_kinds_of_forward_share_one_row(cx: &mut TestAppContext) {
 /// round is 3.6 s: 1.44 s a hop and 0.72 s of rest.
 #[gpui_kit::test]
 async fn the_forward_diagram_keeps_showing_its_flow(cx: &mut TestAppContext) {
-    // Not the forward fixture: that one reduces motion, which stills the flow.
+    // Every fixture reduces motion, which stills the flow; this test is
+    // about the motion.
     let (store, id) = store_with_forward();
     let (handle, _) = open_workspace_with_store(cx, store);
+    cx.update(|cx| cx.set_reduce_motion(false));
     cx.run_until_parked();
     // Where the dot is, if it is on either hop.
     let dot = |cx: &mut TestAppContext| {
@@ -8626,4 +8715,244 @@ async fn a_long_credential_row_fits_the_smallest_window(cx: &mut TestAppContext)
         let row = window.find(("credential-row", id.0)).bounds();
         assert!(row.right() <= list.right(), "{row:?} in {list:?}");
     });
+}
+
+/// A store that keeps pasted and generated keys under `data`, as the app
+/// keeps them beside its database.
+fn store_keeping_keys(data: &std::path::Path, secrets: Arc<InMemorySecretStore>) -> SessionStore {
+    SessionStore::empty()
+        .with_secrets(secrets)
+        .with_key_dir(data.join("keys"))
+}
+
+/// Open 「生成密钥…」 from the empty credential list and wait for the key.
+async fn open_generate_key(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+    show_credentials(cx, handle).await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("credential-empty-generate", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("credential-public-key").is_some()
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn a_generated_key_shows_its_public_half_and_is_kept_by_shellrs(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        store_keeping_keys(data.path(), secrets.clone()),
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    open_generate_key(cx, handle).await;
+    in_frame(cx, handle, |window, cx| {
+        // A key credential with its key made already, waiting for a name.
+        assert_eq!(window.find("credential-name").focused(), Some(true));
+        assert!(window.try_find("credential-key-path").is_none());
+        assert!(window.find("credential-passphrase").visible());
+        window.input("部署", cx);
+    });
+    let line = in_frame(cx, handle, |window, cx| {
+        let line = window
+            .find("credential-public-key")
+            .label()
+            .unwrap()
+            .to_string();
+        assert!(line.starts_with("ssh-ed25519 "), "{line}");
+        // The key's comment is the credential's name.
+        assert!(line.ends_with(" 部署"), "{line}");
+        window.click("commit", cx);
+        line
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+
+    let credential = cx.update(|cx| workspace.read(cx).store().read(cx).credentials()[0].clone());
+    assert_eq!(credential.kind, CredentialKind::Key);
+    let path = credential.key_path.clone().unwrap();
+    let path = std::path::Path::new(path.as_ref());
+    assert!(path.starts_with(data.path().join("keys")), "{path:?}");
+    // The file holds the key whose public half the dialog showed.
+    assert_eq!(read_public_key(path), Some(line));
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(!PastedKey::parse(&text).unwrap().is_encrypted());
+    assert!(secrets.get(&SecretRef::passphrase(path)).unwrap().is_none());
+    // The list names it by kind: its file name means nothing to anyone.
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find(("credential-row", credential.id.0)).visible());
+    });
+}
+
+#[gpui_kit::test]
+async fn a_generated_key_with_a_passphrase_is_saved_encrypted(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        store_keeping_keys(data.path(), secrets.clone()),
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    open_generate_key(cx, handle).await;
+    in_frame(cx, handle, |window, cx| {
+        window.input("部署", cx);
+        window.click("credential-passphrase", cx);
+        window.input("correct horse", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+
+    let path = cx.update(|cx| {
+        workspace.read(cx).store().read(cx).credentials()[0]
+            .key_path
+            .clone()
+            .unwrap()
+    });
+    let text = std::fs::read_to_string(path.as_ref()).unwrap();
+    assert!(PastedKey::parse(&text).unwrap().is_encrypted());
+    assert!(!text.contains("correct horse"));
+    assert_eq!(
+        secrets
+            .get(&SecretRef::passphrase(path.as_ref()))
+            .unwrap()
+            .as_deref()
+            .map(String::as_str),
+        Some("correct horse")
+    );
+}
+
+#[gpui_kit::test]
+async fn a_pasted_key_is_checked_then_kept_by_shellrs(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let key = GeneratedKey::generate(KeyAlgorithm::Ed25519).unwrap();
+    let text = key.encode("me@laptop", "").unwrap().to_string();
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        store_keeping_keys(data.path(), Arc::new(InMemorySecretStore::default())),
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    show_credentials(cx, handle).await;
+    in_frame(cx, handle, |window, cx| window.click("new-credential", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.input("个人", cx);
+        window.within("credential-kind").click(1usize, cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.within("credential-key-source").click(1usize, cx);
+    });
+
+    // The public half, pasted by mistake, is named for what it is.
+    let public = key.public_key_line("me@laptop");
+    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(public.clone())));
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("credential-key-path").is_none());
+        window.click("credential-key-text", cx);
+        window.press("cmd-v", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("credential-public-key").is_none());
+        window.click("commit", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("form-error").label(),
+            Some("这是公钥，请粘贴私钥（以 -----BEGIN 开头的那一段）")
+        );
+    });
+
+    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone())));
+    in_frame(cx, handle, |window, cx| {
+        window.click("credential-key-text", cx);
+        window.press("cmd-a", cx);
+        window.press("cmd-v", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("credential-public-key").label(),
+            Some(public.as_str())
+        );
+        // A key without a passphrase has none to ask for.
+        assert!(window.try_find("credential-passphrase").is_none());
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+
+    let credential = cx.update(|cx| workspace.read(cx).store().read(cx).credentials()[0].clone());
+    let path = credential.key_path.clone().unwrap();
+    assert!(std::path::Path::new(path.as_ref()).starts_with(data.path().join("keys")));
+    assert_eq!(std::fs::read_to_string(path.as_ref()).unwrap(), text);
+}
+
+#[gpui_kit::test]
+async fn a_kept_key_is_deleted_when_its_credential_turns_to_a_password(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let mut store = store_keeping_keys(data.path(), Arc::new(InMemorySecretStore::default()));
+    let path = store.save_private_key(None, "kept").unwrap();
+    let credential = store.insert_credential_unnotified(
+        CredentialDraft::new("部署", CredentialKind::Key, "deploy").with_key_path(path.clone()),
+    );
+    let (handle, _) = open_workspace_with_credentials(
+        cx,
+        store,
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    show_credentials(cx, handle).await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("credential-row", credential.0), cx);
+        window.dispatch_action(Box::new(EditCredential(credential)), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        // The kept key shows as the file it is.
+        assert_eq!(
+            window.find("credential-key-path").value(),
+            Some(path.as_ref())
+        );
+        assert!(window.try_find("credential-kept-key-note").is_none());
+        window.within("credential-kind").click(0usize, cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("credential-kept-key-note").label(),
+            Some("保存后，ShellRS 保存的原私钥会被删除。")
+        );
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    assert!(!std::path::Path::new(path.as_ref()).exists());
+}
+
+#[gpui_kit::test]
+async fn a_key_credentials_public_key_is_copied_from_its_file(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let key = GeneratedKey::generate(KeyAlgorithm::Ed25519).unwrap();
+    let file = data.path().join("id_deploy");
+    std::fs::write(&file, key.encode("deploy@laptop", "").unwrap().as_str()).unwrap();
+    let mut store = SessionStore::empty();
+    let credential = store.insert_credential_unnotified(
+        CredentialDraft::new("部署", CredentialKind::Key, "deploy")
+            .with_key_path(file.display().to_string()),
+    );
+    let (handle, _) = open_workspace_with_credentials(
+        cx,
+        store,
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    show_credentials(cx, handle).await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("credential-row", credential.0), cx);
+        window.dispatch_action(Box::new(CopyCredentialPublicKey(credential)), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.notifications(cx).len() == 1
+    })
+    .await;
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some(key.public_key_line("deploy@laptop"))
+    );
 }

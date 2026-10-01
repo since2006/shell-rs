@@ -18,7 +18,7 @@ use crate::shared::{ClosableTabTitle, HostMark, RenamableTab, close_tab_items};
 
 use super::{
     LatencyLevel, RemoteTerminalId, SharedRemoteTerminalTransportProvider, TerminalEvent,
-    TerminalLifecycle, TerminalMenuItems, TerminalView,
+    TerminalLifecycle, TerminalMenuItems, TerminalStatus, TerminalView,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,6 +141,11 @@ impl TerminalPanel {
 
     pub fn lifecycle(&self, cx: &App) -> TerminalLifecycle {
         self.terminal.read(cx).lifecycle(cx)
+    }
+
+    /// The terminal's state and size, for the window's status bar.
+    pub fn status(&self, cx: &App) -> TerminalStatus {
+        self.terminal.read(cx).status(cx)
     }
 
     pub fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {

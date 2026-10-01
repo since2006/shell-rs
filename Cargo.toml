@@ -78,3 +78,10 @@ ttf-parser = { opt-level = 3 }
 resvg = { opt-level = 3 }
 usvg = { opt-level = 3 }
 zed-font-kit = { opt-level = 3 }
+# Generating an RSA key and deriving a key from a passphrase take seconds
+# unoptimized; the credential form does both.
+rsa = { opt-level = 3 }
+crypto-bigint = { opt-level = 3 }
+crypto-primes = { opt-level = 3 }
+bcrypt-pbkdf = { opt-level = 3 }
+blowfish = { opt-level = 3 }

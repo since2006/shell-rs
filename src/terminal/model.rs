@@ -137,19 +137,21 @@ impl fmt::Display for TerminalLifecycle {
     }
 }
 
+/// What the window's status bar shows of a terminal: whether it runs, and
+/// how many columns and rows its screen has.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerminalStatus {
     lifecycle: TerminalLifecycle,
-    cursor_row: usize,
-    cursor_column: usize,
+    columns: usize,
+    rows: usize,
 }
 
 impl TerminalStatus {
-    pub fn new(lifecycle: TerminalLifecycle, cursor_row: usize, cursor_column: usize) -> Self {
+    pub fn new(lifecycle: TerminalLifecycle, columns: usize, rows: usize) -> Self {
         Self {
             lifecycle,
-            cursor_row,
-            cursor_column,
+            columns,
+            rows,
         }
     }
 
@@ -157,12 +159,12 @@ impl TerminalStatus {
         &self.lifecycle
     }
 
-    pub fn cursor_row(&self) -> usize {
-        self.cursor_row
+    pub fn columns(&self) -> usize {
+        self.columns
     }
 
-    pub fn cursor_column(&self) -> usize {
-        self.cursor_column
+    pub fn rows(&self) -> usize {
+        self.rows
     }
 }
 

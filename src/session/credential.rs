@@ -11,6 +11,7 @@ use gpui_kit::SharedString;
 use crate::secrets::SecretRef;
 
 use super::PublicId;
+use super::private_key::is_kept_in;
 
 /// Stable identity of a credential. Never reused within a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -23,8 +24,10 @@ pub enum CredentialKind {
     /// entry.
     #[default]
     Password,
-    /// A private key file on this machine; its passphrase, if any, is kept
-    /// under the file's path like every other key's.
+    /// A private key file on this machine: one of the user's, or one
+    /// ShellRS keeps in its data directory because the key was pasted or
+    /// generated. Its passphrase, if any, is kept under the file's path
+    /// like every other key's.
     Key,
     /// Whatever keys the SSH agent holds.
     Agent,
@@ -195,11 +198,24 @@ impl Credential {
         SecretRef::credential(self.keychain_id.as_str())
     }
 
+    /// Whether the key is one ShellRS keeps itself in `key_dir`: pasted
+    /// into the form or generated there.
+    pub fn keeps_key_in(&self, key_dir: Option<&Path>) -> bool {
+        match (key_dir, self.key_path.as_deref()) {
+            (Some(dir), Some(path)) => is_kept_in(dir, Path::new(path)),
+            _ => false,
+        }
+    }
+
     /// What the credential logs in as and with: `root · 密码`, or
-    /// `deploy · id_ed25519` for a key.
-    pub fn summary(&self) -> String {
+    /// `deploy · id_ed25519` for a key file. A key ShellRS keeps in
+    /// `key_dir` has a random file name nobody knows it by, so it is just
+    /// `deploy · 密钥`.
+    pub fn summary(&self, key_dir: Option<&Path>) -> String {
         let with = match (self.kind, self.key_path.as_deref()) {
-            (CredentialKind::Key, Some(path)) => file_name(path).to_string(),
+            (CredentialKind::Key, Some(path)) if !self.keeps_key_in(key_dir) => {
+                file_name(path).to_string()
+            }
             (kind, _) => kind.label().to_string(),
         };
         format!("{} · {with}", self.user)
@@ -285,18 +301,27 @@ mod tests {
             CredentialId(1),
             CredentialDraft::new("运维", CredentialKind::Password, "root"),
         );
-        assert_eq!(password.summary(), "root · 密码");
+        assert_eq!(password.summary(None), "root · 密码");
         let key = Credential::new(
             CredentialId(2),
             CredentialDraft::new("部署", CredentialKind::Key, "deploy")
                 .with_key_path("/Users/me/.ssh/id_ed25519"),
         );
-        assert_eq!(key.summary(), "deploy · id_ed25519");
+        assert_eq!(key.summary(None), "deploy · id_ed25519");
+        assert_eq!(
+            key.summary(Some(Path::new("/Users/me/.ssh"))),
+            "deploy · 密钥",
+            "a key ShellRS keeps is not known by its file name"
+        );
+        assert_eq!(
+            key.summary(Some(Path::new("/Users/me/Library/shellrs/keys"))),
+            "deploy · id_ed25519"
+        );
         let agent = Credential::new(
             CredentialId(3),
             CredentialDraft::new("agent", CredentialKind::Agent, "me"),
         );
-        assert_eq!(agent.summary(), "me · SSH Agent");
+        assert_eq!(agent.summary(None), "me · SSH Agent");
     }
 
     #[test]

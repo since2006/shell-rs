@@ -15,8 +15,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CREDENTIAL_PANEL_CONTEXT, CatalogIcon, DeleteCredential, EditCredential,
-    EditSelectedCredential, NewCredential, SelectNextCredential, SelectPreviousCredential,
+    CREDENTIAL_PANEL_CONTEXT, CatalogIcon, CopyCredentialPublicKey, DeleteCredential,
+    EditCredential, EditSelectedCredential, GenerateCredentialKey, NewCredential,
+    SelectNextCredential, SelectPreviousCredential,
 };
 use crate::session::{CredentialId, CredentialKind, SessionStore, matches_credential_query};
 
@@ -156,7 +157,7 @@ impl CredentialPanel {
             .filter(|credential| matches_credential_query(credential, &self.query))
             .map(|credential| {
                 let hosts = store.sessions_using(credential.id).count();
-                let summary = credential.summary();
+                let summary = credential.summary(store.key_dir());
                 let detail = match hosts {
                     0 => summary,
                     hosts => format!("{summary} · {hosts} 台主机"),
@@ -225,20 +226,36 @@ impl CredentialPanel {
     fn render_empty(&self, cx: &Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         let target = self.target.clone();
-        let (title, hint, button) = if !self.store.read(cx).credentials().is_empty() {
+        let (title, hint, buttons) = if !self.store.read(cx).credentials().is_empty() {
             ("没有匹配的凭据", None, None)
         } else {
+            let generate = target.clone();
             (
                 "还没有凭据",
                 Some("保存一套用户名和密码、私钥或 SSH Agent，让多台主机共用。"),
                 Some(
-                    Button::new("credential-empty-new")
-                        .small()
-                        .icon(IconName::Plus)
-                        .label("新建凭据…")
-                        .on_click(move |_, window, cx| {
-                            target.dispatch_action(&NewCredential, window, cx)
-                        }),
+                    h_flex()
+                        .gap_2()
+                        .flex_wrap()
+                        .justify_center()
+                        .child(
+                            Button::new("credential-empty-new")
+                                .small()
+                                .icon(IconName::Plus)
+                                .label("新建凭据…")
+                                .on_click(move |_, window, cx| {
+                                    target.dispatch_action(&NewCredential, window, cx)
+                                }),
+                        )
+                        .child(
+                            Button::new("credential-empty-generate")
+                                .small()
+                                .icon(CatalogIcon::KeyRound)
+                                .label("生成密钥…")
+                                .on_click(move |_, window, cx| {
+                                    generate.dispatch_action(&GenerateCredentialKey, window, cx)
+                                }),
+                        ),
                 ),
             )
         };
@@ -256,8 +273,8 @@ impl CredentialPanel {
             .when_some(hint, |view, hint| {
                 view.child(div().text_xs().text_center().child(hint))
             })
-            .when_some(button, |view, button| {
-                view.child(div().pt_2().child(button))
+            .when_some(buttons, |view, buttons| {
+                view.child(div().pt_2().child(buttons))
             })
             .into_any_element()
     }
@@ -347,20 +364,35 @@ pub fn kind_icon(kind: CredentialKind) -> Icon {
     }
 }
 
-/// The menu of one credential, or of the blank space under the rows.
-fn build_context_menu(hit: Option<CredentialId>, menu: PopupMenu) -> PopupMenu {
-    let Some(id) = hit else {
-        return menu.menu_with_icon(
-            "新建凭据…",
-            Icon::new(IconName::Plus),
-            Box::new(NewCredential),
-        );
+/// The menu of one credential, or of the blank space under the rows. A key
+/// credential's has its public key to copy, for a server's
+/// `authorized_keys`.
+fn build_context_menu(hit: Option<(CredentialId, CredentialKind)>, menu: PopupMenu) -> PopupMenu {
+    let Some((id, kind)) = hit else {
+        return menu
+            .menu_with_icon(
+                "新建凭据…",
+                Icon::new(IconName::Plus),
+                Box::new(NewCredential),
+            )
+            .menu_with_icon(
+                "生成密钥…",
+                Icon::new(CatalogIcon::KeyRound),
+                Box::new(GenerateCredentialKey),
+            );
     };
     menu.menu_with_icon(
         "编辑凭据…",
         Icon::new(CatalogIcon::Pencil),
         Box::new(EditCredential(id)),
     )
+    .when(kind == CredentialKind::Key, |menu| {
+        menu.menu_with_icon(
+            "复制公钥",
+            Icon::new(CatalogIcon::ClipboardCopy),
+            Box::new(CopyCredentialPublicKey(id)),
+        )
+    })
     .separator()
     .menu_with_icon(
         "删除",
@@ -380,6 +412,7 @@ impl Render for CredentialPanel {
         let rows = self.rows(cx);
         let clear_hit = self.menu_hit.clone();
         let menu_hit = self.menu_hit.clone();
+        let store = self.store.clone();
 
         v_flex()
             .id("credential-panel")
@@ -432,7 +465,15 @@ impl Render for CredentialPanel {
                             clear_hit.set(None);
                         }
                     })
-                    .context_menu(move |menu, _, _| build_context_menu(menu_hit.get(), menu)),
+                    // Built as the menu opens, so it can look the
+                    // credential up.
+                    .context_menu(move |menu, _, cx| {
+                        let hit = menu_hit.get().and_then(|id| {
+                            let credential = store.read(cx).credential(id)?;
+                            Some((id, credential.kind))
+                        });
+                        build_context_menu(hit, menu)
+                    }),
             )
     }
 }

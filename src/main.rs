@@ -61,11 +61,19 @@ fn main() {
 ///
 /// Either way the store gets the system keychain, which is where passwords
 /// live. A machine without one still runs; the session form says so and
-/// disables its password field.
+/// disables its password field. Pasted and generated private keys go
+/// beside the database.
 fn open_store() -> (SessionStore, Option<SharedString>) {
     let secrets = shellrs::secrets::system_secret_store();
     match load_store() {
-        Ok(store) => (store.with_secrets(secrets), None),
+        // Keys are kept only with a database to remember them: a store
+        // that forgets everything would leave them behind unused.
+        Ok(store) => (
+            store
+                .with_secrets(secrets)
+                .with_key_dir(shellrs::app::keys_dir()),
+            None,
+        ),
         Err(error) => {
             eprintln!("shellrs: 无法打开本地数据库：{error}");
             (

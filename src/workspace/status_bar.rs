@@ -1,6 +1,6 @@
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, h_flex, separator::Separator,
-    status_bar::StatusBar,
+    status_bar::StatusBar, tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -11,10 +11,13 @@ use crate::session::{ConnectionState, Session};
 use crate::terminal::{TerminalLifecycle, TerminalStatus};
 
 /// The active connection/process state on the left and terminal facts on the
-/// right. Local terminals report their real emulator cursor coordinates.
+/// right, ending in the size of the terminal in front, local or remote. With
+/// no terminal in front there is no size to show.
 #[derive(IntoElement)]
 pub enum WorkspaceStatus {
-    Session(Option<Session>),
+    /// The active session, with the terminal in front when that is one of
+    /// its terminals: the start page and the settings have none.
+    Session(Option<Session>, Option<TerminalStatus>),
     Local(TerminalStatus),
     /// An SFTP tab: its own connection and what went wrong in it.
     Explorer(Option<Session>, ExplorerStatus),
@@ -41,23 +44,27 @@ impl RenderOnce for WorkspaceStatus {
         // Red when something is wrong: a dropped connection, or an SFTP
         // tab's directory that could not be read.
         let mut alarming = false;
-        let (text, icon, address, cursor): (SharedString, Icon, Option<String>, String) = match self
-        {
-            WorkspaceStatus::Session(active) => match active {
+        let (text, icon, address, terminal): (
+            SharedString,
+            Icon,
+            Option<String>,
+            Option<TerminalStatus>,
+        ) = match self {
+            WorkspaceStatus::Session(active, terminal) => match active {
                 Some(session) => {
                     alarming = session.state == ConnectionState::Disconnected;
                     (
                         format!("{} {}", session.state.label(), session.name).into(),
                         state_icon(session.state, cx),
                         Some(session.address()),
-                        "行 1，列 1".into(),
+                        terminal,
                     )
                 }
                 None => (
                     ConnectionState::Disconnected.label().into(),
                     Icon::new(CatalogIcon::Unplug).text_color(muted),
                     None,
-                    "行 1，列 1".into(),
+                    terminal,
                 ),
             },
             WorkspaceStatus::Explorer(session, status) => {
@@ -87,7 +94,7 @@ impl RenderOnce for WorkspaceStatus {
                     text.into(),
                     icon,
                     session.map(|session| session.address()),
-                    "行 1，列 1".into(),
+                    None,
                 )
             }
             WorkspaceStatus::Local(status) => {
@@ -109,11 +116,7 @@ impl RenderOnce for WorkspaceStatus {
                     format!("{} 本地终端", lifecycle.label()).into(),
                     icon,
                     None,
-                    format!(
-                        "行 {}，列 {}",
-                        status.cursor_row() + 1,
-                        status.cursor_column() + 1
-                    ),
+                    Some(status),
                 )
             }
         };
@@ -139,7 +142,20 @@ impl RenderOnce for WorkspaceStatus {
             .right("编码 UTF-8")
             .right(Separator::vertical())
             .right("终端 xterm-256color")
-            .right(Separator::vertical())
-            .right(cursor)
+            .when_some(terminal, |bar, terminal| {
+                let (columns, rows) = (terminal.columns(), terminal.rows());
+                let size = format!("{columns}×{rows}");
+                let explained = format!("终端尺寸：{columns} 列，{rows} 行");
+                bar.right(Separator::vertical()).right(
+                    div()
+                        .id("status-terminal-size")
+                        .test_support()
+                        .aria_label(size.clone())
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(explained.clone()).build(window, cx)
+                        })
+                        .child(size),
+                )
+            })
     }
 }
