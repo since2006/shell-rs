@@ -73,12 +73,12 @@ const FONT_SIZE_MIN: f32 = 12.;
 const FONT_SIZE_MAX: f32 = 20.;
 const FONT_SIZE_DEFAULT: f32 = 16.;
 const FONT_SIZE_STEP: f32 = 2.;
-/// Paint order of the notification layer. gpui-base draws a dialog deferred
-/// at priority 0, and so does the dock skin's start page; a plain child would
-/// land under the dialog's backdrop and show through it only faintly. One step
-/// above them, and below popups (`POPUP_PRIORITY`), keeps a notification on
-/// top of dialogs without covering an open menu.
-const NOTIFICATION_PRIORITY: usize = 1;
+/// Paint order of the notification layer. gpui-base draws a dialog, backdrop
+/// and all, deferred at priority `10 + its layer` (the dock skin's start page
+/// at 0); anything lower lands under the backdrop, dimmed, and a click on it
+/// hits the backdrop. Just below popups (`POPUP_PRIORITY`) keeps a
+/// notification above any stack of dialogs without covering an open menu.
+const NOTIFICATION_PRIORITY: usize = gpui_kit::base::POPUP_PRIORITY - 1;
 /// How often the window asks whether ShellRS was opened again; see
 /// [`CliServer::take_activation`].
 const ACTIVATION_POLL: Duration = Duration::from_millis(200);

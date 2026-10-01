@@ -451,6 +451,34 @@ async fn connection_edits_reconnect_once_but_display_edits_do_not(cx: &mut TestA
     assert_eq!(factory.starts(), 2);
 }
 
+/// The error is painted above the dialog and its backdrop, not under them:
+/// a click on it reaches it, and puts it away, instead of landing on the
+/// backdrop.
+#[gpui_kit::test]
+async fn a_form_error_sits_above_the_dialog_and_a_click_puts_it_away(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-name", cx);
+        window.click("commit", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("form-error").is_some()
+    })
+    .await;
+
+    in_frame(cx, handle, |window, cx| window.click("form-error", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.notifications(cx).is_empty()
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("commit").visible(), "the dialog stays open");
+    });
+}
+
 #[gpui_kit::test]
 async fn new_host_dialog_validates_then_inserts(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);

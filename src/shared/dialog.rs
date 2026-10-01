@@ -37,13 +37,15 @@ struct FormErrorNotification;
 
 /// Why a form was not accepted, as an error notification over the dialog
 /// instead of a line under the form. The element keeps the `form-error` id
-/// the line had, with the message as its label. The dialog takes it away
-/// when it closes (`dismiss_form_error`).
+/// the line had, with the message as its label. A click puts it away, and
+/// so does the dialog when it closes (`dismiss_form_error`).
 pub fn form_error_notification(error: impl Into<SharedString>) -> Notification {
     let error = error.into();
     Notification::new()
         .with_type(NotificationType::Error)
         .id::<FormErrorNotification>()
+        // Clicking a notification dismisses it once it has a click handler.
+        .on_click(|_, _, _| {})
         .content(move |_, _, _| {
             div()
                 .id("form-error")
