@@ -2,6 +2,9 @@
 mod connection;
 mod exec;
 mod probe;
+mod proxy;
+#[cfg(test)]
+mod route_tests;
 mod tester;
 mod transport;
 pub use connection::{

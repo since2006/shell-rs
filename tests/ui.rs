@@ -34,8 +34,8 @@ use shellrs::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
 use shellrs::session::{
     AuthKind, ConnectionState, CredentialDraft, CredentialId, CredentialKind, ForwardDraft,
     ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GeneratedKey, GroupDraft, GroupId,
-    HostOs, KeyAlgorithm, LoginMethod, PastedKey, SessionDatabase, SessionDraft, SessionId,
-    SessionLogin, SessionStore, read_public_key,
+    HostOs, JumpLogin, KeyAlgorithm, LoginMethod, LoginRoute, PastedKey, ProxyKind, ProxySettings,
+    Route, SessionDatabase, SessionDraft, SessionId, SessionLogin, SessionStore, read_public_key,
 };
 use shellrs::settings::{Appearance, InterfaceLanguage, SettingsStore};
 use shellrs::sftp::{
@@ -125,6 +125,9 @@ struct FakeConnectionTester {
     asks_trust: bool,
     result: Result<(), String>,
     requests: Mutex<Vec<TestedLogin>>,
+    /// How each test was to reach the host, with the proxy password the
+    /// form gave.
+    routes: Mutex<Vec<(LoginRoute, Option<String>)>>,
     trust_answers: Mutex<Vec<bool>>,
 }
 
@@ -134,6 +137,7 @@ impl Default for FakeConnectionTester {
             asks_trust: false,
             result: Ok(()),
             requests: Mutex::default(),
+            routes: Mutex::default(),
             trust_answers: Mutex::default(),
         }
     }
@@ -161,6 +165,13 @@ impl FakeConnectionTester {
             .clone()
     }
 
+    fn routes(&self) -> Vec<(LoginRoute, Option<String>)> {
+        self.routes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
     fn trust_answers(&self) -> Vec<bool> {
         self.trust_answers
             .lock()
@@ -179,6 +190,13 @@ impl ConnectionTester for FakeConnectionTester {
                 request.port(),
                 request.user().to_string(),
                 request.password().map(str::to_string),
+            ));
+        self.routes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push((
+                request.login().route.clone(),
+                request.proxy_password().map(str::to_string),
             ));
         if self.asks_trust {
             let ConnectionPromptKind::UnknownHost(prompt) = ConnectionPromptKind::unknown_host(
@@ -560,6 +578,327 @@ async fn a_host_without_a_password_says_what_it_tries_and_is_saved_as_such(
             store.login(session.id).unwrap().method,
             LoginMethod::NoPassword
         );
+    });
+}
+
+/// A store with three hosts to jump through or to, in this order:
+/// 阿里云99, 禅道 and 内网库.
+fn store_with_jump_hosts() -> (SessionStore, [SessionId; 3]) {
+    let mut store = SessionStore::empty();
+    let ids = [
+        ("阿里云99", "120.25.220.186"),
+        ("禅道", "8.138.95.125"),
+        ("内网库", "10.0.0.5"),
+    ]
+    .map(|(name, host)| {
+        store.insert_unnotified(SessionDraft::new(
+            name,
+            host,
+            22,
+            "root",
+            AuthKind::Password,
+            None,
+        ))
+    });
+    (store, ids)
+}
+
+/// Pick the host called `name` with the jump-host picker, the way a person
+/// with many hosts would: by searching for it.
+fn add_jump_host(cx: &mut TestAppContext, handle: WindowHandle<Root>, name: &str) {
+    in_frame(cx, handle, |window, cx| {
+        window.click("jump-add-trigger", cx)
+    });
+    in_frame(cx, handle, |window, cx| window.input(name, cx));
+    in_frame(cx, handle, |window, cx| window.press("enter", cx));
+}
+
+fn chain(window: &mut gpui_kit::Window) -> Option<String> {
+    window
+        .find("session-route-chain")
+        .label()
+        .map(str::to_string)
+}
+
+#[gpui_kit::test]
+async fn a_host_goes_through_the_jump_hosts_it_lists_in_order(cx: &mut TestAppContext) {
+    let (store, [aliyun, zentao, _]) = store_with_jump_hosts();
+    let (handle, workspace) = open_workspace_with_store(cx, store);
+    in_frame(cx, handle, |window, cx| window.click("new-session", cx));
+    in_frame(cx, handle, |window, cx| {
+        // A new host connects directly, with nothing more to fill in.
+        let routes = window.within("session-route");
+        assert_eq!(routes.find(0usize).selected(), Some(true));
+        assert!(window.try_find("session-route-chain").is_none());
+        window.click("session-name", cx);
+        window.input("db", cx);
+        window.click("session-host", cx);
+        window.input("10.0.9.9", cx);
+        window.within("session-route").click(1usize, cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(chain(window).as_deref(), Some("本机 → 当前主机"));
+        assert_eq!(
+            window.find("session-route-note").label(),
+            Some(
+                "依次经过跳板主机连接到当前主机，可添加多台。跳板主机自己的「连接方式」在这里不生效。"
+            )
+        );
+        window.click("commit", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("form-error").label(), Some("请添加跳板主机"));
+    });
+
+    add_jump_host(cx, handle, "阿里云");
+    add_jump_host(cx, handle, "禅道");
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            chain(window).as_deref(),
+            Some("本机 → 阿里云99 → 禅道 → 当前主机")
+        );
+        assert_eq!(
+            window.find(("jump-hop", aliyun.0)).label(),
+            Some("阿里云99")
+        );
+        assert!(window.find(("jump-hop", zentao.0)).visible());
+        // Taking the first one off and adding it back puts it last.
+        window.click(("remove-jump-hop", 0usize), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(chain(window).as_deref(), Some("本机 → 禅道 → 当前主机"));
+        assert!(window.try_find(("jump-hop", aliyun.0)).is_none());
+    });
+    // Searching by address finds it too.
+    add_jump_host(cx, handle, "120.25");
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            chain(window).as_deref(),
+            Some("本机 → 禅道 → 阿里云99 → 当前主机")
+        );
+        // Off the picker first: a focused picker opens on the commit.
+        window.click("session-name", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let created = store.sessions().last().unwrap();
+        assert_eq!(created.name.as_ref(), "db");
+        assert_eq!(created.route, Route::Jump(vec![Some(zentao), Some(aliyun)]));
+    });
+}
+
+#[gpui_kit::test]
+async fn a_deleted_jump_host_keeps_its_place_until_it_is_removed(cx: &mut TestAppContext) {
+    let (mut store, [aliyun, zentao, inner]) = store_with_jump_hosts();
+    store.update_unnotified(
+        inner,
+        SessionDraft::new("内网库", "10.0.0.5", 22, "root", AuthKind::Password, None)
+            .with_route(Route::Jump(vec![Some(aliyun)])),
+    );
+    store.remove_unnotified(aliyun);
+    let (handle, workspace) = open_workspace_with_store(cx, store);
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(EditSession(inner)), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.within("session-route").find(1usize).selected(),
+            Some(true)
+        );
+        assert_eq!(
+            chain(window).as_deref(),
+            Some("本机 → 已删除的主机 → 当前主机")
+        );
+        assert_eq!(
+            window.find(("jump-hop-deleted", 0usize)).label(),
+            Some("已删除的主机")
+        );
+        window.click("commit", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("form-error").label(),
+            Some("请移除已删除的跳板主机")
+        );
+        window.click(("remove-jump-hop", 0usize), cx);
+    });
+    add_jump_host(cx, handle, "禅道");
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(chain(window).as_deref(), Some("本机 → 禅道 → 当前主机"));
+        window.click("session-name", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(
+            store.session(inner).unwrap().route,
+            Route::Jump(vec![Some(zentao)])
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn testing_a_connection_through_a_jump_host_sends_its_login(cx: &mut TestAppContext) {
+    let (store, _) = store_with_jump_hosts();
+    let tester = Arc::new(FakeConnectionTester::default());
+    let (handle, _) = open_workspace_with_tester(cx, store, tester.clone());
+    in_frame(cx, handle, |window, cx| window.click("new-session", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("session-name", cx);
+        window.input("db", cx);
+        window.click("session-host", cx);
+        window.input("10.0.9.9", cx);
+        window.within("session-route").click(1usize, cx);
+    });
+    add_jump_host(cx, handle, "阿里云");
+    in_frame(cx, handle, |window, cx| {
+        window.click("session-name", cx);
+        window.click("test-connection", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.notifications(cx).len() == 1
+    })
+    .await;
+    let routes = tester.routes();
+    let [(LoginRoute::Jump(hops), None)] = routes.as_slice() else {
+        panic!("not one test through a jump host: {routes:?}");
+    };
+    let [JumpLogin::Host { name, login }] = hops.as_slice() else {
+        panic!("not one jump host: {hops:?}");
+    };
+    assert_eq!(name, "阿里云99");
+    assert_eq!(
+        **login,
+        SessionLogin::manual("120.25.220.186", 22, "root", AuthKind::Password)
+    );
+}
+
+#[gpui_kit::test]
+async fn deleting_a_jump_host_leaves_the_connection_behind_it_alone(cx: &mut TestAppContext) {
+    let (mut store, [aliyun, _, inner]) = store_with_jump_hosts();
+    store.update_unnotified(
+        inner,
+        SessionDraft::new("内网库", "10.0.0.5", 22, "root", AuthKind::Password, None)
+            .with_route(Route::Jump(vec![Some(aliyun)])),
+    );
+    let remote = Arc::new(RecordingRemoteProvider::default());
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        store,
+        remote.clone(),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ConnectSession(inner)), cx)
+    });
+    // The terminal is given the way there, jump host and all.
+    let logins = remote.logins();
+    let [login] = logins.as_slice() else {
+        panic!("not one connection: {logins:?}");
+    };
+    assert!(
+        matches!(&login.route, LoginRoute::Jump(hops)
+            if matches!(hops.as_slice(), [JumpLogin::Host { name, .. }] if name == "阿里云99")),
+        "{:?}",
+        login.route
+    );
+
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(DeleteSession(aliyun)), cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("ok", cx));
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert!(store.session(aliyun).is_none());
+        assert_eq!(store.session(inner).unwrap().route, Route::Jump(vec![None]));
+    });
+    // Not reconnected: that would only fail now.
+    assert_eq!(remote.logins().len(), 1);
+}
+
+#[gpui_kit::test]
+async fn a_host_behind_a_proxy_keeps_the_proxys_password_in_the_keychain(cx: &mut TestAppContext) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let tester = Arc::new(FakeConnectionTester::default());
+    let (handle, workspace) = open_workspace_with_tester(
+        cx,
+        SessionStore::empty().with_secrets(secrets.clone()),
+        tester.clone(),
+    );
+    in_frame(cx, handle, |window, cx| window.click("new-session", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("session-name", cx);
+        window.input("abroad", cx);
+        window.click("session-host", cx);
+        window.input("203.0.113.7", cx);
+        window.within("session-route").click(2usize, cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("session-proxy-kind").value(), Some("HTTP 代理"));
+        window.click("commit", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("form-error").label(), Some("请输入代理地址"));
+        window.within("session-proxy-kind").click("input", cx);
+    });
+    for key in ["down", "enter"] {
+        in_frame(cx, handle, |window, cx| window.press(key, cx));
+    }
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("session-proxy-kind").value(),
+            Some("SOCKS5 代理")
+        );
+        window.click("session-proxy-host", cx);
+        window.input("127.0.0.1", cx);
+        window.click("session-proxy-port", cx);
+        window.input("7890", cx);
+        window.click("session-proxy-password", cx);
+        window.input("hunter2", cx);
+        window.click("commit", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("form-error").label(),
+            Some("填写代理密码时请同时填写用户名")
+        );
+        window.click("session-proxy-user", cx);
+        window.input("me", cx);
+        window.click("test-connection", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.notifications(cx).len() == 1
+    })
+    .await;
+    let proxy = ProxySettings::new(ProxyKind::Socks5, "127.0.0.1", 7890).with_user("me");
+    // The test takes the password from the form, saved or not.
+    assert_eq!(
+        tester.routes(),
+        [(
+            LoginRoute::Proxy((&proxy).into()),
+            Some("hunter2".to_string())
+        )]
+    );
+    in_frame(cx, handle, |window, cx| window.click("commit", cx));
+    wait_for_dialog_to_close(cx, handle).await;
+
+    assert_eq!(
+        secrets
+            .get(&SecretRef::proxy("me", "127.0.0.1", 7890))
+            .unwrap()
+            .as_deref()
+            .map(String::as_str),
+        Some("hunter2")
+    );
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(store.sessions()[0].route, Route::Proxy(proxy));
     });
 }
 

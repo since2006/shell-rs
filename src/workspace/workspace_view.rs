@@ -42,9 +42,9 @@ use crate::forward::{
     SshForwardTransportProvider,
 };
 use crate::session::{
-    ConnectionState, ForwardId, GroupId, SessionId, SessionNode, SessionPanel, SessionStore,
-    SessionStoreEvent, confirm_delete_group, confirm_delete_session, open_group_dialog,
-    open_session_dialog,
+    ConnectionState, Dependents, ForwardId, GroupId, SessionId, SessionNode, SessionPanel,
+    SessionStore, SessionStoreEvent, confirm_delete_group, confirm_delete_session,
+    open_group_dialog, open_session_dialog,
 };
 use crate::settings::{
     Appearance, SettingsPanel, SettingsPanelEvent, SettingsStore, SettingsStoreEvent,
@@ -658,8 +658,12 @@ impl Workspace {
             }
             ConnectionPromptKind::HostKeyChanged(prompt) => {
                 let old = prompt.old_fingerprints().join("、");
+                let jump_host = prompt
+                    .jump_host()
+                    .map(|name| format!("跳板主机：{name}\n"))
+                    .unwrap_or_default();
                 let description = introduced(format!(
-                    "主机：{}:{}\n算法：{}\n已保存指纹：{old}\n服务器当前指纹：{}\n\n连接已阻断。请核验服务器身份后手动处理：{}",
+                    "{jump_host}主机：{}:{}\n算法：{}\n已保存指纹：{old}\n服务器当前指纹：{}\n\n连接已阻断。请核验服务器身份后手动处理：{}",
                     prompt.host(),
                     prompt.port(),
                     prompt.algorithm(),
@@ -1632,11 +1636,15 @@ impl Workspace {
             return;
         };
         let workspace = cx.entity().downgrade();
-        let forwards = self.store.read(cx).forwards_of(id).count();
+        let store = self.store.read(cx);
+        let dependents = Dependents {
+            forwards: store.forwards_of(id).count(),
+            jump_users: store.jump_users(&[id]),
+        };
         confirm_delete_session(
             &session,
             (self.has_tabs(id, cx), self.transfers_of(id, cx)),
-            forwards,
+            dependents,
             Rc::new(move |window, cx| {
                 workspace
                     .update(cx, |this, cx| this.remove_session(id, window, cx))
@@ -1754,14 +1762,17 @@ impl Workspace {
         let doomed = store.sessions_under(id);
         let closes_tabs = doomed.iter().any(|id| self.has_tabs(*id, cx));
         let transfers = doomed.iter().map(|id| self.transfers_of(*id, cx)).sum();
-        let forwards = doomed.iter().map(|id| store.forwards_of(*id).count()).sum();
+        let dependents = Dependents {
+            forwards: doomed.iter().map(|id| store.forwards_of(*id).count()).sum(),
+            jump_users: store.jump_users(&doomed),
+        };
         let workspace = cx.entity().downgrade();
         confirm_delete_group(
             &name,
             doomed.len(),
             subgroups,
             (closes_tabs, transfers),
-            forwards,
+            dependents,
             Rc::new(move |window, cx| {
                 workspace
                     .update(cx, |this, cx| this.remove_group(id, window, cx))

@@ -7511,6 +7511,7 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "async-channel",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "dirs 6.0.0",

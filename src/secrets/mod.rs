@@ -22,7 +22,8 @@ pub const SERVICE: &str = "shellrs";
 ///
 /// 按「用哪个用户连到哪个端点」而不是「哪条保存的主机」归属：主机改名、复制都
 /// 不丢密码，端点和用户相同的几条共用一条；私钥口令按文件路径归属，同一把钥匙
-/// 只问一次。密码凭据的密码归凭据自己，用它的主机共用这一条。
+/// 只问一次。密码凭据的密码归凭据自己，用它的主机共用这一条。代理的密码按「代理
+/// 地址 + 用户名」归属，经由同一个代理的主机共用。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SecretRef {
     /// 某个 SSH 端点的登录密码。
@@ -35,6 +36,12 @@ pub enum SecretRef {
     Passphrase { key_path: String },
     /// 某条密码凭据的密码，按凭据随机生成、永不复用的 `keychain_id` 归属。
     Credential { keychain_id: String },
+    /// 某个 HTTP / SOCKS5 代理的认证密码。
+    Proxy {
+        user: String,
+        host: String,
+        port: u16,
+    },
 }
 
 impl SecretRef {
@@ -58,12 +65,21 @@ impl SecretRef {
         }
     }
 
+    pub fn proxy(user: impl Into<String>, host: impl Into<String>, port: u16) -> Self {
+        Self::Proxy {
+            user: user.into(),
+            host: host.into(),
+            port,
+        }
+    }
+
     /// 钥匙串条目的账户名。前缀区分种类，在 Keychain Access 里直接可读。
     pub fn account(&self) -> String {
         match self {
             Self::Password { user, host, port } => format!("password:{user}@{host}:{port}"),
             Self::Passphrase { key_path } => format!("passphrase:{key_path}"),
             Self::Credential { keychain_id } => format!("credential:{keychain_id}"),
+            Self::Proxy { user, host, port } => format!("proxy:{user}@{host}:{port}"),
         }
     }
 }
@@ -118,13 +134,23 @@ mod tests {
     }
 
     #[test]
+    fn proxy_accounts_name_the_proxy_and_its_user() {
+        let secret = SecretRef::proxy("me", "127.0.0.1", 7890);
+        assert_eq!(secret.account(), "proxy:me@127.0.0.1:7890");
+    }
+
+    #[test]
     fn accounts_of_different_kinds_never_collide() {
-        let password = SecretRef::password("root", "10.0.1.12", 22);
-        let passphrase = SecretRef::passphrase("root@10.0.1.12:22");
-        let credential = SecretRef::credential("root@10.0.1.12:22");
-        assert_ne!(password.account(), passphrase.account());
-        assert_ne!(password.account(), credential.account());
-        assert_ne!(passphrase.account(), credential.account());
+        let accounts = [
+            SecretRef::password("root", "10.0.1.12", 22),
+            SecretRef::passphrase("root@10.0.1.12:22"),
+            SecretRef::credential("root@10.0.1.12:22"),
+            SecretRef::proxy("root", "10.0.1.12", 22),
+        ]
+        .map(|secret| secret.account());
+        for (ix, account) in accounts.iter().enumerate() {
+            assert!(!accounts[ix + 1..].contains(account), "{account}");
+        }
     }
 
     #[test]

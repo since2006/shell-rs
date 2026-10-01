@@ -58,6 +58,8 @@ pub struct UnknownHostPrompt {
     port: u16,
     algorithm: String,
     fingerprint: String,
+    /// The jump host's name, when the key is a jump host's.
+    jump_host: Option<String>,
 }
 
 impl UnknownHostPrompt {
@@ -68,10 +70,21 @@ impl UnknownHostPrompt {
     /// What the trust dialog tells the user about the key.
     pub fn description(&self) -> String {
         format!(
-            "主机：{}:{}\n算法：{}\nSHA-256 指纹：{}\n\n请先确认该指纹来自可信渠道。",
-            self.host, self.port, self.algorithm, self.fingerprint,
+            "{}主机：{}:{}\n算法：{}\nSHA-256 指纹：{}\n\n请先确认该指纹来自可信渠道。",
+            jump_host_line(self.jump_host.as_deref()),
+            self.host,
+            self.port,
+            self.algorithm,
+            self.fingerprint,
         )
     }
+}
+
+/// The line that opens a question about a jump host, naming it.
+fn jump_host_line(jump_host: Option<&str>) -> String {
+    jump_host
+        .map(|name| format!("跳板主机：{name}\n"))
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,9 +95,14 @@ pub struct HostKeyChangedPrompt {
     old_fingerprints: Vec<String>,
     fingerprint: String,
     known_hosts_path: std::path::PathBuf,
+    jump_host: Option<String>,
 }
 
 impl HostKeyChangedPrompt {
+    /// The jump host's name, when the key is a jump host's.
+    pub fn jump_host(&self) -> Option<&str> {
+        self.jump_host.as_deref()
+    }
     pub fn host(&self) -> &str {
         &self.host
     }
@@ -136,6 +154,7 @@ impl ConnectionPromptKind {
             port,
             algorithm: algorithm.into(),
             fingerprint: fingerprint.into(),
+            jump_host: None,
         })
     }
 
@@ -154,6 +173,7 @@ impl ConnectionPromptKind {
             old_fingerprints,
             fingerprint: fingerprint.into(),
             known_hosts_path: known_hosts_path.into(),
+            jump_host: None,
         })
     }
 
@@ -167,6 +187,26 @@ impl ConnectionPromptKind {
             instructions: instructions.into(),
             fields,
         })
+    }
+
+    /// The same question, asked on the way through the jump host `name`:
+    /// it says so, since the host the user opened is a different one.
+    pub fn at_jump_host(mut self, name: Option<&str>) -> Self {
+        let Some(name) = name else {
+            return self;
+        };
+        match &mut self {
+            Self::UnknownHost(prompt) => prompt.jump_host = Some(name.to_string()),
+            Self::HostKeyChanged(prompt) => prompt.jump_host = Some(name.to_string()),
+            Self::Authentication(prompt) => {
+                prompt.instructions = if prompt.instructions.trim().is_empty() {
+                    format!("跳板主机「{name}」")
+                } else {
+                    format!("跳板主机「{name}」：{}", prompt.instructions)
+                };
+            }
+        }
+        self
     }
 }
 
@@ -219,6 +259,9 @@ pub struct LoginTest {
     /// The secrets typed into the form, for a login typed there. `None` for
     /// a login through a credential, which uses what the credential saved.
     typed: Option<TypedSecrets>,
+    /// The proxy's password as the form has it, whichever way the host logs
+    /// in: the proxy is the form's either way.
+    proxy_password: Option<Zeroizing<String>>,
 }
 
 #[derive(Default)]
@@ -234,12 +277,24 @@ impl LoginTest {
         Self {
             login,
             typed: Some(TypedSecrets::default()),
+            proxy_password: None,
         }
     }
 
     /// A login through a saved credential, with the secrets saved for it.
     pub fn saved(login: crate::session::SessionLogin) -> Self {
-        Self { login, typed: None }
+        Self {
+            login,
+            typed: None,
+            proxy_password: None,
+        }
+    }
+
+    /// The proxy's password typed into the form. An empty one is none.
+    pub fn with_proxy_password(mut self, password: impl Into<String>) -> Self {
+        let password = password.into();
+        self.proxy_password = (!password.is_empty()).then(|| Zeroizing::new(password));
+        self
     }
 
     /// The password typed into the form. Only a typed login has one.
@@ -286,6 +341,9 @@ impl LoginTest {
             .and_then(|typed| typed.passphrase.as_deref())
             .map(String::as_str)
     }
+    pub fn proxy_password(&self) -> Option<&str> {
+        self.proxy_password.as_deref().map(String::as_str)
+    }
 }
 
 impl std::fmt::Debug for LoginTest {
@@ -295,6 +353,10 @@ impl std::fmt::Debug for LoginTest {
             .field("typed", &self.is_typed())
             .field("password", &self.password().map(|_| "<redacted>"))
             .field("passphrase", &self.passphrase().map(|_| "<redacted>"))
+            .field(
+                "proxy_password",
+                &self.proxy_password().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }

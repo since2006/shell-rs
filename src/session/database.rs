@@ -15,7 +15,8 @@ use rusqlite::{Connection, params};
 use super::{
     AuthKind, BookmarkSide, Credential, CredentialDraft, CredentialId, CredentialKind,
     ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft, GroupId,
-    HostOs, PublicId, Session, SessionDraft, SessionGroup, SessionId,
+    HostOs, ProxyKind, ProxySettings, PublicId, Route, Session, SessionDraft, SessionGroup,
+    SessionId,
 };
 
 /// SQLite's only integer type is `i64`, so the `u64` ids cross the boundary
@@ -34,7 +35,7 @@ fn from_sql(id: i64) -> u64 {
 ///
 /// The steps start at 7 rather than 1 because the databases of development
 /// builds were already at 7 when the older steps were folded into `SCHEMA`.
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 /// The port-forwarding rules, added in version 8. A macro rather than a
 /// constant so that `SCHEMA` and the step from version 7 are built from the
@@ -93,6 +94,35 @@ CREATE INDEX session_credentials_credential_id ON session_credentials(credential
     };
 }
 
+/// How a session is reached when it is not reached directly, added in
+/// version 11. Built like `forwards_table!`, for the same reason, and kept
+/// off `sessions` for the reason `credential_tables!` gives.
+///
+/// A session with jump rows goes through those sessions in `position`
+/// order; one with a proxy row goes through that proxy; one with neither is
+/// reached directly. A deleted jump host leaves its row behind with no
+/// `jump_id`, so the session fails to connect rather than skip the hop.
+macro_rules! route_tables {
+    () => {
+        "\
+CREATE TABLE session_jumps (
+    session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    position   INTEGER NOT NULL,
+    jump_id    INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+    PRIMARY KEY (session_id, position),
+    CHECK (jump_id <> session_id)
+);
+CREATE INDEX session_jumps_jump_id ON session_jumps(jump_id);
+CREATE TABLE session_proxies (
+    session_id INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL CHECK (kind IN ('http', 'socks5')),
+    host       TEXT NOT NULL,
+    port       INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+    username   TEXT
+);"
+    };
+}
+
 /// One step from a version to the next: one transaction that ends by
 /// recording the version it reached.
 enum Step {
@@ -103,7 +133,7 @@ enum Step {
 }
 
 /// The steps from each older version to the next, in order.
-const STEPS: [(i64, Step); 3] = [
+const STEPS: [(i64, Step); 4] = [
     (
         7,
         Step::Sql(concat!(
@@ -121,6 +151,14 @@ const STEPS: [(i64, Step); 3] = [
         )),
     ),
     (9, Step::Code(keys_into_credentials)),
+    (
+        10,
+        Step::Sql(concat!(
+            "BEGIN;\n",
+            route_tables!(),
+            "\nPRAGMA user_version = 11;\nCOMMIT;"
+        )),
+    ),
 ];
 
 /// The whole schema, as a new database gets it.
@@ -167,7 +205,9 @@ CREATE TABLE bookmarks (
 ",
     forwards_table!(),
     "\n",
-    credential_tables!()
+    credential_tables!(),
+    "\n",
+    route_tables!()
 );
 
 /// Everything one launch reads back from disk.
@@ -230,7 +270,7 @@ impl SessionDatabase {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
-        let sessions = self
+        let mut sessions = self
             .connection
             .prepare(
                 "SELECT s.id, s.name, s.host, s.port, s.username, s.auth, s.group_id, \
@@ -266,6 +306,7 @@ impl SessionDatabase {
                 Ok(session)
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        self.load_routes(&mut sessions)?;
 
         let recent = self
             .connection
@@ -375,6 +416,64 @@ impl SessionDatabase {
         })
     }
 
+    /// Give each of `sessions` the route its rows describe.
+    fn load_routes(&self, sessions: &mut [Session]) -> rusqlite::Result<()> {
+        let index: HashMap<SessionId, usize> = sessions
+            .iter()
+            .enumerate()
+            .map(|(ix, session)| (session.id, ix))
+            .collect();
+        let hops = self
+            .connection
+            .prepare("SELECT session_id, jump_id FROM session_jumps ORDER BY session_id, position")?
+            .query_map([], |row| {
+                let session: i64 = row.get(0)?;
+                let jump: Option<i64> = row.get(1)?;
+                Ok((
+                    SessionId(from_sql(session)),
+                    jump.map(|id| SessionId(from_sql(id))),
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (session, hop) in hops {
+            let Some(session) = index.get(&session).map(|ix| &mut sessions[*ix]) else {
+                continue;
+            };
+            match &mut session.route {
+                Route::Jump(hops) => hops.push(hop),
+                route => *route = Route::Jump(vec![hop]),
+            }
+        }
+        let proxies = self
+            .connection
+            .prepare("SELECT session_id, kind, host, port, username FROM session_proxies")?
+            .query_map([], |row| {
+                let session: i64 = row.get(0)?;
+                let kind: String = row.get(1)?;
+                let host: String = row.get(2)?;
+                let port: u16 = row.get(3)?;
+                let user: Option<String> = row.get(4)?;
+                Ok((SessionId(from_sql(session)), kind, host, port, user))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (session, kind, host, port, user) in proxies {
+            // The table's CHECK admits only the kinds this build knows.
+            let Some(kind) = ProxyKind::from_stored(&kind) else {
+                continue;
+            };
+            let Some(session) = index.get(&session).map(|ix| &mut sessions[*ix]) else {
+                continue;
+            };
+            // Writes never leave both; jumps win should a hand edit do it.
+            if session.route == Route::Direct {
+                session.route = Route::Proxy(
+                    ProxySettings::new(kind, host, port).with_user(user.unwrap_or_default()),
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub fn insert_group(&self, group: &SessionGroup) -> rusqlite::Result<()> {
         self.connection.execute(
             "INSERT INTO groups (id, name, parent_id, sort_order, expanded) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -427,7 +526,8 @@ impl SessionDatabase {
         Ok(())
     }
 
-    /// Insert a session together with its link to a credential.
+    /// Insert a session together with its link to a credential and its
+    /// route.
     pub fn insert_session(&self, session: &Session) -> rusqlite::Result<()> {
         let transaction = self.connection.unchecked_transaction()?;
         transaction.execute(
@@ -447,10 +547,11 @@ impl SessionDatabase {
             ],
         )?;
         link_credential(&transaction, session)?;
+        write_route(&transaction, session)?;
         transaction.commit()
     }
 
-    /// Rewrites the editable fields and the link to a credential.
+    /// Rewrites the editable fields, the link to a credential and the route.
     /// `last_connected_at` and `os` are left alone: they are written by
     /// `touch_connected` and `set_host_os`, and neither is part of the session
     /// form. `public_id` never changes.
@@ -475,9 +576,12 @@ impl SessionDatabase {
             params![to_sql(session.id.0)],
         )?;
         link_credential(&transaction, session)?;
+        write_route(&transaction, session)?;
         transaction.commit()
     }
 
+    /// Deleting a session takes its own route with it; the sessions that
+    /// went through it keep their place for it, empty (`ON DELETE SET NULL`).
     pub fn remove_session(&self, id: SessionId) -> rusqlite::Result<()> {
         self.connection
             .execute("DELETE FROM sessions WHERE id = ?1", params![to_sql(id.0)])?;
@@ -698,6 +802,44 @@ fn link_credential(connection: &Connection, session: &Session) -> rusqlite::Resu
             "INSERT INTO session_credentials (session_id, credential_id) VALUES (?1, ?2)",
             params![to_sql(session.id.0), to_sql(credential.0)],
         )?;
+    }
+    Ok(())
+}
+
+/// Record how `session` is reached, in place of whatever was recorded.
+fn write_route(connection: &Connection, session: &Session) -> rusqlite::Result<()> {
+    let id = to_sql(session.id.0);
+    connection.execute(
+        "DELETE FROM session_jumps WHERE session_id = ?1",
+        params![id],
+    )?;
+    connection.execute(
+        "DELETE FROM session_proxies WHERE session_id = ?1",
+        params![id],
+    )?;
+    match &session.route {
+        Route::Direct => {}
+        Route::Jump(hops) => {
+            let mut insert = connection.prepare(
+                "INSERT INTO session_jumps (session_id, position, jump_id) VALUES (?1, ?2, ?3)",
+            )?;
+            for (position, hop) in hops.iter().enumerate() {
+                insert.execute(params![id, position as i64, hop.map(|hop| to_sql(hop.0))])?;
+            }
+        }
+        Route::Proxy(proxy) => {
+            connection.execute(
+                "INSERT INTO session_proxies (session_id, kind, host, port, username) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    id,
+                    proxy.kind.as_str(),
+                    proxy.host.as_ref(),
+                    proxy.port,
+                    proxy.user.as_deref(),
+                ],
+            )?;
+        }
     }
     Ok(())
 }
@@ -1103,6 +1245,125 @@ PRAGMA user_version = 9;";
         drop(db);
         let again = SessionDatabase::open(&path).unwrap().load().unwrap();
         assert_eq!(again.credentials.len(), 3);
+    }
+
+    #[test]
+    fn a_version_10_database_gains_the_route_tables_and_keeps_its_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(SCHEMA_V7).unwrap();
+            old.execute_batch(SCHEMA_V8_FORWARDS).unwrap();
+            old.execute_batch(SCHEMA_V9_CREDENTIALS).unwrap();
+            // Version 10 changed rows, not tables.
+            old.execute_batch(
+                "INSERT INTO sessions (id, name, host, port, username, auth, public_id) \
+                 VALUES (1, 'web', 'example.test', 22, 'root', 'no-password', 'abcdefgh12345678');
+                 PRAGMA user_version = 10;",
+            )
+            .unwrap();
+        }
+
+        let db = SessionDatabase::open(&path).unwrap();
+        let version: i64 = db
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let data = db.load().unwrap();
+        assert_eq!(data.sessions[0].auth, AuthKind::NoPassword);
+        assert_eq!(data.sessions[0].route, Route::Direct);
+        let fresh = SessionDatabase::in_memory().unwrap();
+        assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
+
+        drop(db);
+        assert!(SessionDatabase::open(&path).is_ok());
+    }
+
+    fn routed(mut session: Session, route: Route) -> Session {
+        session.route = route;
+        session
+    }
+
+    #[test]
+    fn routes_round_trip_and_a_deleted_jump_host_leaves_its_place() {
+        let db = SessionDatabase::in_memory().unwrap();
+        let proxy =
+            Route::Proxy(ProxySettings::new(ProxyKind::Socks5, "127.0.0.1", 7890).with_user("me"));
+        let sessions = [
+            session(1, "阿里云99", None),
+            session(2, "禅道", None),
+            routed(
+                session(3, "db", None),
+                Route::Jump(vec![Some(SessionId(1)), Some(SessionId(2))]),
+            ),
+            routed(session(4, "abroad", None), proxy.clone()),
+            routed(
+                session(5, "http", None),
+                Route::Proxy(ProxySettings::new(ProxyKind::Http, "proxy.test", 8080)),
+            ),
+        ];
+        for session in &sessions {
+            db.insert_session(session).unwrap();
+        }
+        let routes = |db: &SessionDatabase| -> Vec<Route> {
+            db.load()
+                .unwrap()
+                .sessions
+                .into_iter()
+                .map(|session| session.route)
+                .collect()
+        };
+        assert_eq!(
+            routes(&db),
+            sessions.iter().map(|s| s.route.clone()).collect::<Vec<_>>()
+        );
+
+        // Updating rewrites the route, and the order of the hops with it.
+        db.update_session(&routed(
+            session(3, "db", None),
+            Route::Jump(vec![Some(SessionId(2)), Some(SessionId(1))]),
+        ))
+        .unwrap();
+        db.update_session(&session(4, "abroad", None)).unwrap();
+        assert_eq!(
+            routes(&db)[2..4],
+            [
+                Route::Jump(vec![Some(SessionId(2)), Some(SessionId(1))]),
+                Route::Direct
+            ]
+        );
+
+        // The jump host goes; its place stays, empty. Its own route goes
+        // with a session that is deleted.
+        db.remove_session(SessionId(1)).unwrap();
+        db.remove_session(SessionId(5)).unwrap();
+        assert_eq!(
+            routes(&db),
+            [
+                Route::Direct,
+                Route::Jump(vec![Some(SessionId(2)), None]),
+                Route::Direct
+            ]
+        );
+        let proxies: i64 = db
+            .connection
+            .query_row("SELECT COUNT(*) FROM session_proxies", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(proxies, 0);
+    }
+
+    #[test]
+    fn the_database_refuses_a_session_that_jumps_through_itself() {
+        let db = SessionDatabase::in_memory().unwrap();
+        let looped = routed(
+            session(1, "web", None),
+            Route::Jump(vec![Some(SessionId(1))]),
+        );
+        assert!(db.insert_session(&looped).is_err());
+        // The transaction took the session with it.
+        assert!(db.load().unwrap().sessions.is_empty());
     }
 
     fn credential(id: u64, name: &str, kind: CredentialKind) -> Credential {
@@ -1563,7 +1824,14 @@ PRAGMA user_version = 9;";
             .unwrap()
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
-        for table in ["sessions", "forwards", "credentials", "session_credentials"] {
+        for table in [
+            "sessions",
+            "forwards",
+            "credentials",
+            "session_credentials",
+            "session_jumps",
+            "session_proxies",
+        ] {
             assert!(tables.contains(&table.to_string()), "{table}");
         }
         let mut columns = Vec::new();

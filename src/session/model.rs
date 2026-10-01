@@ -100,6 +100,111 @@ impl AuthKind {
     }
 }
 
+/// How a connection reaches a host, as the host form's 「连接方式」 offers it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Route {
+    /// A TCP connection from this machine.
+    #[default]
+    Direct,
+    /// Through other saved hosts, one after another: this machine logs in to
+    /// the first, which opens a channel to the second, and so on to the
+    /// host. Only this list counts; a jump host's own route does not.
+    ///
+    /// `None` is a jump host that has been deleted. It stays in its place
+    /// so that the host fails to connect, saying why, rather than quietly
+    /// skipping a hop or going direct.
+    Jump(Vec<Option<SessionId>>),
+    /// Through an HTTP or SOCKS5 proxy.
+    Proxy(ProxySettings),
+}
+
+impl Route {
+    /// The jump hosts this route goes through, deleted ones left out.
+    pub fn jump_hosts(&self) -> impl Iterator<Item = SessionId> + '_ {
+        let hops = match self {
+            Route::Jump(hops) => hops.as_slice(),
+            _ => &[],
+        };
+        hops.iter().flatten().copied()
+    }
+}
+
+/// The proxy of a host that connects through one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ProxySettings {
+    pub kind: ProxyKind,
+    pub host: SharedString,
+    pub port: u16,
+    /// For a proxy that wants a user name and password; its password is in
+    /// the keychain.
+    pub user: Option<SharedString>,
+}
+
+impl ProxySettings {
+    pub fn new(kind: ProxyKind, host: impl Into<SharedString>, port: u16) -> Self {
+        Self {
+            kind,
+            host: host.into(),
+            port,
+            user: None,
+        }
+    }
+
+    /// Log in to the proxy as `user`. An empty name is no name.
+    pub fn with_user(mut self, user: impl Into<SharedString>) -> Self {
+        let user = user.into();
+        self.user = (!user.is_empty()).then_some(user);
+        self
+    }
+
+    /// Where the proxy's password lives in the keychain. Only a proxy with
+    /// a user name has one; hosts behind the same proxy as the same user
+    /// share it.
+    pub fn password_secret(&self) -> Option<SecretRef> {
+        self.user
+            .as_ref()
+            .map(|user| SecretRef::proxy(user.as_ref(), self.host.as_ref(), self.port))
+    }
+}
+
+/// The kind of proxy a host connects through.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProxyKind {
+    /// An HTTP proxy, which the connection asks to `CONNECT` to the host.
+    #[default]
+    Http,
+    Socks5,
+}
+
+impl ProxyKind {
+    /// Every kind, in the order the form lists them.
+    pub const ALL: [ProxyKind; 2] = [ProxyKind::Http, ProxyKind::Socks5];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ProxyKind::Http => "HTTP 代理",
+            ProxyKind::Socks5 => "SOCKS5 代理",
+        }
+    }
+
+    /// The stored spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProxyKind::Http => "http",
+            ProxyKind::Socks5 => "socks5",
+        }
+    }
+
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "http" => Some(ProxyKind::Http),
+            "socks5" => Some(ProxyKind::Socks5),
+            _ => None,
+        }
+    }
+}
+
 /// Which pane of a session's SFTP tab a bookmark belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BookmarkSide {
@@ -292,6 +397,8 @@ pub struct Session {
     pub auth: AuthKind,
     /// The credential it logs in with instead of `auth`, if any.
     pub credential: Option<CredentialId>,
+    /// How a connection reaches it.
+    pub route: Route,
     pub group: Option<GroupId>,
     /// Order among sessions in the same group.
     pub sort_order: i64,
@@ -315,6 +422,7 @@ impl Session {
             user: draft.user,
             auth: draft.auth,
             credential: draft.credential,
+            route: draft.route,
             group: draft.group,
             sort_order: 0,
             state: ConnectionState::Disconnected,
@@ -349,6 +457,7 @@ impl Session {
             user: self.user.clone(),
             auth: self.auth,
             credential: self.credential,
+            route: self.route.clone(),
             group: self.group,
         }
     }
@@ -409,6 +518,7 @@ pub struct SessionDraft {
     pub user: SharedString,
     pub auth: AuthKind,
     pub credential: Option<CredentialId>,
+    pub route: Route,
     pub group: Option<GroupId>,
 }
 
@@ -428,6 +538,7 @@ impl SessionDraft {
             user: user.into(),
             auth,
             credential: None,
+            route: Route::Direct,
             group,
         }
     }
@@ -436,6 +547,12 @@ impl SessionDraft {
     /// user name from the credential when the draft is saved.
     pub fn with_credential(mut self, credential: CredentialId) -> Self {
         self.credential = Some(credential);
+        self
+    }
+
+    /// Reach the host some other way than directly.
+    pub fn with_route(mut self, route: Route) -> Self {
+        self.route = route;
         self
     }
 

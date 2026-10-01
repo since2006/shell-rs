@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use crate::secrets::SecretRef;
 
-use super::{AuthKind, Credential, CredentialKind, Session};
+use super::{AuthKind, Credential, CredentialKind, ProxyKind, ProxySettings, Session};
 
 /// Which authentication methods a login tries. Each one starts by asking
 /// the server to let the user in with nothing at all, which a server without
@@ -42,6 +42,89 @@ pub struct SessionLogin {
     /// password credential's. Every other login keeps the endpoint's for a
     /// server that asks for a password after the key.
     pub password: SecretRef,
+    /// How the connection reaches the host.
+    pub route: LoginRoute,
+}
+
+/// How a connection reaches a host, with every jump host's login looked up.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum LoginRoute {
+    #[default]
+    Direct,
+    /// Through these hosts, in order. Each of them is reached through the
+    /// one before it, whatever its own route says.
+    Jump(Vec<JumpLogin>),
+    Proxy(ProxyLogin),
+}
+
+impl LoginRoute {
+    /// The proxy's password entry, for a route through a proxy that has one.
+    pub fn proxy_password(&self) -> Option<SecretRef> {
+        match self {
+            LoginRoute::Proxy(proxy) => proxy.password(),
+            _ => None,
+        }
+    }
+}
+
+/// One jump host on the way to a host.
+#[derive(Clone, Debug)]
+pub enum JumpLogin {
+    Host {
+        /// What the user calls it, for the questions and errors of its hop.
+        name: String,
+        /// How it logs in, directly from the hop before it.
+        login: Box<SessionLogin>,
+    },
+    /// A jump host that has been deleted: the route cannot be taken.
+    Deleted,
+}
+
+/// Equal when they log in the same way: renaming a jump host does not make
+/// the hosts behind it reconnect.
+impl PartialEq for JumpLogin {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (JumpLogin::Host { login: mine, .. }, JumpLogin::Host { login: theirs, .. }) => {
+                mine == theirs
+            }
+            (JumpLogin::Deleted, JumpLogin::Deleted) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for JumpLogin {}
+
+/// The proxy a connection goes through.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ProxyLogin {
+    pub kind: ProxyKind,
+    pub host: String,
+    pub port: u16,
+    pub user: Option<String>,
+}
+
+impl ProxyLogin {
+    /// Where the proxy's password is kept: only a proxy with a user name
+    /// has one.
+    pub fn password(&self) -> Option<SecretRef> {
+        self.user
+            .as_ref()
+            .map(|user| SecretRef::proxy(user, &self.host, self.port))
+    }
+}
+
+impl From<&ProxySettings> for ProxyLogin {
+    fn from(proxy: &ProxySettings) -> Self {
+        Self {
+            kind: proxy.kind,
+            host: proxy.host.to_string(),
+            port: proxy.port,
+            user: proxy.user.as_ref().map(ToString::to_string),
+        }
+    }
 }
 
 impl SessionLogin {
@@ -65,6 +148,7 @@ impl SessionLogin {
             user,
             method,
             key_path: None,
+            route: LoginRoute::Direct,
         }
     }
 
@@ -92,11 +176,19 @@ impl SessionLogin {
             method,
             key_path,
             password,
+            route: LoginRoute::Direct,
         }
     }
 
-    /// How `session` logs in, given the credential it uses. `credential` is
-    /// ignored unless it is the one the session names, so a session whose
+    /// The same login, reaching the host by `route`.
+    pub fn with_route(mut self, route: LoginRoute) -> Self {
+        self.route = route;
+        self
+    }
+
+    /// How `session` logs in, given the credential it uses, as if it were
+    /// reached directly: its route takes the store to look up. `credential`
+    /// is ignored unless it is the one the session names, so a session whose
     /// credential has gone logs in with what the form holds.
     pub fn of(session: &Session, credential: Option<&Credential>) -> Self {
         match credential.filter(|credential| session.credential == Some(credential.id)) {
@@ -196,6 +288,38 @@ mod tests {
         let login = SessionLogin::of(&session(AuthKind::NoPassword), Some(&credential));
         assert_eq!(login.method, LoginMethod::NoPassword);
         assert_eq!(login.user, "root");
+    }
+
+    #[test]
+    fn a_jump_hosts_name_is_not_part_of_the_login() {
+        let hop = |name: &str, host: &str| JumpLogin::Host {
+            name: name.into(),
+            login: Box::new(SessionLogin::manual(host, 22, "root", AuthKind::Password)),
+        };
+        assert_eq!(hop("阿里云99", "10.0.0.1"), hop("跳板", "10.0.0.1"));
+        assert_ne!(hop("阿里云99", "10.0.0.1"), hop("阿里云99", "10.0.0.2"));
+        assert_ne!(hop("阿里云99", "10.0.0.1"), JumpLogin::Deleted);
+        assert_eq!(JumpLogin::Deleted, JumpLogin::Deleted);
+    }
+
+    #[test]
+    fn only_a_proxy_with_a_user_has_a_password() {
+        let proxy = ProxySettings::new(ProxyKind::Socks5, "127.0.0.1", 7890);
+        assert_eq!(ProxyLogin::from(&proxy).password(), None);
+        assert_eq!(
+            ProxyLogin::from(&proxy.clone().with_user("")).password(),
+            None
+        );
+        let login = ProxyLogin::from(&proxy.with_user("me"));
+        assert_eq!(
+            login.password(),
+            Some(SecretRef::proxy("me", "127.0.0.1", 7890))
+        );
+        assert_eq!(
+            LoginRoute::Proxy(login).proxy_password(),
+            Some(SecretRef::proxy("me", "127.0.0.1", 7890))
+        );
+        assert_eq!(LoginRoute::Direct.proxy_password(), None);
     }
 
     #[test]

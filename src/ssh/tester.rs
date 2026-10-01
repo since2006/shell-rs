@@ -9,7 +9,7 @@ use tokio::sync::watch;
 use zeroize::Zeroizing;
 
 use super::connection::{
-    MissingCredential, SshConnectionConfig, SshConnector, SshPrompts, lock,
+    MissingCredential, RouteFailure, SshConnectionConfig, SshConnector, SshPrompts, lock,
     timeout_excluding_prompts,
 };
 use crate::{
@@ -18,6 +18,7 @@ use crate::{
         TrustCallback,
     },
     secrets::{SecretRef, SecretStore, SharedSecretStore},
+    session::{JumpLogin, LoginRoute},
 };
 
 /// How long a test may take, not counting the time a person spends deciding
@@ -57,12 +58,21 @@ struct HostTrust {
 impl SshConnectionTester {
     async fn run(&self, request: LoginTest, trust: TrustCallback) -> Result<(), String> {
         // Resolved apart from connecting, so a mistyped name says so instead
-        // of surfacing the resolver's own wording.
-        if tokio::net::lookup_host((request.host(), request.port()))
-            .await
-            .is_err()
+        // of surfacing the resolver's own wording. Only the first leg is
+        // resolved here: a proxy or a jump host resolves what comes after.
+        let login = request.login();
+        let first = match &login.route {
+            LoginRoute::Direct => Some((login.host.as_str(), login.port)),
+            LoginRoute::Proxy(proxy) => Some((proxy.host.as_str(), proxy.port)),
+            LoginRoute::Jump(hops) => match hops.first() {
+                Some(JumpLogin::Host { login, .. }) => Some((login.host.as_str(), login.port)),
+                _ => None,
+            },
+        };
+        if let Some((host, port)) = first
+            && tokio::net::lookup_host((host, port)).await.is_err()
         {
-            return Err(format!("无法解析主机 {}", request.host()));
+            return Err(format!("无法解析主机 {host}"));
         }
 
         let config = SshConnectionConfig::from(request.login());
@@ -145,9 +155,13 @@ fn describe_test_failure(error: &anyhow::Error, host_trust: HostTrust) -> String
     describe_login_error(error)
 }
 
-/// Why a login failed, from the error alone: a credential that was
-/// missing, the network's own answer, or whatever the error says.
+/// Why a login failed, from the error alone: where on the way to the host
+/// it failed, a credential that was missing, the network's own answer, or
+/// whatever the error says.
 pub fn describe_login_error(error: &anyhow::Error) -> String {
+    if let Some(failure) = error.downcast_ref::<RouteFailure>() {
+        return failure.to_string();
+    }
     for cause in error.chain() {
         if let Some(need) = cause.downcast_ref::<MissingCredential>() {
             return need.to_string();
@@ -191,12 +205,16 @@ impl FormSecrets {
     fn new(request: &LoginTest, fallback: SharedSecretStore) -> Self {
         let owned = |value: Option<&str>| value.map(|value| Zeroizing::new(value.to_string()));
         let mut typed = Vec::new();
+        let login = request.login();
         if request.is_typed() {
-            let login = request.login();
             typed.push((login.password.clone(), owned(request.password())));
             if let Some(path) = &login.key_path {
                 typed.push((SecretRef::passphrase(path), owned(request.passphrase())));
             }
+        }
+        // The proxy is the form's whichever way the host logs in.
+        if let Some(proxy) = login.route.proxy_password() {
+            typed.push((proxy, owned(request.proxy_password())));
         }
         Self { typed, fallback }
     }
@@ -229,7 +247,7 @@ mod tests {
 
     use anyhow::anyhow;
 
-    use super::{HostTrust, MissingCredential, describe_test_failure};
+    use super::{HostTrust, MissingCredential, RouteFailure, describe_test_failure};
 
     fn reason(error: anyhow::Error) -> String {
         describe_test_failure(&error, HostTrust::default())
@@ -288,6 +306,13 @@ mod tests {
             anyhow::Error::from(russh::Error::IO(Error::from(ErrorKind::ConnectionRefused)))
                 .context("无法建立 SSH 连接");
         assert_eq!(reason(wrapped), "连接被拒绝，该端口上没有服务在监听");
+    }
+
+    #[test]
+    fn a_failure_on_the_way_says_where_it_happened() {
+        let missing = anyhow::Error::from(MissingCredential::Password { rejected: false })
+            .context(RouteFailure("跳板主机「阿里云99」：未填写密码".into()));
+        assert_eq!(reason(missing), "跳板主机「阿里云99」：未填写密码");
     }
 
     #[test]

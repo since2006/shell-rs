@@ -23,6 +23,7 @@ gpui-kit = "0.6.1"
 alacritty_terminal = "0.26"
 anyhow = "1"
 async-channel = "2"
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 futures = "0.3"

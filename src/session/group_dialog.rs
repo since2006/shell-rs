@@ -8,7 +8,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{DeleteHandler, GroupDraft, GroupId, SessionStore, group_options};
+use super::{DeleteHandler, Dependents, GroupDraft, GroupId, SessionStore, group_options};
 use crate::shared::{commit_footer, confirm_delete, form_error};
 
 /// The label of the row that stands for "no parent" / "no group".
@@ -188,18 +188,22 @@ pub fn open_group_dialog(
 
 /// Ask before deleting a group. Deleting one takes its subgroups and every
 /// session inside them, and those sessions' port forwards, so the counts go
-/// in the description.
+/// in the description, with the hosts elsewhere that jump through them.
 #[allow(clippy::too_many_arguments)]
 pub fn confirm_delete_group(
     name: &str,
     sessions: usize,
     subgroups: usize,
     affected: (bool, usize),
-    forwards: usize,
+    dependents: Dependents,
     on_delete: DeleteHandler,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let Dependents {
+        forwards,
+        jump_users,
+    } = dependents;
     let (closes_tabs, uploads) = affected;
     let mut description = describe_contents(sessions, subgroups, closes_tabs);
     if uploads > 0 {
@@ -215,6 +219,15 @@ pub fn confirm_delete_group(
         description = Some(
             format!(
                 "{}这些主机的 {forwards} 条端口转发会一并删除。",
+                description.unwrap_or_default()
+            )
+            .into(),
+        );
+    }
+    if jump_users > 0 {
+        description = Some(
+            format!(
+                "{}分组外有 {jump_users} 台主机经由这些主机跳转，删除后要重新选择跳板主机才能连接。",
                 description.unwrap_or_default()
             )
             .into(),

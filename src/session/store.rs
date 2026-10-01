@@ -11,9 +11,9 @@ use super::database::now_seconds;
 use super::private_key::{is_kept_in, write_key_file};
 use super::{
     AuthKind, BookmarkSide, ConnectionState, Credential, CredentialDraft, CredentialId,
-    CredentialKind, ForwardDraft, ForwardId, ForwardRule, GroupDraft, GroupId, HostOs, NodeDrop,
-    PublicId, Session, SessionDatabase, SessionDraft, SessionGroup, SessionId, SessionLogin,
-    SessionNode, StoredData,
+    CredentialKind, ForwardDraft, ForwardId, ForwardRule, GroupDraft, GroupId, HostOs, JumpLogin,
+    LoginRoute, NodeDrop, ProxyLogin, PublicId, Route, Session, SessionDatabase, SessionDraft,
+    SessionGroup, SessionId, SessionLogin, SessionNode, StoredData,
 };
 
 /// The single source of truth for sessions, groups, the rules that belong
@@ -74,8 +74,8 @@ pub enum SessionStoreEvent {
     /// A change was applied in memory but could not be written to disk.
     PersistFailed(SharedString),
     /// A live terminal must reconnect because the way the session logs in
-    /// changed: its endpoint, its own authentication, or the credential it
-    /// uses.
+    /// changed: its endpoint, its own authentication, the credential it
+    /// uses, or the way it is reached, a jump host's login included.
     ConnectionSettingsChanged(SessionId),
     /// A forwarding rule now listens or connects somewhere else, so a
     /// running forward has to restart to follow it.
@@ -332,7 +332,8 @@ impl SessionStore {
     }
 
     pub fn insert_unnotified(&mut self, draft: SessionDraft) -> SessionId {
-        let draft = normalized(&self.credentials, draft);
+        let mut draft = normalized(&self.credentials, draft);
+        draft.route = self.normalized_route(draft.route, None);
         let sort_order = self.last_session_order(draft.group, None);
         let id = SessionId(self.next_session_id);
         self.next_session_id += 1;
@@ -349,7 +350,10 @@ impl SessionStore {
     }
 
     /// Replace the editable fields of a session; connection state is kept.
+    /// The session reconnects when its login changed, and so does every
+    /// session using it as a jump host.
     pub fn update(&mut self, id: SessionId, draft: SessionDraft, cx: &mut Context<Self>) -> bool {
+        let logins = self.logins();
         let previous = self.login(id);
         let updated = self.update_unnotified(id, draft);
         if updated {
@@ -360,18 +364,17 @@ impl SessionStore {
                 // The session no longer reads the password it did, say
                 // because it moved to another endpoint, so that keychain
                 // entry is an orphan unless another session still uses it.
-                self.forget_endpoint_password(previous.password.clone(), cx);
-                if self.login(id).as_ref() != Some(&previous) {
-                    cx.emit(SessionStoreEvent::ConnectionSettingsChanged(id));
-                }
+                self.forget_passwords_of(&previous, cx);
             }
+            self.emit_changed_logins(logins, cx);
             cx.notify();
         }
         updated
     }
 
     pub fn update_unnotified(&mut self, id: SessionId, draft: SessionDraft) -> bool {
-        let draft = normalized(&self.credentials, draft);
+        let mut draft = normalized(&self.credentials, draft);
+        draft.route = self.normalized_route(draft.route, Some(id));
         let new_order = self.last_session_order(draft.group, Some(id));
         let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) else {
             return false;
@@ -395,13 +398,16 @@ impl SessionStore {
         true
     }
 
+    /// Delete a session. The sessions that went through it keep its place in
+    /// their jump hosts, empty, and are not reconnected: deleting a host does
+    /// not drop a working connection behind it.
     pub fn remove(&mut self, id: SessionId, cx: &mut Context<Self>) -> bool {
         let login = self.login(id);
         let removed = self.remove_unnotified(id);
         if removed {
             self.persist("删除主机", cx, |db| db.remove_session(id));
             if let Some(login) = login {
-                self.forget_endpoint_password(login.password, cx);
+                self.forget_passwords_of(&login, cx);
             }
             cx.notify();
         }
@@ -411,6 +417,14 @@ impl SessionStore {
     pub fn remove_unnotified(&mut self, id: SessionId) -> bool {
         let before = self.sessions.len();
         self.sessions.retain(|s| s.id != id);
+        // As the database's `ON DELETE SET NULL` does.
+        for session in &mut self.sessions {
+            if let Route::Jump(hops) = &mut session.route {
+                for hop in hops.iter_mut().filter(|hop| **hop == Some(id)) {
+                    *hop = None;
+                }
+            }
+        }
         self.recent.retain(|recent| *recent != id);
         // The database drops both through `ON DELETE CASCADE`.
         self.bookmarks.retain(|(session, _), _| *session != id);
@@ -744,17 +758,73 @@ impl SessionStore {
             .filter(move |session| session.credential == Some(credential))
     }
 
-    /// How a session logs in, with its credential looked up. What the
-    /// terminal, SFTP, forward and CLI workers are given.
+    /// How a session logs in, with its credential and its jump hosts' logins
+    /// looked up. What the terminal, SFTP, forward and CLI workers are given.
     pub fn login(&self, id: SessionId) -> Option<SessionLogin> {
         self.session(id).map(|session| self.login_of(session))
     }
 
     pub fn login_of(&self, session: &Session) -> SessionLogin {
+        self.direct_login(session)
+            .with_route(self.route_login(&session.route))
+    }
+
+    /// How `session` logs in once the connection has reached it.
+    fn direct_login(&self, session: &Session) -> SessionLogin {
         SessionLogin::of(
             session,
             session.credential.and_then(|id| self.credential(id)),
         )
+    }
+
+    /// `route` with every jump host's login looked up. A jump host is
+    /// reached through the one before it, so its own route plays no part.
+    pub fn route_login(&self, route: &Route) -> LoginRoute {
+        match route {
+            Route::Direct => LoginRoute::Direct,
+            Route::Jump(hops) => LoginRoute::Jump(
+                hops.iter()
+                    .map(|hop| match hop.and_then(|id| self.session(id)) {
+                        Some(session) => JumpLogin::Host {
+                            name: session.name.to_string(),
+                            login: Box::new(self.direct_login(session)),
+                        },
+                        None => JumpLogin::Deleted,
+                    })
+                    .collect(),
+            ),
+            Route::Proxy(proxy) => LoginRoute::Proxy(ProxyLogin::from(proxy)),
+        }
+    }
+
+    /// How many sessions other than `ids` go through one of them as a jump
+    /// host: what deleting `ids` leaves without a way through.
+    pub fn jump_users(&self, ids: &[SessionId]) -> usize {
+        self.sessions
+            .iter()
+            .filter(|session| {
+                !ids.contains(&session.id)
+                    && session.route.jump_hosts().any(|hop| ids.contains(&hop))
+            })
+            .count()
+    }
+
+    /// Every session's login, to tell afterwards whose changed.
+    fn logins(&self) -> Vec<(SessionId, SessionLogin)> {
+        self.sessions
+            .iter()
+            .map(|session| (session.id, self.login_of(session)))
+            .collect()
+    }
+
+    /// Tell the workspace about every session that logs in differently than
+    /// it did in `before`, so its connections reconnect.
+    fn emit_changed_logins(&self, before: Vec<(SessionId, SessionLogin)>, cx: &mut Context<Self>) {
+        for (id, login) in before {
+            if self.login(id).is_some_and(|now| now != login) {
+                cx.emit(SessionStoreEvent::ConnectionSettingsChanged(id));
+            }
+        }
     }
 
     /// Add a credential at the end of the list.
@@ -803,10 +873,7 @@ impl SessionStore {
         let Some(previous) = self.credential(id).cloned() else {
             return false;
         };
-        let logins: Vec<(SessionId, SessionLogin)> = self
-            .sessions_using(id)
-            .map(|session| (session.id, self.login_of(session)))
-            .collect();
+        let logins = self.logins();
         if !self.update_credential_unnotified(id, draft) {
             return false;
         }
@@ -827,12 +894,15 @@ impl SessionStore {
         {
             self.forget_key_file(path, cx);
         }
-        for (session, before) in logins {
-            self.forget_endpoint_password(before.password.clone(), cx);
-            if self.login(session).as_ref() != Some(&before) {
-                cx.emit(SessionStoreEvent::ConnectionSettingsChanged(session));
+        for (session, before) in &logins {
+            if self
+                .session(*session)
+                .is_some_and(|s| s.credential == Some(id))
+            {
+                self.forget_passwords_of(before, cx);
             }
         }
+        self.emit_changed_logins(logins, cx);
         cx.notify();
         true
     }
@@ -1055,12 +1125,12 @@ impl SessionStore {
         if self.group(id).is_none() {
             return Vec::new();
         }
-        let endpoints = self.endpoints_of(&self.sessions_under(id));
+        let passwords = self.passwords_of(&self.sessions_under(id));
         let removed = self.remove_group_unnotified(id);
         // One delete mirrors the whole subtree: both foreign keys cascade.
         self.persist("删除分组", cx, |db| db.remove_group(id));
-        for endpoint in endpoints {
-            self.forget_endpoint_password(endpoint, cx);
+        for password in passwords {
+            self.forget_password(password, cx);
         }
         cx.notify();
         removed
@@ -1232,6 +1302,8 @@ impl SessionStore {
             (SecretRef::Passphrase { .. }, false) => "私钥口令未能从系统钥匙串删除",
             (SecretRef::Credential { .. }, true) => "凭据的密码未能写入系统钥匙串",
             (SecretRef::Credential { .. }, false) => "凭据的密码未能从系统钥匙串删除",
+            (SecretRef::Proxy { .. }, true) => "代理的密码未能写入系统钥匙串",
+            (SecretRef::Proxy { .. }, false) => "代理的密码未能从系统钥匙串删除",
         };
         cx.spawn(async move |this, cx| {
             let result = cx
@@ -1255,37 +1327,51 @@ impl SessionStore {
         .detach();
     }
 
-    /// The distinct password entries these sessions log in with.
-    fn endpoints_of(&self, ids: &[SessionId]) -> Vec<SecretRef> {
-        let mut endpoints: Vec<SecretRef> = Vec::new();
-        for secret in ids
-            .iter()
-            .filter_map(|id| self.login(*id))
-            .map(|login| login.password)
-        {
-            if !endpoints.contains(&secret) {
-                endpoints.push(secret);
+    /// The distinct password entries these sessions log in with, their
+    /// proxies' included.
+    fn passwords_of(&self, ids: &[SessionId]) -> Vec<SecretRef> {
+        let mut passwords: Vec<SecretRef> = Vec::new();
+        for login in ids.iter().filter_map(|id| self.login(*id)) {
+            for secret in [Some(login.password), login.route.proxy_password()]
+                .into_iter()
+                .flatten()
+            {
+                if !passwords.contains(&secret) {
+                    passwords.push(secret);
+                }
             }
         }
-        endpoints
+        passwords
     }
 
-    /// Delete an endpoint's saved password once no session logs in with it.
-    /// A credential's password is left alone: it goes with the credential,
-    /// not with the sessions using it.
-    fn forget_endpoint_password(&mut self, secret: SecretRef, cx: &mut Context<Self>) {
-        if matches!(secret, SecretRef::Password { .. }) && !self.password_in_use(&secret) {
+    /// Forget the endpoint and proxy passwords `login` used, those that no
+    /// session uses any more.
+    fn forget_passwords_of(&mut self, login: &SessionLogin, cx: &mut Context<Self>) {
+        self.forget_password(login.password.clone(), cx);
+        if let Some(proxy) = login.route.proxy_password() {
+            self.forget_password(proxy, cx);
+        }
+    }
+
+    /// Delete an endpoint's or a proxy's saved password once no session logs
+    /// in with it. A credential's password is left alone: it goes with the
+    /// credential, not with the sessions using it.
+    fn forget_password(&mut self, secret: SecretRef, cx: &mut Context<Self>) {
+        if matches!(secret, SecretRef::Password { .. } | SecretRef::Proxy { .. })
+            && !self.password_in_use(&secret)
+        {
             self.save_secret(secret, None, cx);
         }
     }
 
-    /// Whether any session still logs in with this password entry. Entries
-    /// are shared, so one may only be cleaned up once the last session using
-    /// it is gone.
+    /// Whether any session still logs in with this password entry, or goes
+    /// through a proxy with it. Entries are shared, so one may only be
+    /// cleaned up once the last session using it is gone.
     fn password_in_use(&self, secret: &SecretRef) -> bool {
-        self.sessions
-            .iter()
-            .any(|session| self.login_of(session).password == *secret)
+        self.sessions.iter().any(|session| {
+            let login = self.login_of(session);
+            login.password == *secret || login.route.proxy_password().as_ref() == Some(secret)
+        })
     }
 
     /// Write a change through to the database, when there is one. A failed
@@ -1358,6 +1444,29 @@ fn reordered<Id: Copy + Ord>(
     Some(ids)
 }
 
+impl SessionStore {
+    /// `route` as the store keeps it for session `own` (`None` while it is
+    /// being created): no session jumps through itself, a jump host that is
+    /// not there is a deleted one, and a jump with no hosts is no jump.
+    fn normalized_route(&self, route: Route, own: Option<SessionId>) -> Route {
+        match route {
+            Route::Jump(hops) => {
+                let hops: Vec<_> = hops
+                    .into_iter()
+                    .filter(|hop| hop.is_none() || *hop != own)
+                    .map(|hop| hop.filter(|id| self.session(*id).is_some()))
+                    .collect();
+                if hops.is_empty() {
+                    Route::Direct
+                } else {
+                    Route::Jump(hops)
+                }
+            }
+            route => route,
+        }
+    }
+}
+
 /// `draft` as the store keeps it. A session using a credential logs in as
 /// the credential's user and keeps nothing of its own login; one naming a
 /// credential that is not there logs in on its own.
@@ -1377,7 +1486,7 @@ fn normalized(credentials: &[Credential], mut draft: SessionDraft) -> SessionDra
 
 #[cfg(test)]
 mod tests {
-    use super::super::{ForwardEndpoint, ForwardKind};
+    use super::super::{ForwardEndpoint, ForwardKind, LoginMethod, ProxyKind, ProxySettings};
     use super::*;
 
     fn draft(name: &str, group: Option<GroupId>) -> SessionDraft {
@@ -1837,8 +1946,210 @@ mod tests {
         );
         store.insert_unnotified(other);
 
-        let endpoints = store.endpoints_of(&store.sessions_under(group));
-        assert_eq!(endpoints.len(), 2);
+        let proxy = ProxySettings::new(ProxyKind::Socks5, "127.0.0.1", 7890).with_user("me");
+        for name in ["abroad-1", "abroad-2"] {
+            store.insert_unnotified(
+                draft(name, Some(group)).with_route(Route::Proxy(proxy.clone())),
+            );
+        }
+
+        let passwords = store.passwords_of(&store.sessions_under(group));
+        assert_eq!(passwords.len(), 3);
+        assert!(passwords.contains(&SecretRef::proxy("me", "127.0.0.1", 7890)));
+    }
+
+    fn jump_through(hops: &[SessionId]) -> Route {
+        Route::Jump(hops.iter().copied().map(Some).collect())
+    }
+
+    #[test]
+    fn a_host_behind_jump_hosts_logs_in_through_their_own_logins() {
+        let mut store = SessionStore::empty();
+        let credential = store.insert_credential_unnotified(CredentialDraft::new(
+            "跳板账号",
+            CredentialKind::Agent,
+            "jumper",
+        ));
+        let first = store.insert_unnotified(
+            SessionDraft::new(
+                "阿里云99",
+                "120.25.220.186",
+                22,
+                "root",
+                AuthKind::Password,
+                None,
+            )
+            .with_credential(credential),
+        );
+        // Its own route plays no part when another host jumps through it.
+        let second = store.insert_unnotified(
+            SessionDraft::new(
+                "禅道",
+                "8.138.95.125",
+                22,
+                "ops",
+                AuthKind::NoPassword,
+                None,
+            )
+            .with_route(jump_through(&[first])),
+        );
+        let target =
+            store.insert_unnotified(draft("db", None).with_route(jump_through(&[first, second])));
+
+        let login = store.login(target).unwrap();
+        let LoginRoute::Jump(hops) = &login.route else {
+            panic!("not a jump: {:?}", login.route);
+        };
+        let hops: Vec<_> = hops
+            .iter()
+            .map(|hop| match hop {
+                JumpLogin::Host { name, login } => (
+                    name.as_str(),
+                    login.user.as_str(),
+                    login.method,
+                    login.route.clone(),
+                ),
+                JumpLogin::Deleted => panic!("no hop was deleted"),
+            })
+            .collect();
+        assert_eq!(
+            hops,
+            [
+                ("阿里云99", "jumper", LoginMethod::Agent, LoginRoute::Direct),
+                ("禅道", "ops", LoginMethod::NoPassword, LoginRoute::Direct),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_route_never_jumps_through_its_own_host_or_one_that_is_not_there() {
+        let mut store = SessionStore::empty();
+        let jump = store.insert_unnotified(draft("jump", None));
+        let id = store.insert_unnotified(draft("web", None));
+        store.update_unnotified(
+            id,
+            draft("web", None).with_route(Route::Jump(vec![
+                Some(id),
+                Some(jump),
+                Some(SessionId(99)),
+            ])),
+        );
+        assert_eq!(
+            store.session(id).unwrap().route,
+            Route::Jump(vec![Some(jump), None])
+        );
+
+        // A jump through nothing is no jump.
+        store.update_unnotified(
+            id,
+            draft("web", None).with_route(Route::Jump(vec![Some(id)])),
+        );
+        assert_eq!(store.session(id).unwrap().route, Route::Direct);
+    }
+
+    #[test]
+    fn deleting_a_jump_host_leaves_its_place_and_is_counted() {
+        let mut store = SessionStore::empty();
+        let group = store.insert_group_unnotified(GroupDraft::new("跳板", None));
+        let jump = store.insert_unnotified(draft("jump", Some(group)));
+        let inside =
+            store.insert_unnotified(draft("inside", Some(group)).with_route(jump_through(&[jump])));
+        let outside = store.insert_unnotified(draft("db", None).with_route(jump_through(&[jump])));
+        let direct = store.insert_unnotified(draft("web", None));
+
+        assert_eq!(store.jump_users(&[jump]), 2);
+        // Deleting the group takes `inside` too: only `outside` is left
+        // without a way through.
+        assert_eq!(store.jump_users(&store.sessions_under(group)), 1);
+        assert_eq!(store.jump_users(&[direct]), 0);
+
+        store.remove_unnotified(jump);
+        assert_eq!(
+            store.session(outside).unwrap().route,
+            Route::Jump(vec![None])
+        );
+        assert_eq!(
+            store.login(outside).unwrap().route,
+            LoginRoute::Jump(vec![JumpLogin::Deleted])
+        );
+        assert_eq!(store.jump_users(&[inside]), 0);
+    }
+
+    #[test]
+    fn a_copy_takes_the_same_way_there() {
+        let mut store = SessionStore::empty();
+        let jump = store.insert_unnotified(draft("jump", None));
+        let id = store.insert_unnotified(draft("db", None).with_route(jump_through(&[jump])));
+        let copy = store.duplicate_unnotified(id).unwrap();
+        assert_eq!(store.session(copy).unwrap().route, jump_through(&[jump]));
+    }
+
+    #[gpui_kit::test]
+    fn editing_a_jump_host_reconnects_the_hosts_behind_it_but_renaming_does_not(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::AppContext as _;
+        use std::{cell::RefCell, rc::Rc};
+
+        let mut store = SessionStore::empty();
+        let jump = store.insert_unnotified(draft("jump", None));
+        let behind = store.insert_unnotified(
+            SessionDraft::new("db", "10.0.0.9", 22, "root", AuthKind::Password, None)
+                .with_route(jump_through(&[jump])),
+        );
+        let store = cx.new(|_| store);
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&store, move |_, event: &SessionStoreEvent, _| {
+                events.borrow_mut().push(event.clone());
+            })
+        });
+
+        store.update(cx, |store, cx| store.update(jump, draft("跳板", None), cx));
+        cx.run_until_parked();
+        assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+
+        let moved = SessionDraft::new("跳板", "10.0.0.2", 22, "root", AuthKind::Password, None);
+        store.update(cx, |store, cx| store.update(jump, moved, cx));
+        cx.run_until_parked();
+        assert_eq!(
+            *events.borrow(),
+            [
+                SessionStoreEvent::ConnectionSettingsChanged(jump),
+                SessionStoreEvent::ConnectionSettingsChanged(behind),
+            ]
+        );
+
+        // Deleting it does not drop the connection behind it.
+        events.borrow_mut().clear();
+        store.update(cx, |store, cx| store.remove(jump, cx));
+        cx.run_until_parked();
+        assert!(events.borrow().is_empty(), "{:?}", events.borrow());
+    }
+
+    #[gpui_kit::test]
+    fn a_proxy_password_goes_when_no_host_uses_the_proxy(cx: &mut gpui_kit::TestAppContext) {
+        use crate::secrets::SecretStore as _;
+        use gpui_kit::AppContext as _;
+
+        let secrets = Arc::new(crate::secrets::InMemorySecretStore::default());
+        let mut store = SessionStore::empty().with_secrets(secrets.clone());
+        let proxy =
+            Route::Proxy(ProxySettings::new(ProxyKind::Http, "proxy.test", 8080).with_user("me"));
+        let one = store.insert_unnotified(draft("one", None).with_route(proxy.clone()));
+        let two = store.insert_unnotified(draft("two", None).with_route(proxy));
+        let secret = SecretRef::proxy("me", "proxy.test", 8080);
+        secrets.set(&secret, "hunter2").unwrap();
+        let store = cx.new(|_| store);
+
+        store.update(cx, |store, cx| store.update(one, draft("one", None), cx));
+        cx.run_until_parked();
+        assert!(secrets.get(&secret).unwrap().is_some(), "two still uses it");
+
+        store.update(cx, |store, cx| store.remove(two, cx));
+        cx.run_until_parked();
+        assert!(secrets.get(&secret).unwrap().is_none());
     }
 
     #[test]

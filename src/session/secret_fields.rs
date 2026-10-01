@@ -172,6 +172,18 @@ impl SecretFields {
         cx.notify();
     }
 
+    /// What the empty password field says leaving it empty does.
+    pub fn set_password_placeholder(
+        &mut self,
+        placeholder: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.password.update(cx, |input, cx| {
+            input.set_placeholder(placeholder, window, cx)
+        });
+    }
+
     /// What the empty passphrase field says leaving it empty does.
     pub fn set_passphrase_placeholder(
         &mut self,

@@ -4,7 +4,7 @@ use crate::{
         ConnectionPrompt, ConnectionPromptField, ConnectionPromptKind, ConnectionPromptReply,
     },
     secrets::{SecretRef, SharedSecretStore},
-    session::{LoginMethod, SessionLogin},
+    session::{JumpLogin, LoginMethod, LoginRoute, ProxyLogin, SessionLogin},
 };
 use anyhow::{Context as _, Result, anyhow, bail};
 use russh::keys::{
@@ -26,8 +26,13 @@ use std::{
     },
     time::Duration,
 };
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
 use zeroize::Zeroizing;
+
+use super::proxy::{ProxyAuth, handshake};
+use super::tester::describe_login_error;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const AUTH_RETRIES: usize = 3;
@@ -135,38 +140,277 @@ impl SshConnector {
         secrets: &SharedSecretStore,
         forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
     ) -> Result<(client::Handle<SshClientHandler>, String)> {
-        let fingerprint = Arc::new(Mutex::new(String::new()));
         let login = &config.login;
+        let tunnel = match &login.route {
+            LoginRoute::Direct => {
+                Box::new(step(&broker, tcp(&login.host, login.port)).await?) as Tunnel
+            }
+            LoginRoute::Proxy(proxy) => {
+                Box::new(step(&broker, through_proxy(proxy, login, secrets)).await?)
+            }
+            LoginRoute::Jump(hops) => self.through_jumps(hops, login, &broker, secrets).await?,
+        };
+        self.log_in(tunnel, login, None, &broker, secrets, forwarded)
+            .await
+    }
+
+    /// Open the SSH connection to `login`'s host over `tunnel` and log in.
+    /// `jump_host` names a jump host, for its questions.
+    async fn log_in(
+        &self,
+        tunnel: Tunnel,
+        login: &SessionLogin,
+        jump_host: Option<&str>,
+        broker: &Arc<SshPrompts>,
+        secrets: &SharedSecretStore,
+        forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+    ) -> Result<(SshHandle, String)> {
+        let fingerprint = Arc::new(Mutex::new(String::new()));
         let handler = SshClientHandler {
             host: login.host.clone(),
             port: login.port,
+            jump_host: jump_host.map(str::to_string),
             known_hosts_path: self.known_hosts_path.clone(),
             known_hosts_lock: self.known_hosts_lock.clone(),
             broker: broker.clone(),
             fingerprint: fingerprint.clone(),
             forwarded,
         };
-        let connect = client::connect(
-            Arc::new(client::Config {
-                keepalive_interval: Some(KEEPALIVE_INTERVAL),
-                keepalive_max: 3,
-                nodelay: true,
-                ..Default::default()
-            }),
-            (login.host.as_str(), login.port),
-            handler,
-        );
-        let mut shutdown = broker.shutdown_receiver();
-        let mut handle = tokio::select! {
-            result = timeout_excluding_prompts(connect, broker.prompt_activity_receiver(), CONNECT_TIMEOUT) => result?.map_err(|e| e.context(CONNECT_FAILED))?,
-            _ = shutdown.changed() => bail!("连接已取消"),
+        let connect = async {
+            client::connect_stream(ssh_config(), tunnel, handler)
+                .await
+                .map_err(|error| error.context(CONNECT_FAILED))
         };
+        let mut handle = step(broker, connect).await?;
+        let prompts = Asker {
+            prompts: broker,
+            jump_host,
+        };
+        let mut shutdown = broker.shutdown_receiver();
         tokio::select! {
-            result = authenticate(&mut handle, login, secrets, &self.agent, &broker) => result?,
+            result = authenticate(&mut handle, login, secrets, &self.agent, prompts) => result?,
             _ = shutdown.changed() => bail!("连接已取消"),
         }
         let fingerprint = lock(&fingerprint).clone();
         Ok((handle, fingerprint))
+    }
+
+    /// A stream to `login`'s host through `hops`, each logged in to over the
+    /// one before. A failure says which jump host it was at.
+    async fn through_jumps(
+        &self,
+        hops: &[JumpLogin],
+        login: &SessionLogin,
+        broker: &Arc<SshPrompts>,
+        secrets: &SharedSecretStore,
+    ) -> Result<Tunnel> {
+        // Nothing is connected while the way is known to be broken.
+        let hosts = hops
+            .iter()
+            .enumerate()
+            .map(|(ix, hop)| match hop {
+                JumpLogin::Host { name, login } => Ok((name.as_str(), &**login)),
+                JumpLogin::Deleted => Err(anyhow!(RouteFailure(format!(
+                    "第 {} 台跳板主机已被删除，请编辑这台主机的连接方式",
+                    ix + 1
+                )))),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut tunnel = None;
+        for (ix, (name, hop)) in hosts.iter().enumerate() {
+            let (next_host, next_port) = hosts
+                .get(ix + 1)
+                .map_or((login.host.as_str(), login.port), |(_, next)| {
+                    (next.host.as_str(), next.port)
+                });
+            let reached = self
+                .jump(
+                    tunnel.take(),
+                    name,
+                    hop,
+                    (next_host, next_port),
+                    broker,
+                    secrets,
+                )
+                .await
+                .map_err(|error| {
+                    if error.downcast_ref::<RouteFailure>().is_some() {
+                        return error;
+                    }
+                    let reason = describe_login_error(&error);
+                    error.context(RouteFailure(format!("跳板主机「{name}」：{reason}")))
+                })?;
+            tunnel = Some(reached);
+        }
+        tunnel.ok_or_else(|| anyhow!("没有可用的跳板主机"))
+    }
+
+    /// Log in to the jump host `hop`, over `tunnel` or else directly, and
+    /// open a channel through it to `next`.
+    ///
+    /// The jump host's connection lives as long as that channel does: its
+    /// handle goes here, and the channel's stream keeps the connection's
+    /// task running until the connection over it ends.
+    async fn jump(
+        &self,
+        tunnel: Option<Tunnel>,
+        name: &str,
+        hop: &SessionLogin,
+        next: (&str, u16),
+        broker: &Arc<SshPrompts>,
+        secrets: &SharedSecretStore,
+    ) -> Result<Tunnel> {
+        let tunnel = match tunnel {
+            Some(tunnel) => tunnel,
+            None => Box::new(step(broker, tcp(&hop.host, hop.port)).await?),
+        };
+        let (handle, _) = self
+            .log_in(tunnel, hop, Some(name), broker, secrets, None)
+            .await?;
+        let (next_host, next_port) = next;
+        let open = async {
+            handle
+                .channel_open_direct_tcpip(next_host, u32::from(next_port), "127.0.0.1", 0)
+                .await
+                .map_err(|error| {
+                    let reason = match &error {
+                        russh::Error::ChannelOpenFailure(
+                            russh::ChannelOpenFailure::ConnectFailed,
+                        ) => "连接失败",
+                        russh::Error::ChannelOpenFailure(
+                            russh::ChannelOpenFailure::AdministrativelyProhibited,
+                        ) => "服务器不允许端口转发",
+                        _ => "无法打开转发通道",
+                    };
+                    let text =
+                        format!("跳板主机「{name}」无法连接到 {next_host}:{next_port}：{reason}");
+                    // Refused like a direct connection would be, so it is
+                    // retried like one.
+                    let refused = matches!(
+                        error,
+                        russh::Error::ChannelOpenFailure(russh::ChannelOpenFailure::ConnectFailed)
+                    );
+                    let error = if refused {
+                        anyhow::Error::from(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionRefused,
+                            text.clone(),
+                        ))
+                    } else {
+                        anyhow::Error::from(error)
+                    };
+                    error.context(RouteFailure(text))
+                })
+        };
+        let channel = step(broker, open).await?;
+        Ok(Box::new(channel.into_stream()))
+    }
+}
+
+/// What carries a connection to the host: a socket, or a channel through a
+/// jump host.
+type Tunnel = Box<dyn TunnelStream>;
+
+trait TunnelStream: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> TunnelStream for T {}
+
+fn ssh_config() -> Arc<client::Config> {
+    Arc::new(client::Config {
+        keepalive_interval: Some(KEEPALIVE_INTERVAL),
+        keepalive_max: 3,
+        nodelay: true,
+        ..Default::default()
+    })
+}
+
+/// One step on the way to a host: given up after `CONNECT_TIMEOUT`, not
+/// counting time a person spends answering, or when the connection is
+/// cancelled.
+async fn step<T>(broker: &SshPrompts, future: impl Future<Output = Result<T>>) -> Result<T> {
+    let mut shutdown = broker.shutdown_receiver();
+    tokio::select! {
+        result = timeout_excluding_prompts(future, broker.prompt_activity_receiver(), CONNECT_TIMEOUT) => result?,
+        _ = shutdown.changed() => bail!("连接已取消"),
+    }
+}
+
+/// A socket to `host:port`, failing the way russh's own connect does: a
+/// name that does not resolve then counts as the network failing.
+async fn tcp(host: &str, port: u16) -> Result<TcpStream> {
+    let socket = TcpStream::connect((host, port))
+        .await
+        .map_err(russh::Error::IO)
+        .context(CONNECT_FAILED)?;
+    // As russh's own connect does: the terminal's keystrokes go out at once.
+    let _ = socket.set_nodelay(true);
+    Ok(socket)
+}
+
+/// A stream to `login`'s host through `proxy`.
+async fn through_proxy(
+    proxy: &ProxyLogin,
+    login: &SessionLogin,
+    secrets: &SharedSecretStore,
+) -> Result<TcpStream> {
+    let mut socket = TcpStream::connect((proxy.host.as_str(), proxy.port))
+        .await
+        .map_err(|error| {
+            let error = anyhow::Error::from(russh::Error::IO(error));
+            let reason = describe_login_error(&error);
+            error.context(RouteFailure(format!(
+                "无法连接代理服务器 {}:{}：{reason}",
+                proxy.host, proxy.port
+            )))
+        })?;
+    let _ = socket.set_nodelay(true);
+    let password = proxy
+        .password()
+        .and_then(|secret| saved_secret(secrets, &secret));
+    let auth = proxy.user.as_deref().map(|user| ProxyAuth {
+        user,
+        password: password.as_deref().map_or("", String::as_str),
+    });
+    handshake(&mut socket, proxy.kind, &login.host, login.port, auth)
+        .await
+        .map_err(|error| {
+            let text = error.to_string();
+            error.context(RouteFailure(text))
+        })?;
+    Ok(socket)
+}
+
+/// What went wrong on the way to a host, at a jump host or at the proxy, in
+/// words that say where. The error underneath stays in the chain, so a
+/// network failure on the way is retried like any other and a missing
+/// password is still recognised.
+#[derive(Debug)]
+pub(super) struct RouteFailure(pub(super) String);
+
+impl std::fmt::Display for RouteFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RouteFailure {}
+
+/// The questions of one host on the way. A jump host's say which one: the
+/// host the user opened is a different one.
+#[derive(Clone, Copy)]
+struct Asker<'a> {
+    prompts: &'a SshPrompts,
+    jump_host: Option<&'a str>,
+}
+
+impl Asker<'_> {
+    async fn ask_credential(
+        &self,
+        need: MissingCredential,
+        kind: ConnectionPromptKind,
+    ) -> Result<ConnectionPromptReply> {
+        self.prompts
+            .ask_credential(need, kind.at_jump_host(self.jump_host))
+            .await
     }
 }
 impl SshConnectionConfig {
@@ -361,6 +605,8 @@ pub struct ForwardedTcpip {
 pub struct SshClientHandler {
     host: String,
     port: u16,
+    /// The jump host's name, when this connection is to one.
+    jump_host: Option<String>,
     known_hosts_path: PathBuf,
     known_hosts_lock: Arc<Mutex<()>>,
     broker: Arc<SshPrompts>,
@@ -393,25 +639,26 @@ impl client::Handler for SshClientHandler {
                 .iter()
                 .map(|(_, saved)| saved.fingerprint(HashAlg::Sha256).to_string())
                 .collect();
-            self.broker.emit(ConnectionPromptKind::host_key_changed(
-                &self.host,
-                self.port,
-                algorithm,
-                old,
-                fingerprint,
-                &self.known_hosts_path,
-            ));
+            self.broker.emit(
+                ConnectionPromptKind::host_key_changed(
+                    &self.host,
+                    self.port,
+                    algorithm,
+                    old,
+                    fingerprint,
+                    &self.known_hosts_path,
+                )
+                .at_jump_host(self.jump_host.as_deref()),
+            );
             return Ok(false);
         }
 
         let reply = self
             .broker
-            .ask(ConnectionPromptKind::unknown_host(
-                &self.host,
-                self.port,
-                algorithm,
-                fingerprint,
-            ))
+            .ask(
+                ConnectionPromptKind::unknown_host(&self.host, self.port, algorithm, fingerprint)
+                    .at_jump_host(self.jump_host.as_deref()),
+            )
             .await?;
         if !matches!(reply, ConnectionPromptReply::TrustAndSave) {
             return Ok(false);
@@ -534,7 +781,7 @@ async fn authenticate(
     login: &SessionLogin,
     secrets: &SharedSecretStore,
     agent: &AgentLocation,
-    broker: &SshPrompts,
+    broker: Asker<'_>,
 ) -> Result<()> {
     let user = login.user.as_str();
     let method = login.method;
@@ -815,7 +1062,7 @@ fn key_paths(login: &SessionLogin) -> Result<Vec<PathBuf>> {
 async fn load_private_key(
     path: &Path,
     secrets: &SharedSecretStore,
-    broker: &SshPrompts,
+    broker: Asker<'_>,
 ) -> Result<Option<russh::keys::PrivateKey>> {
     if !path.exists() {
         return Ok(None);
@@ -873,7 +1120,7 @@ fn saved_secret(secrets: &SharedSecretStore, secret: &SecretRef) -> Option<Zeroi
 }
 
 async fn ask_one_secret(
-    broker: &SshPrompts,
+    broker: Asker<'_>,
     need: MissingCredential,
     title: &str,
     instructions: &str,
@@ -899,7 +1146,7 @@ async fn ask_one_secret(
 async fn keyboard_interactive(
     handle: &mut SshHandle,
     user: &str,
-    broker: &SshPrompts,
+    broker: Asker<'_>,
 ) -> Result<bool> {
     let mut response = handle
         .authenticate_keyboard_interactive_start(user, None)
