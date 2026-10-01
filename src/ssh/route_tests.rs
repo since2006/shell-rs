@@ -23,10 +23,8 @@ use crate::{
         ConnectionPrompt, ConnectionPromptKind, ConnectionPromptReply, ConnectionSecret,
         ConnectionTester as _, LoginTest,
     },
+    host::{AuthKind, HostLogin, JumpLogin, LoginRoute, ProxyKind, ProxyLogin, ProxySettings},
     secrets::{InMemorySecretStore, SecretRef, SecretStore as _},
-    session::{
-        AuthKind, JumpLogin, LoginRoute, ProxyKind, ProxyLogin, ProxySettings, SessionLogin,
-    },
 };
 
 /// An SSH server that lets one user in with one password and forwards
@@ -282,8 +280,8 @@ const TARGET_PASSWORD: &str = "target-password";
 const JUMP_USER: &str = "jumper";
 const JUMP_PASSWORD: &str = "jump-password";
 
-fn manual(host: &str, port: u16, user: &str) -> SessionLogin {
-    SessionLogin::manual(host, port, user, AuthKind::Password)
+fn manual(host: &str, port: u16, user: &str) -> HostLogin {
+    HostLogin::manual(host, port, user, AuthKind::Password)
 }
 
 fn hop(name: &str, port: u16) -> JumpLogin {

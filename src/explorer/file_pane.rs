@@ -14,7 +14,7 @@ use crate::{
         CatalogIcon, ExplorerAction, ExplorerCommand, ExplorerShortcut, LOCAL_FILE_LIST_CONTEXT,
         REMOTE_FILE_LIST_CONTEXT,
     },
-    session::{BookmarkSide, ConnectionState, SessionId, SessionStore},
+    host::{BookmarkSide, ConnectionState, HostId, HostStore},
     sftp::{DirectoryListing, SharedLocalDirectoryProvider},
 };
 use gpui_kit::component::{
@@ -163,8 +163,8 @@ pub struct FilePane {
     pub(super) side: PaneSide,
     /// The SFTP tab this pane belongs to, which its commands address.
     explorer: ExplorerId,
-    /// The session whose bookmarks it shows.
-    session_id: SessionId,
+    /// The host whose bookmarks it shows.
+    host_id: HostId,
     pub(super) path: String,
     home: String,
     /// Well-known local places for the 目录列表 select; empty for remote.
@@ -205,7 +205,7 @@ pub struct FilePane {
     transfer_enabled: bool,
     /// A file operation on this pane is running.
     busy: bool,
-    store: Entity<SessionStore>,
+    store: Entity<HostStore>,
     dispatch: FocusHandle,
     _subscriptions: Vec<Subscription>,
     load_task: Option<Task<()>>,
@@ -215,10 +215,10 @@ impl FilePane {
     pub fn new(
         side: PaneSide,
         explorer: ExplorerId,
-        session_id: SessionId,
+        host_id: HostId,
         home: String,
         places: Vec<(SharedString, String)>,
-        store: Entity<SessionStore>,
+        store: Entity<HostStore>,
         dispatch: FocusHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -257,7 +257,7 @@ impl FilePane {
         let mut pane = Self {
             side,
             explorer,
-            session_id,
+            host_id,
             path: home.clone(),
             home,
             places,
@@ -365,7 +365,7 @@ impl FilePane {
     pub fn bookmarks(&self, cx: &App) -> Vec<String> {
         self.store
             .read(cx)
-            .bookmarks(self.session_id, self.side.bookmark_side())
+            .bookmarks(self.host_id, self.side.bookmark_side())
             .to_vec()
     }
     pub fn back_target(&self) -> Option<String> {
@@ -1226,7 +1226,7 @@ impl Render for FilePane {
                         )
                     })
                     // One menu for rows, column titles and empty space, on the
-                    // container: see `SessionPanel` for why menus stay off
+                    // container: see `HostPanel` for why menus stay off
                     // virtual rows. Two menus would also both open, since a
                     // menu does not stop the click reaching the one around it.
                     .context_menu(move |menu, window, cx| {

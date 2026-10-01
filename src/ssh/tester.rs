@@ -1,4 +1,4 @@
-//! Log in once with the session form's values, for its 「测试连接」 button.
+//! Log in once with the host form's values, for its 「测试连接」 button.
 use std::{
     sync::{Arc, Mutex, OnceLock, Weak},
     time::Duration,
@@ -17,8 +17,8 @@ use crate::{
         ConnectionPrompt, ConnectionPromptKind, ConnectionPromptReply, ConnectionTester, LoginTest,
         TrustCallback,
     },
+    host::{JumpLogin, LoginRoute},
     secrets::{SecretRef, SecretStore, SharedSecretStore},
-    session::{JumpLogin, LoginRoute},
 };
 
 /// How long a test may take, not counting the time a person spends deciding

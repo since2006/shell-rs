@@ -17,19 +17,19 @@ use gpui_kit::*;
 
 use super::{ForwardManager, ForwardStatus};
 use crate::app::{
-    CatalogIcon, DeleteForward, EditForward, FORWARD_PANEL_CONTEXT, NewForward, NewSession,
+    CatalogIcon, DeleteForward, EditForward, FORWARD_PANEL_CONTEXT, NewForward, NewHost,
     SelectNextForward, SelectPreviousForward, StartForward, StopForward, ToggleSelectedForward,
 };
-use crate::session::{ForwardId, ForwardKind, SessionStore, matches_forward_query};
+use crate::host::{ForwardId, ForwardKind, HostStore, matches_forward_query};
 
-/// The port-forwarding list the left dock shows in place of the sessions:
+/// The port-forwarding list the left dock shows in place of the hosts:
 /// every rule, whether it is running, and the switch that starts or stops it.
 ///
-/// The rules live in the shared `SessionStore` and what each is doing in the
+/// The rules live in the shared `HostStore` and what each is doing in the
 /// `ForwardManager`; this panel observes both and owns only its selection
 /// and search.
 pub struct ForwardPanel {
-    store: Entity<SessionStore>,
+    store: Entity<HostStore>,
     manager: Entity<ForwardManager>,
     /// The workspace's focus handle: actions dispatched on it reach the
     /// workspace handlers whatever is focused, which after a dialog closes
@@ -63,7 +63,7 @@ struct ForwardRow {
 
 impl ForwardPanel {
     pub fn new(
-        store: Entity<SessionStore>,
+        store: Entity<HostStore>,
         manager: Entity<ForwardManager>,
         target: FocusHandle,
         window: &mut Window,
@@ -162,18 +162,18 @@ impl ForwardPanel {
             .forwards()
             .iter()
             .filter_map(|rule| {
-                let session = store
-                    .session(rule.session)
-                    .map(|session| session.name.clone())
+                let host = store
+                    .host(rule.host)
+                    .map(|host| host.name.clone())
                     .unwrap_or_default();
-                matches_forward_query(rule, &session, &self.query).then(|| ForwardRow {
+                matches_forward_query(rule, &host, &self.query).then(|| ForwardRow {
                     id: rule.id,
                     kind: rule.kind,
                     title: rule.title(),
                     detail: if rule.name.is_empty() {
-                        format!("{} · {session}", rule.kind.label())
+                        format!("{} · {host}", rule.kind.label())
                     } else {
-                        format!("{} · {} · {session}", rule.kind.label(), rule.summary())
+                        format!("{} · {} · {host}", rule.kind.label(), rule.summary())
                     }
                     .into(),
                     status: manager.status(rule.id),
@@ -236,17 +236,17 @@ impl ForwardPanel {
         let target = self.target.clone();
         let (title, hint, button) = if !store.forwards().is_empty() {
             ("没有匹配的端口转发", None, None)
-        } else if store.sessions().is_empty() {
+        } else if store.hosts().is_empty() {
             (
                 "还没有主机",
                 Some("端口转发经由一台主机的 SSH 连接，先新建主机。"),
                 Some(
-                    Button::new("forward-empty-new-session")
+                    Button::new("forward-empty-new-host")
                         .small()
                         .icon(IconName::Plus)
                         .label("新建主机…")
                         .on_click(move |_, window, cx| {
-                            target.dispatch_action(&NewSession, window, cx)
+                            target.dispatch_action(&NewHost, window, cx)
                         }),
                 ),
             )
@@ -313,7 +313,7 @@ impl ForwardPanel {
             .confirmed(selected)
             .aria_selected(selected)
             .when(selected, |item| {
-                item.bg(crate::app::session_tree_selection_color(theme))
+                item.bg(crate::app::host_tree_selection_color(theme))
             })
             .child(
                 h_flex()
@@ -539,7 +539,7 @@ impl Render for ForwardPanel {
             )
             .child(
                 // The menu hangs off the list, not off the rows, like the
-                // session tree's: capture clears the hit before a
+                // host tree's: capture clears the hit before a
                 // right-clicked row writes itself back, and the menu is
                 // built after both.
                 div()

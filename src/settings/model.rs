@@ -25,7 +25,7 @@ pub struct AppSettings {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ExternalCliSettings {
-    /// Whether the `shellrs` command may use the saved sessions. Off until
+    /// Whether the `shellrs` command may use the saved hosts. Off until
     /// the user turns it on.
     pub enabled: bool,
 }

@@ -1,5 +1,5 @@
 //! 打开目录/书签, after WinSCP's Open directory dialog: a directory to go to,
-//! and this session's bookmarks for the pane. Picking a bookmark fills in the
+//! and this host's bookmarks for the pane. Picking a bookmark fills in the
 //! directory; the bookmark matching the directory is the one selected. Changes
 //! to the bookmarks are saved as they are made, even if the dialog is then
 //! cancelled, as in WinSCP.
@@ -8,7 +8,7 @@ use super::{ExplorerId, ExplorerPanel, expand_path};
 use crate::app::ExplorerDispatch as _;
 use crate::{
     app::{CatalogIcon, ExplorerAction, ExplorerCommand},
-    session::{BookmarkSide, SessionId, SessionStore},
+    host::{BookmarkSide, HostId, HostStore},
     shared::{commit_footer, form_error},
 };
 use gpui_kit::component::{
@@ -24,11 +24,11 @@ use gpui_kit::*;
 
 struct OpenDirectoryForm {
     remote: bool,
-    /// The tab the commands address, and the session whose bookmarks these are.
+    /// The tab the commands address, and the host whose bookmarks these are.
     explorer: ExplorerId,
-    session: SessionId,
+    host: HostId,
     dispatch: FocusHandle,
-    store: Entity<SessionStore>,
+    store: Entity<HostStore>,
     input: Entity<InputState>,
     list_focus: FocusHandle,
     /// The pane's directory and home, which `~` and relative paths use.
@@ -42,7 +42,7 @@ impl OpenDirectoryForm {
     fn bookmarks(&self, cx: &App) -> Vec<String> {
         self.store
             .read(cx)
-            .bookmarks(self.session, BookmarkSide::from_remote(self.remote))
+            .bookmarks(self.host, BookmarkSide::from_remote(self.remote))
             .to_vec()
     }
     /// The typed directory, resolved the way the pane resolves it; empty
@@ -349,7 +349,7 @@ impl ExplorerPanel {
         let form = cx.new(|cx| OpenDirectoryForm {
             remote,
             explorer: self.id(),
-            session: self.session_id(),
+            host: self.host_id(),
             dispatch: self.dispatch.clone(),
             store: self.store.clone(),
             input: input.clone(),

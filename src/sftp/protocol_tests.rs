@@ -2,8 +2,8 @@
 use super::*;
 use crate::{
     connection::{ConnectionPromptKind, ConnectionPromptReply, ConnectionSecret},
+    host::{AuthKind, Host, HostDraft, HostId, HostLogin},
     secrets::InMemorySecretStore,
-    session::{AuthKind, Session, SessionDraft, SessionId, SessionLogin},
     ssh::SshConnector,
 };
 use russh::{
@@ -249,9 +249,9 @@ fn worker(port: u16, data: &std::path::Path) -> Worker {
         data.join("upload-resume"),
         data.join("download-resume"),
     );
-    let session = Session::new(
-        SessionId(1),
-        SessionDraft::new(
+    let host = Host::new(
+        HostId(1),
+        HostDraft::new(
             "fixture",
             "127.0.0.1",
             port,
@@ -260,7 +260,7 @@ fn worker(port: u16, data: &std::path::Path) -> Worker {
             None,
         ),
     );
-    let transport = provider.create(&SessionLogin::of(&session, None));
+    let transport = provider.create(&HostLogin::of(&host, None));
     let (commands, rx) = async_channel::unbounded();
     let (tx, events) = async_channel::unbounded();
     let thread = std::thread::spawn(move || transport.run(rx, tx).unwrap());

@@ -3,7 +3,7 @@
 //! stays busy until the result arrives, then re-reads its directory.
 
 use super::{ExplorerPanel, NewEntryKind};
-use crate::session::ConnectionState;
+use crate::host::ConnectionState;
 use crate::sftp::{
     LocalDirectoryProvider, PermissionEdit, RemoteOperation, RemotePath, SftpCommand,
 };

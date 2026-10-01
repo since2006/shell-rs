@@ -15,7 +15,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::CatalogIcon;
-use crate::session::ForwardKind;
+use crate::host::ForwardKind;
 
 /// One round of the dot: across the tunnel, on to the target, then a rest
 /// before it sets out again. The rounds go on for as long as the picture is

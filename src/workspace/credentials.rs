@@ -12,7 +12,7 @@ use crate::app::{
     NewCredential, ShowCredentials,
 };
 use crate::credential::{CredentialDialog, open_credential_dialog};
-use crate::session::{AuthKind, CredentialKind, read_public_key};
+use crate::host::{AuthKind, CredentialKind, read_public_key};
 use crate::shared::confirm_delete;
 
 use super::{sidebar::SidebarMode, workspace_view::Workspace};
@@ -117,7 +117,7 @@ impl Workspace {
         else {
             return;
         };
-        let hosts = store.sessions_using(id).count();
+        let hosts = store.hosts_using(id).count();
         let store = self.store.clone();
         confirm_delete(
             &name,
@@ -147,7 +147,7 @@ fn describe_credential_delete(hosts: usize, kind: CredentialKind) -> Option<Shar
 #[cfg(test)]
 mod tests {
     use super::describe_credential_delete;
-    use crate::session::CredentialKind;
+    use crate::host::CredentialKind;
 
     #[test]
     fn deleting_a_credential_says_how_many_hosts_and_what_they_become() {

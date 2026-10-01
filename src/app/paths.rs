@@ -17,7 +17,7 @@ pub fn data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// The SQLite file holding sessions and groups. The parent directory is
+/// The SQLite file holding hosts and groups. The parent directory is
 /// created if it does not exist yet.
 pub fn database_path() -> std::io::Result<PathBuf> {
     let dir = data_dir();

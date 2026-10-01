@@ -22,14 +22,13 @@ use crate::connection::{LoginTest, SharedConnectionTester, TrustCallback, Unknow
 
 use super::secret_fields::SecretFields;
 use super::{
-    AuthKind, Credential, CredentialId, CredentialKind, DEFAULT_USER, GroupId, ProxyKind,
-    ProxySettings, Route, Session, SessionDraft, SessionId, SessionLogin, SessionStore,
-    group_options,
+    AuthKind, Credential, CredentialId, CredentialKind, DEFAULT_USER, GroupId, Host, HostDraft,
+    HostId, HostLogin, HostStore, ProxyKind, ProxySettings, Route, group_options,
 };
 pub use crate::shared::DeleteHandler;
 use crate::shared::{Segment, SegmentedControl, confirm_delete, form_error, parse_port};
 
-/// The label of the row that puts a session at the root of the tree.
+/// The label of the row that puts a host at the root of the tree.
 pub const NO_GROUP_LABEL: &str = "（无分组）";
 
 /// Where the dialog's top sits and how tall it may grow, as fractions of
@@ -119,24 +118,24 @@ const PROXY_NOTE: &str = "目标地址由代理服务器解析；代理不需要
 /// A host the form offers as a jump host, as it was when the form opened.
 #[derive(Clone)]
 struct JumpHost {
-    id: SessionId,
+    id: HostId,
     name: SharedString,
     /// `host:port`.
     address: SharedString,
 }
 
 impl JumpHost {
-    fn of(session: &Session) -> Self {
+    fn of(host: &Host) -> Self {
         Self {
-            id: session.id,
-            name: session.name.clone(),
-            address: format!("{}:{}", session.host, session.port).into(),
+            id: host.id,
+            name: host.name.clone(),
+            address: format!("{}:{}", host.address, host.port).into(),
         }
     }
 }
 
 impl SearchableListItem for JumpHost {
-    type Value = SessionId;
+    type Value = HostId;
 
     /// The name and the address, both of which the search looks in.
     fn title(&self) -> SharedString {
@@ -156,20 +155,20 @@ impl SearchableListItem for JumpHost {
             )
     }
 
-    fn value(&self) -> &SessionId {
+    fn value(&self) -> &HostId {
         &self.id
     }
 }
 
 type JumpPicker = ComboboxState<SearchableVec<JumpHost>>;
 
-/// The body of the new/edit session dialog. Owns the field states and
+/// The body of the new/edit host dialog. Owns the field states and
 /// validates on commit; the store is only touched when validation passes.
-pub struct SessionForm {
-    store: Entity<SessionStore>,
-    editing: Option<SessionId>,
+pub struct HostForm {
+    store: Entity<HostStore>,
+    editing: Option<HostId>,
     name: Entity<InputState>,
-    host: Entity<InputState>,
+    address: Entity<InputState>,
     port: Entity<InputState>,
     source: AuthSource,
     user: Entity<InputState>,
@@ -188,7 +187,7 @@ pub struct SessionForm {
     group_ids: Vec<Option<GroupId>>,
     route: RouteChoice,
     /// The jump hosts, in order; `None` is one that has been deleted.
-    hops: Vec<Option<SessionId>>,
+    hops: Vec<Option<HostId>>,
     /// Every other host, as it was when the form opened: what can be a
     /// jump host, and what the hops are called.
     jump_hosts: Vec<JumpHost>,
@@ -208,11 +207,11 @@ pub struct SessionForm {
     _subscriptions: Vec<Subscription>,
 }
 
-impl SessionForm {
+impl HostForm {
     pub fn new(
-        editing: Option<SessionId>,
+        editing: Option<HostId>,
         preselect_group: Option<GroupId>,
-        store: Entity<SessionStore>,
+        store: Entity<HostStore>,
         tester: SharedConnectionTester,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -221,22 +220,22 @@ impl SessionForm {
         let (draft, options, credentials, key_dir, editing_connected, jump_hosts) = {
             let read = store.read(cx);
             (
-                editing.and_then(|id| read.session(id)).map(Session::draft),
+                editing.and_then(|id| read.host(id)).map(Host::draft),
                 group_options(read.groups(), &[]),
                 read.credentials().to_vec(),
                 read.key_dir().map(Path::to_path_buf),
                 editing
-                    .and_then(|id| read.session(id))
-                    .is_some_and(|session| session.state != super::ConnectionState::Disconnected),
-                read.sessions()
+                    .and_then(|id| read.host(id))
+                    .is_some_and(|host| host.state != super::ConnectionState::Disconnected),
+                read.hosts()
                     .iter()
-                    .filter(|session| Some(session.id) != editing)
+                    .filter(|host| Some(host.id) != editing)
                     .map(JumpHost::of)
                     .collect::<Vec<_>>(),
             )
         };
-        // A session with no group sits at the root of the tree, which is where
-        // every session starts when the database is still empty.
+        // A host with no group sits at the root of the tree, which is where
+        // every host starts when the database is still empty.
         let mut group_ids: Vec<Option<GroupId>> = vec![None];
         let mut group_names: Vec<SharedString> = vec![NO_GROUP_LABEL.into()];
         for (id, path) in options {
@@ -244,7 +243,7 @@ impl SessionForm {
             group_names.push(path);
         }
         let draft = draft.unwrap_or_else(|| {
-            SessionDraft::new(
+            HostDraft::new(
                 "",
                 "",
                 22,
@@ -259,10 +258,10 @@ impl SessionForm {
                 .placeholder("例如 web-01")
                 .default_value(draft.name.clone())
         });
-        let host = cx.new(|cx| {
+        let address = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("主机名或 IP 地址")
-                .default_value(draft.host.clone())
+                .default_value(draft.address.clone())
         });
         let port = cx.new(|cx| {
             InputState::new(window, cx)
@@ -401,7 +400,7 @@ impl SessionForm {
             store,
             editing,
             name,
-            host,
+            address,
             port,
             source: match (credential_ix, draft.auth) {
                 (Some(_), _) => AuthSource::Credential,
@@ -451,7 +450,7 @@ impl SessionForm {
 
     /// Put `id` at the end of the jump hosts, and take it off the hosts that
     /// can still be added.
-    fn add_hop(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
+    fn add_hop(&mut self, id: HostId, window: &mut Window, cx: &mut Context<Self>) {
         if !self.hops.contains(&Some(id)) {
             self.hops.push(Some(id));
             self.error = None;
@@ -522,12 +521,12 @@ impl SessionForm {
 
     /// The address and port, or why they will not do.
     fn endpoint(&self, cx: &App) -> Result<(String, u16), &'static str> {
-        let host = self.host.read(cx).value().trim().to_string();
+        let address = self.address.read(cx).value().trim().to_string();
         let port = parse_port(self.port.read(cx).value().trim());
-        match (host.is_empty(), port) {
+        match (address.is_empty(), port) {
             (true, _) => Err("请输入地址"),
             (_, None) => Err("端口必须是 1 到 65535 之间的数字"),
-            (_, Some(port)) => Ok((host, port)),
+            (_, Some(port)) => Ok((address, port)),
         }
     }
 
@@ -541,7 +540,7 @@ impl SessionForm {
             None => {
                 let credential = self.selected_credential(cx).ok_or("请选择凭据")?;
                 LoginTest::saved(
-                    SessionLogin::with_credential(host, port, credential).with_route(route_login),
+                    HostLogin::with_credential(host, port, credential).with_route(route_login),
                 )
             }
             Some(auth) => {
@@ -550,7 +549,7 @@ impl SessionForm {
                     return Err("请输入用户名");
                 }
                 let mut request = LoginTest::typed(
-                    SessionLogin::manual(host, port, user, auth).with_route(route_login),
+                    HostLogin::manual(host, port, user, auth).with_route(route_login),
                 );
                 // Only what the chosen way uses, which is also what the form
                 // shows.
@@ -692,7 +691,7 @@ impl SessionForm {
         let mut password_change = None;
         let draft = match login {
             CommittedLogin::Saved { credential, user } => {
-                SessionDraft::new(name, host, port, user, AuthKind::default(), group)
+                HostDraft::new(name, host, port, user, AuthKind::default(), group)
                     .with_credential(credential)
             }
             CommittedLogin::Own(auth) => {
@@ -702,7 +701,7 @@ impl SessionForm {
                 } else {
                     user
                 };
-                let draft = SessionDraft::new(name, host, port, user, auth, group);
+                let draft = HostDraft::new(name, host, port, user, auth, group);
                 if auth == AuthKind::Password
                     && let Some(change) = self.fields.read(cx).password_change(cx)
                 {
@@ -735,7 +734,7 @@ impl SessionForm {
                 }
             }
             // `update` above may have dropped the entry for the endpoint the
-            // session just left; this writes the one it moved to.
+            // host just left; this writes the one it moved to.
             for (secret, change) in password_change.into_iter().chain(proxy_change) {
                 store.save_secret(secret, change, cx);
             }
@@ -756,14 +755,14 @@ impl SessionForm {
             Field::new()
                 .label("用户名")
                 .col_span(4)
-                .child(Input::new(&self.user).id("session-user").small()),
+                .child(Input::new(&self.user).id("host-user").small()),
         )
         .when(auth == AuthKind::Password, |form| {
             form.child(
                 Field::new()
                     .label("密码")
                     .col_span(4)
-                    .child(self.fields.read(cx).password_input("session-password")),
+                    .child(self.fields.read(cx).password_input("host-password")),
             )
         })
     }
@@ -783,7 +782,7 @@ impl SessionForm {
             .col_span(4)
             .child(
                 Select::new(&self.credential)
-                    .id("session-credential")
+                    .id("host-credential")
                     .placeholder("请选择凭据")
                     .search_placeholder("搜索凭据")
                     .empty(|_, cx| {
@@ -799,7 +798,7 @@ impl SessionForm {
             .when_some(summary, |field, summary: SharedString| {
                 field.description_fn(move |_, _| {
                     div()
-                        .id("session-credential-summary")
+                        .id("host-credential-summary")
                         .test_support()
                         .aria_label(summary.clone())
                         .child(summary.clone())
@@ -808,11 +807,11 @@ impl SessionForm {
     }
 }
 
-impl SessionForm {
+impl HostForm {
     /// 「连接方式」: the choice, and below it what the choice needs.
     fn route_field(&self, cx: &mut Context<Self>) -> Field {
         let route = self.route;
-        let choice = SegmentedControl::new("session-route")
+        let choice = SegmentedControl::new("host-route")
             .selected_index(RouteChoice::ALL.iter().position(|each| *each == route))
             .on_change(cx.listener(|this, ix: &usize, _, cx| {
                 if let Some(route) = RouteChoice::ALL.get(*ix) {
@@ -849,7 +848,7 @@ impl SessionForm {
     fn jump_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (muted, danger) = (theme.muted_foreground, theme.danger);
-        let name_of = |hop: &Option<SessionId>| {
+        let name_of = |hop: &Option<HostId>| {
             hop.and_then(|id| self.jump_hosts.iter().find(|host| host.id == id))
         };
 
@@ -892,7 +891,7 @@ impl SessionForm {
             .join(" → ");
         let stop_count = stops.len();
         let chain = h_flex()
-            .id("session-route-chain")
+            .id("host-route-chain")
             .test_support()
             .aria_label(chain_label)
             .flex_wrap()
@@ -1008,7 +1007,7 @@ impl SessionForm {
             .gap_2()
             .child(
                 div()
-                    .id("session-route-note")
+                    .id("host-route-note")
                     .test_support()
                     .aria_label(JUMP_NOTE)
                     .text_sm()
@@ -1030,47 +1029,40 @@ impl SessionForm {
                 Form::new()
                     .columns(4)
                     .child(
-                        Field::new().label("代理类型").col_span(4).child(
-                            Select::new(&self.proxy_kind)
-                                .id("session-proxy-kind")
-                                .small(),
-                        ),
+                        Field::new()
+                            .label("代理类型")
+                            .col_span(4)
+                            .child(Select::new(&self.proxy_kind).id("host-proxy-kind").small()),
                     )
                     .child(
                         Field::new()
                             .label("代理地址")
                             .required(true)
                             .col_span(3)
-                            .child(
-                                Input::new(&self.proxy_host)
-                                    .id("session-proxy-host")
-                                    .small(),
-                            ),
+                            .child(Input::new(&self.proxy_host).id("host-proxy-host").small()),
                     )
                     .child(
-                        Field::new().label("端口").required(true).child(
-                            Input::new(&self.proxy_port)
-                                .id("session-proxy-port")
-                                .small(),
-                        ),
+                        Field::new()
+                            .label("端口")
+                            .required(true)
+                            .child(Input::new(&self.proxy_port).id("host-proxy-port").small()),
                     )
                     .child(
-                        Field::new().label("用户名").col_span(2).child(
-                            Input::new(&self.proxy_user)
-                                .id("session-proxy-user")
-                                .small(),
-                        ),
+                        Field::new()
+                            .label("用户名")
+                            .col_span(2)
+                            .child(Input::new(&self.proxy_user).id("host-proxy-user").small()),
                     )
                     .child(
                         Field::new()
                             .label("密码")
                             .col_span(2)
-                            .child(password.password_input("session-proxy-password")),
+                            .child(password.password_input("host-proxy-password")),
                     ),
             )
             .child(
                 div()
-                    .id("session-route-note")
+                    .id("host-route-note")
                     .test_support()
                     .aria_label(PROXY_NOTE)
                     .text_sm()
@@ -1084,7 +1076,7 @@ impl SessionForm {
 const DELETED_HOST: &str = "已删除的主机";
 
 /// The hosts that can still be added as a jump host: those not in `hops`.
-fn available_jump_hosts(hosts: &[JumpHost], hops: &[Option<SessionId>]) -> Vec<JumpHost> {
+fn available_jump_hosts(hosts: &[JumpHost], hops: &[Option<HostId>]) -> Vec<JumpHost> {
     hosts
         .iter()
         .filter(|host| !hops.contains(&Some(host.id)))
@@ -1092,7 +1084,7 @@ fn available_jump_hosts(hosts: &[JumpHost], hops: &[Option<SessionId>]) -> Vec<J
         .collect()
 }
 
-impl Render for SessionForm {
+impl Render for HostForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let source = self.source;
         let keychain = self.fields.read(cx).keychain_available();
@@ -1110,26 +1102,26 @@ impl Render for SessionForm {
                     .label("名称")
                     .required(true)
                     .col_span(4)
-                    .child(Input::new(&self.name).id("session-name").small()),
+                    .child(Input::new(&self.name).id("host-name").small()),
             )
             .child(
                 Field::new()
                     .label("地址")
                     .required(true)
                     .col_span(3)
-                    .child(Input::new(&self.host).id("session-host").small()),
+                    .child(Input::new(&self.address).id("host-address").small()),
             )
             .child(
                 Field::new()
                     .label("端口")
-                    .child(Input::new(&self.port).id("session-port").small()),
+                    .child(Input::new(&self.port).id("host-port").small()),
             )
             .child(
                 Field::new()
                     .label("认证方式")
                     .col_span(4)
                     .child(
-                        SegmentedControl::new("session-auth-source")
+                        SegmentedControl::new("host-auth-source")
                             .selected_index(AuthSource::ALL.iter().position(|each| *each == source))
                             .on_change(cx.listener(|this, ix: &usize, _, cx| {
                                 if let Some(source) = AuthSource::ALL.get(*ix) {
@@ -1141,7 +1133,7 @@ impl Render for SessionForm {
                     .when(source == AuthSource::NoPassword, |field| {
                         field.description_fn(|_, _| {
                             div()
-                                .id("session-no-password-note")
+                                .id("host-no-password-note")
                                 .test_support()
                                 .aria_label(NO_PASSWORD_NOTE)
                                 .child(NO_PASSWORD_NOTE)
@@ -1166,7 +1158,7 @@ impl Render for SessionForm {
                 .child(
                     Field::new().label("备注").col_span(4).child(
                         div()
-                            .id("session-notes")
+                            .id("host-notes")
                             .test_support()
                             .w_full()
                             .child(Textarea::new(&self.notes).text_sm()),
@@ -1229,7 +1221,7 @@ fn credential_summary(credential: &Credential, key_dir: Option<&Path>) -> Shared
 /// A trust question from the test's worker, with where to send the answer.
 type TrustQuestion = (UnknownHostPrompt, std::sync::mpsc::Sender<bool>);
 
-/// Put a first-seen host key to the user, above the session dialog. Closing
+/// Put a first-seen host key to the user, above the host dialog. Closing
 /// the dialog any other way than trusting counts as declining.
 fn ask_to_trust(
     prompt: UnknownHostPrompt,
@@ -1278,19 +1270,19 @@ fn connection_test_notification(result: Result<(), String>) -> Notification {
 
 /// Whether this authentication kind can end up asking for a password.
 /// `Auto` walks agent, then keys, then password, so it can.
-/// Open the new-session (`editing == None`) or edit-session dialog.
-/// `preselect_group` fills in the group field of a new session, so creating
+/// Open the new-host (`editing == None`) or edit-host dialog.
+/// `preselect_group` fills in the group field of a new host, so creating
 /// one from a group's context menu lands it in that group. `tester` backs the
 /// dialog's 「测试连接」 button.
-pub fn open_session_dialog(
-    editing: Option<SessionId>,
+pub fn open_host_dialog(
+    editing: Option<HostId>,
     preselect_group: Option<GroupId>,
-    store: Entity<SessionStore>,
+    store: Entity<HostStore>,
     tester: SharedConnectionTester,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let form = cx.new(|cx| SessionForm::new(editing, preselect_group, store, tester, window, cx));
+    let form = cx.new(|cx| HostForm::new(editing, preselect_group, store, tester, window, cx));
     let title: SharedString = if editing.is_some() {
         "编辑主机"
     } else {
@@ -1377,11 +1369,11 @@ pub struct Dependents {
     pub jump_users: usize,
 }
 
-/// Ask before deleting a session. `on_delete` runs when the user confirms.
-/// `affected` is whether tabs of the session are open and how many of them
+/// Ask before deleting a host. `on_delete` runs when the user confirms.
+/// `affected` is whether tabs of the host are open and how many of them
 /// are transferring.
-pub fn confirm_delete_session(
-    session: &Session,
+pub fn confirm_delete_host(
+    host: &Host,
     affected: (bool, usize),
     dependents: Dependents,
     on_delete: DeleteHandler,
@@ -1390,17 +1382,17 @@ pub fn confirm_delete_session(
 ) {
     let (closes_tabs, uploads) = affected;
     confirm_delete(
-        &session.name,
-        describe_session_delete(closes_tabs, uploads, dependents),
+        &host.name,
+        describe_host_delete(closes_tabs, uploads, dependents),
         on_delete,
         window,
         cx,
     );
 }
 
-/// What the delete dialog says goes with the session. `None` for a session
+/// What the delete dialog says goes with the host. `None` for a host
 /// with nothing open and nothing depending on it.
-fn describe_session_delete(
+fn describe_host_delete(
     closes_tabs: bool,
     uploads: usize,
     dependents: Dependents,
@@ -1429,7 +1421,7 @@ fn describe_session_delete(
 
 #[cfg(test)]
 mod tests {
-    use super::{Dependents, describe_session_delete};
+    use super::{Dependents, describe_host_delete};
 
     fn forwards(forwards: usize) -> Dependents {
         Dependents {
@@ -1439,22 +1431,22 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_session_says_what_goes_with_it() {
-        assert_eq!(describe_session_delete(false, 0, forwards(0)), None);
+    fn deleting_a_host_says_what_goes_with_it() {
+        assert_eq!(describe_host_delete(false, 0, forwards(0)), None);
         assert_eq!(
-            describe_session_delete(true, 0, forwards(0)).as_deref(),
+            describe_host_delete(true, 0, forwards(0)).as_deref(),
             Some("会一并关闭该主机已打开的终端和 SFTP 标签。")
         );
         assert_eq!(
-            describe_session_delete(true, 2, forwards(0)).as_deref(),
+            describe_host_delete(true, 2, forwards(0)).as_deref(),
             Some("会一并关闭该主机已打开的终端和 SFTP 标签。将停止 2 个传输批次并保留续传进度。")
         );
         assert_eq!(
-            describe_session_delete(false, 0, forwards(3)).as_deref(),
+            describe_host_delete(false, 0, forwards(3)).as_deref(),
             Some("将同时删除经由该主机的 3 条端口转发。")
         );
         assert_eq!(
-            describe_session_delete(true, 0, forwards(1)).as_deref(),
+            describe_host_delete(true, 0, forwards(1)).as_deref(),
             Some("会一并关闭该主机已打开的终端和 SFTP 标签。将同时删除经由该主机的 1 条端口转发。")
         );
     }
@@ -1466,7 +1458,7 @@ mod tests {
             jump_users: 2,
         };
         assert_eq!(
-            describe_session_delete(false, 0, dependents).as_deref(),
+            describe_host_delete(false, 0, dependents).as_deref(),
             Some(
                 "将同时删除经由该主机的 1 条端口转发。有 2 台主机把它用作跳板主机，删除后要重新选择跳板主机才能连接。"
             )

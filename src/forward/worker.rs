@@ -2,7 +2,7 @@
 //!
 //! One run is one thread with its own current-thread runtime, like an SFTP
 //! worker: SSH handles are bound to the runtime that made them. The run owns
-//! its own connection, apart from any terminal or SFTP tab of the session.
+//! its own connection, apart from any terminal or SFTP tab of the host.
 
 use std::{
     future::Future,
@@ -26,7 +26,7 @@ use super::{
 };
 use crate::{
     connection::{ConnectionPrompt, ConnectionPromptKind},
-    session::{ForwardEndpoint, ForwardKind, ForwardRule, SessionLogin},
+    host::{ForwardEndpoint, ForwardKind, ForwardRule, HostLogin},
     ssh::{
         ForwardedTcpip, MissingCredential, SshConnectionConfig, SshConnector, SshHandle,
         SshPrompts, describe_login_error, is_network_error,
@@ -78,7 +78,7 @@ impl SshForwardTransportProvider {
 }
 
 impl ForwardTransportProvider for SshForwardTransportProvider {
-    fn create(&self, rule: &ForwardRule, login: &SessionLogin) -> Box<dyn ForwardTransport> {
+    fn create(&self, rule: &ForwardRule, login: &HostLogin) -> Box<dyn ForwardTransport> {
         Box::new(SshForwardTransport {
             connector: self.connector.clone(),
             config: SshConnectionConfig::from(login),

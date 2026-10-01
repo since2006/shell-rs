@@ -8,7 +8,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{DeleteHandler, Dependents, GroupDraft, GroupId, SessionStore, group_options};
+use super::{DeleteHandler, Dependents, GroupDraft, GroupId, HostStore, group_options};
 use crate::shared::{commit_footer, confirm_delete, form_error};
 
 /// The label of the row that stands for "no parent" / "no group".
@@ -17,7 +17,7 @@ pub const ROOT_LABEL: &str = "（顶层）";
 /// The body of the new/rename group dialog. Owns the field states and
 /// validates on commit; the store is only touched when validation passes.
 pub struct GroupForm {
-    store: Entity<SessionStore>,
+    store: Entity<HostStore>,
     editing: Option<GroupId>,
     name: Entity<InputState>,
     parent: Entity<SelectState<Vec<SharedString>>>,
@@ -30,7 +30,7 @@ impl GroupForm {
     pub fn new(
         editing: Option<GroupId>,
         default_parent: Option<GroupId>,
-        store: Entity<SessionStore>,
+        store: Entity<HostStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -151,7 +151,7 @@ impl Render for GroupForm {
 pub fn open_group_dialog(
     editing: Option<GroupId>,
     default_parent: Option<GroupId>,
-    store: Entity<SessionStore>,
+    store: Entity<HostStore>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -187,12 +187,12 @@ pub fn open_group_dialog(
 }
 
 /// Ask before deleting a group. Deleting one takes its subgroups and every
-/// session inside them, and those sessions' port forwards, so the counts go
+/// host inside them, and those hosts' port forwards, so the counts go
 /// in the description, with the hosts elsewhere that jump through them.
 #[allow(clippy::too_many_arguments)]
 pub fn confirm_delete_group(
     name: &str,
-    sessions: usize,
+    hosts: usize,
     subgroups: usize,
     affected: (bool, usize),
     dependents: Dependents,
@@ -205,7 +205,7 @@ pub fn confirm_delete_group(
         jump_users,
     } = dependents;
     let (closes_tabs, uploads) = affected;
-    let mut description = describe_contents(sessions, subgroups, closes_tabs);
+    let mut description = describe_contents(hosts, subgroups, closes_tabs);
     if uploads > 0 {
         description = Some(
             format!(
@@ -238,13 +238,13 @@ pub fn confirm_delete_group(
 
 /// What the delete dialog says about everything that goes with the group.
 /// `None` for an empty group with nothing open.
-fn describe_contents(sessions: usize, subgroups: usize, closes_tabs: bool) -> Option<SharedString> {
-    let contents = match (sessions, subgroups) {
+fn describe_contents(hosts: usize, subgroups: usize, closes_tabs: bool) -> Option<SharedString> {
+    let contents = match (hosts, subgroups) {
         (0, 0) => None,
         (0, subgroups) => Some(format!("将同时删除其中的 {subgroups} 个子分组。")),
-        (sessions, 0) => Some(format!("将同时删除其中的 {sessions} 台主机。")),
-        (sessions, subgroups) => Some(format!(
-            "将同时删除其中的 {sessions} 台主机和 {subgroups} 个子分组。"
+        (hosts, 0) => Some(format!("将同时删除其中的 {hosts} 台主机。")),
+        (hosts, subgroups) => Some(format!(
+            "将同时删除其中的 {hosts} 台主机和 {subgroups} 个子分组。"
         )),
     };
     let tabs = closes_tabs.then_some("已打开的终端和 SFTP 标签会一并关闭。");

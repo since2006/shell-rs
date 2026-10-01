@@ -7,7 +7,7 @@ use gpui_kit::*;
 
 use crate::app::CatalogIcon;
 use crate::explorer::ExplorerStatus;
-use crate::session::{ConnectionState, Session};
+use crate::host::{ConnectionState, Host};
 use crate::terminal::{TerminalLifecycle, TerminalStatus};
 
 /// The active connection/process state on the left and terminal facts on the
@@ -15,12 +15,12 @@ use crate::terminal::{TerminalLifecycle, TerminalStatus};
 /// no terminal in front there is no size to show.
 #[derive(IntoElement)]
 pub enum WorkspaceStatus {
-    /// The active session, with the terminal in front when that is one of
+    /// The active host, with the terminal in front when that is one of
     /// its terminals: the start page and the settings have none.
-    Session(Option<Session>, Option<TerminalStatus>),
+    Host(Option<Host>, Option<TerminalStatus>),
     Local(TerminalStatus),
     /// An SFTP tab: its own connection and what went wrong in it.
-    Explorer(Option<Session>, ExplorerStatus),
+    Explorer(Option<Host>, ExplorerStatus),
 }
 
 /// The icon for a connection state; a dropped one, like a problem, in red.
@@ -50,13 +50,13 @@ impl RenderOnce for WorkspaceStatus {
             Option<String>,
             Option<TerminalStatus>,
         ) = match self {
-            WorkspaceStatus::Session(active, terminal) => match active {
-                Some(session) => {
-                    alarming = session.state == ConnectionState::Disconnected;
+            WorkspaceStatus::Host(active, terminal) => match active {
+                Some(host) => {
+                    alarming = host.state == ConnectionState::Disconnected;
                     (
-                        format!("{} {}", session.state.label(), session.name).into(),
-                        state_icon(session.state, cx),
-                        Some(session.address()),
+                        format!("{} {}", host.state.label(), host.name).into(),
+                        state_icon(host.state, cx),
+                        Some(host.endpoint()),
                         terminal,
                     )
                 }
@@ -67,10 +67,10 @@ impl RenderOnce for WorkspaceStatus {
                     terminal,
                 ),
             },
-            WorkspaceStatus::Explorer(session, status) => {
-                let name = session
+            WorkspaceStatus::Explorer(host, status) => {
+                let name = host
                     .as_ref()
-                    .map_or_else(|| "SFTP".into(), |session| session.name.clone());
+                    .map_or_else(|| "SFTP".into(), |host| host.name.clone());
                 let state = format!("{} {name}", status.state.label());
                 let (text, icon) = match (status.state, status.problem) {
                     (ConnectionState::Disconnected, Some(problem)) => {
@@ -90,12 +90,7 @@ impl RenderOnce for WorkspaceStatus {
                         (state, state_icon(now, cx))
                     }
                 };
-                (
-                    text.into(),
-                    icon,
-                    session.map(|session| session.address()),
-                    None,
-                )
+                (text.into(), icon, host.map(|host| host.endpoint()), None)
             }
             WorkspaceStatus::Local(status) => {
                 let lifecycle = status.lifecycle();

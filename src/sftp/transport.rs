@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     connection::{ConnectionPrompt, ConnectionPromptReply},
-    session::SessionLogin,
+    host::HostLogin,
 };
 use anyhow::Result;
 use async_channel::{Receiver, Sender};
@@ -96,6 +96,6 @@ pub trait SftpTransport: Send + 'static {
     ) -> Result<()>;
 }
 pub trait SftpTransportProvider: Send + Sync + 'static {
-    fn create(&self, login: &SessionLogin) -> Box<dyn SftpTransport>;
+    fn create(&self, login: &HostLogin) -> Box<dyn SftpTransport>;
 }
 pub type SharedSftpTransportProvider = Arc<dyn SftpTransportProvider>;

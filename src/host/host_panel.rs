@@ -26,53 +26,51 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CollapseAllGroups, ConnectGroup, ConnectSelected, ConnectSession, CopySessionId,
-    DeleteGroup, DeleteSession, DuplicateSession, EditSession, ExpandAllGroups, MoveSessionNode,
-    NewChildGroup, NewGroup, NewSession, NewSessionInGroup, OpenExplorer, RenameGroup,
-    SESSION_PANEL_CONTEXT,
+    CatalogIcon, CollapseAllGroups, ConnectGroup, ConnectHost, ConnectSelected, CopyHostId,
+    DeleteGroup, DeleteHost, DuplicateHost, EditHost, ExpandAllGroups, HOST_PANEL_CONTEXT,
+    MoveHostNode, NewChildGroup, NewGroup, NewHost, NewHostInGroup, OpenExplorer, RenameGroup,
 };
 
 use crate::shared::HostMark;
 
 use super::{
-    GroupId, HostOs, NodeDrop, SessionId, SessionNode, SessionStore, matches_query,
-    session_tree_items,
+    GroupId, HostId, HostNode, HostOs, HostStore, NodeDrop, host_tree_items, matches_query,
 };
 
-/// The session list of the left dock: a searchable, grouped tree of sessions.
+/// The host list of the left dock: a searchable, grouped tree of hosts.
 /// The workspace's sidebar shows it, and borrows its title and toolbar for
 /// the dock's title bar while it does.
 ///
-/// Owns the tree and search state; the session data lives in the shared
-/// `SessionStore`, which this panel observes.
-pub struct SessionPanel {
-    store: Entity<SessionStore>,
+/// Owns the tree and search state; the host data lives in the shared
+/// `HostStore`, which this panel observes.
+pub struct HostPanel {
+    store: Entity<HostStore>,
     tree_state: Entity<TreeState>,
     search: Entity<InputState>,
     query: String,
     expanded: HashSet<GroupId>,
     /// What the store held the last time the tree was rebuilt. Comparing
-    /// against these is how a group or session created in a dialog gets
+    /// against these is how a group or host created in a dialog gets
     /// revealed without the dialog having to report back to the panel.
     known_groups: HashSet<GroupId>,
-    known_sessions: HashSet<SessionId>,
+    seen_hosts: HashSet<HostId>,
     /// Which node the last right-click landed on, `None` for the blank space
     /// below the rows. Shared with the row renderer and the context menu
     /// builder, both of which run outside this entity.
-    right_clicked: Rc<Cell<Option<SessionNode>>>,
-    drop_target: Rc<Cell<Option<(SessionNode, NodeDrop)>>>,
-    /// Session rows' tooltips, which open beside the row rather than under
+    right_clicked: Rc<Cell<Option<HostNode>>>,
+    drop_target: Rc<Cell<Option<(HostNode, NodeDrop)>>>,
+    /// Host rows' tooltips, which open beside the row rather than under
     /// the pointer so they never cover the rows below.
     row_tooltip: Entity<TooltipOverlay>,
     /// The row the tooltip was last opened for. See `render_row`.
-    row_tooltip_owner: Rc<Cell<Option<SessionId>>>,
+    row_tooltip_owner: Rc<Cell<Option<HostId>>>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
-impl SessionPanel {
-    pub fn new(store: Entity<SessionStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (expanded, known_groups, known_sessions, items) = {
+impl HostPanel {
+    pub fn new(store: Entity<HostStore>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let (expanded, known_groups, seen_hosts, items) = {
             let read = store.read(cx);
             let expanded: HashSet<GroupId> = read
                 .groups()
@@ -80,11 +78,11 @@ impl SessionPanel {
                 .filter(|group| group.expanded)
                 .map(|group| group.id)
                 .collect();
-            let items = session_tree_items(read.groups(), read.sessions(), "", &expanded);
+            let items = host_tree_items(read.groups(), read.hosts(), "", &expanded);
             (
                 expanded,
                 read.groups().iter().map(|group| group.id).collect(),
-                read.sessions().iter().map(|s| s.id).collect(),
+                read.hosts().iter().map(|s| s.id).collect(),
                 items,
             )
         };
@@ -117,7 +115,7 @@ impl SessionPanel {
                     TreeEvent::Expanded(id) => (id, true),
                     TreeEvent::Collapsed(id) => (id, false),
                 };
-                if let Some(SessionNode::Group(group)) = SessionNode::parse(id) {
+                if let Some(HostNode::Group(group)) = HostNode::parse(id) {
                     if expanded {
                         this.expanded.insert(group);
                     } else {
@@ -137,7 +135,7 @@ impl SessionPanel {
             query: String::new(),
             expanded,
             known_groups,
-            known_sessions,
+            seen_hosts,
             right_clicked: Rc::new(Cell::new(None)),
             drop_target: Rc::new(Cell::new(None)),
             row_tooltip: cx.new(|_| TooltipOverlay::new().render_with(animate_row_tooltip)),
@@ -148,7 +146,7 @@ impl SessionPanel {
     }
 
     /// Rebuild the tree, then put the cursor on whatever the store just
-    /// gained so a freshly created group or session is visible and selected.
+    /// gained so a freshly created group or host is visible and selected.
     fn on_store_changed(&mut self, cx: &mut Context<Self>) {
         let created = self.take_created_node(cx);
         self.rebuild_tree(cx);
@@ -159,22 +157,22 @@ impl SessionPanel {
 
     /// The node the store gained since the last rebuild, if any, with the
     /// folders above it opened so it can be scrolled to.
-    fn take_created_node(&mut self, cx: &mut Context<Self>) -> Option<SessionNode> {
-        let (created, ancestors, groups, sessions) = {
+    fn take_created_node(&mut self, cx: &mut Context<Self>) -> Option<HostNode> {
+        let (created, ancestors, groups, hosts) = {
             let store = self.store.read(cx);
             let created = store
                 .groups()
                 .iter()
                 .rev()
                 .find(|group| !self.known_groups.contains(&group.id))
-                .map(|group| SessionNode::Group(group.id))
+                .map(|group| HostNode::Group(group.id))
                 .or_else(|| {
                     store
-                        .sessions()
+                        .hosts()
                         .iter()
                         .rev()
-                        .find(|session| !self.known_sessions.contains(&session.id))
-                        .map(|session| SessionNode::Session(session.id))
+                        .find(|host| !self.seen_hosts.contains(&host.id))
+                        .map(|host| HostNode::Host(host.id))
                 });
             let ancestors = created
                 .map(|node| groups_above(store, node))
@@ -183,13 +181,13 @@ impl SessionPanel {
                 created,
                 ancestors,
                 store.groups().iter().map(|g| g.id).collect(),
-                store.sessions().iter().map(|s| s.id).collect(),
+                store.hosts().iter().map(|s| s.id).collect(),
             )
         };
         self.known_groups = groups;
-        self.known_sessions = sessions;
+        self.seen_hosts = hosts;
         self.expanded.extend(ancestors);
-        if let Some(SessionNode::Group(id)) = created
+        if let Some(HostNode::Group(id)) = created
             && self
                 .store
                 .read(cx)
@@ -205,12 +203,7 @@ impl SessionPanel {
     fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
         let items = {
             let store = self.store.read(cx);
-            session_tree_items(
-                store.groups(),
-                store.sessions(),
-                &self.query,
-                &self.expanded,
-            )
+            host_tree_items(store.groups(), store.hosts(), &self.query, &self.expanded)
         };
         let selected_id = self
             .tree_state
@@ -227,7 +220,7 @@ impl SessionPanel {
 
     /// Select (and reveal) a row, for example a fresh duplicate or a group
     /// just created.
-    pub fn select_node(&mut self, node: SessionNode, cx: &mut Context<Self>) {
+    pub fn select_node(&mut self, node: HostNode, cx: &mut Context<Self>) {
         self.rebuild_tree(cx);
         let row_id = node.id();
         self.tree_state.update(cx, |state, cx| {
@@ -238,7 +231,7 @@ impl SessionPanel {
     }
 
     /// Keep the moved row visible even when it was dropped into a closed group.
-    pub fn reveal_node(&mut self, node: SessionNode, cx: &mut Context<Self>) {
+    pub fn reveal_node(&mut self, node: HostNode, cx: &mut Context<Self>) {
         let ancestors = groups_above(self.store.read(cx), node);
         self.expanded.extend(ancestors);
         self.select_node(node, cx);
@@ -265,23 +258,23 @@ impl SessionPanel {
     }
 
     /// The node currently selected in the tree.
-    pub fn selected_node(&self, cx: &App) -> Option<SessionNode> {
+    pub fn selected_node(&self, cx: &App) -> Option<HostNode> {
         self.tree_state
             .read(cx)
             .selected_item()
-            .and_then(|item| SessionNode::parse(&item.id))
+            .and_then(|item| HostNode::parse(&item.id))
     }
 
     fn connect_first_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let first = self
             .store
             .read(cx)
-            .sessions()
+            .hosts()
             .iter()
-            .find(|session| matches_query(session, &self.query))
-            .map(|session| session.id);
+            .find(|host| matches_query(host, &self.query))
+            .map(|host| host.id);
         if let Some(id) = first {
-            window.dispatch_action(Box::new(ConnectSession(id)), cx);
+            window.dispatch_action(Box::new(ConnectHost(id)), cx);
         }
     }
 
@@ -292,10 +285,10 @@ impl SessionPanel {
         cx: &mut Context<Self>,
     ) {
         match self.selected_node(cx) {
-            Some(SessionNode::Session(id)) => {
-                window.dispatch_action(Box::new(ConnectSession(id)), cx);
+            Some(HostNode::Host(id)) => {
+                window.dispatch_action(Box::new(ConnectHost(id)), cx);
             }
-            Some(SessionNode::Group(group)) => {
+            Some(HostNode::Group(group)) => {
                 if !self.query.trim().is_empty() {
                     return;
                 }
@@ -317,10 +310,10 @@ impl SessionPanel {
 
 /// Every group a node sits in, at any depth: the folders that have to be
 /// open for its row to show.
-fn groups_above(store: &SessionStore, node: SessionNode) -> Vec<GroupId> {
+fn groups_above(store: &HostStore, node: HostNode) -> Vec<GroupId> {
     let parent = match node {
-        SessionNode::Group(id) => store.group(id).and_then(|group| group.parent),
-        SessionNode::Session(id) => store.session(id).and_then(|session| session.group),
+        HostNode::Group(id) => store.group(id).and_then(|group| group.parent),
+        HostNode::Host(id) => store.host(id).and_then(|host| host.group),
     };
     parent
         .map(|id| {
@@ -331,17 +324,17 @@ fn groups_above(store: &SessionStore, node: SessionNode) -> Vec<GroupId> {
         .unwrap_or_default()
 }
 
-impl EventEmitter<PanelEvent> for SessionPanel {}
+impl EventEmitter<PanelEvent> for HostPanel {}
 
-impl Focusable for SessionPanel {
+impl Focusable for HostPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-impl BasePanel for SessionPanel {
+impl BasePanel for HostPanel {
     fn panel_name(&self) -> &'static str {
-        "SessionPanel"
+        "HostPanel"
     }
 
     fn closable(&self, _: &App) -> bool {
@@ -353,7 +346,7 @@ impl BasePanel for SessionPanel {
     }
 }
 
-impl Panel for SessionPanel {
+impl Panel for HostPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .gap_1()
@@ -364,10 +357,10 @@ impl Panel for SessionPanel {
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
         // A new host first: it is what the list is mostly added to.
         Some(vec![
-            Button::new("new-session-panel")
+            Button::new("new-host-panel")
                 .icon(IconName::Plus)
                 .tooltip("新建主机…")
-                .on_click(|_, window, cx| window.dispatch_action(Box::new(NewSession), cx)),
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(NewHost), cx)),
             Button::new("new-group")
                 .icon(Icon::new(CatalogIcon::FolderPlus))
                 .tooltip("新建分组…")
@@ -384,24 +377,24 @@ impl Panel for SessionPanel {
     }
 }
 
-impl Render for SessionPanel {
+impl Render for HostPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Plain snapshots for the row renderer: render callbacks must not
         // read entities.
-        let host_os: Rc<HashMap<SessionId, HostOs>> = Rc::new(
+        let host_os: Rc<HashMap<HostId, HostOs>> = Rc::new(
             self.store
                 .read(cx)
-                .sessions()
+                .hosts()
                 .iter()
-                .filter_map(|session| session.os.map(|os| (session.id, os)))
+                .filter_map(|host| host.os.map(|os| (host.id, os)))
                 .collect(),
         );
-        let addresses: Rc<HashMap<SessionId, SharedString>> = Rc::new(
+        let addresses: Rc<HashMap<HostId, SharedString>> = Rc::new(
             self.store
                 .read(cx)
-                .sessions()
+                .hosts()
                 .iter()
-                .map(|session| (session.id, session.address().into()))
+                .map(|host| (host.id, host.endpoint().into()))
                 .collect(),
         );
         let group_parents: Rc<HashMap<GroupId, Option<GroupId>>> = Rc::new(
@@ -413,7 +406,7 @@ impl Render for SessionPanel {
                 .collect(),
         );
         let group_counts = Rc::new(group_host_counts(
-            self.store.read(cx).sessions(),
+            self.store.read(cx).hosts(),
             &group_parents,
         ));
         let clicked_row = self.right_clicked.clone();
@@ -435,8 +428,8 @@ impl Render for SessionPanel {
         let tree_scroll = self.tree_state.read(cx).scroll_handle().clone();
 
         v_flex()
-            .id("session-panel")
-            .key_context(SESSION_PANEL_CONTEXT)
+            .id("host-panel")
+            .key_context(HOST_PANEL_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::on_connect_selected))
             .size_full()
@@ -445,7 +438,7 @@ impl Render for SessionPanel {
             .child(
                 div().p_2().child(
                     Input::new(&self.search)
-                        .id("session-search")
+                        .id("host-search")
                         .small()
                         .cleanable(true)
                         .prefix(Icon::new(IconName::Search).small()),
@@ -453,7 +446,7 @@ impl Render for SessionPanel {
             )
             .child(
                 div()
-                    .id("session-tree")
+                    .id("host-tree")
                     .test_support()
                     .flex_1()
                     .min_h_0()
@@ -464,7 +457,7 @@ impl Render for SessionPanel {
                             .child(
                                 BaseTree::new(&self.tree_state)
                                     .item(move |_, entry, state, _, cx| {
-                                        let node = SessionNode::parse(&entry.item().id);
+                                        let node = HostNode::parse(&entry.item().id);
                                         let selected = match row_interactions.right_clicked.get() {
                                             Some(right_clicked) => node == Some(right_clicked),
                                             None => state.is_selected(),
@@ -502,14 +495,14 @@ impl Render for SessionPanel {
                         }
                     })
                     .when(can_reorder, |view| {
-                        view.on_drag_move(move |_: &DragMoveEvent<DraggedSessionNode>, _, _| {
+                        view.on_drag_move(move |_: &DragMoveEvent<DraggedHostNode>, _, _| {
                             drop_target_for_move.set(None);
                         })
                         .on_drop(
-                            move |drag: &DraggedSessionNode, window, cx| {
+                            move |drag: &DraggedHostNode, window, cx| {
                                 if drop_target_for_root.get().is_none() {
                                     window.dispatch_action(
-                                        Box::new(MoveSessionNode {
+                                        Box::new(MoveHostNode {
                                             source: drag.node,
                                             destination: NodeDrop::Root,
                                         }),
@@ -526,8 +519,8 @@ impl Render for SessionPanel {
     }
 }
 
-/// A row that is not a session still has to reserve the badge's width, or the
-/// labels of groups and sessions would not line up.
+/// A row that is not a host still has to reserve the badge's width, or the
+/// labels of groups and hosts would not line up.
 fn plain_mark(icon: Icon, cx: &App) -> AnyElement {
     h_flex()
         .flex_shrink_0()
@@ -540,27 +533,27 @@ fn plain_mark(icon: Icon, cx: &App) -> AnyElement {
 
 struct RowInteractions {
     group_parents: Rc<HashMap<GroupId, Option<GroupId>>>,
-    right_clicked: Rc<Cell<Option<SessionNode>>>,
-    drop_target: Rc<Cell<Option<(SessionNode, NodeDrop)>>>,
+    right_clicked: Rc<Cell<Option<HostNode>>>,
+    drop_target: Rc<Cell<Option<(HostNode, NodeDrop)>>>,
     can_reorder: bool,
-    /// `user@host:port` of every session, for the row tooltips.
-    addresses: Rc<HashMap<SessionId, SharedString>>,
+    /// `user@host:port` of every host, for the row tooltips.
+    addresses: Rc<HashMap<HostId, SharedString>>,
     tooltip: Entity<TooltipOverlay>,
-    tooltip_owner: Rc<Cell<Option<SessionId>>>,
+    tooltip_owner: Rc<Cell<Option<HostId>>>,
 }
 
-/// A session row's tooltip: where the session logs in, as `user@host:port`.
+/// A host row's tooltip: where the host logs in, as `user@host:port`.
 ///
 /// Drawn in the theme's inverse, dark on the light theme and light on the
 /// dark one, so it stands out against the sidebar and the terminal in both.
 /// Only this tooltip: gpui-kit's others share the popover colour with menus.
-fn session_tooltip(address: SharedString) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+fn host_tooltip(address: SharedString) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     move |window, cx| {
         let address = address.clone();
         let (background, foreground) = (cx.theme().foreground, cx.theme().background);
         Tooltip::element(move |_, _| {
             div()
-                .id("session-tooltip")
+                .id("host-tooltip")
                 .test_support()
                 .aria_label(address.clone())
                 .child(address.clone())
@@ -588,7 +581,7 @@ fn animate_row_tooltip(
             .fade(0., 1.)
             .apply(
                 tooltip,
-                ElementId::NamedInteger("session-tooltip-enter".into(), epoch as u64),
+                ElementId::NamedInteger("host-tooltip-enter".into(), epoch as u64),
             )
             .into_any_element(),
         TooltipTransition::Switch {
@@ -600,7 +593,7 @@ fn animate_row_tooltip(
             .slide_y(previous.center().y - current.center().y, px(0.))
             .apply(
                 tooltip,
-                ElementId::NamedInteger("session-tooltip-move".into(), epoch as u64),
+                ElementId::NamedInteger("host-tooltip-move".into(), epoch as u64),
             )
             .into_any_element(),
     }
@@ -608,12 +601,12 @@ fn animate_row_tooltip(
 
 /// Count hosts in each group, including hosts in nested child groups.
 fn group_host_counts(
-    sessions: &[super::Session],
+    hosts: &[super::Host],
     parents: &HashMap<GroupId, Option<GroupId>>,
 ) -> HashMap<GroupId, usize> {
     let mut counts = HashMap::new();
-    for session in sessions {
-        let mut group = session.group;
+    for host in hosts {
+        let mut group = host.group;
         for _ in 0..parents.len() {
             let Some(id) = group else { break };
             *counts.entry(id).or_insert(0) += 1;
@@ -627,7 +620,7 @@ fn render_row(
     entry: &TreeEntry,
     selected: bool,
     group_counts: &HashMap<GroupId, usize>,
-    host_os: &HashMap<SessionId, HostOs>,
+    host_os: &HashMap<HostId, HostOs>,
     interactions: &RowInteractions,
     cx: &mut App,
 ) -> ListItem {
@@ -641,9 +634,9 @@ fn render_row(
         tooltip_owner,
     } = interactions;
     let item = entry.item();
-    let node = SessionNode::parse(&item.id);
+    let node = HostNode::parse(&item.id);
     let (mark, row_id): (AnyElement, ElementId) = match node {
-        Some(SessionNode::Group(id)) => (
+        Some(HostNode::Group(id)) => (
             plain_mark(
                 Icon::new(if entry.is_expanded() {
                     IconName::FolderOpen
@@ -654,23 +647,23 @@ fn render_row(
             ),
             ("group-row", id.0).into(),
         ),
-        Some(SessionNode::Session(id)) => (
+        Some(HostNode::Host(id)) => (
             HostMark::new(
-                ("session-os", id.0),
+                ("host-os", id.0),
                 item.label.clone(),
                 host_os.get(&id).copied(),
             )
             .small()
             .without_tooltip()
             .into_any_element(),
-            ("session-row", id.0).into(),
+            ("host-row", id.0).into(),
         ),
         None => (
             plain_mark(Icon::new(IconName::File), cx),
             item.id.clone().into(),
         ),
     };
-    let session_id = node.and_then(SessionNode::session_id);
+    let host_id = node.and_then(HostNode::host_id);
 
     ListItem::new(row_id)
         .w_full()
@@ -679,11 +672,11 @@ fn render_row(
         // Make selection stronger than hover against the sidebar background.
         .confirmed(selected)
         .when(selected, |row| {
-            row.bg(crate::app::session_tree_selection_color(cx.theme()))
+            row.bg(crate::app::host_tree_selection_color(cx.theme()))
         })
         .pl(rems(0.75 + entry.depth() as f32))
         .child(h_flex().gap_2().child(mark).child(item.label.clone()))
-        .when_some(node.and_then(SessionNode::group_id), |row, id| {
+        .when_some(node.and_then(HostNode::group_id), |row, id| {
             let count = group_counts.get(&id).copied().unwrap_or(0);
             row.suffix(move |_, cx| {
                 div()
@@ -696,15 +689,15 @@ fn render_row(
                     .child(count.to_string())
             })
         })
-        .when_some(session_id, |row, id| {
+        .when_some(host_id, |row, id| {
             row.on_click(move |event: &ClickEvent, window, cx| {
                 if event.click_count() == 2 {
-                    window.dispatch_action(Box::new(ConnectSession(id)), cx);
+                    window.dispatch_action(Box::new(ConnectHost(id)), cx);
                 }
             })
         })
-        .when_some(session_id, |row, id| {
-            let content = Rc::new(session_tooltip(
+        .when_some(host_id, |row, id| {
+            let content = Rc::new(host_tooltip(
                 addresses.get(&id).cloned().unwrap_or_default(),
             ));
             let bounds = Rc::new(Cell::new(Bounds::default()));
@@ -761,17 +754,17 @@ fn render_row(
                 let drop_target_for_drop = drop_target.clone();
                 let parents_for_move = group_parents.clone();
                 let label = item.label.clone();
-                row.on_drag(DraggedSessionNode { node, label }, |drag, _, _, cx| {
+                row.on_drag(DraggedHostNode { node, label }, |drag, _, _, cx| {
                     cx.new(|_| drag.clone())
                 })
-                .on_drag_move(move |event: &DragMoveEvent<DraggedSessionNode>, _, cx| {
+                .on_drag_move(move |event: &DragMoveEvent<DraggedHostNode>, _, cx| {
                     if event.bounds.contains(&event.event.position) {
                         let source = event.drag(cx).node;
                         let relative = (event.event.position.y - event.bounds.top())
                             / event.bounds.size.height;
                         let destination = match (source, node) {
-                            (SessionNode::Session(_), SessionNode::Group(id)) => NodeDrop::Into(id),
-                            (_, SessionNode::Group(id)) if relative > 0.25 && relative < 0.75 => {
+                            (HostNode::Host(_), HostNode::Group(id)) => NodeDrop::Into(id),
+                            (_, HostNode::Group(id)) if relative > 0.25 && relative < 0.75 => {
                                 NodeDrop::Into(id)
                             }
                             _ if relative < 0.5 => NodeDrop::Before(node),
@@ -782,7 +775,7 @@ fn render_row(
                         }
                     }
                 })
-                .drag_over::<DraggedSessionNode>(move |style, drag, _, cx| {
+                .drag_over::<DraggedHostNode>(move |style, drag, _, cx| {
                     if drag.node == node {
                         return style;
                     }
@@ -800,13 +793,13 @@ fn render_row(
                         _ => style,
                     }
                 })
-                .on_drop(move |drag: &DraggedSessionNode, window, cx| {
+                .on_drop(move |drag: &DraggedHostNode, window, cx| {
                     if let Some((target, destination)) = drop_target_for_drop.get()
                         && target == node
                         && drag.node != node
                     {
                         window.dispatch_action(
-                            Box::new(MoveSessionNode {
+                            Box::new(MoveHostNode {
                                 source: drag.node,
                                 destination,
                             }),
@@ -821,12 +814,12 @@ fn render_row(
 }
 
 #[derive(Clone)]
-struct DraggedSessionNode {
-    node: SessionNode,
+struct DraggedHostNode {
+    node: HostNode,
     label: SharedString,
 }
 
-impl Render for DraggedSessionNode {
+impl Render for DraggedHostNode {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .px_2()
@@ -842,7 +835,7 @@ impl Render for DraggedSessionNode {
 
 /// Use the render snapshot to keep impossible group drops from looking active.
 fn valid_drop(
-    source: SessionNode,
+    source: HostNode,
     destination: NodeDrop,
     parents: &HashMap<GroupId, Option<GroupId>>,
 ) -> bool {
@@ -854,17 +847,17 @@ fn valid_drop(
         return false;
     }
     match source {
-        SessionNode::Session(_) => match destination {
-            NodeDrop::Before(SessionNode::Session(_))
-            | NodeDrop::After(SessionNode::Session(_))
+        HostNode::Host(_) => match destination {
+            NodeDrop::Before(HostNode::Host(_))
+            | NodeDrop::After(HostNode::Host(_))
             | NodeDrop::Root => true,
             NodeDrop::Into(group) => parents.contains_key(&group),
             _ => false,
         },
-        SessionNode::Group(id) => {
+        HostNode::Group(id) => {
             let mut parent = match destination {
-                NodeDrop::Before(SessionNode::Group(target))
-                | NodeDrop::After(SessionNode::Group(target)) => match parents.get(&target) {
+                NodeDrop::Before(HostNode::Group(target))
+                | NodeDrop::After(HostNode::Group(target)) => match parents.get(&target) {
                     Some(parent) => *parent,
                     None => return false,
                 },
@@ -889,13 +882,13 @@ fn valid_drop(
     }
 }
 
-/// The menu of one session, wherever it is listed: the session tree and the
-/// start page's recent sessions both build it here, so they cannot drift.
-pub fn session_menu(menu: PopupMenu, id: SessionId) -> PopupMenu {
+/// The menu of one host, wherever it is listed: the host tree and the
+/// start page's recent hosts both build it here, so they cannot drift.
+pub fn host_menu(menu: PopupMenu, id: HostId) -> PopupMenu {
     menu.menu_with_icon(
         "连接",
         Icon::new(CatalogIcon::Plug),
-        Box::new(ConnectSession(id)),
+        Box::new(ConnectHost(id)),
     )
     .menu_with_icon(
         "打开 SFTP",
@@ -906,31 +899,31 @@ pub fn session_menu(menu: PopupMenu, id: SessionId) -> PopupMenu {
     .menu_with_icon(
         "编辑主机…",
         Icon::new(CatalogIcon::Pencil),
-        Box::new(EditSession(id)),
+        Box::new(EditHost(id)),
     )
     .menu_with_icon(
         "复制",
         Icon::new(IconName::Copy),
-        Box::new(DuplicateSession(id)),
+        Box::new(DuplicateHost(id)),
     )
     .separator()
     .menu_with_icon(
         "复制 ID",
         Icon::new(CatalogIcon::ClipboardCopy),
-        Box::new(CopySessionId(id)),
+        Box::new(CopyHostId(id)),
     )
     .separator()
     .menu_with_icon(
         "删除",
         Icon::new(CatalogIcon::Trash),
-        Box::new(DeleteSession(id)),
+        Box::new(DeleteHost(id)),
     )
 }
 
-fn build_context_menu(node: Option<SessionNode>, menu: PopupMenu) -> PopupMenu {
+fn build_context_menu(node: Option<HostNode>, menu: PopupMenu) -> PopupMenu {
     match node {
-        Some(SessionNode::Session(id)) => session_menu(menu, id),
-        Some(SessionNode::Group(id)) => menu
+        Some(HostNode::Host(id)) => host_menu(menu, id),
+        Some(HostNode::Group(id)) => menu
             .menu_with_icon(
                 "连接组内主机",
                 Icon::new(CatalogIcon::Plug),
@@ -940,7 +933,7 @@ fn build_context_menu(node: Option<SessionNode>, menu: PopupMenu) -> PopupMenu {
             .menu_with_icon(
                 "新建主机…",
                 Icon::new(IconName::Plus),
-                Box::new(NewSessionInGroup(id)),
+                Box::new(NewHostInGroup(id)),
             )
             .menu_with_icon(
                 "新建子分组…",
@@ -971,7 +964,7 @@ fn build_context_menu(node: Option<SessionNode>, menu: PopupMenu) -> PopupMenu {
                 Box::new(DeleteGroup(id)),
             ),
         None => menu
-            .menu_with_icon("新建主机…", Icon::new(IconName::Plus), Box::new(NewSession))
+            .menu_with_icon("新建主机…", Icon::new(IconName::Plus), Box::new(NewHost))
             .menu_with_icon(
                 "新建分组…",
                 Icon::new(CatalogIcon::FolderPlus),

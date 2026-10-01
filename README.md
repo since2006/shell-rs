@@ -16,7 +16,7 @@ ShellRS 同一时间只运行一个：已经开着时再打开一次，会把已
 - **使用凭据**：选一条保存好的凭据，用户名和登录方式都来自凭据（见下面「凭据」），对话框里不再填用户名和密码。「测试连接」同样使用凭据保存的密码。要用私钥登录，就建一条密钥凭据。
 - **无密码**：只填用户名。依次尝试服务器免认证、SSH Agent 和 `~/.ssh` 下的默认私钥（`id_ed25519`、`id_ecdsa`、`id_rsa`），和命令行 `ssh` 默认的做法一样。服务器要求密码时连接失败并说明原因，不会询问；服务器在密钥之后再要验证码时照样询问。
 
-无论选哪种，连接时都先问服务器是否允许免认证登录，允许就直接登录。旧版本里「自动」的主机升级后归为「密码」，自己选了私钥文件的主机升级后改用按「用户 + 私钥文件」自动建好的密钥凭据。
+无论选哪种，连接时都先问服务器是否允许免认证登录，允许就直接登录。
 
 主机对话框「分组」下面的「连接方式」决定怎么连到这台主机，终端、SFTP、端口转发、外部 CLI 和「测试连接」都照它走：
 
@@ -117,7 +117,7 @@ shellrs download <ID> <远程路径> <本地路径>
 - `<ID>` 是 16 位的主机 ID，即 `shellrs list` 的 `id`，也就是主机右键「复制 ID」复制的内容。
 - `exec` 每次临时建立连接，执行完即断开。远程命令没有标准输入，退出码就是远程命令的退出码；被信号终止时是 128 加信号编号。
 - 上传和下载沿用 SFTP 标签的传输引擎（递归、`.filepart`、断线重连），目标路径按 scp 的规则：目标是已存在的目录就放进去并保留原名，否则目标就是副本自己的路径，其父目录必须存在。已存在的文件直接覆盖；新建的文件保留源文件的可执行权限。`~` 表示登录目录。
-- 失败时在标准错误输出 `shellrs: [错误码] 说明`，退出码 255。错误码有 `not_running`（ShellRS 未运行）、`not_enabled`（未启用外部 CLI）、`session_not_found`、`host_key_unknown`（还没在 ShellRS 里连过这台主机）、`host_key_changed`、`missing_credential`（没有保存密码或口令）、`connect_failed`、`transfer_failed`、`bad_request`、`version_mismatch`。CLI 不弹任何询问：陌生主机、缺少密码都直接失败，请先在 ShellRS 里连接一次。传输完成但有项目失败时退出码为 1。
+- 失败时在标准错误输出 `shellrs: [错误码] 说明`，退出码 255。错误码有 `not_running`（ShellRS 未运行）、`not_enabled`（未启用外部 CLI）、`host_not_found`、`host_key_unknown`（还没在 ShellRS 里连过这台主机）、`host_key_changed`、`missing_credential`（没有保存密码或口令）、`connect_failed`、`transfer_failed`、`bad_request`、`version_mismatch`。CLI 不弹任何询问：陌生主机、缺少密码都直接失败，请先在 ShellRS 里连接一次。传输完成但有项目失败时退出码为 1。
 - 支持 macOS、Linux 和 Windows。Windows 的 PowerShell 里，多行或带引号的命令用 here-string 经 `--stdin` 传入（`@'…'@ | shellrs exec <ID> --stdin`）；输出有中文时先执行 `$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()`。命令文本会去掉开头的 BOM、把 CRLF 换成 LF，远程 shell 不会看到多余的回车符。
 
 ## 标签页

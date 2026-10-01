@@ -19,15 +19,15 @@ use crate::app::{
     EditCredential, EditSelectedCredential, GenerateCredentialKey, NewCredential,
     SelectNextCredential, SelectPreviousCredential,
 };
-use crate::session::{CredentialId, CredentialKind, SessionStore, matches_credential_query};
+use crate::host::{CredentialId, CredentialKind, HostStore, matches_credential_query};
 
-/// The credential list the left dock shows in place of the sessions: every
+/// The credential list the left dock shows in place of the hosts: every
 /// saved login and how many hosts use it.
 ///
-/// The credentials live in the shared `SessionStore`; this panel observes it
+/// The credentials live in the shared `HostStore`; this panel observes it
 /// and owns only its selection and search.
 pub struct CredentialPanel {
-    store: Entity<SessionStore>,
+    store: Entity<HostStore>,
     /// The workspace's focus handle: actions dispatched on it reach the
     /// workspace handlers whatever is focused, which after a dialog closes
     /// may be nothing at all.
@@ -60,7 +60,7 @@ struct CredentialRow {
 
 impl CredentialPanel {
     pub fn new(
-        store: Entity<SessionStore>,
+        store: Entity<HostStore>,
         target: FocusHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -156,7 +156,7 @@ impl CredentialPanel {
             .iter()
             .filter(|credential| matches_credential_query(credential, &self.query))
             .map(|credential| {
-                let hosts = store.sessions_using(credential.id).count();
+                let hosts = store.hosts_using(credential.id).count();
                 let summary = credential.summary(store.key_dir());
                 let detail = match hosts {
                     0 => summary,
@@ -293,7 +293,7 @@ impl CredentialPanel {
             .confirmed(selected)
             .aria_selected(selected)
             .when(selected, |item| {
-                item.bg(crate::app::session_tree_selection_color(theme))
+                item.bg(crate::app::host_tree_selection_color(theme))
             })
             .child(
                 h_flex()
@@ -435,7 +435,7 @@ impl Render for CredentialPanel {
             )
             .child(
                 // The menu hangs off the list, not off the rows, like the
-                // session tree's and the forward list's.
+                // host tree's and the forward list's.
                 div()
                     .id("credential-list")
                     .test_support()

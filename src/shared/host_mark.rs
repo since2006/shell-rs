@@ -4,13 +4,13 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::session::HostOs;
+use crate::host::HostOs;
 
-/// The mark that stands for a session: the operating system found on its host,
+/// The mark that stands for a host: the operating system found on its host,
 /// drawn on a badge in that project's own colour, or the first character of
-/// the session name until a probe succeeds.
+/// the host name until a probe succeeds.
 ///
-/// Shared so the session tree and the start page show one identity for the
+/// Shared so the host tree and the start page show one identity for the
 /// same host. The badge borrows `Avatar`'s treatment, a circle at the theme's
 /// radius, so identity marks look alike wherever the product shows one.
 #[derive(IntoElement)]
@@ -38,7 +38,7 @@ impl HostMark {
     }
 
     /// No tooltip of its own, for a row that shows one for the whole row, as
-    /// the session tree does, so two tooltips never stack.
+    /// the host tree does, so two tooltips never stack.
     pub fn without_tooltip(mut self) -> Self {
         self.tooltip = false;
         self

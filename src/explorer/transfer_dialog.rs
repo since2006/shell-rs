@@ -2,7 +2,7 @@ use super::{ExplorerId, ExplorerPanel, TransferJob};
 use crate::app::ExplorerDispatch as _;
 use crate::{
     app::{ExplorerAction, ExplorerCommand},
-    session::ConnectionState,
+    host::ConnectionState,
     sftp::{TransferAnswer, TransferChoice, TransferDirection, TransferQuestionKind},
     shared::commit_footer,
 };

@@ -3,7 +3,7 @@ use super::{
     probe::{HostOsProbe, ProbeOutcome},
 };
 use crate::{
-    session::SessionLogin,
+    host::HostLogin,
     terminal::{
         Latency, RemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalSize,
         TerminalTransport, TerminalTransportCommand, TerminalTransportEvent,
@@ -42,7 +42,7 @@ impl SshTerminalTransportProvider {
     }
 }
 impl RemoteTerminalTransportProvider for SshTerminalTransportProvider {
-    fn factory_for(&self, login: &SessionLogin) -> SharedTerminalTransportFactory {
+    fn factory_for(&self, login: &HostLogin) -> SharedTerminalTransportFactory {
         Arc::new(SshTerminalTransport {
             config: SshConnectionConfig::from(login),
             connector: self.connector.clone(),
@@ -50,7 +50,7 @@ impl RemoteTerminalTransportProvider for SshTerminalTransportProvider {
     }
 }
 
-/// One session's connection settings. It is its own factory: every launch
+/// One host's connection settings. It is its own factory: every launch
 /// and restart runs a fresh copy.
 #[derive(Clone)]
 struct SshTerminalTransport {
@@ -177,7 +177,7 @@ impl SshTerminalTransport {
         // loop below collect the answer alongside the shell's output. Opening
         // it after `Started` keeps the terminal from waiting on a round trip,
         // and a host that refuses or ignores the probe simply keeps whatever
-        // mark the session already had.
+        // mark the host already had.
         let mut probe = HostOsProbe::new();
         let mut probe_channel = open_probe(&handle, probe.command()).await;
 
@@ -299,7 +299,7 @@ fn pixel_dimension(cells: usize, cell_size: u16) -> u32 {
 }
 
 /// Open a channel and run one probe command on it. Best effort throughout: a
-/// server that refuses the channel or the command just leaves the session's
+/// server that refuses the channel or the command just leaves the host's
 /// recorded operating system as it was.
 async fn open_probe(
     handle: &SshHandle,
@@ -316,14 +316,14 @@ async fn open_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::HostOs;
     use crate::secrets::{
         InMemorySecretStore, NoSecretStore, SecretRef, SecretStore as _, SharedSecretStore,
     };
-    use crate::session::HostOs;
     use crate::ssh::probe::{PROBE_COMMAND, WINDOWS_PROBE_COMMAND};
     use crate::{
         connection::{ConnectionPromptKind, ConnectionPromptReply, ConnectionSecret},
-        session::{AuthKind, Session},
+        host::{AuthKind, Host},
     };
     use russh::keys::{PublicKey, known_hosts::learn_known_hosts_path};
     use russh::server::{self, Server as _};
@@ -651,12 +651,12 @@ mod tests {
     }
 
     fn connect_then_shutdown(
-        session: Session,
+        host: Host,
         known_hosts: &Path,
         answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
     ) {
         connect(
-            SessionLogin::of(&session, None),
+            HostLogin::of(&host, None),
             known_hosts,
             Arc::new(NoSecretStore),
             false,
@@ -665,13 +665,13 @@ mod tests {
     }
 
     fn connect_with_secrets(
-        session: Session,
+        host: Host,
         known_hosts: &Path,
         secrets: SharedSecretStore,
         answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
     ) -> ConnectionReport {
         connect(
-            SessionLogin::of(&session, None),
+            HostLogin::of(&host, None),
             known_hosts,
             secrets,
             false,
@@ -682,12 +682,12 @@ mod tests {
     /// Same, but waits for the host-operating-system probe and the first
     /// round-trip measurement to report before shutting the connection down.
     fn connect_and_probe(
-        session: Session,
+        host: Host,
         known_hosts: &Path,
         answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
     ) -> ConnectionReport {
         connect(
-            SessionLogin::of(&session, None),
+            HostLogin::of(&host, None),
             known_hosts,
             Arc::new(NoSecretStore),
             true,
@@ -706,7 +706,7 @@ mod tests {
     /// Connect, answer whatever is asked, then shut down. The report says what
     /// was raised along the way, so a test can assert that nothing was.
     fn connect(
-        login: SessionLogin,
+        login: HostLogin,
         known_hosts: &Path,
         secrets: SharedSecretStore,
         wait_for_host_os: bool,
@@ -788,12 +788,12 @@ mod tests {
         };
         let directory = tempfile::tempdir().unwrap();
         let known_hosts = directory.path().join("known_hosts");
-        let session = password_session(server.port);
+        let host = password_host(server.port);
         let provider = SshTerminalTransportProvider::with_connector(SshConnector::new(
             &known_hosts,
             Arc::new(NoSecretStore),
         ));
-        let factory = provider.factory_for(&SessionLogin::of(&session, None));
+        let factory = provider.factory_for(&HostLogin::of(&host, None));
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::unbounded();
         let worker = thread::spawn(move || {
@@ -866,7 +866,7 @@ mod tests {
 
         // A second connection must trust the saved key without prompting and
         // an active close must return the worker within the shutdown bound.
-        let factory = provider.factory_for(&SessionLogin::of(&session, None));
+        let factory = provider.factory_for(&HostLogin::of(&host, None));
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::unbounded();
         let (done_tx, done_rx) = mpsc::channel();
@@ -925,10 +925,10 @@ mod tests {
         }
     }
 
-    fn password_session(port: u16) -> Session {
-        Session::new(
-            crate::session::SessionId(1),
-            crate::session::SessionDraft::new(
+    fn password_host(port: u16) -> Host {
+        Host::new(
+            crate::host::HostId(1),
+            crate::host::HostDraft::new(
                 "test",
                 "127.0.0.1",
                 port,
@@ -939,7 +939,7 @@ mod tests {
         )
     }
 
-    /// Run a connection test the way the session form does, recording
+    /// Run a connection test the way the host form does, recording
     /// whether (and about what) it asked to trust the host.
     fn test_login(
         request: crate::connection::LoginTest,
@@ -962,7 +962,7 @@ mod tests {
     }
 
     fn login_request(port: u16) -> crate::connection::LoginTest {
-        crate::connection::LoginTest::typed(SessionLogin::manual(
+        crate::connection::LoginTest::typed(HostLogin::manual(
             "127.0.0.1",
             port,
             "tester",
@@ -973,7 +973,7 @@ mod tests {
     /// The CLI's `exec` against the test server, on a thread of its own so
     /// a login that waits instead of failing shows up as a timeout.
     fn run_cli_command(
-        session: &Session,
+        host: &Host,
         known_hosts: &Path,
         keychain: Arc<InMemorySecretStore>,
     ) -> (
@@ -982,7 +982,7 @@ mod tests {
         Vec<u8>,
     ) {
         let connector = SshConnector::new(known_hosts, keychain);
-        let config = SshConnectionConfig::from(&SessionLogin::of(session, None));
+        let config = SshConnectionConfig::from(&HostLogin::of(host, None));
         let (done_tx, done_rx) = mpsc::channel();
         thread::spawn(move || {
             let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
@@ -1022,13 +1022,13 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let known_hosts = directory.path().join("known_hosts");
         trust_server(server.port, &known_hosts);
-        let session = password_session(server.port);
+        let host = password_host(server.port);
         let keychain = Arc::new(InMemorySecretStore::default());
         keychain
-            .set(&session.password_secret(), TEST_PASSWORD)
+            .set(&host.password_secret(), TEST_PASSWORD)
             .unwrap();
 
-        let (result, stdout, stderr) = run_cli_command(&session, &known_hosts, keychain);
+        let (result, stdout, stderr) = run_cli_command(&host, &known_hosts, keychain);
         assert_eq!(result, Ok(crate::ssh::ExecExit::Code(3)));
         assert_eq!(stdout, b"out");
         assert_eq!(stderr, b"err");
@@ -1050,13 +1050,13 @@ mod tests {
         };
         let directory = tempfile::tempdir().unwrap();
         let known_hosts = directory.path().join("known_hosts");
-        let session = password_session(server.port);
+        let host = password_host(server.port);
         let keychain = Arc::new(InMemorySecretStore::default());
         keychain
-            .set(&session.password_secret(), TEST_PASSWORD)
+            .set(&host.password_secret(), TEST_PASSWORD)
             .unwrap();
 
-        let (result, stdout, _) = run_cli_command(&session, &known_hosts, keychain);
+        let (result, stdout, _) = run_cli_command(&host, &known_hosts, keychain);
         let error = result.unwrap_err();
         assert_eq!(error.kind, crate::ssh::ExecErrorKind::HostKeyUnknown);
         assert!(error.message.contains("请先在 ShellRS 中连接一次"));
@@ -1074,10 +1074,10 @@ mod tests {
         crate::ssh::SshConnectionTester::new(connector).test(request, Box::new(|_| true))
     }
 
-    fn credential(kind: crate::session::CredentialKind) -> crate::session::Credential {
-        crate::session::Credential::new(
-            crate::session::CredentialId(1),
-            crate::session::CredentialDraft::new("运维", kind, "tester"),
+    fn credential(kind: crate::host::CredentialKind) -> crate::host::Credential {
+        crate::host::Credential::new(
+            crate::host::CredentialId(1),
+            crate::host::CredentialDraft::new("运维", kind, "tester"),
         )
     }
 
@@ -1088,7 +1088,7 @@ mod tests {
             return;
         };
         let directory = tempfile::tempdir().unwrap();
-        let credential = credential(crate::session::CredentialKind::Password);
+        let credential = credential(crate::host::CredentialKind::Password);
         let keychain = Arc::new(InMemorySecretStore::default());
         keychain
             .set(&credential.password_secret(), TEST_PASSWORD)
@@ -1100,7 +1100,7 @@ mod tests {
                 "wrong",
             )
             .unwrap();
-        let login = SessionLogin::with_credential("127.0.0.1", server.port, &credential);
+        let login = HostLogin::with_credential("127.0.0.1", server.port, &credential);
 
         let connector = SshConnector::new(directory.path().join("known_hosts"), keychain);
         assert_eq!(
@@ -1163,10 +1163,10 @@ mod tests {
     /// `agent`.
     #[cfg(unix)]
     fn agent_login(port: u16, agent: std::path::PathBuf, known_hosts: &Path) -> Result<(), String> {
-        let login = SessionLogin::with_credential(
+        let login = HostLogin::with_credential(
             "127.0.0.1",
             port,
-            &credential(crate::session::CredentialKind::Agent),
+            &credential(crate::host::CredentialKind::Agent),
         );
         let connector = SshConnector::new(known_hosts, Arc::new(NoSecretStore))
             .with_agent(crate::ssh::AgentLocation::At(agent));
@@ -1204,7 +1204,7 @@ mod tests {
         };
         let directory = tempfile::tempdir().unwrap();
         let agent = start_agent(&[key]);
-        let login = SessionLogin::manual("127.0.0.1", server.port, "tester", AuthKind::NoPassword);
+        let login = HostLogin::manual("127.0.0.1", server.port, "tester", AuthKind::NoPassword);
         let connector = SshConnector::new(
             directory.path().join("known_hosts"),
             Arc::new(NoSecretStore),
@@ -1267,7 +1267,7 @@ mod tests {
             directory.path().join("known_hosts"),
             Arc::new(NoSecretStore),
         );
-        let login = SessionLogin::manual("127.0.0.1", server.port, "tester", AuthKind::NoPassword);
+        let login = HostLogin::manual("127.0.0.1", server.port, "tester", AuthKind::NoPassword);
         // Refused outright: the connection test cannot ask, and would say a
         // password was missing if this login tried to.
         assert_eq!(
@@ -1285,10 +1285,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let known_hosts = directory.path().join("known_hosts");
         trust_server(server.port, &known_hosts);
-        let session = password_session(server.port);
+        let host = password_host(server.port);
 
         let (result, _, _) = run_cli_command(
-            &session,
+            &host,
             &known_hosts,
             Arc::new(InMemorySecretStore::default()),
         );
@@ -1462,13 +1462,11 @@ mod tests {
         };
         let directory = tempfile::tempdir().unwrap();
         let known_hosts = directory.path().join("known_hosts");
-        let session = password_session(server.port);
+        let host = password_host(server.port);
         let secrets = Arc::new(InMemorySecretStore::default());
-        secrets
-            .set(&session.password_secret(), TEST_PASSWORD)
-            .unwrap();
+        secrets.set(&host.password_secret(), TEST_PASSWORD).unwrap();
 
-        let report = connect_with_secrets(session, &known_hosts, secrets, |kind| match kind {
+        let report = connect_with_secrets(host, &known_hosts, secrets, |kind| match kind {
             ConnectionPromptKind::UnknownHost(_) => ConnectionPromptReply::TrustAndSave,
             other => panic!("unexpected prompt: {other:?}"),
         });
@@ -1492,17 +1490,13 @@ mod tests {
         };
         let directory = tempfile::tempdir().unwrap();
         let known_hosts = directory.path().join("known_hosts");
-        let session = password_session(server.port);
-        let endpoint = session.password_secret();
+        let host = password_host(server.port);
+        let endpoint = host.password_secret();
         let secrets = Arc::new(InMemorySecretStore::default());
         secrets.set(&endpoint, "stale-password").unwrap();
 
-        let report = connect_with_secrets(
-            session,
-            &known_hosts,
-            secrets.clone(),
-            trust_and_type_password,
-        );
+        let report =
+            connect_with_secrets(host, &known_hosts, secrets.clone(), trust_and_type_password);
 
         let instructions = report
             .prompts
@@ -1539,7 +1533,7 @@ mod tests {
         let known_hosts = directory.path().join("known_hosts");
 
         let report = connect_and_probe(
-            password_session(server.port),
+            password_host(server.port),
             &known_hosts,
             trust_and_type_password,
         );
@@ -1576,7 +1570,7 @@ mod tests {
         let known_hosts = directory.path().join("known_hosts");
 
         let report = connect_and_probe(
-            password_session(server.port),
+            password_host(server.port),
             &known_hosts,
             trust_and_type_password,
         );
@@ -1595,7 +1589,7 @@ mod tests {
     }
 
     #[test]
-    fn a_host_that_answers_nothing_leaves_the_session_unmarked() {
+    fn a_host_that_answers_nothing_leaves_the_host_unmarked() {
         let Some(server) = start_server(TestAuth::Password) else {
             eprintln!(
                 "loopback sockets are unavailable in this sandbox; skipping integration body"
@@ -1606,7 +1600,7 @@ mod tests {
         let known_hosts = directory.path().join("known_hosts");
 
         let report = connect_and_probe(
-            password_session(server.port),
+            password_host(server.port),
             &known_hosts,
             trust_and_type_password,
         );
@@ -1639,17 +1633,17 @@ mod tests {
         client_key
             .write_openssh_file(&key_path, russh::keys::ssh_key::LineEnding::LF)
             .unwrap();
-        let key_credential = crate::session::Credential::new(
-            crate::session::CredentialId(1),
-            crate::session::CredentialDraft::new(
+        let key_credential = crate::host::Credential::new(
+            crate::host::CredentialId(1),
+            crate::host::CredentialDraft::new(
                 "key-test",
-                crate::session::CredentialKind::Key,
+                crate::host::CredentialKind::Key,
                 "tester",
             )
             .with_key_path(key_path.to_string_lossy().into_owned()),
         );
         connect(
-            SessionLogin::with_credential("127.0.0.1", key_server.port, &key_credential),
+            HostLogin::with_credential("127.0.0.1", key_server.port, &key_credential),
             &directory.path().join("key-known-hosts"),
             Arc::new(NoSecretStore),
             false,
@@ -1663,9 +1657,9 @@ mod tests {
         let Some(interactive_server) = start_server(TestAuth::KeyboardInteractive) else {
             panic!("loopback became unavailable during keyboard-interactive test")
         };
-        let interactive_session = Session::new(
-            crate::session::SessionId(2),
-            crate::session::SessionDraft::new(
+        let interactive_host = Host::new(
+            crate::host::HostId(2),
+            crate::host::HostDraft::new(
                 "interactive-test",
                 "127.0.0.1",
                 interactive_server.port,
@@ -1676,7 +1670,7 @@ mod tests {
         );
         let mut saw_challenge = false;
         connect_then_shutdown(
-            interactive_session,
+            interactive_host,
             &directory.path().join("interactive-known-hosts"),
             |prompt| match prompt {
                 ConnectionPromptKind::UnknownHost(_) => ConnectionPromptReply::TrustAndSave,
@@ -1717,12 +1711,12 @@ mod tests {
             &known_hosts,
         )
         .unwrap();
-        let session = password_session(server.port);
+        let host = password_host(server.port);
         let provider = SshTerminalTransportProvider::with_connector(SshConnector::new(
             &known_hosts,
             Arc::new(NoSecretStore),
         ));
-        let factory = provider.factory_for(&SessionLogin::of(&session, None));
+        let factory = provider.factory_for(&HostLogin::of(&host, None));
         let (_command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::unbounded();
         let (done_tx, done_rx) = mpsc::channel();

@@ -252,10 +252,10 @@ impl std::fmt::Debug for ConnectionPromptReply {
     }
 }
 
-/// What a connection test logs in with: the session form's current values,
+/// What a connection test logs in with: the host form's current values,
 /// saved or not. Secrets stay zeroized and never print.
 pub struct LoginTest {
-    login: crate::session::SessionLogin,
+    login: crate::host::HostLogin,
     /// The secrets typed into the form, for a login typed there. `None` for
     /// a login through a credential, which uses what the credential saved.
     typed: Option<TypedSecrets>,
@@ -273,7 +273,7 @@ struct TypedSecrets {
 impl LoginTest {
     /// A login typed into the form. The form decides its password and its
     /// key's passphrase: an empty field means none, whatever is saved.
-    pub fn typed(login: crate::session::SessionLogin) -> Self {
+    pub fn typed(login: crate::host::HostLogin) -> Self {
         Self {
             login,
             typed: Some(TypedSecrets::default()),
@@ -282,7 +282,7 @@ impl LoginTest {
     }
 
     /// A login through a saved credential, with the secrets saved for it.
-    pub fn saved(login: crate::session::SessionLogin) -> Self {
+    pub fn saved(login: crate::host::HostLogin) -> Self {
         Self {
             login,
             typed: None,
@@ -313,7 +313,7 @@ impl LoginTest {
         self
     }
 
-    pub fn login(&self) -> &crate::session::SessionLogin {
+    pub fn login(&self) -> &crate::host::HostLogin {
         &self.login
     }
     pub fn host(&self) -> &str {
@@ -365,7 +365,7 @@ impl std::fmt::Debug for LoginTest {
 /// until a person decides; `false` also covers "nobody is there to ask".
 pub type TrustCallback = Box<dyn Fn(UnknownHostPrompt) -> bool + Send + Sync>;
 
-/// Logs in once with a [`LoginTest`] and hangs up, so the session form can
+/// Logs in once with a [`LoginTest`] and hangs up, so the host form can
 /// check its values before saving them.
 pub trait ConnectionTester: Send + Sync + 'static {
     /// Blocks: call it on a thread of its own. `Err` holds the reason, worded

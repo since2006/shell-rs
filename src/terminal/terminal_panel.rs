@@ -9,11 +9,11 @@ use gpui_kit::component::{
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CenterTab, CloseTerminal, ConnectSession, CopySessionHost, DisconnectTerminal,
-    EditSession, OpenExplorer, ReconnectTerminal, RenameTerminal,
+    CatalogIcon, CenterTab, CloseTerminal, ConnectHost, CopyHostAddress, DisconnectTerminal,
+    EditHost, OpenExplorer, ReconnectTerminal, RenameTerminal,
 };
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
-use crate::session::{HostOs, SessionId, SessionStore};
+use crate::host::{HostId, HostOs, HostStore};
 use crate::shared::{ClosableTabTitle, HostMark, RenamableTab, close_tab_items};
 
 use super::{
@@ -23,19 +23,19 @@ use super::{
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalPanelEvent {
-    Activated(RemoteTerminalId, SessionId),
-    Closed(RemoteTerminalId, SessionId),
-    StatusChanged(RemoteTerminalId, SessionId),
-    PromptRequested(RemoteTerminalId, SessionId, ConnectionPrompt),
-    HostOsDetected(SessionId, HostOs),
+    Activated(RemoteTerminalId, HostId),
+    Closed(RemoteTerminalId, HostId),
+    StatusChanged(RemoteTerminalId, HostId),
+    PromptRequested(RemoteTerminalId, HostId, ConnectionPrompt),
+    HostOsDetected(HostId, HostOs),
 }
 
-/// A remote-session Dock panel backed by the shared terminal engine. The
-/// transport is created from the latest saved session on every connection.
+/// A remote-host Dock panel backed by the shared terminal engine. The
+/// transport is created from the latest saved host on every connection.
 pub struct TerminalPanel {
     id: RemoteTerminalId,
-    session_id: SessionId,
-    store: Entity<SessionStore>,
+    host_id: HostId,
+    store: Entity<HostStore>,
     terminal: Entity<TerminalView>,
     remote_provider: SharedRemoteTerminalTransportProvider,
     tab_group: Option<WeakEntity<TabGroup>>,
@@ -48,36 +48,36 @@ pub struct TerminalPanel {
 impl TerminalPanel {
     pub fn new(
         id: RemoteTerminalId,
-        session_id: SessionId,
-        store: Entity<SessionStore>,
+        host_id: HostId,
+        store: Entity<HostStore>,
         remote_provider: SharedRemoteTerminalTransportProvider,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (session, login) = {
+        let (host, login) = {
             let store = store.read(cx);
-            let session = store
-                .session(session_id)
+            let host = store
+                .host(host_id)
                 .cloned()
-                .expect("terminal sessions must exist in the store");
-            let login = store.login_of(&session);
-            (session, login)
+                .expect("terminal hosts must exist in the store");
+            let login = store.login_of(&host);
+            (host, login)
         };
         let terminal = cx.new(|cx| {
             let mut terminal = TerminalView::new(
                 ("terminal", id.0),
-                format!("{} 的终端", session.name),
+                format!("{} 的终端", host.name),
                 remote_provider.factory_for(&login),
                 window,
                 cx,
             );
-            terminal.set_menu_items(connection_menu_items(id, session_id));
+            terminal.set_menu_items(connection_menu_items(id, host_id));
             terminal
         });
         let subscriptions = vec![
             cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe(&terminal, |this, _, cx| {
-                cx.emit(TerminalPanelEvent::StatusChanged(this.id, this.session_id));
+                cx.emit(TerminalPanelEvent::StatusChanged(this.id, this.host_id));
                 cx.notify();
             }),
             cx.subscribe(
@@ -86,12 +86,12 @@ impl TerminalPanel {
                     TerminalEvent::PromptRequested(prompt) => {
                         cx.emit(TerminalPanelEvent::PromptRequested(
                             this.id,
-                            this.session_id,
+                            this.host_id,
                             prompt.clone(),
                         ));
                     }
                     TerminalEvent::HostOsDetected(os) => {
-                        cx.emit(TerminalPanelEvent::HostOsDetected(this.session_id, *os));
+                        cx.emit(TerminalPanelEvent::HostOsDetected(this.host_id, *os));
                     }
                 },
             ),
@@ -99,7 +99,7 @@ impl TerminalPanel {
 
         Self {
             id,
-            session_id,
+            host_id,
             store,
             terminal,
             remote_provider,
@@ -113,8 +113,8 @@ impl TerminalPanel {
         self.id
     }
 
-    pub fn session_id(&self) -> SessionId {
-        self.session_id
+    pub fn host_id(&self) -> HostId {
+        self.host_id
     }
 
     pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
@@ -124,12 +124,12 @@ impl TerminalPanel {
     fn tab_menu(&self, cx: &Context<Self>) -> TabMenu {
         TabMenu {
             id: self.id,
-            session_id: self.session_id,
+            host_id: self.host_id,
             host_is_ip: self
                 .store
                 .read(cx)
-                .session(self.session_id)
-                .is_some_and(|session| session.host_is_ip()),
+                .host(self.host_id)
+                .is_some_and(|host| host.address_is_ip()),
             group: self.tab_group.clone(),
             panel: cx.entity_id(),
         }
@@ -149,7 +149,7 @@ impl TerminalPanel {
     }
 
     pub fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(login) = self.store.read(cx).login(self.session_id) else {
+        let Some(login) = self.store.read(cx).login(self.host_id) else {
             return;
         };
         let factory = self.remote_provider.factory_for(&login);
@@ -202,7 +202,7 @@ impl BasePanel for TerminalPanel {
         if !active {
             return;
         }
-        let id = self.session_id;
+        let id = self.host_id;
         self.store
             .update(cx, |store, cx| store.set_active(Some(id), cx));
         let focus = self.terminal.read(cx).focus_handle();
@@ -218,7 +218,7 @@ impl BasePanel for TerminalPanel {
         self.tab_group = None;
         self.terminal
             .update(cx, |terminal, cx| terminal.shutdown(cx));
-        let id = self.session_id;
+        let id = self.host_id;
         cx.emit(TerminalPanelEvent::Closed(self.id, id));
     }
 }
@@ -229,8 +229,8 @@ impl Panel for TerminalPanel {
         let os = self
             .store
             .read(cx)
-            .session(self.session_id)
-            .and_then(|session| session.os);
+            .host(self.host_id)
+            .and_then(|host| host.os);
         let mark = HostMark::new(("terminal-tab-os", id.0), self.default_title(cx), os).small();
         let tab_menu = self.tab_menu(cx);
         ClosableTabTitle::new(("terminal-tab", id.0), mark, self.tab_title(cx))
@@ -268,7 +268,7 @@ impl Panel for TerminalPanel {
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
-        let session_id = self.session_id;
+        let host_id = self.host_id;
         let terminal_id = self.id;
         Some(vec![
             Button::new(("sftp", terminal_id.0))
@@ -276,7 +276,7 @@ impl Panel for TerminalPanel {
                 .label("SFTP")
                 .tooltip("打开 SFTP 文件浏览")
                 .on_click(move |_, window, cx| {
-                    window.dispatch_action(Box::new(OpenExplorer(session_id)), cx)
+                    window.dispatch_action(Box::new(OpenExplorer(host_id)), cx)
                 }),
             Button::new(("reconnect", terminal_id.0))
                 .icon(Icon::new(CatalogIcon::RefreshCw))
@@ -302,7 +302,7 @@ impl Panel for TerminalPanel {
 }
 
 /// The connection commands at the bottom of a remote terminal's context menu.
-fn connection_menu_items(id: RemoteTerminalId, session_id: SessionId) -> TerminalMenuItems {
+fn connection_menu_items(id: RemoteTerminalId, host_id: HostId) -> TerminalMenuItems {
     Rc::new(move |menu, lifecycle| {
         let connected = matches!(
             lifecycle,
@@ -311,7 +311,7 @@ fn connection_menu_items(id: RemoteTerminalId, session_id: SessionId) -> Termina
         menu.menu_with_icon(
             "打开 SFTP",
             Icon::new(CatalogIcon::FolderTree),
-            Box::new(OpenExplorer(session_id)),
+            Box::new(OpenExplorer(host_id)),
         )
         .menu_with_icon(
             "重新连接",
@@ -333,22 +333,22 @@ fn connection_menu_items(id: RemoteTerminalId, session_id: SessionId) -> Termina
 #[derive(Clone)]
 struct TabMenu {
     id: RemoteTerminalId,
-    session_id: SessionId,
+    host_id: HostId,
     host_is_ip: bool,
     group: Option<WeakEntity<TabGroup>>,
     panel: EntityId,
 }
 
 impl RenamableTab for TerminalPanel {
-    /// The session's name, as the tab shows it without a title of its own.
+    /// The host's name, as the tab shows it without a title of its own.
     fn default_title(&self, cx: &App) -> SharedString {
         self.store
             .read(cx)
-            .session(self.session_id)
-            .map(|session| session.name.clone())
+            .host(self.host_id)
+            .map(|host| host.name.clone())
             .unwrap_or_else(|| "终端".into())
     }
-    /// The tab's label: its own title when it has one, else the session name.
+    /// The tab's label: its own title when it has one, else the host name.
     fn tab_title(&self, cx: &App) -> SharedString {
         self.custom_title
             .clone()
@@ -362,7 +362,7 @@ impl RenamableTab for TerminalPanel {
 
 impl TabMenu {
     fn build(&self, menu: PopupMenu, cx: &App) -> PopupMenu {
-        let (id, session_id) = (self.id, self.session_id);
+        let (id, host_id) = (self.id, self.host_id);
         let copy_host = if self.host_is_ip {
             "复制 IP 地址"
         } else {
@@ -377,17 +377,17 @@ impl TabMenu {
             .menu_with_icon(
                 "在新标签页中连接",
                 Icon::new(CatalogIcon::Plug),
-                Box::new(ConnectSession(session_id)),
+                Box::new(ConnectHost(host_id)),
             )
             .menu_with_icon(
                 "打开 SFTP",
                 Icon::new(CatalogIcon::FolderTree),
-                Box::new(OpenExplorer(session_id)),
+                Box::new(OpenExplorer(host_id)),
             )
             .menu_with_icon(
                 copy_host,
                 Icon::new(IconName::Copy),
-                Box::new(CopySessionHost(session_id)),
+                Box::new(CopyHostAddress(host_id)),
             )
             .menu_with_icon(
                 "重新连接",
@@ -397,7 +397,7 @@ impl TabMenu {
             .menu_with_icon(
                 "编辑主机…",
                 Icon::new(CatalogIcon::Pencil),
-                Box::new(EditSession(session_id)),
+                Box::new(EditHost(host_id)),
             )
             .separator();
         close_tab_items(

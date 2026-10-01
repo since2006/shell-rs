@@ -6,15 +6,15 @@ use gpui_kit::*;
 use crate::{
     cli::AgentKind,
     explorer::{ExplorerId, FileSizeFormat},
-    session::{CredentialId, ForwardId, GroupId, NodeDrop, SessionId, SessionNode},
+    host::{CredentialId, ForwardId, GroupId, HostId, HostNode, NodeDrop},
     terminal::{LocalTerminalId, RemoteTerminalId},
 };
 
 gpui_kit::actions!(
     shellrs,
     [
-        /// Open the new-session dialog for a session at the root of the tree.
-        NewSession,
+        /// Open the new-host dialog for a host at the root of the tree.
+        NewHost,
         /// Open the new-group dialog for a top-level group.
         NewGroup,
         /// Open a new local login-shell terminal.
@@ -35,9 +35,9 @@ gpui_kit::actions!(
         /// prompt line.
         ClearTerminal,
         /// Show or hide the left dock, whichever list it is showing.
-        ToggleSessionPanel,
-        /// Show the session list in the left dock.
-        ShowSessions,
+        ToggleHostPanel,
+        /// Show the host list in the left dock.
+        ShowHosts,
         /// Show the port-forwarding list in the left dock.
         ShowForwards,
         /// Open the new-forward dialog.
@@ -67,11 +67,11 @@ gpui_kit::actions!(
         /// Move keyboard focus to the search field of the list the left dock
         /// is showing.
         FocusSearch,
-        /// Connect the session selected in the focused session list.
+        /// Connect the host selected in the focused host list.
         ConnectSelected,
-        /// Expand every group in the session tree.
+        /// Expand every group in the host tree.
         ExpandAllGroups,
-        /// Collapse every group in the session tree.
+        /// Collapse every group in the host tree.
         CollapseAllGroups,
         /// Close the center tab displayed most recently (the one ⌘W acts on).
         CloseActiveTab,
@@ -121,29 +121,29 @@ macro_rules! id_actions {
 }
 
 id_actions! {
-    /// Open a new terminal connection for a session.
-    ConnectSession(SessionId);
-    /// Mark a session disconnected.
-    DisconnectSession(SessionId);
-    /// Open a new SFTP tab for a session, like a new terminal connection.
-    OpenExplorer(SessionId);
-    /// Open the edit-session dialog for a session.
-    EditSession(SessionId);
-    /// Duplicate a session in the same group.
-    DuplicateSession(SessionId);
-    /// Ask for confirmation, then delete a session.
-    DeleteSession(SessionId);
-    /// Copy a session's host field (an IP address or a host name) to the
+    /// Open a new terminal connection for a host.
+    ConnectHost(HostId);
+    /// Mark a host disconnected.
+    DisconnectHost(HostId);
+    /// Open a new SFTP tab for a host, like a new terminal connection.
+    OpenExplorer(HostId);
+    /// Open the edit-host dialog for a host.
+    EditHost(HostId);
+    /// Duplicate a host in the same group.
+    DuplicateHost(HostId);
+    /// Ask for confirmation, then delete a host.
+    DeleteHost(HostId);
+    /// Copy a host's address (an IP address or a host name) to the
     /// clipboard.
-    CopySessionHost(SessionId);
-    /// Copy a session's public id to the clipboard, for another tool to
+    CopyHostAddress(HostId);
+    /// Copy a host's public id to the clipboard, for another tool to
     /// name the machine by.
-    CopySessionId(SessionId);
+    CopyHostId(HostId);
 
-    /// Open a terminal connection for every session in this group's subtree.
+    /// Open a terminal connection for every host in this group's subtree.
     ConnectGroup(GroupId);
-    /// Open the new-session dialog with this group pre-selected.
-    NewSessionInGroup(GroupId);
+    /// Open the new-host dialog with this group pre-selected.
+    NewHostInGroup(GroupId);
     /// Open the new-group dialog for a group nested inside this one.
     NewChildGroup(GroupId);
     /// Open the rename-group dialog.
@@ -153,7 +153,7 @@ id_actions! {
 
     /// Close one remote terminal connection and its tab.
     CloseTerminal(RemoteTerminalId);
-    /// Reconnect one remote terminal using the session's latest settings.
+    /// Reconnect one remote terminal using the host's latest settings.
     ReconnectTerminal(RemoteTerminalId);
     /// Disconnect one remote terminal, keeping its tab to reconnect from.
     DisconnectTerminal(RemoteTerminalId);
@@ -197,11 +197,11 @@ id_actions! {
     DeleteCredential(CredentialId);
 }
 
-/// Move a session-tree row by dropping it beside a peer or into a group.
+/// Move a host-tree row by dropping it beside a peer or into a group.
 #[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = shellrs, no_json)]
-pub struct MoveSessionNode {
-    pub source: SessionNode,
+pub struct MoveHostNode {
+    pub source: HostNode,
     pub destination: NodeDrop,
 }
 

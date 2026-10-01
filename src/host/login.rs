@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use crate::secrets::SecretRef;
 
-use super::{AuthKind, Credential, CredentialKind, ProxyKind, ProxySettings, Session};
+use super::{AuthKind, Credential, CredentialKind, Host, ProxyKind, ProxySettings};
 
 /// Which authentication methods a login tries. Each one starts by asking
 /// the server to let the user in with nothing at all, which a server without
@@ -30,7 +30,7 @@ pub enum LoginMethod {
 /// nothing that only changes what the user sees, such as a name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct SessionLogin {
+pub struct HostLogin {
     pub host: String,
     pub port: u16,
     pub user: String,
@@ -74,7 +74,7 @@ pub enum JumpLogin {
         /// What the user calls it, for the questions and errors of its hop.
         name: String,
         /// How it logs in, directly from the hop before it.
-        login: Box<SessionLogin>,
+        login: Box<HostLogin>,
     },
     /// A jump host that has been deleted: the route cannot be taken.
     Deleted,
@@ -127,7 +127,7 @@ impl From<&ProxySettings> for ProxyLogin {
     }
 }
 
-impl SessionLogin {
+impl HostLogin {
     /// A login of the host's own rather than taken from a credential.
     pub fn manual(
         host: impl Into<String>,
@@ -186,20 +186,18 @@ impl SessionLogin {
         self
     }
 
-    /// How `session` logs in, given the credential it uses, as if it were
+    /// How `host` logs in, given the credential it uses, as if it were
     /// reached directly: its route takes the store to look up. `credential`
-    /// is ignored unless it is the one the session names, so a session whose
+    /// is ignored unless it is the one the host names, so a host whose
     /// credential has gone logs in with what the form holds.
-    pub fn of(session: &Session, credential: Option<&Credential>) -> Self {
-        match credential.filter(|credential| session.credential == Some(credential.id)) {
-            Some(credential) => {
-                Self::with_credential(session.host.as_ref(), session.port, credential)
-            }
+    pub fn of(host: &Host, credential: Option<&Credential>) -> Self {
+        match credential.filter(|credential| host.credential == Some(credential.id)) {
+            Some(credential) => Self::with_credential(host.address.as_ref(), host.port, credential),
             None => Self::manual(
-                session.host.as_ref(),
-                session.port,
-                session.user.as_ref(),
-                session.auth,
+                host.address.as_ref(),
+                host.port,
+                host.user.as_ref(),
+                host.auth,
             ),
         }
     }
@@ -212,13 +210,13 @@ impl SessionLogin {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{CredentialDraft, CredentialId, SessionDraft, SessionId};
+    use super::super::{CredentialDraft, CredentialId, HostDraft, HostId};
     use super::*;
 
-    fn session(auth: AuthKind) -> Session {
-        Session::new(
-            SessionId(1),
-            SessionDraft::new("web", "10.0.0.1", 22, "root", auth, None),
+    fn host(auth: AuthKind) -> Host {
+        Host::new(
+            HostId(1),
+            HostDraft::new("web", "10.0.0.1", 22, "root", auth, None),
         )
     }
 
@@ -231,16 +229,16 @@ mod tests {
         Credential::new(CredentialId(7), draft)
     }
 
-    fn using(kind: CredentialKind) -> (Session, Credential) {
+    fn using(kind: CredentialKind) -> (Host, Credential) {
         let credential = credential(kind);
-        let mut session = session(AuthKind::Password);
-        session.credential = Some(credential.id);
-        (session, credential)
+        let mut host = host(AuthKind::Password);
+        host.credential = Some(credential.id);
+        (host, credential)
     }
 
     #[test]
     fn a_manual_host_logs_in_with_its_endpoint_password() {
-        let login = SessionLogin::of(&session(AuthKind::Password), None);
+        let login = HostLogin::of(&host(AuthKind::Password), None);
         assert_eq!(login.method, LoginMethod::Password);
         assert_eq!(login.user, "root");
         assert_eq!(login.password, SecretRef::password("root", "10.0.0.1", 22));
@@ -249,7 +247,7 @@ mod tests {
 
     #[test]
     fn a_host_without_a_password_keeps_its_endpoint_for_a_partial_success() {
-        let login = SessionLogin::of(&session(AuthKind::NoPassword), None);
+        let login = HostLogin::of(&host(AuthKind::NoPassword), None);
         assert_eq!(login.method, LoginMethod::NoPassword);
         assert_eq!(login.key_path, None);
         assert_eq!(login.password, SecretRef::password("root", "10.0.0.1", 22));
@@ -257,8 +255,8 @@ mod tests {
 
     #[test]
     fn a_password_credential_logs_in_with_its_own_keychain_entry() {
-        let (session, credential) = using(CredentialKind::Password);
-        let login = SessionLogin::of(&session, Some(&credential));
+        let (host, credential) = using(CredentialKind::Password);
+        let login = HostLogin::of(&host, Some(&credential));
         assert_eq!(login.method, LoginMethod::Password);
         assert_eq!(login.user, "deploy");
         assert_eq!(login.password, credential.password_secret());
@@ -266,14 +264,14 @@ mod tests {
 
     #[test]
     fn key_and_agent_credentials_keep_the_endpoint_for_a_partial_success() {
-        let (session, credential) = using(CredentialKind::Key);
-        let key = SessionLogin::of(&session, Some(&credential));
+        let (host, credential) = using(CredentialKind::Key);
+        let key = HostLogin::of(&host, Some(&credential));
         assert_eq!(key.method, LoginMethod::Key);
         assert_eq!(key.key_path, Some(PathBuf::from("/tmp/id_deploy")));
         assert_eq!(key.password, SecretRef::password("deploy", "10.0.0.1", 22));
 
-        let (session, credential) = using(CredentialKind::Agent);
-        let agent = SessionLogin::of(&session, Some(&credential));
+        let (host, credential) = using(CredentialKind::Agent);
+        let agent = HostLogin::of(&host, Some(&credential));
         assert_eq!(agent.method, LoginMethod::Agent);
         assert_eq!(agent.key_path, None);
         assert_eq!(
@@ -285,7 +283,7 @@ mod tests {
     #[test]
     fn a_credential_the_host_does_not_name_is_not_used() {
         let credential = credential(CredentialKind::Password);
-        let login = SessionLogin::of(&session(AuthKind::NoPassword), Some(&credential));
+        let login = HostLogin::of(&host(AuthKind::NoPassword), Some(&credential));
         assert_eq!(login.method, LoginMethod::NoPassword);
         assert_eq!(login.user, "root");
     }
@@ -294,7 +292,7 @@ mod tests {
     fn a_jump_hosts_name_is_not_part_of_the_login() {
         let hop = |name: &str, host: &str| JumpLogin::Host {
             name: name.into(),
-            login: Box::new(SessionLogin::manual(host, 22, "root", AuthKind::Password)),
+            login: Box::new(HostLogin::manual(host, 22, "root", AuthKind::Password)),
         };
         assert_eq!(hop("阿里云99", "10.0.0.1"), hop("跳板", "10.0.0.1"));
         assert_ne!(hop("阿里云99", "10.0.0.1"), hop("阿里云99", "10.0.0.2"));
@@ -324,11 +322,11 @@ mod tests {
 
     #[test]
     fn renaming_a_credential_does_not_change_the_login() {
-        let (session, mut credential) = using(CredentialKind::Password);
-        let before = SessionLogin::of(&session, Some(&credential));
+        let (host, mut credential) = using(CredentialKind::Password);
+        let before = HostLogin::of(&host, Some(&credential));
         credential.name = "别的名字".into();
-        assert_eq!(SessionLogin::of(&session, Some(&credential)), before);
+        assert_eq!(HostLogin::of(&host, Some(&credential)), before);
         credential.user = "admin".into();
-        assert_ne!(SessionLogin::of(&session, Some(&credential)), before);
+        assert_ne!(HostLogin::of(&host, Some(&credential)), before);
     }
 }

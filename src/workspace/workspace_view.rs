@@ -20,15 +20,15 @@ use gpui_kit::*;
 
 use crate::app::{
     CenterTab, ClearTerminal, CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseSettings,
-    CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectSession, CopyAgentSkill,
-    CopySessionHost, CopySessionId, CopyTerminal, DeleteGroup, DeleteSession, DisconnectSession,
-    DisconnectTerminal, DismissTerminalFind, DuplicateSession, EditSession, ExpandAllGroups,
+    CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectHost, CopyAgentSkill,
+    CopyHostAddress, CopyHostId, CopyTerminal, DeleteGroup, DeleteHost, DisconnectHost,
+    DisconnectTerminal, DismissTerminalFind, DuplicateHost, EditHost, ExpandAllGroups,
     ExplorerAction, ExplorerCommand, ExplorerShortcut, FindInTerminal, FindNextInTerminal,
-    FindPreviousInTerminal, FocusSearch, InstallAgentSkill, InstallCliCommand, MoveSessionNode,
-    NewChildGroup, NewGroup, NewLocalTerminal, NewSession, NewSessionInGroup, OpenExplorer,
-    OpenSettings, PasteTerminal, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill,
-    RemoveCliCommand, RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal,
-    SetFileSizeFormat, ToggleSessionPanel, ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
+    FindPreviousInTerminal, FocusSearch, InstallAgentSkill, InstallCliCommand, MoveHostNode,
+    NewChildGroup, NewGroup, NewHost, NewHostInGroup, NewLocalTerminal, OpenExplorer, OpenSettings,
+    PasteTerminal, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand,
+    RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal, SetFileSizeFormat,
+    ToggleHostPanel, ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::cli::{CliIntegration, CliServer, CliTarget, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -41,10 +41,9 @@ use crate::forward::{
     ForwardManager, ForwardManagerEvent, ForwardPanel, SharedForwardTransportProvider,
     SshForwardTransportProvider,
 };
-use crate::session::{
-    ConnectionState, Dependents, ForwardId, GroupId, SessionId, SessionNode, SessionPanel,
-    SessionStore, SessionStoreEvent, confirm_delete_group, confirm_delete_session,
-    open_group_dialog, open_session_dialog,
+use crate::host::{
+    ConnectionState, Dependents, ForwardId, GroupId, HostId, HostNode, HostPanel, HostStore,
+    HostStoreEvent, confirm_delete_group, confirm_delete_host, open_group_dialog, open_host_dialog,
 };
 use crate::settings::{
     Appearance, SettingsPanel, SettingsPanelEvent, SettingsStore, SettingsStoreEvent,
@@ -63,7 +62,7 @@ use crate::terminal::{
 use crate::update::{UpdateServices, Updater, UpdaterEvent};
 
 use super::{
-    dock_skin::WorkspaceDockSkin, recent_sessions::RecentSessions, sidebar::Sidebar,
+    dock_skin::WorkspaceDockSkin, recent_hosts::RecentHosts, sidebar::Sidebar,
     status_bar::WorkspaceStatus, title_bar::render_title_bar,
 };
 
@@ -121,21 +120,21 @@ pub(super) enum PromptOwner {
 
 /// The main window content: title bar above the dock, status bar below.
 ///
-/// Owns the session store, the dock and the registry of open per-session
+/// Owns the host store, the dock and the registry of open per-host
 /// panels, and handles every application action.
 pub struct Workspace {
-    pub(super) store: Entity<SessionStore>,
+    pub(super) store: Entity<HostStore>,
     pub(super) dock_area: Entity<DockArea>,
     skin: Rc<WorkspaceDockSkin>,
-    /// The left dock's panel: the session tree or the forward list.
+    /// The left dock's panel: the host tree or the forward list.
     pub(super) sidebar: Entity<Sidebar>,
-    session_panel: Entity<SessionPanel>,
+    host_panel: Entity<HostPanel>,
     /// The port forwards that are running, each on a connection of its own.
     pub(super) forwards: Entity<ForwardManager>,
     /// The start page the dock skin shows while the center has no tab.
-    recent: Entity<RecentSessions>,
+    recent: Entity<RecentHosts>,
     pub(super) terminals: HashMap<RemoteTerminalId, Entity<TerminalPanel>>,
-    /// SFTP tabs; a session can have several, like terminals.
+    /// SFTP tabs; a host can have several, like terminals.
     pub(super) explorers: HashMap<ExplorerId, Entity<ExplorerPanel>>,
     pub(super) local_terminals: HashMap<LocalTerminalId, Entity<LocalTerminalPanel>>,
     /// The settings tab, while it is open. There is only ever one.
@@ -157,15 +156,15 @@ pub struct Workspace {
     remote_terminal_provider: SharedRemoteTerminalTransportProvider,
     sftp_provider: SharedSftpTransportProvider,
     local_directory_provider: SharedLocalDirectoryProvider,
-    /// Backs the session dialog's 「测试连接」.
+    /// Backs the host dialog's 「测试连接」.
     connection_tester: SharedConnectionTester,
     next_remote_terminal_id: u64,
     next_local_terminal_id: u64,
     next_explorer_id: u64,
     /// The center tab displayed most recently; `CloseActiveTab` closes it.
     active_tab: Option<CenterTab>,
-    pub(super) prompt_queue: VecDeque<(PromptOwner, SessionId, ConnectionPrompt)>,
-    pub(super) active_prompt: Option<(PromptOwner, SessionId, u64)>,
+    pub(super) prompt_queue: VecDeque<(PromptOwner, HostId, ConnectionPrompt)>,
+    pub(super) active_prompt: Option<(PromptOwner, HostId, u64)>,
     /// Dispatch target for the title bar and start page: actions sent to it
     /// reach the workspace handlers whatever is focused.
     pub(super) focus_handle: FocusHandle,
@@ -174,10 +173,10 @@ pub struct Workspace {
 
 impl Workspace {
     /// `store` is built by `main` from the database on disk, and by the UI
-    /// tests from `SessionStore::seed`; `settings` likewise from the settings
+    /// tests from `HostStore::seed`; `settings` likewise from the settings
     /// file, or kept in memory.
     pub fn new(
-        store: Entity<SessionStore>,
+        store: Entity<HostStore>,
         settings: Entity<SettingsStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -238,7 +237,7 @@ impl Workspace {
     /// Bring the window forward whenever ShellRS is opened while it is
     /// already running. The second copy only passes the word on and exits:
     /// two of them on one data directory would each keep their own copy of
-    /// the sessions and write over the other's changes.
+    /// the hosts and write over the other's changes.
     ///
     /// Asked on a timer, like every other worker: the thread that hears the
     /// request never wakes the window itself.
@@ -265,7 +264,7 @@ impl Workspace {
     }
 
     /// Tell the CLI server what it may use: whether 启用外部 CLI is on, and
-    /// the sessions as they are now.
+    /// the hosts as they are now.
     fn sync_cli_server(&self, cx: &App) {
         if let Some(server) = &self.cli_server {
             server.set_enabled(self.settings.read(cx).settings().external_cli.enabled);
@@ -278,7 +277,7 @@ impl Workspace {
     // constructor; bundling them would only move the list elsewhere.
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_services(
-        store: Entity<SessionStore>,
+        store: Entity<HostStore>,
         settings: Entity<SettingsStore>,
         remote_terminal_provider: SharedRemoteTerminalTransportProvider,
         local_terminal_factory: SharedTerminalTransportFactory,
@@ -290,7 +289,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus_handle = cx.focus_handle();
-        let recent = cx.new(|cx| RecentSessions::new(store.clone(), focus_handle.clone(), cx));
+        let recent = cx.new(|cx| RecentHosts::new(store.clone(), focus_handle.clone(), cx));
         let (dock_area, skin) = WorkspaceDockSkin::dock_area(
             DOCK_ID,
             Some(DOCK_VERSION),
@@ -298,7 +297,7 @@ impl Workspace {
             window,
             cx,
         );
-        let session_panel = cx.new(|cx| SessionPanel::new(store.clone(), window, cx));
+        let host_panel = cx.new(|cx| HostPanel::new(store.clone(), window, cx));
         let forwards = cx.new(|cx| ForwardManager::new(store.clone(), forward_provider, cx));
         let automatic = settings.read(cx).settings().update.automatic;
         let updater = cx.new(|cx| {
@@ -317,13 +316,12 @@ impl Workspace {
         });
         let credential_panel =
             cx.new(|cx| CredentialPanel::new(store.clone(), focus_handle.clone(), window, cx));
-        let sidebar =
-            cx.new(|_| Sidebar::new(session_panel.clone(), forward_panel, credential_panel));
-        // Start with focus in the session panel so window-level actions have a
+        let sidebar = cx.new(|_| Sidebar::new(host_panel.clone(), forward_panel, credential_panel));
+        // Start with focus in the host panel so window-level actions have a
         // dispatch path. The workspace's own handle is never focused: the
         // dialog layer is its child, and a focused ancestor would keep the
         // dialog's focus trap from taking focus.
-        let panel_focus = session_panel.read(cx).focus_handle(cx);
+        let panel_focus = host_panel.read(cx).focus_handle(cx);
         window.focus(&panel_focus, cx);
         // Before the first frame, so a dark theme never starts out light.
         crate::settings::apply(settings.read(cx).settings(), window, cx);
@@ -336,11 +334,11 @@ impl Workspace {
             cx.subscribe_in(
                 &store,
                 window,
-                |this, _, event: &SessionStoreEvent, window, cx| match event {
-                    SessionStoreEvent::PersistFailed(message) => {
+                |this, _, event: &HostStoreEvent, window, cx| match event {
+                    HostStoreEvent::PersistFailed(message) => {
                         window.push_notification(Notification::error(message.clone()), cx);
                     }
-                    SessionStoreEvent::ConnectionSettingsChanged(id) => {
+                    HostStoreEvent::ConnectionSettingsChanged(id) => {
                         let panels: Vec<_> = this.terminals_of(*id, cx).cloned().collect();
                         if !panels.is_empty() {
                             for panel in &panels {
@@ -355,7 +353,7 @@ impl Workspace {
                         }
                     }
                     // The forward manager restarts the rule itself.
-                    SessionStoreEvent::ForwardSettingsChanged(_) => {}
+                    HostStoreEvent::ForwardSettingsChanged(_) => {}
                 },
             ),
             cx.subscribe_in(
@@ -401,13 +399,13 @@ impl Workspace {
             ),
         ];
 
-        // Sessions that start out connected get a terminal tab right away.
-        let connected: Vec<SessionId> = store
+        // Hosts that start out connected get a terminal tab right away.
+        let connected: Vec<HostId> = store
             .read(cx)
-            .sessions()
+            .hosts()
             .iter()
-            .filter(|session| session.state.is_connected())
-            .map(|session| session.id)
+            .filter(|host| host.state.is_connected())
+            .map(|host| host.id)
             .collect();
         let mut terminals = HashMap::new();
         let mut center = DockLayout::tabs();
@@ -456,7 +454,7 @@ impl Workspace {
             dock_area,
             skin,
             sidebar,
-            session_panel,
+            host_panel,
             forwards,
             recent,
             terminals,
@@ -483,15 +481,15 @@ impl Workspace {
         }
     }
 
-    /// The session store, for tests and for panels created later.
-    pub fn store(&self) -> &Entity<SessionStore> {
+    /// The host store, for tests and for panels created later.
+    pub fn store(&self) -> &Entity<HostStore> {
         &self.store
     }
 
-    pub fn terminal(&self, id: SessionId, cx: &App) -> Option<&Entity<TerminalPanel>> {
+    pub fn terminal(&self, id: HostId, cx: &App) -> Option<&Entity<TerminalPanel>> {
         self.terminals
             .values()
-            .filter(|panel| panel.read(cx).session_id() == id)
+            .filter(|panel| panel.read(cx).host_id() == id)
             .max_by_key(|panel| panel.read(cx).id().0)
     }
 
@@ -499,31 +497,31 @@ impl Workspace {
         self.terminals.get(&id)
     }
 
-    pub fn terminal_count(&self, id: SessionId, cx: &App) -> usize {
+    pub fn terminal_count(&self, id: HostId, cx: &App) -> usize {
         self.terminals_of(id, cx).count()
     }
 
-    /// A session's terminal tabs, in no particular order.
+    /// A host's terminal tabs, in no particular order.
     fn terminals_of<'a>(
         &'a self,
-        session: SessionId,
+        host: HostId,
         cx: &'a App,
     ) -> impl Iterator<Item = &'a Entity<TerminalPanel>> {
         self.terminals
             .values()
-            .filter(move |panel| panel.read(cx).session_id() == session)
+            .filter(move |panel| panel.read(cx).host_id() == host)
     }
 
     pub fn explorer(&self, id: ExplorerId) -> Option<&Entity<ExplorerPanel>> {
         self.explorers.get(&id)
     }
 
-    /// A session's SFTP tabs, oldest first.
-    pub fn explorers_of(&self, session: SessionId, cx: &App) -> Vec<Entity<ExplorerPanel>> {
+    /// A host's SFTP tabs, oldest first.
+    pub fn explorers_of(&self, host: HostId, cx: &App) -> Vec<Entity<ExplorerPanel>> {
         let mut explorers: Vec<_> = self
             .explorers
             .iter()
-            .filter(|(_, panel)| panel.read(cx).session_id() == session)
+            .filter(|(_, panel)| panel.read(cx).host_id() == host)
             .collect();
         explorers.sort_by_key(|(id, _)| id.0);
         explorers
@@ -532,15 +530,14 @@ impl Workspace {
             .collect()
     }
 
-    /// Whether a session has any tab open in the center.
-    fn has_tabs(&self, session: SessionId, cx: &App) -> bool {
-        self.terminals_of(session, cx).next().is_some()
-            || !self.explorers_of(session, cx).is_empty()
+    /// Whether a host has any tab open in the center.
+    fn has_tabs(&self, host: HostId, cx: &App) -> bool {
+        self.terminals_of(host, cx).next().is_some() || !self.explorers_of(host, cx).is_empty()
     }
 
-    /// How many of a session's SFTP tabs are in the middle of a transfer.
-    fn transfers_of(&self, session: SessionId, cx: &App) -> usize {
-        self.explorers_of(session, cx)
+    /// How many of a host's SFTP tabs are in the middle of a transfer.
+    fn transfers_of(&self, host: HostId, cx: &App) -> usize {
+        self.explorers_of(host, cx)
             .iter()
             .filter(|panel| panel.read(cx).is_transferring())
             .count()
@@ -590,13 +587,12 @@ impl Workspace {
     pub(super) fn enqueue_prompt(
         &mut self,
         terminal_id: PromptOwner,
-        session_id: SessionId,
+        host_id: HostId,
         prompt: ConnectionPrompt,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.prompt_queue
-            .push_back((terminal_id, session_id, prompt));
+        self.prompt_queue.push_back((terminal_id, host_id, prompt));
         cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -623,7 +619,7 @@ impl Workspace {
     }
 
     fn open_next_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (terminal_id, session_id, prompt) = loop {
+        let (terminal_id, host_id, prompt) = loop {
             let Some(next) = self.prompt_queue.pop_front() else {
                 return;
             };
@@ -632,7 +628,7 @@ impl Workspace {
             }
         };
         let request_id = prompt.request_id();
-        self.active_prompt = Some((terminal_id, session_id, request_id));
+        self.active_prompt = Some((terminal_id, host_id, request_id));
         let origin = match terminal_id {
             PromptOwner::Forward(id, _) => self.forward_prompt_origin(id, cx),
             PromptOwner::Terminal(_) | PromptOwner::Sftp(..) => None,
@@ -777,7 +773,7 @@ impl Workspace {
         reply: ConnectionPromptReply,
         cx: &mut Context<Self>,
     ) {
-        let Some((active_terminal, session_id, active_request)) = self.active_prompt else {
+        let Some((active_terminal, host_id, active_request)) = self.active_prompt else {
             return;
         };
         if (active_terminal, active_request) != (terminal_id, request_id) {
@@ -802,7 +798,7 @@ impl Workspace {
                 PromptOwner::Sftp(..) => {}
             }
         }
-        self.refresh_session_connection_state(session_id, cx);
+        self.refresh_host_connection_state(host_id, cx);
     }
 
     fn prompt_owner_is_live(&self, owner: PromptOwner, cx: &App) -> bool {
@@ -871,30 +867,30 @@ impl Workspace {
     ) {
         self.cancel_prompts_for_owner(PromptOwner::Terminal(terminal_id), window, cx);
     }
-    fn cancel_prompts_for_session(
+    fn cancel_prompts_for_host(
         &mut self,
-        session_id: SessionId,
+        host_id: HostId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // A port forward through the session is on its own: what the
-        // session's tabs are told does not reach it. Its questions end when
+        // A port forward through the host is on its own: what the
+        // host's tabs are told does not reach it. Its questions end when
         // the forward does.
         let of_a_tab = |owner: &PromptOwner| !matches!(owner, PromptOwner::Forward(..));
         self.prompt_queue
-            .retain(|(owner, id, _)| *id != session_id || !of_a_tab(owner));
+            .retain(|(owner, id, _)| *id != host_id || !of_a_tab(owner));
         if let Some((owner, id, _)) = self.active_prompt
-            && id == session_id
+            && id == host_id
             && of_a_tab(&owner)
         {
             self.cancel_prompts_for_owner(owner, window, cx);
         }
     }
 
-    fn refresh_session_connection_state(&mut self, session_id: SessionId, cx: &mut Context<Self>) {
+    fn refresh_host_connection_state(&mut self, host_id: HostId, cx: &mut Context<Self>) {
         let mut has_starting = false;
         let mut has_running = false;
-        for panel in self.terminals_of(session_id, cx) {
+        for panel in self.terminals_of(host_id, cx) {
             match panel.read(cx).lifecycle(cx) {
                 TerminalLifecycle::Running => has_running = true,
                 TerminalLifecycle::Starting => has_starting = true,
@@ -903,7 +899,7 @@ impl Workspace {
                 | TerminalLifecycle::Closing => {}
             }
         }
-        for panel in self.explorers_of(session_id, cx) {
+        for panel in self.explorers_of(host_id, cx) {
             match panel.read(cx).connection_state() {
                 ConnectionState::Connected => has_running = true,
                 ConnectionState::Connecting => has_starting = true,
@@ -918,16 +914,16 @@ impl Workspace {
             ConnectionState::Disconnected
         };
         self.store
-            .update(cx, |store, cx| store.set_state(session_id, state, cx));
+            .update(cx, |store, cx| store.set_state(host_id, state, cx));
     }
 
-    fn on_connect_session(
+    fn on_connect_host(
         &mut self,
-        action: &ConnectSession,
+        action: &ConnectHost,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.connect_session(action.0, window, cx);
+        self.connect_host(action.0, window, cx);
     }
 
     fn on_connect_group(
@@ -936,19 +932,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let session_ids = self.store.read(cx).sessions_under(action.0);
-        for session_id in session_ids {
-            self.connect_session(session_id, window, cx);
+        let host_ids = self.store.read(cx).hosts_under(action.0);
+        for host_id in host_ids {
+            self.connect_host(host_id, window, cx);
         }
     }
 
-    fn connect_session(
-        &mut self,
-        session_id: SessionId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.store.read(cx).session(session_id).is_none() {
+    fn connect_host(&mut self, host_id: HostId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.store.read(cx).host(host_id).is_none() {
             return;
         }
         let terminal_id = RemoteTerminalId(self.next_remote_terminal_id);
@@ -957,13 +948,13 @@ impl Workspace {
             &self.store,
             self.remote_terminal_provider.clone(),
             terminal_id,
-            session_id,
+            host_id,
             window,
             cx,
         );
         self._subscriptions.push(subscription);
         self.terminals.insert(terminal_id, panel.clone());
-        self.refresh_session_connection_state(session_id, cx);
+        self.refresh_host_connection_state(host_id, cx);
         self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
         });
@@ -975,15 +966,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let session_id = action.0;
-        if self.store.read(cx).session(session_id).is_none() {
+        let host_id = action.0;
+        if self.store.read(cx).host(host_id).is_none() {
             return;
         }
         // Every request opens a tab of its own, as connecting does for
         // terminals: two directories of one host side by side.
         let id = ExplorerId(self.next_explorer_id);
         self.next_explorer_id += 1;
-        let (panel, subscription) = new_explorer_panel(self, id, session_id, window, cx);
+        let (panel, subscription) = new_explorer_panel(self, id, host_id, window, cx);
         self._subscriptions.push(subscription);
         self.explorers.insert(id, panel.clone());
         self.dock_area.update(cx, |area, cx| {
@@ -1193,7 +1184,7 @@ impl Workspace {
         });
     }
 
-    /// Close a session's terminal tab. Goes through the dock area rather
+    /// Close a host's terminal tab. Goes through the dock area rather
     /// than the tab group: the group refuses to close the last tab of the
     /// center, and here every tab is closable.
     fn on_close_terminal(
@@ -1421,17 +1412,17 @@ impl Workspace {
         }
     }
 
-    fn on_copy_session_host(
+    fn on_copy_host_address(
         &mut self,
-        action: &CopySessionHost,
+        action: &CopyHostAddress,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(host) = self
             .store
             .read(cx)
-            .session(action.0)
-            .map(|session| session.host.clone())
+            .host(action.0)
+            .map(|host| host.address.clone())
         else {
             return;
         };
@@ -1439,17 +1430,17 @@ impl Workspace {
         window.push_notification(Notification::success(format!("已复制 {host}")), cx);
     }
 
-    fn on_copy_session_id(
+    fn on_copy_host_id(
         &mut self,
-        action: &CopySessionId,
+        action: &CopyHostId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(public_id) = self
             .store
             .read(cx)
-            .session(action.0)
-            .map(|session| session.public_id.clone())
+            .host(action.0)
+            .map(|host| host.public_id.clone())
         else {
             return;
         };
@@ -1554,20 +1545,20 @@ impl Workspace {
         let id = action.0;
         self.cancel_prompts_for_terminal(id, window, cx);
         if let Some(terminal) = self.terminals.get(&id).cloned() {
-            let session_id = terminal.read(cx).session_id();
+            let host_id = terminal.read(cx).host_id();
             terminal.update(cx, |terminal, cx| terminal.disconnect(cx));
-            self.refresh_session_connection_state(session_id, cx);
+            self.refresh_host_connection_state(host_id, cx);
         }
     }
 
-    fn on_disconnect_session(
+    fn on_disconnect_host(
         &mut self,
-        action: &DisconnectSession,
+        action: &DisconnectHost,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let id = action.0;
-        self.cancel_prompts_for_session(id, window, cx);
+        self.cancel_prompts_for_host(id, window, cx);
         self.store.update(cx, |store, cx| {
             store.set_state(id, ConnectionState::Disconnected, cx);
         });
@@ -1589,14 +1580,14 @@ impl Workspace {
         let id = action.0;
         self.cancel_prompts_for_terminal(id, window, cx);
         if let Some(terminal) = self.terminals.get(&id).cloned() {
-            let session_id = terminal.read(cx).session_id();
+            let host_id = terminal.read(cx).host_id();
             terminal.update(cx, |terminal, cx| terminal.reconnect(window, cx));
-            self.refresh_session_connection_state(session_id, cx);
+            self.refresh_host_connection_state(host_id, cx);
         }
     }
 
-    fn on_new_session(&mut self, _: &NewSession, window: &mut Window, cx: &mut Context<Self>) {
-        open_session_dialog(
+    fn on_new_host(&mut self, _: &NewHost, window: &mut Window, cx: &mut Context<Self>) {
+        open_host_dialog(
             None,
             None,
             self.store.clone(),
@@ -1606,14 +1597,9 @@ impl Workspace {
         );
     }
 
-    fn on_edit_session(
-        &mut self,
-        action: &EditSession,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.store.read(cx).session(action.0).is_some() {
-            open_session_dialog(
+    fn on_edit_host(&mut self, action: &EditHost, window: &mut Window, cx: &mut Context<Self>) {
+        if self.store.read(cx).host(action.0).is_some() {
+            open_host_dialog(
                 Some(action.0),
                 None,
                 self.store.clone(),
@@ -1624,9 +1610,9 @@ impl Workspace {
         }
     }
 
-    fn on_duplicate_session(
+    fn on_duplicate_host(
         &mut self,
-        action: &DuplicateSession,
+        action: &DuplicateHost,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1634,35 +1620,24 @@ impl Workspace {
             .store
             .update(cx, |store, cx| store.duplicate(action.0, cx));
         if let Some(copy) = copy {
-            self.session_panel.update(cx, |panel, cx| {
-                panel.select_node(SessionNode::Session(copy), cx)
-            });
+            self.host_panel
+                .update(cx, |panel, cx| panel.select_node(HostNode::Host(copy), cx));
         }
     }
 
-    fn on_move_session_node(
-        &mut self,
-        action: &MoveSessionNode,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_move_host_node(&mut self, action: &MoveHostNode, _: &mut Window, cx: &mut Context<Self>) {
         let moved = self.store.update(cx, |store, cx| {
             store.move_node(action.source, action.destination, cx)
         });
         if moved {
-            self.session_panel
+            self.host_panel
                 .update(cx, |panel, cx| panel.reveal_node(action.source, cx));
         }
     }
 
-    fn on_delete_session(
-        &mut self,
-        action: &DeleteSession,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_delete_host(&mut self, action: &DeleteHost, window: &mut Window, cx: &mut Context<Self>) {
         let id = action.0;
-        let Some(session) = self.store.read(cx).session(id).cloned() else {
+        let Some(host) = self.store.read(cx).host(id).cloned() else {
             return;
         };
         let workspace = cx.entity().downgrade();
@@ -1671,13 +1646,13 @@ impl Workspace {
             forwards: store.forwards_of(id).count(),
             jump_users: store.jump_users(&[id]),
         };
-        confirm_delete_session(
-            &session,
+        confirm_delete_host(
+            &host,
             (self.has_tabs(id, cx), self.transfers_of(id, cx)),
             dependents,
             Rc::new(move |window, cx| {
                 workspace
-                    .update(cx, |this, cx| this.remove_session(id, window, cx))
+                    .update(cx, |this, cx| this.remove_host(id, window, cx))
                     .ok();
             }),
             window,
@@ -1685,18 +1660,18 @@ impl Workspace {
         );
     }
 
-    fn remove_session(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
-        self.close_session_tabs(id, window, cx);
+    fn remove_host(&mut self, id: HostId, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_host_tabs(id, window, cx);
         self.store.update(cx, |store, cx| {
             store.remove(id, cx);
         });
     }
 
-    /// Close whatever a session has open in the center, leaving the store
-    /// alone. Deleting a session and deleting the group around it both need
-    /// this, the latter for every session in the subtree.
-    fn close_session_tabs(&mut self, id: SessionId, window: &mut Window, cx: &mut Context<Self>) {
-        self.cancel_prompts_for_session(id, window, cx);
+    /// Close whatever a host has open in the center, leaving the store
+    /// alone. Deleting a host and deleting the group around it both need
+    /// this, the latter for every host in the subtree.
+    fn close_host_tabs(&mut self, id: HostId, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_prompts_for_host(id, window, cx);
         let terminals: Vec<_> = self.terminals_of(id, cx).cloned().collect();
         for terminal in terminals {
             self.dock_area
@@ -1709,13 +1684,13 @@ impl Workspace {
         }
     }
 
-    fn on_new_session_in_group(
+    fn on_new_host_in_group(
         &mut self,
-        action: &NewSessionInGroup,
+        action: &NewHostInGroup,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        open_session_dialog(
+        open_host_dialog(
             None,
             Some(action.0),
             self.store.clone(),
@@ -1750,7 +1725,7 @@ impl Workspace {
     fn set_all_groups_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
         self.store
             .update(cx, |store, cx| store.set_all_groups_expanded(expanded, cx));
-        self.session_panel
+        self.host_panel
             .update(cx, |panel, cx| panel.set_all_groups_expanded(expanded, cx));
     }
 
@@ -1789,7 +1764,7 @@ impl Workspace {
         };
         let name = group.name.to_string();
         let subgroups = store.descendant_groups(id).len();
-        let doomed = store.sessions_under(id);
+        let doomed = store.hosts_under(id);
         let closes_tabs = doomed.iter().any(|id| self.has_tabs(*id, cx));
         let transfers = doomed.iter().map(|id| self.transfers_of(*id, cx)).sum();
         let dependents = Dependents {
@@ -1814,19 +1789,19 @@ impl Workspace {
     }
 
     /// The store cascades the delete; the workspace only has to close the
-    /// tabs of the sessions that went with the group.
+    /// tabs of the hosts that went with the group.
     fn remove_group(&mut self, id: GroupId, window: &mut Window, cx: &mut Context<Self>) {
         let removed = self
             .store
             .update(cx, |store, cx| store.remove_group(id, cx));
-        for session in removed {
-            self.close_session_tabs(session, window, cx);
+        for host in removed {
+            self.close_host_tabs(host, window, cx);
         }
     }
 
-    fn on_toggle_session_panel(
+    fn on_toggle_host_panel(
         &mut self,
-        _: &ToggleSessionPanel,
+        _: &ToggleHostPanel,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1895,17 +1870,17 @@ impl Workspace {
 }
 
 fn new_terminal_panel(
-    store: &Entity<SessionStore>,
+    store: &Entity<HostStore>,
     remote_provider: SharedRemoteTerminalTransportProvider,
     terminal_id: RemoteTerminalId,
-    session_id: SessionId,
+    host_id: HostId,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> (Entity<TerminalPanel>, Subscription) {
     let panel = cx.new(|cx| {
         TerminalPanel::new(
             terminal_id,
-            session_id,
+            host_id,
             store.clone(),
             remote_provider,
             window,
@@ -1919,36 +1894,36 @@ fn new_terminal_panel(
             TerminalPanelEvent::Activated(terminal_id, _) => {
                 this.active_tab = Some(CenterTab::Terminal(*terminal_id))
             }
-            TerminalPanelEvent::Closed(terminal_id, session_id) => {
+            TerminalPanelEvent::Closed(terminal_id, host_id) => {
                 this.cancel_prompts_for_terminal(*terminal_id, window, cx);
                 this.terminals.remove(terminal_id);
                 if this.active_tab == Some(CenterTab::Terminal(*terminal_id)) {
                     this.active_tab = None;
                 }
-                this.refresh_session_connection_state(*session_id, cx);
-                if !this.has_tabs(*session_id, cx)
-                    && this.store.read(cx).active().map(|session| session.id) == Some(*session_id)
+                this.refresh_host_connection_state(*host_id, cx);
+                if !this.has_tabs(*host_id, cx)
+                    && this.store.read(cx).active().map(|host| host.id) == Some(*host_id)
                 {
                     this.store
                         .update(cx, |store, cx| store.set_active(None, cx));
                 }
             }
-            TerminalPanelEvent::StatusChanged(_, session_id) => {
-                this.refresh_session_connection_state(*session_id, cx);
+            TerminalPanelEvent::StatusChanged(_, host_id) => {
+                this.refresh_host_connection_state(*host_id, cx);
                 cx.notify();
             }
-            TerminalPanelEvent::PromptRequested(terminal_id, session_id, prompt) => this
+            TerminalPanelEvent::PromptRequested(terminal_id, host_id, prompt) => this
                 .enqueue_prompt(
                     PromptOwner::Terminal(*terminal_id),
-                    *session_id,
+                    *host_id,
                     prompt.clone(),
                     window,
                     cx,
                 ),
-            TerminalPanelEvent::HostOsDetected(session_id, os) => {
-                let (session_id, os) = (*session_id, *os);
+            TerminalPanelEvent::HostOsDetected(host_id, os) => {
+                let (host_id, os) = (*host_id, *os);
                 this.store
-                    .update(cx, |store, cx| store.set_host_os(session_id, Some(os), cx));
+                    .update(cx, |store, cx| store.set_host_os(host_id, Some(os), cx));
             }
         },
     );
@@ -2012,14 +1987,14 @@ impl Render for AuthenticationPromptForm {
 fn new_explorer_panel(
     workspace: &Workspace,
     id: ExplorerId,
-    session_id: SessionId,
+    host_id: HostId,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> (Entity<ExplorerPanel>, Subscription) {
     let panel = cx.new(|cx| {
         ExplorerPanel::new(
             id,
-            session_id,
+            host_id,
             workspace.store.clone(),
             workspace.sftp_provider.clone(),
             workspace.local_directory_provider.clone(),
@@ -2033,14 +2008,14 @@ fn new_explorer_panel(
         window,
         |this, _, event: &ExplorerPanelEvent, window, cx| match event {
             ExplorerPanelEvent::Activated(id) => this.active_tab = Some(CenterTab::Explorer(*id)),
-            ExplorerPanelEvent::Closed(id, session_id) => {
+            ExplorerPanelEvent::Closed(id, host_id) => {
                 this.explorers.remove(id);
                 if this.active_tab == Some(CenterTab::Explorer(*id)) {
                     this.active_tab = None;
                 }
-                this.refresh_session_connection_state(*session_id, cx);
+                this.refresh_host_connection_state(*host_id, cx);
             }
-            ExplorerPanelEvent::StateChanged(id, session_id) => {
+            ExplorerPanelEvent::StateChanged(id, host_id) => {
                 if let Some(panel) = this.explorers.get(id) {
                     let generation = panel.read(cx).generation();
                     this.prompt_queue.retain(|(owner,_,_)| !matches!(owner,PromptOwner::Sftp(s,g) if s == id && *g != generation));
@@ -2048,16 +2023,16 @@ fn new_explorer_panel(
                         this.cancel_prompts_for_owner(owner,window,cx);
                     }
                 }
-                this.refresh_session_connection_state(*session_id, cx);
+                this.refresh_host_connection_state(*host_id, cx);
             },
             ExplorerPanelEvent::StatusChanged(id) => {
                 if this.active_tab == Some(CenterTab::Explorer(*id)) {
                     cx.notify();
                 }
             }
-            ExplorerPanelEvent::PromptRequested(id, session_id, generation, prompt) => this.enqueue_prompt(
+            ExplorerPanelEvent::PromptRequested(id, host_id, generation, prompt) => this.enqueue_prompt(
                 PromptOwner::Sftp(*id, *generation),
-                *session_id,
+                *host_id,
                 prompt.clone(),
                 window,
                 cx,
@@ -2106,24 +2081,24 @@ impl Render for Workspace {
                     .terminals
                     .get(&id)
                     .map(|panel| panel.read(cx).status(cx));
-                WorkspaceStatus::Session(active, terminal)
+                WorkspaceStatus::Host(active, terminal)
             }
             Some(CenterTab::LocalTerminal(id)) => self
                 .local_terminals
                 .get(&id)
                 .map(|panel| WorkspaceStatus::Local(panel.read(cx).status(cx)))
-                .unwrap_or_else(|| WorkspaceStatus::Session(active, None)),
-            // An SFTP tab tells its own connection, not the session's, and
+                .unwrap_or_else(|| WorkspaceStatus::Host(active, None)),
+            // An SFTP tab tells its own connection, not the host's, and
             // what went wrong in it.
             Some(CenterTab::Explorer(id)) => match self.explorers.get(&id) {
                 Some(panel) => {
                     let panel = panel.read(cx);
-                    let session = self.store.read(cx).session(panel.session_id()).cloned();
-                    WorkspaceStatus::Explorer(session, panel.status(cx))
+                    let host = self.store.read(cx).host(panel.host_id()).cloned();
+                    WorkspaceStatus::Explorer(host, panel.status(cx))
                 }
-                None => WorkspaceStatus::Session(active, None),
+                None => WorkspaceStatus::Host(active, None),
             },
-            _ => WorkspaceStatus::Session(active, None),
+            _ => WorkspaceStatus::Host(active, None),
         };
         let sidebar = self.sidebar_showing(cx);
         let running_forwards = self.forwards.read(cx).active_count();
@@ -2132,22 +2107,22 @@ impl Render for Workspace {
             .id("workspace")
             .key_context("Workspace")
             .track_focus(&self.focus_handle)
-            .on_action(cx.listener(Self::on_new_session))
+            .on_action(cx.listener(Self::on_new_host))
             .on_action(cx.listener(Self::on_new_local_terminal))
-            .on_action(cx.listener(Self::on_edit_session))
-            .on_action(cx.listener(Self::on_duplicate_session))
-            .on_action(cx.listener(Self::on_move_session_node))
-            .on_action(cx.listener(Self::on_delete_session))
-            .on_action(cx.listener(Self::on_new_session_in_group))
+            .on_action(cx.listener(Self::on_edit_host))
+            .on_action(cx.listener(Self::on_duplicate_host))
+            .on_action(cx.listener(Self::on_move_host_node))
+            .on_action(cx.listener(Self::on_delete_host))
+            .on_action(cx.listener(Self::on_new_host_in_group))
             .on_action(cx.listener(Self::on_new_group))
             .on_action(cx.listener(Self::on_expand_all_groups))
             .on_action(cx.listener(Self::on_collapse_all_groups))
             .on_action(cx.listener(Self::on_new_child_group))
             .on_action(cx.listener(Self::on_rename_group))
             .on_action(cx.listener(Self::on_delete_group))
-            .on_action(cx.listener(Self::on_connect_session))
+            .on_action(cx.listener(Self::on_connect_host))
             .on_action(cx.listener(Self::on_connect_group))
-            .on_action(cx.listener(Self::on_disconnect_session))
+            .on_action(cx.listener(Self::on_disconnect_host))
             .on_action(cx.listener(Self::on_reconnect_terminal))
             .on_action(cx.listener(Self::on_disconnect_terminal))
             .on_action(cx.listener(Self::on_open_explorer))
@@ -2174,8 +2149,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_close_tabs))
             .on_action(cx.listener(Self::on_rename_terminal))
             .on_action(cx.listener(Self::on_rename_explorer))
-            .on_action(cx.listener(Self::on_copy_session_host))
-            .on_action(cx.listener(Self::on_copy_session_id))
+            .on_action(cx.listener(Self::on_copy_host_address))
+            .on_action(cx.listener(Self::on_copy_host_id))
             .on_action(cx.listener(Self::on_restart_local_terminal))
             .on_action(cx.listener(Self::on_copy_terminal))
             .on_action(cx.listener(Self::on_paste_terminal))
@@ -2184,8 +2159,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_find_previous_in_terminal))
             .on_action(cx.listener(Self::on_dismiss_terminal_find))
             .on_action(cx.listener(Self::on_clear_terminal))
-            .on_action(cx.listener(Self::on_toggle_session_panel))
-            .on_action(cx.listener(Self::on_show_sessions))
+            .on_action(cx.listener(Self::on_toggle_host_panel))
+            .on_action(cx.listener(Self::on_show_hosts))
             .on_action(cx.listener(Self::on_show_forwards))
             .on_action(cx.listener(Self::on_new_forward))
             .on_action(cx.listener(Self::on_edit_forward))

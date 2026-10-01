@@ -54,8 +54,8 @@ icon_assets!(
 /// Names of the icons in `ExtraIcons`, usable anywhere an `Icon` is built.
 pub use gpui_kit::assets::IconName as CatalogIcon;
 
-/// Operating-system marks for the session tree, one file per
-/// [`crate::session::HostOs`] variant.
+/// Operating-system marks for the host tree, one file per
+/// [`crate::host::HostOs`] variant.
 ///
 /// These are brand logos, not Lucide glyphs, because an approximation cannot
 /// say "this is a Debian box". The artwork comes from Simple Icons (CC0); the
@@ -127,7 +127,7 @@ impl AssetSource for AppAssets {
 #[cfg(test)]
 mod tests {
     use super::AppAssets;
-    use crate::session::HostOs;
+    use crate::host::HostOs;
     use gpui_kit::AssetSource as _;
 
     #[test]

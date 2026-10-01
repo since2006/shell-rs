@@ -51,7 +51,7 @@ impl SecretStore for InMemorySecretStore {
 }
 
 /// 用在没有系统钥匙串的机器上：读永远是空，写明确报错，界面据此把密码字段
-/// 禁用掉。也是 `SessionStore` 的默认值，所以单元测试不会碰到任何秘密存储。
+/// 禁用掉。也是 `HostStore` 的默认值，所以单元测试不会碰到任何秘密存储。
 pub struct NoSecretStore;
 
 impl SecretStore for NoSecretStore {

@@ -15,9 +15,8 @@ use super::{
     diagram::{ForwardDiagram, explain, purpose, ssh_flag, typical_use},
     forward_panel::kind_icon,
 };
-use crate::session::{
-    DEFAULT_BIND_HOST, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, SessionId,
-    SessionStore,
+use crate::host::{
+    DEFAULT_BIND_HOST, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, HostId, HostStore,
 };
 use crate::shared::{commit_footer, form_error, parse_port};
 
@@ -42,7 +41,7 @@ const RADIO_DOT_COLUMN: f32 = 1.375;
 /// The kind cards, the diagram and the sentence under it are all driven by
 /// the same fields, so what the picture shows is what would be saved.
 pub struct ForwardForm {
-    store: Entity<SessionStore>,
+    store: Entity<HostStore>,
     editing: Option<ForwardId>,
     /// Whether the rule being edited is running, in which case saving a
     /// change to what it does restarts it.
@@ -52,9 +51,9 @@ pub struct ForwardForm {
     /// the new entrance.
     flow: u64,
     name: Entity<InputState>,
-    session: Entity<SelectState<Vec<SharedString>>>,
-    /// Parallel to the session select's rows.
-    session_ids: Vec<SessionId>,
+    host: Entity<SelectState<Vec<SharedString>>>,
+    /// Parallel to the host select's rows.
+    host_ids: Vec<HostId>,
     bind_host: Entity<InputState>,
     bind_port: Entity<InputState>,
     target_host: Entity<InputState>,
@@ -68,36 +67,31 @@ impl ForwardForm {
     pub fn new(
         editing: Option<ForwardId>,
         editing_active: bool,
-        store: Entity<SessionStore>,
+        store: Entity<HostStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (draft, session_ids, session_labels) = {
+        let (draft, host_ids, host_labels) = {
             let read = store.read(cx);
             let draft = editing
                 .and_then(|id| read.forward(id))
                 .map(|rule| rule.draft());
-            let sessions = read.sessions();
+            let hosts = read.hosts();
             (
                 draft,
-                sessions
+                hosts.iter().map(|host| host.id).collect::<Vec<_>>(),
+                hosts
                     .iter()
-                    .map(|session| session.id)
-                    .collect::<Vec<_>>(),
-                sessions
-                    .iter()
-                    .map(|session| {
-                        SharedString::from(format!("{}（{}）", session.name, session.address()))
-                    })
+                    .map(|host| SharedString::from(format!("{}（{}）", host.name, host.endpoint())))
                     .collect::<Vec<_>>(),
             )
         };
         let kind = draft.as_ref().map(|draft| draft.kind).unwrap_or_default();
         // A new rule names no host: which server a port is opened through is
         // for the user to pick, not for a default to pick for them.
-        let session_ix = draft
+        let host_ix = draft
             .as_ref()
-            .and_then(|draft| session_ids.iter().position(|id| *id == draft.session));
+            .and_then(|draft| host_ids.iter().position(|id| *id == draft.host));
         let bind = draft.as_ref().map(|draft| draft.bind.clone());
         let target = draft.as_ref().and_then(|draft| draft.target.clone());
         let port_text = |port: Option<u16>| port.map(|port| port.to_string()).unwrap_or_default();
@@ -107,9 +101,8 @@ impl ForwardForm {
                 .placeholder("可选，留空显示转发摘要")
                 .default_value(draft.as_ref().map(|d| d.name.clone()).unwrap_or_default())
         });
-        let session = cx.new(|cx| {
-            SelectState::new(session_labels, session_ix.map(IndexPath::new), window, cx)
-                .searchable(true)
+        let host = cx.new(|cx| {
+            SelectState::new(host_labels, host_ix.map(IndexPath::new), window, cx).searchable(true)
         });
         let bind_host = cx.new(|cx| {
             InputState::new(window, cx)
@@ -162,8 +155,8 @@ impl ForwardForm {
             kind,
             flow: 0,
             name,
-            session,
-            session_ids,
+            host,
+            host_ids,
             bind_host,
             bind_port,
             target_host,
@@ -199,18 +192,18 @@ impl ForwardForm {
         cx.notify();
     }
 
-    fn selected_session(&self, cx: &App) -> Option<usize> {
-        self.session
+    fn selected_host(&self, cx: &App) -> Option<usize> {
+        self.host
             .read(cx)
             .selected_index(cx)
             .map(|ix| ix.row)
-            .filter(|ix| *ix < self.session_ids.len())
+            .filter(|ix| *ix < self.host_ids.len())
     }
 
     /// What the form holds right now, not yet checked. A port that is not a
     /// number reads as 0, which no rule may have.
     fn draft(&self, cx: &App) -> Option<ForwardDraft> {
-        let session = *self.session_ids.get(self.selected_session(cx)?)?;
+        let host = *self.host_ids.get(self.selected_host(cx)?)?;
         let endpoint = |host: &Entity<InputState>, port: &Entity<InputState>| {
             ForwardEndpoint::new(
                 host.read(cx).value().trim().to_string(),
@@ -224,7 +217,7 @@ impl ForwardForm {
         Some(
             ForwardDraft::new(
                 self.kind,
-                session,
+                host,
                 endpoint(&self.bind_host, &self.bind_port),
                 target,
             )
@@ -253,7 +246,7 @@ impl ForwardForm {
             None => store.insert_forward(draft, cx).is_some(),
         });
         if !saved {
-            // The session, or the rule itself, was deleted meanwhile.
+            // The host, or the rule itself, was deleted meanwhile.
             self.error = Some("所选主机已不存在，请重新选择".into());
             cx.notify();
             return false;
@@ -387,8 +380,8 @@ impl ForwardForm {
                     .required(true)
                     .col_span(4)
                     .child(
-                        Select::new(&self.session)
-                            .id("forward-session")
+                        Select::new(&self.host)
+                            .id("forward-host")
                             .placeholder("请选择主机")
                             .small(),
                     ),
@@ -528,7 +521,7 @@ impl Render for ForwardForm {
 pub fn open_forward_dialog(
     editing: Option<ForwardId>,
     editing_active: bool,
-    store: Entity<SessionStore>,
+    store: Entity<HostStore>,
     window: &mut Window,
     cx: &mut App,
 ) {

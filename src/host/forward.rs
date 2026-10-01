@@ -1,12 +1,12 @@
-//! Port-forwarding rules. They live with the sessions because they are stored
-//! in the same database and go with their session when it is deleted; the
+//! Port-forwarding rules. They live with the hosts because they are stored
+//! in the same database and go with their host when it is deleted; the
 //! `forward` module that runs them depends on this one, never the reverse.
 
 use std::fmt;
 
 use gpui_kit::SharedString;
 
-use super::SessionId;
+use super::HostId;
 
 /// Stable identity of a forwarding rule. Never reused within a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -150,8 +150,8 @@ pub struct ForwardDraft {
     /// Optional. An empty name shows the rule's summary instead.
     pub name: SharedString,
     pub kind: ForwardKind,
-    /// The session whose server the forward goes through.
-    pub session: SessionId,
+    /// The host whose server the forward goes through.
+    pub host: HostId,
     /// Where the forward listens: on this machine for local and dynamic
     /// forwards, on the server for a remote one.
     pub bind: ForwardEndpoint,
@@ -164,14 +164,14 @@ pub struct ForwardDraft {
 impl ForwardDraft {
     pub fn new(
         kind: ForwardKind,
-        session: SessionId,
+        host: HostId,
         bind: ForwardEndpoint,
         target: Option<ForwardEndpoint>,
     ) -> Self {
         Self {
             name: SharedString::default(),
             kind,
-            session,
+            host,
             bind,
             target,
             auto_start: false,
@@ -227,7 +227,7 @@ pub struct ForwardRule {
     pub id: ForwardId,
     pub name: SharedString,
     pub kind: ForwardKind,
-    pub session: SessionId,
+    pub host: HostId,
     pub bind: ForwardEndpoint,
     pub target: Option<ForwardEndpoint>,
     pub auto_start: bool,
@@ -241,7 +241,7 @@ impl ForwardRule {
             id,
             name: draft.name,
             kind: draft.kind,
-            session: draft.session,
+            host: draft.host,
             bind: draft.bind,
             target: draft.target,
             auto_start: draft.auto_start,
@@ -254,7 +254,7 @@ impl ForwardRule {
         ForwardDraft {
             name: self.name.clone(),
             kind: self.kind,
-            session: self.session,
+            host: self.host,
             bind: self.bind.clone(),
             target: self.target.clone(),
             auto_start: self.auto_start,
@@ -290,15 +290,15 @@ impl ForwardRule {
     /// opposed to its name or whether it starts with the application.
     pub fn needs_restart(&self, draft: &ForwardDraft) -> bool {
         self.kind != draft.kind
-            || self.session != draft.session
+            || self.host != draft.host
             || self.bind != draft.bind
             || self.target != draft.target
     }
 }
 
 /// Whether a rule matches what was typed into the forward list's search box:
-/// its name, its addresses, or the name of the session it goes through.
-pub fn matches_forward_query(rule: &ForwardRule, session_name: &str, query: &str) -> bool {
+/// its name, its addresses, or the name of the host it goes through.
+pub fn matches_forward_query(rule: &ForwardRule, host_name: &str, query: &str) -> bool {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return true;
@@ -307,7 +307,7 @@ pub fn matches_forward_query(rule: &ForwardRule, session_name: &str, query: &str
         rule.name.to_string(),
         rule.summary(),
         rule.kind.label().to_string(),
-        session_name.to_string(),
+        host_name.to_string(),
     ]
     .iter()
     .any(|text| text.to_lowercase().contains(&query))
@@ -320,7 +320,7 @@ mod tests {
     fn local() -> ForwardDraft {
         ForwardDraft::new(
             ForwardKind::Local,
-            SessionId(1),
+            HostId(1),
             ForwardEndpoint::new(DEFAULT_BIND_HOST, 8080),
             Some(ForwardEndpoint::new("db.internal", 3306)),
         )
@@ -413,16 +413,16 @@ mod tests {
         let mut other_port = local();
         other_port.bind.port = 8081;
         assert!(rule.needs_restart(&other_port));
-        let mut other_session = local();
-        other_session.session = SessionId(2);
-        assert!(rule.needs_restart(&other_session));
+        let mut through_another = local();
+        through_another.host = HostId(2);
+        assert!(rule.needs_restart(&through_another));
         let mut other_target = local();
         other_target.target = Some(ForwardEndpoint::new("db.internal", 5432));
         assert!(rule.needs_restart(&other_target));
     }
 
     #[test]
-    fn the_search_looks_at_the_name_the_addresses_and_the_session() {
+    fn the_search_looks_at_the_name_the_addresses_and_the_host() {
         let rule = ForwardRule::new(ForwardId(1), local().with_name("数据库"));
         assert!(matches_forward_query(&rule, "web-01", ""));
         assert!(matches_forward_query(&rule, "web-01", "数据"));

@@ -5,16 +5,16 @@ use crate::secrets::SecretRef;
 
 use super::CredentialId;
 
-/// Stable identity of a session. Never reused within a process.
+/// Stable identity of a host. Never reused within a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SessionId(pub u64);
+pub struct HostId(pub u64);
 
-/// The identity a session shows outside the app, such as
+/// The identity a host shows outside the app, such as
 /// `Jwg5rHvXCxw89paM`: what 复制 ID copies, so a script or another tool can
 /// name the machine. Random letters and digits, not derived from
-/// [`SessionId`]: that one is an allocator detail that can come back after a
-/// restart, while this one is never reused and stays with its session
-/// through renames and address changes. It names a session; it grants
+/// [`HostId`]: that one is an allocator detail that can come back after a
+/// restart, while this one is never reused and stays with its host
+/// through renames and address changes. It names a host; it grants
 /// nothing.
 ///
 /// A credential uses one the same way to name its password in the keychain.
@@ -61,11 +61,11 @@ impl std::fmt::Display for PublicId {
     }
 }
 
-/// Stable identity of a session group (a folder in the session tree).
+/// Stable identity of a host group (a folder in the host tree).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GroupId(pub u64);
 
-/// How a session logs in on its own, without a credential. A key, or a
+/// How a host logs in on its own, without a credential. A key, or a
 /// password shared by several hosts, is a credential.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum AuthKind {
@@ -89,9 +89,8 @@ impl AuthKind {
         }
     }
 
-    /// Parse a stored spelling. Anything else, including what versions
-    /// before 10 wrote (`auto`, `key`), is a password: version 10's
-    /// migration turned those rows into passwords and key credentials.
+    /// Parse a stored spelling. Anything else is the default: `credential`,
+    /// which a host using a credential stores, keeps the default here.
     pub fn from_stored(value: &str) -> Self {
         match value {
             "no-password" => AuthKind::NoPassword,
@@ -113,14 +112,14 @@ pub enum Route {
     /// `None` is a jump host that has been deleted. It stays in its place
     /// so that the host fails to connect, saying why, rather than quietly
     /// skipping a hop or going direct.
-    Jump(Vec<Option<SessionId>>),
+    Jump(Vec<Option<HostId>>),
     /// Through an HTTP or SOCKS5 proxy.
     Proxy(ProxySettings),
 }
 
 impl Route {
     /// The jump hosts this route goes through, deleted ones left out.
-    pub fn jump_hosts(&self) -> impl Iterator<Item = SessionId> + '_ {
+    pub fn jump_hosts(&self) -> impl Iterator<Item = HostId> + '_ {
         let hops = match self {
             Route::Jump(hops) => hops.as_slice(),
             _ => &[],
@@ -205,7 +204,7 @@ impl ProxyKind {
     }
 }
 
-/// Which pane of a session's SFTP tab a bookmark belongs to.
+/// Which pane of a host's SFTP tab a bookmark belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BookmarkSide {
     Local,
@@ -234,7 +233,7 @@ impl BookmarkSide {
     }
 }
 
-/// The operating system running on a host, as reported by the session's own
+/// The operating system running on a host, as reported by the host's own
 /// shell after it connects.
 ///
 /// Each variant owns four things that must stay in step: the spelling kept in
@@ -354,8 +353,8 @@ fn is_light(color: Rgba) -> bool {
     luminance > 0.5
 }
 
-/// Connection state of a session. Runtime only: it is never persisted, so a
-/// freshly loaded session always starts disconnected.
+/// Connection state of a host. Runtime only: it is never persisted, so a
+/// freshly loaded host always starts disconnected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ConnectionState {
     #[default]
@@ -378,21 +377,22 @@ impl ConnectionState {
     }
 }
 
-/// A saved SSH session. `group` is `None` for a session that sits at the root
+/// A saved SSH host. `group` is `None` for a host that sits at the root
 /// of the tree rather than inside a folder.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
-pub struct Session {
-    pub id: SessionId,
-    /// Set once when the session is created; editing never changes it.
+pub struct Host {
+    pub id: HostId,
+    /// Set once when the host is created; editing never changes it.
     pub public_id: PublicId,
     pub name: SharedString,
-    pub host: SharedString,
+    /// The host name or IP address it is reached at: 「地址」 in the form.
+    pub address: SharedString,
     pub port: u16,
-    /// The user it logs in as. For a session using a credential this is the
+    /// The user it logs in as. For a host using a credential this is the
     /// credential's user, which the store keeps in step.
     pub user: SharedString,
-    /// How a session logs in on its own. A session using a credential keeps
+    /// How a host logs in on its own. A host using a credential keeps
     /// the default here.
     pub auth: AuthKind,
     /// The credential it logs in with instead of `auth`, if any.
@@ -402,24 +402,24 @@ pub struct Session {
     pub group: Option<GroupId>,
     /// Whatever the user wants to remember about it; empty for none.
     pub notes: SharedString,
-    /// Order among sessions in the same group.
+    /// Order among hosts in the same group.
     pub sort_order: i64,
     pub state: ConnectionState,
     /// Detected on every successful connection and persisted, so the tree can
     /// show the right mark before anyone connects. `None` until a probe
-    /// succeeds, and the session tree falls back to the name's first letter.
+    /// succeeds, and the host tree falls back to the name's first letter.
     pub os: Option<HostOs>,
 }
 
-impl Session {
-    /// A session with a fresh [`PublicId`]. The store makes sure it is not
-    /// one another session already has.
-    pub fn new(id: SessionId, draft: SessionDraft) -> Self {
+impl Host {
+    /// A host with a fresh [`PublicId`]. The store makes sure it is not
+    /// one another host already has.
+    pub fn new(id: HostId, draft: HostDraft) -> Self {
         Self {
             id,
             public_id: PublicId::generate(),
             name: draft.name,
-            host: draft.host,
+            address: draft.address,
             port: draft.port,
             user: draft.user,
             auth: draft.auth,
@@ -433,29 +433,29 @@ impl Session {
         }
     }
 
-    /// `user@host:port`, as shown in the status bar.
-    pub fn address(&self) -> String {
-        format!("{}@{}:{}", self.user, self.host, self.port)
+    /// `user@address:port`, as shown in the status bar.
+    pub fn endpoint(&self) -> String {
+        format!("{}@{}:{}", self.user, self.address, self.port)
     }
 
-    /// Whether the host field is a literal IP address rather than a name, so
-    /// a command can say which of the two it copies.
-    pub fn host_is_ip(&self) -> bool {
-        is_ip_address(&self.host)
+    /// Whether the address is a literal IP address rather than a name, so a
+    /// command can say which of the two it copies.
+    pub fn address_is_ip(&self) -> bool {
+        is_ip_address(&self.address)
     }
 
-    /// Where this session's login password lives in the system keychain.
-    /// Keyed by the endpoint, so renaming or copying a session keeps the
-    /// password and two sessions on the same account share one entry.
+    /// Where this host's login password lives in the system keychain.
+    /// Keyed by the endpoint, so renaming or copying a host keeps the
+    /// password and two hosts on the same account share one entry.
     pub fn password_secret(&self) -> SecretRef {
-        SecretRef::password(self.user.as_ref(), self.host.as_ref(), self.port)
+        SecretRef::password(self.user.as_ref(), self.address.as_ref(), self.port)
     }
 
-    /// The editable fields, for pre-filling the session form.
-    pub fn draft(&self) -> SessionDraft {
-        SessionDraft {
+    /// The editable fields, for pre-filling the host form.
+    pub fn draft(&self) -> HostDraft {
+        HostDraft {
             name: self.name.clone(),
-            host: self.host.clone(),
+            address: self.address.clone(),
             port: self.port,
             user: self.user.clone(),
             auth: self.auth,
@@ -478,21 +478,21 @@ fn is_ip_address(host: &str) -> bool {
     bare.parse::<std::net::IpAddr>().is_ok()
 }
 
-/// A folder in the session tree. Groups nest: `parent` is `None` for a
+/// A folder in the host tree. Groups nest: `parent` is `None` for a
 /// top-level folder.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
-pub struct SessionGroup {
+pub struct HostGroup {
     pub id: GroupId,
     pub name: SharedString,
     pub parent: Option<GroupId>,
     /// Order among groups with the same parent.
     pub sort_order: i64,
-    /// Whether the group is expanded in the session tree across launches.
+    /// Whether the group is expanded in the host tree across launches.
     pub expanded: bool,
 }
 
-impl SessionGroup {
+impl HostGroup {
     pub fn new(id: GroupId, draft: GroupDraft) -> Self {
         Self {
             id,
@@ -512,12 +512,12 @@ impl SessionGroup {
     }
 }
 
-/// The values the session form commits.
+/// The values the host form commits.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct SessionDraft {
+pub struct HostDraft {
     pub name: SharedString,
-    pub host: SharedString,
+    pub address: SharedString,
     pub port: u16,
     pub user: SharedString,
     pub auth: AuthKind,
@@ -527,10 +527,10 @@ pub struct SessionDraft {
     pub notes: SharedString,
 }
 
-impl SessionDraft {
+impl HostDraft {
     pub fn new(
         name: impl Into<SharedString>,
-        host: impl Into<SharedString>,
+        address: impl Into<SharedString>,
         port: u16,
         user: impl Into<SharedString>,
         auth: AuthKind,
@@ -538,7 +538,7 @@ impl SessionDraft {
     ) -> Self {
         Self {
             name: name.into(),
-            host: host.into(),
+            address: address.into(),
             port,
             user: user.into(),
             auth,
@@ -568,9 +568,9 @@ impl SessionDraft {
     }
 
     /// The keychain entry this draft would log in with. Matches
-    /// [`Session::password_secret`] once the draft is applied.
+    /// [`Host::password_secret`] once the draft is applied.
     pub fn password_secret(&self) -> SecretRef {
-        SecretRef::password(self.user.as_ref(), self.host.as_ref(), self.port)
+        SecretRef::password(self.user.as_ref(), self.address.as_ref(), self.port)
     }
 }
 
@@ -641,23 +641,21 @@ mod tests {
     }
 
     #[test]
-    fn a_new_session_has_not_been_probed_yet() {
-        let session = Session::new(
-            SessionId(1),
-            SessionDraft::new("s", "h", 22, "root", AuthKind::Password, None),
+    fn a_new_host_has_not_been_probed_yet() {
+        let host = Host::new(
+            HostId(1),
+            HostDraft::new("s", "h", 22, "root", AuthKind::Password, None),
         );
-        assert_eq!(session.os, None);
+        assert_eq!(host.os, None);
     }
 
     #[test]
-    fn a_password_is_the_default_and_old_spellings_read_as_one() {
+    fn a_password_is_the_default_and_spellings_round_trip() {
         assert_eq!(AuthKind::default(), AuthKind::Password);
         for auth in [AuthKind::Password, AuthKind::NoPassword] {
             assert_eq!(AuthKind::from_stored(auth.as_str()), auth);
         }
-        // What versions before 10 wrote.
-        assert_eq!(AuthKind::from_stored("auto"), AuthKind::Password);
-        assert_eq!(AuthKind::from_stored("key"), AuthKind::Password);
+        assert_eq!(AuthKind::from_stored("credential"), AuthKind::Password);
     }
 }
 

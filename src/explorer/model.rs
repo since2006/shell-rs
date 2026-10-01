@@ -4,7 +4,7 @@ use crate::sftp::{DirectoryEntry, EntryKind};
 use gpui_kit::{Global, SharedString};
 use serde::{Deserialize, Serialize};
 
-/// Stable identity for one SFTP tab. A session can have several, each with
+/// Stable identity for one SFTP tab. A host can have several, each with
 /// its own connection and transfer queue.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ExplorerId(pub u64);

@@ -1,5 +1,5 @@
 //! The external CLI: the `shellrs` command AI agents use to run commands
-//! and move files on the user's saved sessions. The command holds no
+//! and move files on the user's saved hosts. The command holds no
 //! credentials and opens no database: it hands each request to the running
 //! app over a local socket, and the app connects with what it has saved.
 
@@ -32,17 +32,17 @@ pub use install::{
     update_outdated_binary, update_outdated_skills,
 };
 pub use integration::{CliIntegration, IntegrationStatus};
-pub use protocol::{CliError, ErrorCode, Request, SessionInfo, TransferCounters, TransferSummary};
+pub use protocol::{CliError, ErrorCode, HostInfo, Request, TransferCounters, TransferSummary};
 pub use server::{CliBackend, CliServer, CliTarget};
 
 const AFTER_HELP: &str = "\
-Sessions are named by the 16-character ID that `shellrs list` prints (the one ShellRS copies with 复制 ID).
+Hosts are named by the 16-character ID that `shellrs list` prints (the one ShellRS copies with 复制 ID).
 ShellRS must be running, with 设置 → 外部 CLI → 启用外部 CLI turned on.
 
 Exit codes: exec exits with the remote command's code; 1 means a transfer finished with failures;
 255 means shellrs could not do what was asked (the reason is printed as `shellrs: [code] message`).";
 
-/// Run commands and move files on the SSH sessions saved in ShellRS.
+/// Run commands and move files on the SSH hosts saved in ShellRS.
 ///
 /// ShellRS holds the passwords and keys and makes the connections; this
 /// command never sees them.
@@ -55,22 +55,22 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// List the saved sessions.
+    /// List the saved hosts.
     List {
-        /// Only sessions whose name, host, user, group or ID matches.
+        /// Only hosts whose name, host, user, group or ID matches.
         #[arg(short, long)]
         query: Option<String>,
         /// Print JSON. Implied when stdout is not a terminal.
         #[arg(long)]
         json: bool,
     },
-    /// Run one command on a session's host and print its output.
+    /// Run one command on a saved host and print its output.
     ///
     /// Opens a temporary connection, runs the command in the login shell,
     /// and closes it. The command gets no stdin. The exit code is the
     /// remote command's.
     Exec {
-        /// Session ID, from `shellrs list`.
+        /// Host ID, from `shellrs list`.
         id: String,
         /// One complete remote shell command, quoted as one argument.
         #[arg(required_unless_present = "stdin")]
@@ -80,14 +80,14 @@ enum Command {
         #[arg(long, conflicts_with = "command")]
         stdin: bool,
     },
-    /// Copy a local file or folder to a session's host.
+    /// Copy a local file or folder to a saved host.
     ///
     /// Like scp: when the destination is an existing directory the source
     /// goes inside it under its own name; otherwise the destination is the
     /// copy's path. Folders are copied recursively; existing files are
     /// overwritten.
     Upload {
-        /// Session ID, from `shellrs list`.
+        /// Host ID, from `shellrs list`.
         id: String,
         /// Local file or folder.
         local: PathBuf,
@@ -97,11 +97,11 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Copy a file or folder from a session's host to this machine.
+    /// Copy a file or folder from a saved host to this machine.
     ///
     /// Destination rules are scp's, as for `upload`.
     Download {
-        /// Session ID, from `shellrs list`.
+        /// Host ID, from `shellrs list`.
         id: String,
         /// Remote file or folder. `~` is the login directory.
         remote: String,
@@ -167,10 +167,7 @@ fn request(command: Command, console: &mut Console) -> Result<Request, i32> {
             if command.trim().is_empty() {
                 return Err(console.error(ErrorCode::BadRequest, "命令不能为空"));
             }
-            Request::Exec {
-                session: id,
-                command,
-            }
+            Request::Exec { host: id, command }
         }
         Command::Upload {
             id,
@@ -180,7 +177,7 @@ fn request(command: Command, console: &mut Console) -> Result<Request, i32> {
         } => {
             console.json |= json;
             Request::Upload {
-                session: id,
+                host: id,
                 source: absolute(local, console)?,
                 destination: remote,
             }
@@ -193,7 +190,7 @@ fn request(command: Command, console: &mut Console) -> Result<Request, i32> {
         } => {
             console.json |= json;
             Request::Download {
-                session: id,
+                host: id,
                 source: remote,
                 destination: absolute(local, console)?,
             }

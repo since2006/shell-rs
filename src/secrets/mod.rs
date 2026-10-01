@@ -1,6 +1,6 @@
 //! 系统钥匙串（macOS Keychain Services / Windows 凭据管理器 / Secret Service）。
 //!
-//! ShellRS 的秘密只存在这里。数据库里永远不出现密码或口令，`session/database.rs`
+//! ShellRS 的秘密只存在这里。数据库里永远不出现密码或口令，`host/database.rs`
 //! 的 `schema_never_contains_secret_columns` 守着这条不变量。
 
 mod keychain;

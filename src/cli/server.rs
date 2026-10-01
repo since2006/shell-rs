@@ -16,16 +16,16 @@ use std::{
 use tokio::sync::watch;
 
 use super::protocol::{
-    CliError, Envelope, ErrorCode, FrameKind, PROTOCOL_VERSION, Reply, Request, SessionInfo,
+    CliError, Envelope, ErrorCode, FrameKind, HostInfo, PROTOCOL_VERSION, Reply, Request,
     TransferCounters, TransferSummary, parse_json, read_frame, write_frame, write_json,
 };
-use crate::session::{Session, SessionLogin, SessionStore, matches_query};
+use crate::host::{Host, HostLogin, HostStore, matches_query};
 use crate::ssh::ExecStream;
 
 /// Does what a CLI request asks. Every method blocks: each request has a
 /// thread of its own.
 pub trait CliBackend: Send + Sync + 'static {
-    /// Run `command` on the session's host, passing its output on as it
+    /// Run `command` on the host, passing its output on as it
     /// comes; the remote exit code. When `output` fails, the caller is gone
     /// and the command should be abandoned.
     fn exec(
@@ -57,65 +57,65 @@ pub trait CliBackend: Send + Sync + 'static {
     ) -> Result<TransferSummary, CliError>;
 }
 
-/// A saved session as the CLI sees it, with the login it connects with
+/// A saved host as the CLI sees it, with the login it connects with
 /// resolved when the target list was built.
 #[derive(Clone, Debug)]
 pub struct CliTarget {
-    info: SessionInfo,
-    session: Session,
-    login: SessionLogin,
+    info: HostInfo,
+    host: Host,
+    login: HostLogin,
 }
 
 impl CliTarget {
-    /// `group` is the session's full group path, if it has one.
-    pub fn new(session: &Session, login: SessionLogin, group: Option<String>) -> Self {
+    /// `group` is the host's full group path, if it has one.
+    pub fn new(host: &Host, login: HostLogin, group: Option<String>) -> Self {
         Self {
-            info: SessionInfo {
-                id: session.public_id.to_string(),
-                name: session.name.to_string(),
+            info: HostInfo {
+                id: host.public_id.to_string(),
+                name: host.name.to_string(),
                 group,
-                user: session.user.to_string(),
-                host: session.host.to_string(),
-                port: session.port,
-                os: session.os.map(|os| os.as_str().to_string()),
+                user: host.user.to_string(),
+                host: host.address.to_string(),
+                port: host.port,
+                os: host.os.map(|os| os.as_str().to_string()),
             },
-            session: session.clone(),
+            host: host.clone(),
             login,
         }
     }
 
-    pub fn session(&self) -> &Session {
-        &self.session
+    pub fn host(&self) -> &Host {
+        &self.host
     }
 
-    /// How a request logs in to the session's host.
-    pub fn login(&self) -> &SessionLogin {
+    /// How a request logs in to the host.
+    pub fn login(&self) -> &HostLogin {
         &self.login
     }
 
-    /// Every session in `store`, with its group path.
-    pub fn all(store: &SessionStore) -> Vec<Self> {
+    /// Every host in `store`, with its group path.
+    pub fn all(store: &HostStore) -> Vec<Self> {
         store
-            .sessions()
+            .hosts()
             .iter()
-            .map(|session| {
-                let names = session
+            .map(|host| {
+                let names = host
                     .group
                     .map(|id| store.group_names(id))
                     .unwrap_or_default();
                 Self::new(
-                    session,
-                    store.login_of(session),
+                    host,
+                    store.login_of(host),
                     (!names.is_empty()).then(|| names.join("/")),
                 )
             })
             .collect()
     }
 
-    /// The session tree's search, plus the group path and the ID.
+    /// The host tree's search, plus the group path and the ID.
     fn matches(&self, query: &str) -> bool {
         let needle = query.trim().to_lowercase();
-        matches_query(&self.session, query)
+        matches_query(&self.host, query)
             || self
                 .info
                 .group
@@ -445,15 +445,15 @@ fn respond(
                 .targets
                 .read()
                 .unwrap_or_else(|error| error.into_inner());
-            let sessions = targets
+            let hosts = targets
                 .iter()
                 .filter(|target| query.as_deref().is_none_or(|query| target.matches(query)))
                 .map(|target| target.info.clone())
                 .collect();
-            Ok(Reply::Sessions { sessions })
+            Ok(Reply::Hosts { hosts })
         }
-        Request::Exec { session, command } => {
-            let target = find(shared, &session)?;
+        Request::Exec { host, command } => {
+            let target = find(shared, &host)?;
             let code = shared
                 .backend
                 .exec(&target, &command, &mut |stream, bytes| {
@@ -466,11 +466,11 @@ fn respond(
             Ok(Reply::Exit { code })
         }
         Request::Upload {
-            session,
+            host,
             source,
             destination,
         } => {
-            let target = find(shared, &session)?;
+            let target = find(shared, &host)?;
             if !source.is_absolute() {
                 return Err(not_absolute(&source));
             }
@@ -482,11 +482,11 @@ fn respond(
                 .map(Reply::TransferDone)
         }
         Request::Download {
-            session,
+            host,
             source,
             destination,
         } => {
-            let target = find(shared, &session)?;
+            let target = find(shared, &host)?;
             if !destination.is_absolute() {
                 return Err(not_absolute(&destination));
             }
@@ -512,7 +512,7 @@ fn find(shared: &Shared, id: &str) -> Result<CliTarget, CliError> {
         .cloned()
         .ok_or_else(|| {
             CliError::new(
-                ErrorCode::SessionNotFound,
+                ErrorCode::HostNotFound,
                 format!("没有 ID 为 {id} 的主机：请用 shellrs list 查看"),
             )
         })

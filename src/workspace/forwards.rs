@@ -7,10 +7,10 @@ use gpui_kit::component::{WindowExt as _, dock::DockPlacement, notification::Not
 use gpui_kit::*;
 
 use crate::app::{
-    DeleteForward, EditForward, NewForward, ShowForwards, ShowSessions, StartForward, StopForward,
+    DeleteForward, EditForward, NewForward, ShowForwards, ShowHosts, StartForward, StopForward,
 };
 use crate::forward::{ForwardManagerEvent, open_forward_dialog};
-use crate::session::ForwardId;
+use crate::host::ForwardId;
 use crate::shared::confirm_delete;
 
 use super::{
@@ -45,13 +45,13 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn on_show_sessions(
+    pub(super) fn on_show_hosts(
         &mut self,
-        _: &ShowSessions,
+        _: &ShowHosts,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.show_sidebar(SidebarMode::Sessions, window, cx);
+        self.show_sidebar(SidebarMode::Hosts, window, cx);
     }
 
     pub(super) fn on_show_forwards(
@@ -70,7 +70,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let store = self.store.read(cx);
-        if store.sessions().is_empty() {
+        if store.hosts().is_empty() {
             window.push_notification(
                 Notification::warning("端口转发经由一台主机的 SSH 连接，请先新建主机。"),
                 cx,
@@ -159,10 +159,10 @@ impl Workspace {
                 // The title bar counts the forwards that are running.
                 cx.notify();
             }
-            ForwardManagerEvent::PromptRequested(id, session, generation, prompt) => self
+            ForwardManagerEvent::PromptRequested(id, host, generation, prompt) => self
                 .enqueue_prompt(
                     PromptOwner::Forward(*id, *generation),
-                    *session,
+                    *host,
                     prompt.clone(),
                     window,
                     cx,
@@ -211,11 +211,11 @@ impl Workspace {
     pub(super) fn forward_prompt_origin(&self, id: ForwardId, cx: &App) -> Option<String> {
         let store = self.store.read(cx);
         let rule = store.forward(id)?;
-        let session = store.session(rule.session)?;
+        let host = store.host(rule.host)?;
         Some(format!(
             "端口转发“{}”正在通过 {} 连接。",
             rule.title(),
-            session.name
+            host.name
         ))
     }
 }

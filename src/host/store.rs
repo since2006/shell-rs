@@ -11,20 +11,22 @@ use super::database::now_seconds;
 use super::private_key::{is_kept_in, write_key_file};
 use super::{
     AuthKind, BookmarkSide, ConnectionState, Credential, CredentialDraft, CredentialId,
-    CredentialKind, ForwardDraft, ForwardId, ForwardRule, GroupDraft, GroupId, HostOs, JumpLogin,
-    LoginRoute, NodeDrop, ProxyLogin, PublicId, Route, Session, SessionDatabase, SessionDraft,
-    SessionGroup, SessionId, SessionLogin, SessionNode, StoredData,
+    CredentialKind, ForwardDraft, ForwardId, ForwardRule, GroupDraft, GroupId, Host, HostDatabase,
+    HostDraft, HostGroup, HostId, HostLogin, HostNode, HostOs, JumpLogin, LoginRoute, NodeDrop,
+    ProxyLogin, PublicId, Route, StoredData,
 };
 
-/// The single source of truth for sessions, groups, the rules that belong
-/// to sessions (bookmarks, port forwards) and the credentials sessions log in
+/// The single source of truth for hosts, groups, the rules that belong
+/// to hosts (bookmarks, port forwards) and the credentials hosts log in
 /// with. Created once by the workspace and shared with every panel and
 /// dialog; consumers observe it.
 ///
-/// A session using a credential keeps a copy of the credential's user name,
-/// so everything that shows or keys by `user@host:port` reads the session
+/// A host using a credential keeps a copy of the credential's user name,
+/// so everything that shows or keys by `user@host:port` reads the host
 /// alone. The store keeps the copy in step: it takes it from the credential
-/// when a session is saved and rewrites it when the credential changes.
+/// when a host is saved or loaded and rewrites it when the credential
+/// changes. The copy lives in memory only; the database keeps the user name
+/// on the credential alone.
 ///
 /// Mutators that take a `Context` notify observers and mirror the change into
 /// the database; the `*_unnotified` variants are pure in-memory and exist for
@@ -32,22 +34,22 @@ use super::{
 /// notification.
 ///
 /// Memory is authoritative. A failed write costs persistence, never the edit:
-/// the change stands and a `SessionStoreEvent::PersistFailed` goes out so the
+/// the change stands and a `HostStoreEvent::PersistFailed` goes out so the
 /// workspace can tell the user.
 ///
 /// Passwords and private-key passphrases never reach the database. They go to
 /// the system keychain through `secrets`, on a background thread, and report
 /// failures through the same event.
-pub struct SessionStore {
-    groups: Vec<SessionGroup>,
-    sessions: Vec<Session>,
-    next_session_id: u64,
+pub struct HostStore {
+    groups: Vec<HostGroup>,
+    hosts: Vec<Host>,
+    next_host_id: u64,
     next_group_id: u64,
-    active: Option<SessionId>,
-    /// Sessions in the order they last connected, most recent first.
-    recent: Vec<SessionId>,
-    /// SFTP bookmarks per session and pane, in the order they were added.
-    bookmarks: HashMap<(SessionId, BookmarkSide), Vec<String>>,
+    active: Option<HostId>,
+    /// Hosts in the order they last connected, most recent first.
+    recent: Vec<HostId>,
+    /// SFTP bookmarks per host and pane, in the order they were added.
+    bookmarks: HashMap<(HostId, BookmarkSide), Vec<String>>,
     /// Port-forwarding rules, in the order the forward list shows them.
     forwards: Vec<ForwardRule>,
     next_forward_id: u64,
@@ -55,7 +57,7 @@ pub struct SessionStore {
     credentials: Vec<Credential>,
     next_credential_id: u64,
     /// `None` for a memory-only store, as used by tests.
-    database: Option<SessionDatabase>,
+    database: Option<HostDatabase>,
     /// Where passwords go. Defaults to a store that keeps nothing, so unit
     /// tests never touch the machine's keychain.
     secrets: SharedSecretStore,
@@ -65,32 +67,32 @@ pub struct SessionStore {
     key_dir: Option<PathBuf>,
 }
 
-/// How many sessions the start page lists as recently connected.
+/// How many hosts the start page lists as recently connected.
 const MAX_RECENT: usize = 10;
 
 /// What the store tells the workspace about, beyond plain change notification.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SessionStoreEvent {
+pub enum HostStoreEvent {
     /// A change was applied in memory but could not be written to disk.
     PersistFailed(SharedString),
-    /// A live terminal must reconnect because the way the session logs in
+    /// A live terminal must reconnect because the way the host logs in
     /// changed: its endpoint, its own authentication, the credential it
     /// uses, or the way it is reached, a jump host's login included.
-    ConnectionSettingsChanged(SessionId),
+    ConnectionSettingsChanged(HostId),
     /// A forwarding rule now listens or connects somewhere else, so a
     /// running forward has to restart to follow it.
     ForwardSettingsChanged(ForwardId),
 }
 
-impl EventEmitter<SessionStoreEvent> for SessionStore {}
+impl EventEmitter<HostStoreEvent> for HostStore {}
 
-impl SessionStore {
+impl HostStore {
     /// An empty memory-only store.
     pub fn empty() -> Self {
         Self {
             groups: Vec::new(),
-            sessions: Vec::new(),
-            next_session_id: 1,
+            hosts: Vec::new(),
+            next_host_id: 1,
             next_group_id: 1,
             active: None,
             recent: Vec::new(),
@@ -121,10 +123,10 @@ impl SessionStore {
 
     /// Read everything back from `database` and keep writing to it. Ids carry
     /// over from disk, so the allocators resume past the largest stored id.
-    pub fn load(database: SessionDatabase) -> rusqlite::Result<Self> {
+    pub fn load(database: HostDatabase) -> rusqlite::Result<Self> {
         let StoredData {
             groups,
-            mut sessions,
+            mut hosts,
             mut recent,
             bookmarks: stored_bookmarks,
             forwards,
@@ -132,28 +134,26 @@ impl SessionStore {
         } = database.load()?;
         recent.truncate(MAX_RECENT);
         let mut bookmarks: HashMap<_, Vec<String>> = HashMap::new();
-        for (session, side, path) in stored_bookmarks {
-            bookmarks.entry((session, side)).or_default().push(path);
+        for (host, side, path) in stored_bookmarks {
+            bookmarks.entry((host, side)).or_default().push(path);
         }
-        // A write that failed after the fact can leave a host's copy of its
-        // credential's user name behind, or a link to a credential this
-        // build could not read. Memory is what counts, so it is put right
-        // here and reaches the file with the host's next save.
-        for session in &mut sessions {
-            let draft = normalized(&credentials, session.draft());
-            session.user = draft.user;
-            session.auth = draft.auth;
-            session.credential = draft.credential;
+        // A host using a credential has no user name of its own on disk:
+        // memory keeps a copy of the credential's, taken here.
+        for host in &mut hosts {
+            let draft = normalized(&credentials, host.draft());
+            host.user = draft.user;
+            host.auth = draft.auth;
+            host.credential = draft.credential;
         }
         Ok(Self {
             next_group_id: groups.iter().map(|group| group.id.0).max().unwrap_or(0) + 1,
-            next_session_id: sessions.iter().map(|s| s.id.0).max().unwrap_or(0) + 1,
+            next_host_id: hosts.iter().map(|s| s.id.0).max().unwrap_or(0) + 1,
             next_forward_id: forwards.iter().map(|rule| rule.id.0).max().unwrap_or(0) + 1,
             next_credential_id: credentials.iter().map(|c| c.id.0).max().unwrap_or(0) + 1,
             forwards,
             credentials,
             groups,
-            sessions,
+            hosts,
             active: None,
             recent,
             bookmarks,
@@ -172,7 +172,7 @@ impl SessionStore {
         let staging = store.insert_group_unnotified(GroupDraft::new("测试", None));
         let development = store.insert_group_unnotified(GroupDraft::new("开发", None));
         let drafts = [
-            SessionDraft::new(
+            HostDraft::new(
                 "web-01",
                 "10.0.1.12",
                 22,
@@ -180,7 +180,7 @@ impl SessionStore {
                 AuthKind::Password,
                 Some(production),
             ),
-            SessionDraft::new(
+            HostDraft::new(
                 "web-02",
                 "10.0.1.13",
                 22,
@@ -188,7 +188,7 @@ impl SessionStore {
                 AuthKind::Password,
                 Some(production),
             ),
-            SessionDraft::new(
+            HostDraft::new(
                 "db-01",
                 "10.0.2.5",
                 22,
@@ -196,7 +196,7 @@ impl SessionStore {
                 AuthKind::Password,
                 Some(production),
             ),
-            SessionDraft::new(
+            HostDraft::new(
                 "staging-api",
                 "10.0.9.20",
                 2222,
@@ -204,7 +204,7 @@ impl SessionStore {
                 AuthKind::Password,
                 Some(staging),
             ),
-            SessionDraft::new(
+            HostDraft::new(
                 "qa-runner",
                 "10.0.9.31",
                 22,
@@ -212,7 +212,7 @@ impl SessionStore {
                 AuthKind::Password,
                 Some(staging),
             ),
-            SessionDraft::new(
+            HostDraft::new(
                 "dev-box",
                 "192.168.1.20",
                 22,
@@ -225,26 +225,26 @@ impl SessionStore {
             store.insert_unnotified(draft);
         }
         for name in ["web-01", "staging-api"] {
-            if let Some(id) = store.sessions.iter().find(|s| s.name == name).map(|s| s.id) {
+            if let Some(id) = store.hosts.iter().find(|s| s.name == name).map(|s| s.id) {
                 store.set_state_unnotified(id, ConnectionState::Connected);
             }
         }
         store
     }
 
-    pub fn groups(&self) -> &[SessionGroup] {
+    pub fn groups(&self) -> &[HostGroup] {
         &self.groups
     }
 
-    pub fn sessions(&self) -> &[Session] {
-        &self.sessions
+    pub fn hosts(&self) -> &[Host] {
+        &self.hosts
     }
 
-    pub fn session(&self, id: SessionId) -> Option<&Session> {
-        self.sessions.iter().find(|s| s.id == id)
+    pub fn host(&self, id: HostId) -> Option<&Host> {
+        self.hosts.iter().find(|s| s.id == id)
     }
 
-    pub fn group(&self, id: GroupId) -> Option<&SessionGroup> {
+    pub fn group(&self, id: GroupId) -> Option<&HostGroup> {
         self.groups.iter().find(|g| g.id == id)
     }
 
@@ -262,15 +262,15 @@ impl SessionStore {
         found
     }
 
-    /// Every session inside `id` or any group below it. What deleting the
+    /// Every host inside `id` or any group below it. What deleting the
     /// group takes with it.
-    pub fn sessions_under(&self, id: GroupId) -> Vec<SessionId> {
+    pub fn hosts_under(&self, id: GroupId) -> Vec<HostId> {
         let mut doomed = self.descendant_groups(id);
         doomed.push(id);
-        self.sessions
+        self.hosts
             .iter()
-            .filter(|session| session.group.is_some_and(|group| doomed.contains(&group)))
-            .map(|session| session.id)
+            .filter(|host| host.group.is_some_and(|group| doomed.contains(&group)))
+            .map(|host| host.id)
             .collect()
     }
 
@@ -311,59 +311,59 @@ impl SessionStore {
         parts
     }
 
-    /// The session whose tab is currently displayed, if any.
-    pub fn active(&self) -> Option<&Session> {
-        self.active.and_then(|id| self.session(id))
+    /// The host whose tab is currently displayed, if any.
+    pub fn active(&self) -> Option<&Host> {
+        self.active.and_then(|id| self.host(id))
     }
 
-    /// Sessions in the order they last connected, most recent first. A
-    /// session joins (or moves to the front) each time it becomes connected.
-    pub fn recent_sessions(&self) -> impl Iterator<Item = &Session> {
-        self.recent.iter().filter_map(|id| self.session(*id))
+    /// Hosts in the order they last connected, most recent first. A
+    /// host joins (or moves to the front) each time it becomes connected.
+    pub fn recent_hosts(&self) -> impl Iterator<Item = &Host> {
+        self.recent.iter().filter_map(|id| self.host(*id))
     }
 
-    pub fn insert(&mut self, draft: SessionDraft, cx: &mut Context<Self>) -> SessionId {
+    pub fn insert(&mut self, draft: HostDraft, cx: &mut Context<Self>) -> HostId {
         let id = self.insert_unnotified(draft);
-        if let Some(session) = self.session(id) {
-            self.persist("新建主机", cx, |db| db.insert_session(session));
+        if let Some(host) = self.host(id) {
+            self.persist("新建主机", cx, |db| db.insert_host(host));
         }
         cx.notify();
         id
     }
 
-    pub fn insert_unnotified(&mut self, draft: SessionDraft) -> SessionId {
+    pub fn insert_unnotified(&mut self, draft: HostDraft) -> HostId {
         let mut draft = normalized(&self.credentials, draft);
         draft.route = self.normalized_route(draft.route, None);
-        let sort_order = self.last_session_order(draft.group, None);
-        let id = SessionId(self.next_session_id);
-        self.next_session_id += 1;
-        let mut session = Session::new(id, draft);
-        session.public_id = self.unused_public_id();
-        session.sort_order = sort_order;
-        self.sessions.push(session);
+        let sort_order = self.last_host_order(draft.group, None);
+        let id = HostId(self.next_host_id);
+        self.next_host_id += 1;
+        let mut host = Host::new(id, draft);
+        host.public_id = self.unused_public_id();
+        host.sort_order = sort_order;
+        self.hosts.push(host);
         id
     }
 
-    /// A [`PublicId`] no session in the store has yet.
+    /// A [`PublicId`] no host in the store has yet.
     fn unused_public_id(&self) -> PublicId {
-        PublicId::generate_unused(|id| self.sessions.iter().any(|s| &s.public_id == id))
+        PublicId::generate_unused(|id| self.hosts.iter().any(|s| &s.public_id == id))
     }
 
-    /// Replace the editable fields of a session; connection state is kept.
-    /// The session reconnects when its login changed, and so does every
-    /// session using it as a jump host.
-    pub fn update(&mut self, id: SessionId, draft: SessionDraft, cx: &mut Context<Self>) -> bool {
+    /// Replace the editable fields of a host; connection state is kept.
+    /// The host reconnects when its login changed, and so does every
+    /// host using it as a jump host.
+    pub fn update(&mut self, id: HostId, draft: HostDraft, cx: &mut Context<Self>) -> bool {
         let logins = self.logins();
         let previous = self.login(id);
         let updated = self.update_unnotified(id, draft);
         if updated {
-            if let Some(session) = self.session(id) {
-                self.persist("保存主机", cx, |db| db.update_session(session));
+            if let Some(host) = self.host(id) {
+                self.persist("保存主机", cx, |db| db.update_host(host));
             }
             if let Some(previous) = previous {
-                // The session no longer reads the password it did, say
+                // The host no longer reads the password it did, say
                 // because it moved to another endpoint, so that keychain
-                // entry is an orphan unless another session still uses it.
+                // entry is an orphan unless another host still uses it.
                 self.forget_passwords_of(&previous, cx);
             }
             self.emit_changed_logins(logins, cx);
@@ -372,25 +372,25 @@ impl SessionStore {
         updated
     }
 
-    pub fn update_unnotified(&mut self, id: SessionId, draft: SessionDraft) -> bool {
+    pub fn update_unnotified(&mut self, id: HostId, draft: HostDraft) -> bool {
         let mut draft = normalized(&self.credentials, draft);
         draft.route = self.normalized_route(draft.route, Some(id));
-        let new_order = self.last_session_order(draft.group, Some(id));
-        let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) else {
+        let new_order = self.last_host_order(draft.group, Some(id));
+        let Some(host) = self.hosts.iter_mut().find(|s| s.id == id) else {
             return false;
         };
         // The form owns none of these, so rebuilding from the draft must not
         // drop them.
-        let state = session.state;
-        let os = session.os;
-        let sort_order = session.sort_order;
-        let old_group = session.group;
-        let public_id = session.public_id.clone();
-        *session = Session::new(id, draft);
-        session.public_id = public_id;
-        session.state = state;
-        session.os = os;
-        session.sort_order = if session.group == old_group {
+        let state = host.state;
+        let os = host.os;
+        let sort_order = host.sort_order;
+        let old_group = host.group;
+        let public_id = host.public_id.clone();
+        *host = Host::new(id, draft);
+        host.public_id = public_id;
+        host.state = state;
+        host.os = os;
+        host.sort_order = if host.group == old_group {
             sort_order
         } else {
             new_order
@@ -398,14 +398,14 @@ impl SessionStore {
         true
     }
 
-    /// Delete a session. The sessions that went through it keep its place in
+    /// Delete a host. The hosts that went through it keep its place in
     /// their jump hosts, empty, and are not reconnected: deleting a host does
     /// not drop a working connection behind it.
-    pub fn remove(&mut self, id: SessionId, cx: &mut Context<Self>) -> bool {
+    pub fn remove(&mut self, id: HostId, cx: &mut Context<Self>) -> bool {
         let login = self.login(id);
         let removed = self.remove_unnotified(id);
         if removed {
-            self.persist("删除主机", cx, |db| db.remove_session(id));
+            self.persist("删除主机", cx, |db| db.remove_host(id));
             if let Some(login) = login {
                 self.forget_passwords_of(&login, cx);
             }
@@ -414,12 +414,12 @@ impl SessionStore {
         removed
     }
 
-    pub fn remove_unnotified(&mut self, id: SessionId) -> bool {
-        let before = self.sessions.len();
-        self.sessions.retain(|s| s.id != id);
+    pub fn remove_unnotified(&mut self, id: HostId) -> bool {
+        let before = self.hosts.len();
+        self.hosts.retain(|s| s.id != id);
         // As the database's `ON DELETE SET NULL` does.
-        for session in &mut self.sessions {
-            if let Route::Jump(hops) = &mut session.route {
+        for host in &mut self.hosts {
+            if let Route::Jump(hops) = &mut host.route {
                 for hop in hops.iter_mut().filter(|hop| **hop == Some(id)) {
                     *hop = None;
                 }
@@ -427,46 +427,46 @@ impl SessionStore {
         }
         self.recent.retain(|recent| *recent != id);
         // The database drops both through `ON DELETE CASCADE`.
-        self.bookmarks.retain(|(session, _), _| *session != id);
-        self.forwards.retain(|rule| rule.session != id);
+        self.bookmarks.retain(|(host, _), _| *host != id);
+        self.forwards.retain(|rule| rule.host != id);
         if self.active == Some(id) {
             self.active = None;
         }
-        self.sessions.len() != before
+        self.hosts.len() != before
     }
 
-    /// Copy a session as `<name> 副本`, placed right after the original.
-    pub fn duplicate(&mut self, id: SessionId, cx: &mut Context<Self>) -> Option<SessionId> {
+    /// Copy a host as `<name> 副本`, placed right after the original.
+    pub fn duplicate(&mut self, id: HostId, cx: &mut Context<Self>) -> Option<HostId> {
         let copy = self.duplicate_unnotified(id)?;
-        if let Some(session) = self.session(copy) {
-            self.persist("复制主机", cx, |db| db.insert_session(session));
+        if let Some(host) = self.host(copy) {
+            self.persist("复制主机", cx, |db| db.insert_host(host));
             self.persist("保存主机顺序", cx, |db| {
-                db.save_tree_order(&self.groups, &self.sessions)
+                db.save_tree_order(&self.groups, &self.hosts)
             });
         }
         cx.notify();
         Some(copy)
     }
 
-    pub fn duplicate_unnotified(&mut self, id: SessionId) -> Option<SessionId> {
-        let ix = self.sessions.iter().position(|s| s.id == id)?;
-        let mut draft = self.sessions[ix].draft();
+    pub fn duplicate_unnotified(&mut self, id: HostId) -> Option<HostId> {
+        let ix = self.hosts.iter().position(|s| s.id == id)?;
+        let mut draft = self.hosts[ix].draft();
         draft.name = format!("{} 副本", draft.name).into();
         // Same host, so the copy already knows what it will find there.
-        let os = self.sessions[ix].os;
-        let copy_id = SessionId(self.next_session_id);
-        self.next_session_id += 1;
-        let mut copy = Session::new(copy_id, draft);
-        // A copy is another session, so a third party must not confuse the two.
+        let os = self.hosts[ix].os;
+        let copy_id = HostId(self.next_host_id);
+        self.next_host_id += 1;
+        let mut copy = Host::new(copy_id, draft);
+        // A copy is another host, so a third party must not confuse the two.
         copy.public_id = self.unused_public_id();
         copy.os = os;
-        copy.sort_order = self.sessions[ix].sort_order + 1;
-        for session in &mut self.sessions {
-            if session.group == copy.group && session.sort_order >= copy.sort_order {
-                session.sort_order += 1;
+        copy.sort_order = self.hosts[ix].sort_order + 1;
+        for host in &mut self.hosts {
+            if host.group == copy.group && host.sort_order >= copy.sort_order {
+                host.sort_order += 1;
             }
         }
-        self.sessions.insert(ix + 1, copy);
+        self.hosts.insert(ix + 1, copy);
         Some(copy_id)
     }
 
@@ -483,7 +483,7 @@ impl SessionStore {
         let sort_order = self.last_group_order(draft.parent, None);
         let id = GroupId(self.next_group_id);
         self.next_group_id += 1;
-        let mut group = SessionGroup::new(id, draft);
+        let mut group = HostGroup::new(id, draft);
         group.sort_order = sort_order;
         self.groups.push(group);
         id
@@ -520,7 +520,7 @@ impl SessionStore {
         let old_parent = group.parent;
         let old_order = group.sort_order;
         let expanded = group.expanded;
-        *group = SessionGroup::new(id, draft);
+        *group = HostGroup::new(id, draft);
         group.expanded = expanded;
         group.sort_order = if group.parent == old_parent {
             old_order
@@ -530,8 +530,8 @@ impl SessionStore {
         true
     }
 
-    /// A session's SFTP bookmarks for one pane, oldest first.
-    pub fn bookmarks(&self, id: SessionId, side: BookmarkSide) -> &[String] {
+    /// A host's SFTP bookmarks for one pane, oldest first.
+    pub fn bookmarks(&self, id: HostId, side: BookmarkSide) -> &[String] {
         self.bookmarks
             .get(&(id, side))
             .map(Vec::as_slice)
@@ -540,7 +540,7 @@ impl SessionStore {
 
     pub fn add_bookmark(
         &mut self,
-        id: SessionId,
+        id: HostId,
         side: BookmarkSide,
         path: &str,
         cx: &mut Context<Self>,
@@ -553,13 +553,8 @@ impl SessionStore {
         true
     }
 
-    pub fn add_bookmark_unnotified(
-        &mut self,
-        id: SessionId,
-        side: BookmarkSide,
-        path: &str,
-    ) -> bool {
-        if self.session(id).is_none() || path.is_empty() {
+    pub fn add_bookmark_unnotified(&mut self, id: HostId, side: BookmarkSide, path: &str) -> bool {
+        if self.host(id).is_none() || path.is_empty() {
             return false;
         }
         let list = self.bookmarks.entry((id, side)).or_default();
@@ -572,7 +567,7 @@ impl SessionStore {
 
     pub fn remove_bookmark(
         &mut self,
-        id: SessionId,
+        id: HostId,
         side: BookmarkSide,
         path: &str,
         cx: &mut Context<Self>,
@@ -587,7 +582,7 @@ impl SessionStore {
 
     pub fn remove_bookmark_unnotified(
         &mut self,
-        id: SessionId,
+        id: HostId,
         side: BookmarkSide,
         path: &str,
     ) -> bool {
@@ -603,7 +598,7 @@ impl SessionStore {
     /// 下移).
     pub fn move_bookmark(
         &mut self,
-        id: SessionId,
+        id: HostId,
         side: BookmarkSide,
         path: &str,
         to: usize,
@@ -621,7 +616,7 @@ impl SessionStore {
 
     pub fn move_bookmark_unnotified(
         &mut self,
-        id: SessionId,
+        id: HostId,
         side: BookmarkSide,
         path: &str,
         to: usize,
@@ -650,15 +645,13 @@ impl SessionStore {
         self.forwards.iter().find(|rule| rule.id == id)
     }
 
-    /// The rules that go through `session`: what deleting it takes along.
-    pub fn forwards_of(&self, session: SessionId) -> impl Iterator<Item = &ForwardRule> {
-        self.forwards
-            .iter()
-            .filter(move |rule| rule.session == session)
+    /// The rules that go through `host`: what deleting it takes along.
+    pub fn forwards_of(&self, host: HostId) -> impl Iterator<Item = &ForwardRule> {
+        self.forwards.iter().filter(move |rule| rule.host == host)
     }
 
     /// Add a rule at the end of the list. `None` when the draft names a
-    /// session that is not there.
+    /// host that is not there.
     pub fn insert_forward(
         &mut self,
         draft: ForwardDraft,
@@ -673,7 +666,7 @@ impl SessionStore {
     }
 
     pub fn insert_forward_unnotified(&mut self, draft: ForwardDraft) -> Option<ForwardId> {
-        self.session(draft.session)?;
+        self.host(draft.host)?;
         let sort_order = self
             .forwards
             .iter()
@@ -706,14 +699,14 @@ impl SessionStore {
             self.persist("保存端口转发", cx, |db| db.update_forward(rule));
         }
         if needs_restart {
-            cx.emit(SessionStoreEvent::ForwardSettingsChanged(id));
+            cx.emit(HostStoreEvent::ForwardSettingsChanged(id));
         }
         cx.notify();
         true
     }
 
     pub fn update_forward_unnotified(&mut self, id: ForwardId, draft: ForwardDraft) -> bool {
-        if self.session(draft.session).is_none() {
+        if self.host(draft.host).is_none() {
             return false;
         }
         let Some(rule) = self.forwards.iter_mut().find(|rule| rule.id == id) else {
@@ -751,30 +744,27 @@ impl SessionStore {
             .find(|credential| credential.id == id)
     }
 
-    /// The sessions that log in with `credential`.
-    pub fn sessions_using(&self, credential: CredentialId) -> impl Iterator<Item = &Session> {
-        self.sessions
+    /// The hosts that log in with `credential`.
+    pub fn hosts_using(&self, credential: CredentialId) -> impl Iterator<Item = &Host> {
+        self.hosts
             .iter()
-            .filter(move |session| session.credential == Some(credential))
+            .filter(move |host| host.credential == Some(credential))
     }
 
-    /// How a session logs in, with its credential and its jump hosts' logins
+    /// How a host logs in, with its credential and its jump hosts' logins
     /// looked up. What the terminal, SFTP, forward and CLI workers are given.
-    pub fn login(&self, id: SessionId) -> Option<SessionLogin> {
-        self.session(id).map(|session| self.login_of(session))
+    pub fn login(&self, id: HostId) -> Option<HostLogin> {
+        self.host(id).map(|host| self.login_of(host))
     }
 
-    pub fn login_of(&self, session: &Session) -> SessionLogin {
-        self.direct_login(session)
-            .with_route(self.route_login(&session.route))
+    pub fn login_of(&self, host: &Host) -> HostLogin {
+        self.direct_login(host)
+            .with_route(self.route_login(&host.route))
     }
 
-    /// How `session` logs in once the connection has reached it.
-    fn direct_login(&self, session: &Session) -> SessionLogin {
-        SessionLogin::of(
-            session,
-            session.credential.and_then(|id| self.credential(id)),
-        )
+    /// How `host` logs in once the connection has reached it.
+    fn direct_login(&self, host: &Host) -> HostLogin {
+        HostLogin::of(host, host.credential.and_then(|id| self.credential(id)))
     }
 
     /// `route` with every jump host's login looked up. A jump host is
@@ -784,10 +774,10 @@ impl SessionStore {
             Route::Direct => LoginRoute::Direct,
             Route::Jump(hops) => LoginRoute::Jump(
                 hops.iter()
-                    .map(|hop| match hop.and_then(|id| self.session(id)) {
-                        Some(session) => JumpLogin::Host {
-                            name: session.name.to_string(),
-                            login: Box::new(self.direct_login(session)),
+                    .map(|hop| match hop.and_then(|id| self.host(id)) {
+                        Some(host) => JumpLogin::Host {
+                            name: host.name.to_string(),
+                            login: Box::new(self.direct_login(host)),
                         },
                         None => JumpLogin::Deleted,
                     })
@@ -797,32 +787,31 @@ impl SessionStore {
         }
     }
 
-    /// How many sessions other than `ids` go through one of them as a jump
+    /// How many hosts other than `ids` go through one of them as a jump
     /// host: what deleting `ids` leaves without a way through.
-    pub fn jump_users(&self, ids: &[SessionId]) -> usize {
-        self.sessions
+    pub fn jump_users(&self, ids: &[HostId]) -> usize {
+        self.hosts
             .iter()
-            .filter(|session| {
-                !ids.contains(&session.id)
-                    && session.route.jump_hosts().any(|hop| ids.contains(&hop))
+            .filter(|host| {
+                !ids.contains(&host.id) && host.route.jump_hosts().any(|hop| ids.contains(&hop))
             })
             .count()
     }
 
-    /// Every session's login, to tell afterwards whose changed.
-    fn logins(&self) -> Vec<(SessionId, SessionLogin)> {
-        self.sessions
+    /// Every host's login, to tell afterwards whose changed.
+    fn logins(&self) -> Vec<(HostId, HostLogin)> {
+        self.hosts
             .iter()
-            .map(|session| (session.id, self.login_of(session)))
+            .map(|host| (host.id, self.login_of(host)))
             .collect()
     }
 
-    /// Tell the workspace about every session that logs in differently than
+    /// Tell the workspace about every host that logs in differently than
     /// it did in `before`, so its connections reconnect.
-    fn emit_changed_logins(&self, before: Vec<(SessionId, SessionLogin)>, cx: &mut Context<Self>) {
+    fn emit_changed_logins(&self, before: Vec<(HostId, HostLogin)>, cx: &mut Context<Self>) {
         for (id, login) in before {
             if self.login(id).is_some_and(|now| now != login) {
-                cx.emit(SessionStoreEvent::ConnectionSettingsChanged(id));
+                cx.emit(HostStoreEvent::ConnectionSettingsChanged(id));
             }
         }
     }
@@ -862,7 +851,7 @@ impl SessionStore {
         id
     }
 
-    /// Replace the editable fields of a credential. Every session using it
+    /// Replace the editable fields of a credential. Every host using it
     /// takes the new user name, and those whose login changed reconnect.
     pub fn update_credential(
         &mut self,
@@ -894,11 +883,8 @@ impl SessionStore {
         {
             self.forget_key_file(path, cx);
         }
-        for (session, before) in &logins {
-            if self
-                .session(*session)
-                .is_some_and(|s| s.credential == Some(id))
-            {
+        for (host, before) in &logins {
+            if self.host(*host).is_some_and(|s| s.credential == Some(id)) {
                 self.forget_passwords_of(before, cx);
             }
         }
@@ -925,22 +911,18 @@ impl SessionStore {
         credential.keychain_id = keychain_id;
         credential.sort_order = sort_order;
         let user = credential.user.clone();
-        for session in &mut self.sessions {
-            if session.credential == Some(id) {
-                session.user = user.clone();
+        for host in &mut self.hosts {
+            if host.credential == Some(id) {
+                host.user = user.clone();
             }
         }
         true
     }
 
-    /// Delete a credential. The sessions using it log in on their own again,
+    /// Delete a credential. The hosts using it log in on their own again,
     /// automatically and as the same user, and are returned. They are not
     /// reconnected: deleting a credential does not drop a working connection.
-    pub fn remove_credential(
-        &mut self,
-        id: CredentialId,
-        cx: &mut Context<Self>,
-    ) -> Vec<SessionId> {
+    pub fn remove_credential(&mut self, id: CredentialId, cx: &mut Context<Self>) -> Vec<HostId> {
         let Some(credential) = self.credential(id).cloned() else {
             return Vec::new();
         };
@@ -957,7 +939,7 @@ impl SessionStore {
         released
     }
 
-    pub fn remove_credential_unnotified(&mut self, id: CredentialId) -> Vec<SessionId> {
+    pub fn remove_credential_unnotified(&mut self, id: CredentialId) -> Vec<HostId> {
         let Some(index) = self
             .credentials
             .iter()
@@ -967,11 +949,11 @@ impl SessionStore {
         };
         let auth = self.credentials.remove(index).kind.without_credential();
         let mut released = Vec::new();
-        for session in &mut self.sessions {
-            if session.credential == Some(id) {
-                session.credential = None;
-                session.auth = auth;
-                released.push(session.id);
+        for host in &mut self.hosts {
+            if host.credential == Some(id) {
+                host.credential = None;
+                host.auth = auth;
+                released.push(host.id);
             }
         }
         released
@@ -1015,23 +997,18 @@ impl SessionStore {
 
     /// Move a group or host in the tree and persist its new location and
     /// sibling order in one transaction.
-    pub fn move_node(
-        &mut self,
-        source: SessionNode,
-        drop: NodeDrop,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    pub fn move_node(&mut self, source: HostNode, drop: NodeDrop, cx: &mut Context<Self>) -> bool {
         if !self.move_node_unnotified(source, drop) {
             return false;
         }
         self.persist("调整主机顺序", cx, |db| {
-            db.save_tree_order(&self.groups, &self.sessions)
+            db.save_tree_order(&self.groups, &self.hosts)
         });
         cx.notify();
         true
     }
 
-    pub fn move_node_unnotified(&mut self, source: SessionNode, drop: NodeDrop) -> bool {
+    pub fn move_node_unnotified(&mut self, source: HostNode, drop: NodeDrop) -> bool {
         let (parent, target, after) = match drop {
             NodeDrop::Before(target) => (self.node_parent(target), Some(target), false),
             NodeDrop::After(target) => (self.node_parent(target), Some(target), true),
@@ -1048,7 +1025,7 @@ impl SessionStore {
             return false;
         }
         match source {
-            SessionNode::Group(id) => {
+            HostNode::Group(id) => {
                 if self.group(id).is_none() {
                     return false;
                 }
@@ -1058,8 +1035,8 @@ impl SessionStore {
                     return false;
                 }
                 let target = match target {
-                    Some(SessionNode::Group(target)) => Some(target),
-                    Some(SessionNode::Session(_)) => return false,
+                    Some(HostNode::Group(target)) => Some(target),
+                    Some(HostNode::Host(_)) => return false,
                     None => None,
                 };
                 let siblings = self
@@ -1080,17 +1057,17 @@ impl SessionStore {
                     }
                 }
             }
-            SessionNode::Session(id) => {
-                if self.session(id).is_none() {
+            HostNode::Host(id) => {
+                if self.host(id).is_none() {
                     return false;
                 }
                 let target = match target {
-                    Some(SessionNode::Session(target)) => Some(target),
-                    Some(SessionNode::Group(_)) => return false,
+                    Some(HostNode::Host(target)) => Some(target),
+                    Some(HostNode::Group(_)) => return false,
                     None => None,
                 };
                 let siblings = self
-                    .sessions
+                    .hosts
                     .iter()
                     .filter(|s| s.group == parent)
                     .map(|s| (s.sort_order, s.id))
@@ -1098,12 +1075,12 @@ impl SessionStore {
                 let Some(ids) = reordered(siblings, id, target, after) else {
                     return false;
                 };
-                for session in &mut self.sessions {
-                    if session.id == id {
-                        session.group = parent;
+                for host in &mut self.hosts {
+                    if host.id == id {
+                        host.group = parent;
                     }
-                    if let Some(order) = ids.iter().position(|sibling| *sibling == session.id) {
-                        session.sort_order = order as i64;
+                    if let Some(order) = ids.iter().position(|sibling| *sibling == host.id) {
+                        host.sort_order = order as i64;
                     }
                 }
             }
@@ -1111,21 +1088,21 @@ impl SessionStore {
         true
     }
 
-    fn node_parent(&self, node: SessionNode) -> Option<Option<GroupId>> {
+    fn node_parent(&self, node: HostNode) -> Option<Option<GroupId>> {
         match node {
-            SessionNode::Group(id) => self.group(id).map(|g| g.parent),
-            SessionNode::Session(id) => self.session(id).map(|s| s.group),
+            HostNode::Group(id) => self.group(id).map(|g| g.parent),
+            HostNode::Host(id) => self.host(id).map(|s| s.group),
         }
     }
 
-    /// Delete a group with its subgroups and every session inside them.
-    /// Returns the sessions that went with it, so the workspace can close
+    /// Delete a group with its subgroups and every host inside them.
+    /// Returns the hosts that went with it, so the workspace can close
     /// their tabs.
-    pub fn remove_group(&mut self, id: GroupId, cx: &mut Context<Self>) -> Vec<SessionId> {
+    pub fn remove_group(&mut self, id: GroupId, cx: &mut Context<Self>) -> Vec<HostId> {
         if self.group(id).is_none() {
             return Vec::new();
         }
-        let passwords = self.passwords_of(&self.sessions_under(id));
+        let passwords = self.passwords_of(&self.hosts_under(id));
         let removed = self.remove_group_unnotified(id);
         // One delete mirrors the whole subtree: both foreign keys cascade.
         self.persist("删除分组", cx, |db| db.remove_group(id));
@@ -1136,21 +1113,21 @@ impl SessionStore {
         removed
     }
 
-    pub fn remove_group_unnotified(&mut self, id: GroupId) -> Vec<SessionId> {
+    pub fn remove_group_unnotified(&mut self, id: GroupId) -> Vec<HostId> {
         if self.group(id).is_none() {
             return Vec::new();
         }
-        let removed = self.sessions_under(id);
+        let removed = self.hosts_under(id);
         let mut doomed = self.descendant_groups(id);
         doomed.push(id);
         self.groups.retain(|group| !doomed.contains(&group.id));
-        for session in &removed {
-            self.remove_unnotified(*session);
+        for host in &removed {
+            self.remove_unnotified(*host);
         }
         removed
     }
 
-    pub fn set_state(&mut self, id: SessionId, state: ConnectionState, cx: &mut Context<Self>) {
+    pub fn set_state(&mut self, id: HostId, state: ConnectionState, cx: &mut Context<Self>) {
         if !self.set_state_unnotified(id, state) {
             return;
         }
@@ -1163,15 +1140,15 @@ impl SessionStore {
     }
 
     /// Returns whether the state changed. Becoming connected also moves the
-    /// session to the front of the recent list.
-    pub fn set_state_unnotified(&mut self, id: SessionId, state: ConnectionState) -> bool {
-        let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) else {
+    /// host to the front of the recent list.
+    pub fn set_state_unnotified(&mut self, id: HostId, state: ConnectionState) -> bool {
+        let Some(host) = self.hosts.iter_mut().find(|s| s.id == id) else {
             return false;
         };
-        if session.state == state {
+        if host.state == state {
             return false;
         }
-        session.state = state;
+        host.state = state;
         if state.is_connected() {
             self.recent.retain(|recent| *recent != id);
             self.recent.insert(0, id);
@@ -1182,7 +1159,7 @@ impl SessionStore {
 
     /// Record what a connection found on the host. Called after every
     /// successful connection, so a rebuilt machine corrects itself.
-    pub fn set_host_os(&mut self, id: SessionId, os: Option<HostOs>, cx: &mut Context<Self>) {
+    pub fn set_host_os(&mut self, id: HostId, os: Option<HostOs>, cx: &mut Context<Self>) {
         if !self.set_host_os_unnotified(id, os) {
             return;
         }
@@ -1191,25 +1168,25 @@ impl SessionStore {
     }
 
     /// Returns whether the recorded system changed.
-    pub fn set_host_os_unnotified(&mut self, id: SessionId, os: Option<HostOs>) -> bool {
-        let Some(session) = self.sessions.iter_mut().find(|s| s.id == id) else {
+    pub fn set_host_os_unnotified(&mut self, id: HostId, os: Option<HostOs>) -> bool {
+        let Some(host) = self.hosts.iter_mut().find(|s| s.id == id) else {
             return false;
         };
-        if session.os == os {
+        if host.os == os {
             return false;
         }
-        session.os = os;
+        host.os = os;
         true
     }
 
-    pub fn set_active(&mut self, id: Option<SessionId>, cx: &mut Context<Self>) {
+    pub fn set_active(&mut self, id: Option<HostId>, cx: &mut Context<Self>) {
         if self.active != id {
             self.active = id;
             cx.notify();
         }
     }
 
-    /// Where passwords are read from. The session form uses this to pre-fill
+    /// Where passwords are read from. The host form uses this to pre-fill
     /// its field; the workspace hands it to the SSH provider.
     pub fn secrets(&self) -> SharedSecretStore {
         self.secrets.clone()
@@ -1274,7 +1251,7 @@ impl SessionStore {
         if let Err(error) = std::fs::remove_file(path)
             && error.kind() != io::ErrorKind::NotFound
         {
-            cx.emit(SessionStoreEvent::PersistFailed(
+            cx.emit(HostStoreEvent::PersistFailed(
                 format!("ShellRS 保存的私钥未能删除：{error}").into(),
             ));
         }
@@ -1317,7 +1294,7 @@ impl SessionStore {
                 .await;
             if let Err(error) = result {
                 this.update(cx, |_, cx| {
-                    cx.emit(SessionStoreEvent::PersistFailed(
+                    cx.emit(HostStoreEvent::PersistFailed(
                         format!("{failure}：{error}").into(),
                     ));
                 })
@@ -1327,9 +1304,9 @@ impl SessionStore {
         .detach();
     }
 
-    /// The distinct password entries these sessions log in with, their
+    /// The distinct password entries these hosts log in with, their
     /// proxies' included.
-    fn passwords_of(&self, ids: &[SessionId]) -> Vec<SecretRef> {
+    fn passwords_of(&self, ids: &[HostId]) -> Vec<SecretRef> {
         let mut passwords: Vec<SecretRef> = Vec::new();
         for login in ids.iter().filter_map(|id| self.login(*id)) {
             for secret in [Some(login.password), login.route.proxy_password()]
@@ -1345,17 +1322,17 @@ impl SessionStore {
     }
 
     /// Forget the endpoint and proxy passwords `login` used, those that no
-    /// session uses any more.
-    fn forget_passwords_of(&mut self, login: &SessionLogin, cx: &mut Context<Self>) {
+    /// host uses any more.
+    fn forget_passwords_of(&mut self, login: &HostLogin, cx: &mut Context<Self>) {
         self.forget_password(login.password.clone(), cx);
         if let Some(proxy) = login.route.proxy_password() {
             self.forget_password(proxy, cx);
         }
     }
 
-    /// Delete an endpoint's or a proxy's saved password once no session logs
+    /// Delete an endpoint's or a proxy's saved password once no host logs
     /// in with it. A credential's password is left alone: it goes with the
-    /// credential, not with the sessions using it.
+    /// credential, not with the hosts using it.
     fn forget_password(&mut self, secret: SecretRef, cx: &mut Context<Self>) {
         if matches!(secret, SecretRef::Password { .. } | SecretRef::Proxy { .. })
             && !self.password_in_use(&secret)
@@ -1364,12 +1341,12 @@ impl SessionStore {
         }
     }
 
-    /// Whether any session still logs in with this password entry, or goes
+    /// Whether any host still logs in with this password entry, or goes
     /// through a proxy with it. Entries are shared, so one may only be
-    /// cleaned up once the last session using it is gone.
+    /// cleaned up once the last host using it is gone.
     fn password_in_use(&self, secret: &SecretRef) -> bool {
-        self.sessions.iter().any(|session| {
-            let login = self.login_of(session);
+        self.hosts.iter().any(|host| {
+            let login = self.login_of(host);
             login.password == *secret || login.route.proxy_password().as_ref() == Some(secret)
         })
     }
@@ -1380,21 +1357,21 @@ impl SessionStore {
         &self,
         action: &str,
         cx: &mut Context<Self>,
-        write: impl FnOnce(&SessionDatabase) -> rusqlite::Result<()>,
+        write: impl FnOnce(&HostDatabase) -> rusqlite::Result<()>,
     ) {
         if let Some(database) = &self.database
             && let Err(error) = write(database)
         {
-            cx.emit(SessionStoreEvent::PersistFailed(
+            cx.emit(HostStoreEvent::PersistFailed(
                 format!("{action}未能保存到本地数据库：{error}").into(),
             ));
         }
     }
 
-    /// The sort order that puts a session last in `group`, among the
-    /// sessions other than `except`.
-    fn last_session_order(&self, group: Option<GroupId>, except: Option<SessionId>) -> i64 {
-        self.sessions
+    /// The sort order that puts a host last in `group`, among the
+    /// hosts other than `except`.
+    fn last_host_order(&self, group: Option<GroupId>, except: Option<HostId>) -> i64 {
+        self.hosts
             .iter()
             .filter(|s| Some(s.id) != except && s.group == group)
             .map(|s| s.sort_order)
@@ -1444,17 +1421,17 @@ fn reordered<Id: Copy + Ord>(
     Some(ids)
 }
 
-impl SessionStore {
-    /// `route` as the store keeps it for session `own` (`None` while it is
-    /// being created): no session jumps through itself, a jump host that is
+impl HostStore {
+    /// `route` as the store keeps it for host `own` (`None` while it is
+    /// being created): no host jumps through itself, a jump host that is
     /// not there is a deleted one, and a jump with no hosts is no jump.
-    fn normalized_route(&self, route: Route, own: Option<SessionId>) -> Route {
+    fn normalized_route(&self, route: Route, own: Option<HostId>) -> Route {
         match route {
             Route::Jump(hops) => {
                 let hops: Vec<_> = hops
                     .into_iter()
                     .filter(|hop| hop.is_none() || *hop != own)
-                    .map(|hop| hop.filter(|id| self.session(*id).is_some()))
+                    .map(|hop| hop.filter(|id| self.host(*id).is_some()))
                     .collect();
                 if hops.is_empty() {
                     Route::Direct
@@ -1467,10 +1444,10 @@ impl SessionStore {
     }
 }
 
-/// `draft` as the store keeps it. A session using a credential logs in as
+/// `draft` as the store keeps it. A host using a credential logs in as
 /// the credential's user and keeps nothing of its own login; one naming a
 /// credential that is not there logs in on its own.
-fn normalized(credentials: &[Credential], mut draft: SessionDraft) -> SessionDraft {
+fn normalized(credentials: &[Credential], mut draft: HostDraft) -> HostDraft {
     let credential = draft
         .credential
         .and_then(|id| credentials.iter().find(|credential| credential.id == id));
@@ -1489,13 +1466,13 @@ mod tests {
     use super::super::{ForwardEndpoint, ForwardKind, LoginMethod, ProxyKind, ProxySettings};
     use super::*;
 
-    fn draft(name: &str, group: Option<GroupId>) -> SessionDraft {
-        SessionDraft::new(name, "10.0.0.1", 22, "root", AuthKind::Password, group)
+    fn draft(name: &str, group: Option<GroupId>) -> HostDraft {
+        HostDraft::new(name, "10.0.0.1", 22, "root", AuthKind::Password, group)
     }
 
     #[test]
-    fn bookmarks_are_per_pane_and_leave_with_their_session() {
-        let mut store = SessionStore::empty();
+    fn bookmarks_are_per_pane_and_leave_with_their_host() {
+        let mut store = HostStore::empty();
         let group = store.insert_group_unnotified(GroupDraft::new("生产", None));
         let web = store.insert_unnotified(draft("web", Some(group)));
         let db = store.insert_unnotified(draft("db", None));
@@ -1503,7 +1480,7 @@ mod tests {
         assert!(!store.add_bookmark_unnotified(web, BookmarkSide::Remote, "/var/log"));
         assert!(store.add_bookmark_unnotified(web, BookmarkSide::Local, "/tmp"));
         assert!(store.add_bookmark_unnotified(db, BookmarkSide::Remote, "/srv"));
-        assert!(!store.add_bookmark_unnotified(SessionId(99), BookmarkSide::Remote, "/x"));
+        assert!(!store.add_bookmark_unnotified(HostId(99), BookmarkSide::Remote, "/x"));
         assert_eq!(store.bookmarks(web, BookmarkSide::Remote), ["/var/log"]);
         assert_eq!(store.bookmarks(web, BookmarkSide::Local), ["/tmp"]);
         assert!(store.remove_bookmark_unnotified(db, BookmarkSide::Remote, "/srv"));
@@ -1526,25 +1503,25 @@ mod tests {
         assert!(store.bookmarks(web, BookmarkSide::Local).is_empty());
     }
 
-    fn forward_draft(session: SessionId, port: u16) -> ForwardDraft {
+    fn forward_draft(host: HostId, port: u16) -> ForwardDraft {
         ForwardDraft::new(
             ForwardKind::Local,
-            session,
+            host,
             ForwardEndpoint::new("127.0.0.1", port),
             Some(ForwardEndpoint::new("db.internal", 3306)),
         )
     }
 
     #[test]
-    fn forwards_keep_their_order_and_leave_with_their_session() {
-        let mut store = SessionStore::empty();
+    fn forwards_keep_their_order_and_leave_with_their_host() {
+        let mut store = HostStore::empty();
         let group = store.insert_group_unnotified(GroupDraft::new("生产", None));
         let web = store.insert_unnotified(draft("web", Some(group)));
         let db = store.insert_unnotified(draft("db", None));
         assert_eq!(
-            store.insert_forward_unnotified(forward_draft(SessionId(99), 1)),
+            store.insert_forward_unnotified(forward_draft(HostId(99), 1)),
             None,
-            "a rule needs a session to go through"
+            "a rule needs a host to go through"
         );
         let first = store
             .insert_forward_unnotified(forward_draft(web, 8080))
@@ -1566,16 +1543,16 @@ mod tests {
         );
         assert_eq!(store.forwards_of(web).count(), 2);
 
-        // Editing keeps the rule's place; it cannot move to a missing session.
+        // Editing keeps the rule's place; it cannot move to a missing host.
         assert!(store.update_forward_unnotified(second, forward_draft(web, 9000)));
         assert_eq!(store.forward(second).unwrap().bind.port, 9000);
         assert_eq!(store.forward(second).unwrap().sort_order, 1);
-        assert!(!store.update_forward_unnotified(second, forward_draft(SessionId(99), 1)));
+        assert!(!store.update_forward_unnotified(second, forward_draft(HostId(99), 1)));
         assert!(!store.update_forward_unnotified(ForwardId(99), forward_draft(web, 1)));
 
         assert!(store.remove_forward_unnotified(first));
         assert!(!store.remove_forward_unnotified(first));
-        // A copy of a session starts without forwards, like bookmarks.
+        // A copy of a host starts without forwards, like bookmarks.
         let copy = store.duplicate_unnotified(web).unwrap();
         assert_eq!(store.forwards_of(copy).count(), 0);
 
@@ -1591,26 +1568,26 @@ mod tests {
 
     #[test]
     fn load_resumes_the_forward_id_sequence() {
-        let database = SessionDatabase::in_memory().unwrap();
+        let database = HostDatabase::in_memory().unwrap();
         database
-            .insert_session(&Session::new(SessionId(1), draft("web", None)))
+            .insert_host(&Host::new(HostId(1), draft("web", None)))
             .unwrap();
         database
             .insert_forward(&ForwardRule::new(
                 ForwardId(5),
-                forward_draft(SessionId(1), 8080),
+                forward_draft(HostId(1), 8080),
             ))
             .unwrap();
 
-        let mut store = SessionStore::load(database).unwrap();
+        let mut store = HostStore::load(database).unwrap();
         assert_eq!(store.forwards().len(), 1);
         assert_eq!(
-            store.insert_forward_unnotified(forward_draft(SessionId(1), 8081)),
+            store.insert_forward_unnotified(forward_draft(HostId(1), 8081)),
             Some(ForwardId(6))
         );
     }
 
-    fn password_credential(store: &mut SessionStore, user: &str) -> CredentialId {
+    fn password_credential(store: &mut HostStore, user: &str) -> CredentialId {
         store.insert_credential_unnotified(CredentialDraft::new(
             "运维",
             CredentialKind::Password,
@@ -1620,38 +1597,38 @@ mod tests {
 
     #[test]
     fn a_host_using_a_credential_logs_in_as_its_user() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let credential = password_credential(&mut store, "deploy");
         let mut form = draft("web", None).with_credential(credential);
         // Whatever the form still held of its own login is dropped.
         form.auth = AuthKind::NoPassword;
         let web = store.insert_unnotified(form);
 
-        let session = store.session(web).unwrap();
-        assert_eq!(session.credential, Some(credential));
-        assert_eq!(session.user.as_ref(), "deploy");
-        assert_eq!(session.auth, AuthKind::Password);
+        let host = store.host(web).unwrap();
+        assert_eq!(host.credential, Some(credential));
+        assert_eq!(host.user.as_ref(), "deploy");
+        assert_eq!(host.auth, AuthKind::Password);
         let login = store.login(web).unwrap();
         assert_eq!(login.user, "deploy");
         assert_eq!(
             login.password,
             store.credential(credential).unwrap().password_secret()
         );
-        assert_eq!(store.sessions_using(credential).count(), 1);
+        assert_eq!(store.hosts_using(credential).count(), 1);
     }
 
     #[test]
     fn a_draft_naming_a_missing_credential_is_saved_as_manual() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let web = store.insert_unnotified(draft("web", None).with_credential(CredentialId(9)));
-        let session = store.session(web).unwrap();
-        assert_eq!(session.credential, None);
-        assert_eq!(session.user.as_ref(), "root");
+        let host = store.host(web).unwrap();
+        assert_eq!(host.credential, None);
+        assert_eq!(host.user.as_ref(), "root");
     }
 
     #[test]
     fn renaming_a_credentials_user_renames_every_host_using_it() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let credential = password_credential(&mut store, "deploy");
         let web = store.insert_unnotified(draft("web", None).with_credential(credential));
         let db = store.insert_unnotified(draft("db", None));
@@ -1659,9 +1636,9 @@ mod tests {
         let mut edited = store.credential(credential).unwrap().draft();
         edited.user = "admin".into();
         assert!(store.update_credential_unnotified(credential, edited));
-        assert_eq!(store.session(web).unwrap().user.as_ref(), "admin");
-        assert_eq!(store.session(web).unwrap().address(), "admin@10.0.0.1:22");
-        assert_eq!(store.session(db).unwrap().user.as_ref(), "root");
+        assert_eq!(store.host(web).unwrap().user.as_ref(), "admin");
+        assert_eq!(store.host(web).unwrap().endpoint(), "admin@10.0.0.1:22");
+        assert_eq!(store.host(db).unwrap().user.as_ref(), "root");
         assert!(!store.update_credential_unnotified(
             CredentialId(9),
             CredentialDraft::new("x", CredentialKind::Agent, "x")
@@ -1670,7 +1647,7 @@ mod tests {
 
     #[test]
     fn changing_only_a_credentials_name_changes_no_login() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let credential = password_credential(&mut store, "deploy");
         let web = store.insert_unnotified(draft("web", None).with_credential(credential));
         let before = store.login(web);
@@ -1689,7 +1666,7 @@ mod tests {
 
     #[test]
     fn deleting_a_credential_leaves_its_hosts_on_their_own_with_the_user() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let credential = store.insert_credential_unnotified(
             CredentialDraft::new("部署", CredentialKind::Key, "deploy").with_key_path("/tmp/id"),
         );
@@ -1698,42 +1675,42 @@ mod tests {
 
         assert_eq!(store.remove_credential_unnotified(credential), [web]);
         assert!(store.credentials().is_empty());
-        let session = store.session(web).unwrap();
-        assert_eq!(session.credential, None);
+        let host = store.host(web).unwrap();
+        assert_eq!(host.credential, None);
         // Without its key, it tries the agent and the default keys.
-        assert_eq!(session.auth, AuthKind::NoPassword);
-        assert_eq!(session.user.as_ref(), "deploy");
-        assert_eq!(store.session(db).unwrap().user.as_ref(), "root");
+        assert_eq!(host.auth, AuthKind::NoPassword);
+        assert_eq!(host.user.as_ref(), "deploy");
+        assert_eq!(store.host(db).unwrap().user.as_ref(), "root");
         assert!(store.remove_credential_unnotified(credential).is_empty());
 
         // Without its password, it asks for one.
         let credential = password_credential(&mut store, "deploy");
         let api = store.insert_unnotified(draft("api", None).with_credential(credential));
         store.remove_credential_unnotified(credential);
-        assert_eq!(store.session(api).unwrap().auth, AuthKind::Password);
+        assert_eq!(store.host(api).unwrap().auth, AuthKind::Password);
     }
 
     #[test]
     fn a_copy_of_a_host_uses_the_same_credential() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let credential = password_credential(&mut store, "deploy");
         let web = store.insert_unnotified(draft("web", None).with_credential(credential));
         let copy = store.duplicate_unnotified(web).unwrap();
-        assert_eq!(store.session(copy).unwrap().credential, Some(credential));
-        assert_eq!(store.sessions_using(credential).count(), 2);
+        assert_eq!(store.host(copy).unwrap().credential, Some(credential));
+        assert_eq!(store.hosts_using(credential).count(), 2);
     }
 
     #[test]
     fn a_host_with_a_password_credential_does_not_keep_the_endpoint_password_in_use() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let credential = password_credential(&mut store, "root");
         let web = store.insert_unnotified(draft("web", None));
-        let endpoint = store.session(web).unwrap().password_secret();
+        let endpoint = store.host(web).unwrap().password_secret();
         assert!(store.password_in_use(&endpoint));
 
         store.update_unnotified(web, draft("web", None).with_credential(credential));
         // Same user, host and port, but the password comes from elsewhere.
-        assert_eq!(store.session(web).unwrap().password_secret(), endpoint);
+        assert_eq!(store.host(web).unwrap().password_secret(), endpoint);
         assert!(!store.password_in_use(&endpoint));
         let secret = store.credential(credential).unwrap().password_secret();
         assert!(store.password_in_use(&secret));
@@ -1741,21 +1718,21 @@ mod tests {
 
     #[test]
     fn load_resumes_the_credential_id_sequence_and_repairs_usernames() {
-        let database = SessionDatabase::in_memory().unwrap();
+        let database = HostDatabase::in_memory().unwrap();
         let credential = Credential::new(
             CredentialId(4),
             CredentialDraft::new("运维", CredentialKind::Agent, "deploy"),
         );
         database.insert_credential(&credential).unwrap();
-        let mut stale = Session::new(SessionId(1), draft("web", None));
+        let mut stale = Host::new(HostId(1), draft("web", None));
         stale.credential = Some(credential.id);
         stale.auth = AuthKind::NoPassword;
-        database.insert_session(&stale).unwrap();
+        database.insert_host(&stale).unwrap();
 
-        let mut store = SessionStore::load(database).unwrap();
-        let session = store.session(SessionId(1)).unwrap();
-        assert_eq!(session.user.as_ref(), "deploy");
-        assert_eq!(session.auth, AuthKind::Password);
+        let mut store = HostStore::load(database).unwrap();
+        let host = store.host(HostId(1)).unwrap();
+        assert_eq!(host.user.as_ref(), "deploy");
+        assert_eq!(host.auth, AuthKind::Password);
         assert_eq!(
             store.credential(CredentialId(4)).unwrap().keychain_id,
             credential.keychain_id
@@ -1770,7 +1747,7 @@ mod tests {
         );
     }
 
-    fn key_credential(store: &mut SessionStore, path: &str) -> CredentialId {
+    fn key_credential(store: &mut HostStore, path: &str) -> CredentialId {
         store.insert_credential_unnotified(
             CredentialDraft::new("部署", CredentialKind::Key, "deploy").with_key_path(path),
         )
@@ -1784,7 +1761,7 @@ mod tests {
     fn a_pasted_key_gets_a_file_of_its_own_and_keeps_it_when_replaced() {
         let data = tempfile::tempdir().unwrap();
         let keys = data.path().join("keys");
-        let mut store = SessionStore::empty().with_key_dir(&keys);
+        let mut store = HostStore::empty().with_key_dir(&keys);
 
         // A credential being created: a new file in the key directory.
         let path = store.save_private_key(None, "one").unwrap();
@@ -1823,7 +1800,7 @@ mod tests {
 
     #[test]
     fn without_a_key_directory_no_key_is_saved() {
-        assert!(SessionStore::empty().save_private_key(None, "one").is_err());
+        assert!(HostStore::empty().save_private_key(None, "one").is_err());
     }
 
     #[gpui_kit::test]
@@ -1833,7 +1810,7 @@ mod tests {
 
         let data = tempfile::tempdir().unwrap();
         let secrets = Arc::new(crate::secrets::InMemorySecretStore::default());
-        let mut store = SessionStore::empty()
+        let mut store = HostStore::empty()
             .with_secrets(secrets.clone())
             .with_key_dir(data.path().join("keys"));
         let kept = store.save_private_key(None, "kept").unwrap();
@@ -1872,36 +1849,36 @@ mod tests {
 
     #[test]
     fn the_detected_system_survives_an_edit() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let id = store.insert_unnotified(draft("web", None));
         assert!(store.set_host_os_unnotified(id, Some(HostOs::Debian)));
         assert!(!store.set_host_os_unnotified(id, Some(HostOs::Debian)));
 
         store.update_unnotified(id, draft("web-renamed", None));
-        assert_eq!(store.session(id).unwrap().os, Some(HostOs::Debian));
+        assert_eq!(store.host(id).unwrap().os, Some(HostOs::Debian));
     }
 
     #[test]
     fn a_copy_inherits_the_detected_system() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let id = store.insert_unnotified(draft("web", None));
         store.set_host_os_unnotified(id, Some(HostOs::Alpine));
 
         let copy = store.duplicate_unnotified(id).unwrap();
-        assert_eq!(store.session(copy).unwrap().os, Some(HostOs::Alpine));
+        assert_eq!(store.host(copy).unwrap().os, Some(HostOs::Alpine));
     }
 
     #[test]
-    fn probing_an_unknown_session_changes_nothing() {
-        let mut store = SessionStore::empty();
-        assert!(!store.set_host_os_unnotified(SessionId(99), Some(HostOs::Linux)));
+    fn probing_an_unknown_host_changes_nothing() {
+        let mut store = HostStore::empty();
+        assert!(!store.set_host_os_unnotified(HostId(99), Some(HostOs::Linux)));
     }
 
     #[test]
-    fn an_endpoint_is_in_use_while_a_session_still_logs_into_it() {
-        let mut store = SessionStore::empty();
+    fn an_endpoint_is_in_use_while_a_host_still_logs_into_it() {
+        let mut store = HostStore::empty();
         let id = store.insert_unnotified(draft("web", None));
-        let endpoint = store.session(id).unwrap().password_secret();
+        let endpoint = store.host(id).unwrap().password_secret();
         assert!(store.password_in_use(&endpoint));
 
         store.remove_unnotified(id);
@@ -1909,12 +1886,12 @@ mod tests {
     }
 
     #[test]
-    fn two_sessions_on_one_account_share_an_endpoint() {
-        let mut store = SessionStore::empty();
+    fn two_hosts_on_one_account_share_an_endpoint() {
+        let mut store = HostStore::empty();
         let first = store.insert_unnotified(draft("web-01", None));
         let second = store.insert_unnotified(draft("web-02", None));
-        let endpoint = store.session(first).unwrap().password_secret();
-        assert_eq!(endpoint, store.session(second).unwrap().password_secret());
+        let endpoint = store.host(first).unwrap().password_secret();
+        assert_eq!(endpoint, store.host(second).unwrap().password_secret());
 
         store.remove_unnotified(first);
         assert!(store.password_in_use(&endpoint));
@@ -1922,21 +1899,21 @@ mod tests {
 
     #[test]
     fn a_different_port_is_a_different_endpoint() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let id = store.insert_unnotified(draft("web", None));
-        let endpoint = store.session(id).unwrap().password_secret();
-        let moved = SessionDraft::new("web", "10.0.0.1", 2222, "root", AuthKind::Password, None);
+        let endpoint = store.host(id).unwrap().password_secret();
+        let moved = HostDraft::new("web", "10.0.0.1", 2222, "root", AuthKind::Password, None);
         store.update_unnotified(id, moved);
         assert!(!store.password_in_use(&endpoint));
     }
 
     #[test]
     fn endpoints_of_a_group_are_deduplicated() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let group = store.insert_group_unnotified(GroupDraft::new("生产", None));
         store.insert_unnotified(draft("web-01", Some(group)));
         store.insert_unnotified(draft("web-02", Some(group)));
-        let other = SessionDraft::new(
+        let other = HostDraft::new(
             "db",
             "10.0.0.2",
             22,
@@ -1953,25 +1930,25 @@ mod tests {
             );
         }
 
-        let passwords = store.passwords_of(&store.sessions_under(group));
+        let passwords = store.passwords_of(&store.hosts_under(group));
         assert_eq!(passwords.len(), 3);
         assert!(passwords.contains(&SecretRef::proxy("me", "127.0.0.1", 7890)));
     }
 
-    fn jump_through(hops: &[SessionId]) -> Route {
+    fn jump_through(hops: &[HostId]) -> Route {
         Route::Jump(hops.iter().copied().map(Some).collect())
     }
 
     #[test]
     fn a_host_behind_jump_hosts_logs_in_through_their_own_logins() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let credential = store.insert_credential_unnotified(CredentialDraft::new(
             "跳板账号",
             CredentialKind::Agent,
             "jumper",
         ));
         let first = store.insert_unnotified(
-            SessionDraft::new(
+            HostDraft::new(
                 "阿里云99",
                 "120.25.220.186",
                 22,
@@ -1983,7 +1960,7 @@ mod tests {
         );
         // Its own route plays no part when another host jumps through it.
         let second = store.insert_unnotified(
-            SessionDraft::new(
+            HostDraft::new(
                 "禅道",
                 "8.138.95.125",
                 22,
@@ -2023,7 +2000,7 @@ mod tests {
 
     #[test]
     fn a_route_never_jumps_through_its_own_host_or_one_that_is_not_there() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let jump = store.insert_unnotified(draft("jump", None));
         let id = store.insert_unnotified(draft("web", None));
         store.update_unnotified(
@@ -2031,11 +2008,11 @@ mod tests {
             draft("web", None).with_route(Route::Jump(vec![
                 Some(id),
                 Some(jump),
-                Some(SessionId(99)),
+                Some(HostId(99)),
             ])),
         );
         assert_eq!(
-            store.session(id).unwrap().route,
+            store.host(id).unwrap().route,
             Route::Jump(vec![Some(jump), None])
         );
 
@@ -2044,12 +2021,12 @@ mod tests {
             id,
             draft("web", None).with_route(Route::Jump(vec![Some(id)])),
         );
-        assert_eq!(store.session(id).unwrap().route, Route::Direct);
+        assert_eq!(store.host(id).unwrap().route, Route::Direct);
     }
 
     #[test]
     fn deleting_a_jump_host_leaves_its_place_and_is_counted() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let group = store.insert_group_unnotified(GroupDraft::new("跳板", None));
         let jump = store.insert_unnotified(draft("jump", Some(group)));
         let inside =
@@ -2060,14 +2037,11 @@ mod tests {
         assert_eq!(store.jump_users(&[jump]), 2);
         // Deleting the group takes `inside` too: only `outside` is left
         // without a way through.
-        assert_eq!(store.jump_users(&store.sessions_under(group)), 1);
+        assert_eq!(store.jump_users(&store.hosts_under(group)), 1);
         assert_eq!(store.jump_users(&[direct]), 0);
 
         store.remove_unnotified(jump);
-        assert_eq!(
-            store.session(outside).unwrap().route,
-            Route::Jump(vec![None])
-        );
+        assert_eq!(store.host(outside).unwrap().route, Route::Jump(vec![None]));
         assert_eq!(
             store.login(outside).unwrap().route,
             LoginRoute::Jump(vec![JumpLogin::Deleted])
@@ -2077,24 +2051,21 @@ mod tests {
 
     #[test]
     fn a_copy_takes_the_same_way_there() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let jump = store.insert_unnotified(draft("jump", None));
         let id = store.insert_unnotified(draft("db", None).with_route(jump_through(&[jump])));
         let copy = store.duplicate_unnotified(id).unwrap();
-        assert_eq!(store.session(copy).unwrap().route, jump_through(&[jump]));
+        assert_eq!(store.host(copy).unwrap().route, jump_through(&[jump]));
     }
 
     #[test]
     fn notes_stay_through_an_edit_and_go_with_a_copy() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let id = store.insert_unnotified(draft("db", None).with_notes("只读副本"));
         store.update_unnotified(id, draft("db-01", None).with_notes("只读副本，勿写"));
-        assert_eq!(store.session(id).unwrap().notes.as_ref(), "只读副本，勿写");
+        assert_eq!(store.host(id).unwrap().notes.as_ref(), "只读副本，勿写");
         let copy = store.duplicate_unnotified(id).unwrap();
-        assert_eq!(
-            store.session(copy).unwrap().notes.as_ref(),
-            "只读副本，勿写"
-        );
+        assert_eq!(store.host(copy).unwrap().notes.as_ref(), "只读副本，勿写");
     }
 
     #[gpui_kit::test]
@@ -2104,17 +2075,17 @@ mod tests {
         use gpui_kit::AppContext as _;
         use std::{cell::RefCell, rc::Rc};
 
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let jump = store.insert_unnotified(draft("jump", None));
         let behind = store.insert_unnotified(
-            SessionDraft::new("db", "10.0.0.9", 22, "root", AuthKind::Password, None)
+            HostDraft::new("db", "10.0.0.9", 22, "root", AuthKind::Password, None)
                 .with_route(jump_through(&[jump])),
         );
         let store = cx.new(|_| store);
         let events = Rc::new(RefCell::new(Vec::new()));
         let _subscription = cx.update(|cx| {
             let events = events.clone();
-            cx.subscribe(&store, move |_, event: &SessionStoreEvent, _| {
+            cx.subscribe(&store, move |_, event: &HostStoreEvent, _| {
                 events.borrow_mut().push(event.clone());
             })
         });
@@ -2123,14 +2094,14 @@ mod tests {
         cx.run_until_parked();
         assert!(events.borrow().is_empty(), "{:?}", events.borrow());
 
-        let moved = SessionDraft::new("跳板", "10.0.0.2", 22, "root", AuthKind::Password, None);
+        let moved = HostDraft::new("跳板", "10.0.0.2", 22, "root", AuthKind::Password, None);
         store.update(cx, |store, cx| store.update(jump, moved, cx));
         cx.run_until_parked();
         assert_eq!(
             *events.borrow(),
             [
-                SessionStoreEvent::ConnectionSettingsChanged(jump),
-                SessionStoreEvent::ConnectionSettingsChanged(behind),
+                HostStoreEvent::ConnectionSettingsChanged(jump),
+                HostStoreEvent::ConnectionSettingsChanged(behind),
             ]
         );
 
@@ -2147,7 +2118,7 @@ mod tests {
         use gpui_kit::AppContext as _;
 
         let secrets = Arc::new(crate::secrets::InMemorySecretStore::default());
-        let mut store = SessionStore::empty().with_secrets(secrets.clone());
+        let mut store = HostStore::empty().with_secrets(secrets.clone());
         let proxy =
             Route::Proxy(ProxySettings::new(ProxyKind::Http, "proxy.test", 8080).with_user("me"));
         let one = store.insert_unnotified(draft("one", None).with_route(proxy.clone()));
@@ -2166,12 +2137,12 @@ mod tests {
     }
 
     #[test]
-    fn seed_has_three_groups_and_two_connected_sessions() {
-        let store = SessionStore::seed();
+    fn seed_has_three_groups_and_two_connected_hosts() {
+        let store = HostStore::seed();
         assert_eq!(store.groups().len(), 3);
-        assert_eq!(store.sessions().len(), 6);
+        assert_eq!(store.hosts().len(), 6);
         let connected: Vec<_> = store
-            .sessions()
+            .hosts()
             .iter()
             .filter(|s| s.state.is_connected())
             .map(|s| s.name.as_ref())
@@ -2180,80 +2151,80 @@ mod tests {
     }
 
     #[test]
-    fn groups_and_sessions_have_independent_id_sequences() {
-        let mut store = SessionStore::seed();
+    fn groups_and_hosts_have_independent_id_sequences() {
+        let mut store = HostStore::seed();
         let group_ids: Vec<_> = store.groups().iter().map(|g| g.id).collect();
         assert_eq!(group_ids, [GroupId(1), GroupId(2), GroupId(3)]);
-        assert_eq!(store.sessions()[0].id, SessionId(1));
-        assert_eq!(store.sessions()[5].id, SessionId(6));
+        assert_eq!(store.hosts()[0].id, HostId(1));
+        assert_eq!(store.hosts()[5].id, HostId(6));
         assert_eq!(
             store.insert_group_unnotified(GroupDraft::new("预发", None)),
             GroupId(4)
         );
-        assert_eq!(store.insert_unnotified(draft("new", None)), SessionId(7));
+        assert_eq!(store.insert_unnotified(draft("new", None)), HostId(7));
     }
 
     #[test]
     fn insert_assigns_increasing_ids_and_keeps_order() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let a = store.insert_unnotified(draft("a", Some(GroupId(1))));
         let b = store.insert_unnotified(draft("b", Some(GroupId(1))));
         assert!(a < b);
-        assert_eq!(store.sessions()[1].id, b);
+        assert_eq!(store.hosts()[1].id, b);
     }
 
     #[test]
     fn duplicate_places_a_copy_after_the_original() {
-        let mut store = SessionStore::seed();
-        let web01 = store.sessions()[0].id;
-        let mut draft = store.session(web01).unwrap().draft();
+        let mut store = HostStore::seed();
+        let web01 = store.hosts()[0].id;
+        let mut draft = store.host(web01).unwrap().draft();
         draft.auth = AuthKind::NoPassword;
         assert!(store.update_unnotified(web01, draft));
         let copy = store.duplicate_unnotified(web01).unwrap();
-        assert_eq!(store.sessions()[1].id, copy);
-        assert_eq!(store.sessions()[1].name.as_ref(), "web-01 副本");
-        assert_eq!(store.sessions()[1].auth, AuthKind::NoPassword);
-        assert_eq!(store.sessions()[1].state, ConnectionState::Disconnected);
+        assert_eq!(store.hosts()[1].id, copy);
+        assert_eq!(store.hosts()[1].name.as_ref(), "web-01 副本");
+        assert_eq!(store.hosts()[1].auth, AuthKind::NoPassword);
+        assert_eq!(store.hosts()[1].state, ConnectionState::Disconnected);
         assert_ne!(
-            store.sessions()[1].public_id,
-            store.session(web01).unwrap().public_id
+            store.hosts()[1].public_id,
+            store.host(web01).unwrap().public_id
         );
     }
 
     #[test]
     fn a_public_id_survives_editing_and_is_never_shared() {
-        let mut store = SessionStore::seed();
-        let web01 = store.sessions()[0].id;
-        let before = store.session(web01).unwrap().public_id.clone();
-        let mut draft = store.session(web01).unwrap().draft();
+        let mut store = HostStore::seed();
+        let web01 = store.hosts()[0].id;
+        let before = store.host(web01).unwrap().public_id.clone();
+        let mut draft = store.host(web01).unwrap().draft();
         draft.name = "web".into();
-        draft.host = "10.0.1.99".into();
+        draft.address = "10.0.1.99".into();
         draft.group = None;
         assert!(store.update_unnotified(web01, draft));
-        assert_eq!(store.session(web01).unwrap().public_id, before);
+        assert_eq!(store.host(web01).unwrap().public_id, before);
 
         let ids: std::collections::HashSet<_> =
-            store.sessions().iter().map(|s| &s.public_id).collect();
-        assert_eq!(ids.len(), store.sessions().len());
+            store.hosts().iter().map(|s| &s.public_id).collect();
+        assert_eq!(ids.len(), store.hosts().len());
     }
 
     #[test]
     fn update_keeps_connection_state() {
-        let mut store = SessionStore::seed();
-        let web01 = store.sessions()[0].id;
-        let mut draft = store.session(web01).unwrap().draft();
+        let mut store = HostStore::seed();
+        let web01 = store.hosts()[0].id;
+        let mut draft = store.host(web01).unwrap().draft();
         draft.port = 2200;
         assert!(store.update_unnotified(web01, draft));
-        let session = store.session(web01).unwrap();
-        assert_eq!(session.port, 2200);
-        assert_eq!(session.state, ConnectionState::Connected);
-        assert!(!store.update_unnotified(SessionId(999), session.draft()));
+        let host = store.host(web01).unwrap();
+        assert_eq!(host.port, 2200);
+        assert_eq!(host.state, ConnectionState::Connected);
+        assert!(!store.update_unnotified(HostId(999), host.draft()));
     }
 
     #[test]
-    fn remove_clears_active_session() {
-        let mut store = SessionStore::seed();
-        let web01 = store.sessions()[0].id;
+    fn remove_clears_active_host() {
+        let mut store = HostStore::seed();
+        let web01 = store.hosts()[0].id;
         store.active = Some(web01);
         assert!(store.remove_unnotified(web01));
         assert!(store.active().is_none());
@@ -2261,50 +2232,50 @@ mod tests {
     }
 
     #[test]
-    fn seed_lists_connected_sessions_as_recent_newest_first() {
-        let store = SessionStore::seed();
-        let recent: Vec<_> = store.recent_sessions().map(|s| s.name.as_ref()).collect();
+    fn seed_lists_connected_hosts_as_recent_newest_first() {
+        let store = HostStore::seed();
+        let recent: Vec<_> = store.recent_hosts().map(|s| s.name.as_ref()).collect();
         assert_eq!(recent, ["staging-api", "web-01"]);
     }
 
     #[test]
-    fn connecting_moves_a_session_to_the_front_of_recent() {
-        let mut store = SessionStore::seed();
-        let web01 = store.sessions()[0].id;
-        let db01 = store.sessions()[2].id;
+    fn connecting_moves_a_host_to_the_front_of_recent() {
+        let mut store = HostStore::seed();
+        let web01 = store.hosts()[0].id;
+        let db01 = store.hosts()[2].id;
         assert!(store.set_state_unnotified(db01, ConnectionState::Connected));
         // Already connected: nothing changes, nothing moves.
         assert!(!store.set_state_unnotified(db01, ConnectionState::Connected));
         assert!(store.set_state_unnotified(web01, ConnectionState::Disconnected));
         assert!(store.set_state_unnotified(web01, ConnectionState::Connected));
-        let recent: Vec<_> = store.recent_sessions().map(|s| s.name.as_ref()).collect();
+        let recent: Vec<_> = store.recent_hosts().map(|s| s.name.as_ref()).collect();
         assert_eq!(recent, ["web-01", "db-01", "staging-api"]);
     }
 
     #[test]
-    fn remove_drops_the_session_from_recent() {
-        let mut store = SessionStore::seed();
-        let web01 = store.sessions()[0].id;
+    fn remove_drops_the_host_from_recent() {
+        let mut store = HostStore::seed();
+        let web01 = store.hosts()[0].id;
         assert!(store.remove_unnotified(web01));
-        let recent: Vec<_> = store.recent_sessions().map(|s| s.name.as_ref()).collect();
+        let recent: Vec<_> = store.recent_hosts().map(|s| s.name.as_ref()).collect();
         assert_eq!(recent, ["staging-api"]);
     }
 
     #[test]
     fn recent_keeps_only_the_newest_entries() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         for ix in 0..(MAX_RECENT + 2) {
             let id = store.insert_unnotified(draft(&format!("s{ix}"), None));
             store.set_state_unnotified(id, ConnectionState::Connected);
         }
-        assert_eq!(store.recent_sessions().count(), MAX_RECENT);
-        let newest = store.recent_sessions().next().unwrap();
+        assert_eq!(store.recent_hosts().count(), MAX_RECENT);
+        let newest = store.recent_hosts().next().unwrap();
         assert_eq!(newest.name.as_ref(), "s11");
     }
 
     #[test]
     fn nested_groups_report_descendants_and_path() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let production = store.insert_group_unnotified(GroupDraft::new("生产", None));
         let databases = store.insert_group_unnotified(GroupDraft::new("数据库", Some(production)));
         let replicas = store.insert_group_unnotified(GroupDraft::new("只读副本", Some(databases)));
@@ -2320,8 +2291,8 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_group_takes_its_subtree_and_its_sessions() {
-        let mut store = SessionStore::empty();
+    fn removing_a_group_takes_its_subtree_and_its_hosts() {
+        let mut store = HostStore::empty();
         let production = store.insert_group_unnotified(GroupDraft::new("生产", None));
         let databases = store.insert_group_unnotified(GroupDraft::new("数据库", Some(production)));
         let staging = store.insert_group_unnotified(GroupDraft::new("测试", None));
@@ -2339,12 +2310,12 @@ mod tests {
             store.groups().iter().map(|g| g.id).collect::<Vec<_>>(),
             [staging]
         );
-        // The root-level session and the untouched group's session survive.
+        // The root-level host and the untouched group's host survive.
         assert_eq!(
-            store.sessions().iter().map(|s| s.id).collect::<Vec<_>>(),
+            store.hosts().iter().map(|s| s.id).collect::<Vec<_>>(),
             [qa, jump]
         );
-        assert_eq!(store.recent_sessions().count(), 0);
+        assert_eq!(store.recent_hosts().count(), 0);
         assert!(store.active().is_none());
         // Removing it a second time finds nothing left to do.
         assert!(store.remove_group_unnotified(production).is_empty());
@@ -2352,7 +2323,7 @@ mod tests {
 
     #[test]
     fn a_group_cannot_be_moved_into_its_own_subtree() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let production = store.insert_group_unnotified(GroupDraft::new("生产", None));
         let databases = store.insert_group_unnotified(GroupDraft::new("数据库", Some(production)));
         let replicas = store.insert_group_unnotified(GroupDraft::new("只读副本", Some(databases)));
@@ -2373,7 +2344,7 @@ mod tests {
 
     #[test]
     fn renaming_a_group_preserves_its_expansion_choice() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let id = store.insert_group_unnotified(GroupDraft::new("生产", None));
         store
             .groups
@@ -2388,78 +2359,69 @@ mod tests {
 
     #[test]
     fn dragging_reorders_peers_and_moves_hosts_between_groups() {
-        let mut store = SessionStore::seed();
-        let web = SessionNode::Session(SessionId(1));
-        let db = SessionNode::Session(SessionId(3));
+        let mut store = HostStore::seed();
+        let web = HostNode::Host(HostId(1));
+        let db = HostNode::Host(HostId(3));
         assert!(store.move_node_unnotified(db, NodeDrop::Before(web)));
         let mut production: Vec<_> = store
-            .sessions()
+            .hosts()
             .iter()
-            .filter(|session| session.group == Some(GroupId(1)))
+            .filter(|host| host.group == Some(GroupId(1)))
             .collect();
-        production.sort_by_key(|session| session.sort_order);
+        production.sort_by_key(|host| host.sort_order);
         assert_eq!(
-            production
-                .iter()
-                .map(|session| session.id)
-                .collect::<Vec<_>>(),
-            [SessionId(3), SessionId(1), SessionId(2)]
+            production.iter().map(|host| host.id).collect::<Vec<_>>(),
+            [HostId(3), HostId(1), HostId(2)]
         );
         assert!(!store.move_node_unnotified(db, NodeDrop::Before(web)));
 
         assert!(store.move_node_unnotified(web, NodeDrop::Into(GroupId(2))));
-        assert_eq!(store.session(SessionId(1)).unwrap().group, Some(GroupId(2)));
+        assert_eq!(store.host(HostId(1)).unwrap().group, Some(GroupId(2)));
         assert!(store.move_node_unnotified(web, NodeDrop::Root));
-        assert_eq!(store.session(SessionId(1)).unwrap().group, None);
+        assert_eq!(store.host(HostId(1)).unwrap().group, None);
     }
 
     #[test]
     fn dragging_a_group_refuses_its_descendants() {
-        let mut store = SessionStore::empty();
+        let mut store = HostStore::empty();
         let parent = store.insert_group_unnotified(GroupDraft::new("parent", None));
         let child = store.insert_group_unnotified(GroupDraft::new("child", Some(parent)));
         let peer = store.insert_group_unnotified(GroupDraft::new("peer", None));
-        assert!(!store.move_node_unnotified(SessionNode::Group(parent), NodeDrop::Into(child)));
-        assert!(!store.move_node_unnotified(SessionNode::Group(parent), NodeDrop::Into(parent)));
+        assert!(!store.move_node_unnotified(HostNode::Group(parent), NodeDrop::Into(child)));
+        assert!(!store.move_node_unnotified(HostNode::Group(parent), NodeDrop::Into(parent)));
         assert!(store.move_node_unnotified(
-            SessionNode::Group(peer),
-            NodeDrop::Before(SessionNode::Group(parent))
+            HostNode::Group(peer),
+            NodeDrop::Before(HostNode::Group(parent))
         ));
         assert!(store.group(peer).unwrap().sort_order < store.group(parent).unwrap().sort_order);
     }
 
     #[test]
     fn load_resumes_the_id_sequences_and_the_recent_order() {
-        let database = SessionDatabase::in_memory().unwrap();
+        let database = HostDatabase::in_memory().unwrap();
         database
-            .insert_group(&SessionGroup::new(
-                GroupId(4),
-                GroupDraft::new("生产", None),
-            ))
+            .insert_group(&HostGroup::new(GroupId(4), GroupDraft::new("生产", None)))
             .unwrap();
         database
-            .insert_session(&Session::new(
-                SessionId(7),
-                draft("web-01", Some(GroupId(4))),
-            ))
+            .insert_host(&Host::new(HostId(7), draft("web-01", Some(GroupId(4)))))
             .unwrap();
         database
-            .insert_session(&Session::new(SessionId(9), draft("db-01", None)))
+            .insert_host(&Host::new(HostId(9), draft("db-01", None)))
             .unwrap();
-        database.touch_connected(SessionId(9), 100).unwrap();
+        database.touch_connected(HostId(9), 100).unwrap();
 
-        let mut store = SessionStore::load(database).unwrap();
+        let mut store = HostStore::load(database).unwrap();
         assert_eq!(store.groups().len(), 1);
         assert_eq!(
-            store.recent_sessions().map(|s| s.id).collect::<Vec<_>>(),
-            [SessionId(9)]
+            store.recent_hosts().map(|s| s.id).collect::<Vec<_>>(),
+            [HostId(9)]
         );
         // Nothing is connected on load, however recently it last connected.
-        assert!(store.sessions().iter().all(|s| !s.state.is_connected()));
+        assert!(store.hosts().iter().all(|s| !s.state.is_connected()));
         assert_eq!(
             store.insert_group_unnotified(GroupDraft::new("测试", None)),
             GroupId(5)
         );
-        assert_eq!(store.insert_unnotified(draft("new", None)), SessionId(10));
+        assert_eq!(store.insert_unnotified(draft("new", None)), HostId(10));
     }
 }

@@ -13,7 +13,7 @@ use base64::Engine as _;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zeroize::Zeroizing;
 
-use crate::session::ProxyKind;
+use crate::host::ProxyKind;
 
 /// What a proxy that wants a user name and password is given.
 pub(super) struct ProxyAuth<'a> {

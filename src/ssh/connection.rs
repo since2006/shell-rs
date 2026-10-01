@@ -3,8 +3,8 @@ use crate::{
     connection::{
         ConnectionPrompt, ConnectionPromptField, ConnectionPromptKind, ConnectionPromptReply,
     },
+    host::{HostLogin, JumpLogin, LoginMethod, LoginRoute, ProxyLogin},
     secrets::{SecretRef, SharedSecretStore},
-    session::{JumpLogin, LoginMethod, LoginRoute, ProxyLogin, SessionLogin},
 };
 use anyhow::{Context as _, Result, anyhow, bail};
 use russh::keys::{
@@ -46,11 +46,11 @@ static NEXT_PROMPT_ID: AtomicU64 = AtomicU64::new(1);
 /// it on the UI thread, credential and all.
 #[derive(Clone)]
 pub struct SshConnectionConfig {
-    login: SessionLogin,
+    login: HostLogin,
 }
 
-impl From<&SessionLogin> for SshConnectionConfig {
-    fn from(login: &SessionLogin) -> Self {
+impl From<&HostLogin> for SshConnectionConfig {
+    fn from(login: &HostLogin) -> Self {
         Self {
             login: login.clone(),
         }
@@ -159,7 +159,7 @@ impl SshConnector {
     async fn log_in(
         &self,
         tunnel: Tunnel,
-        login: &SessionLogin,
+        login: &HostLogin,
         jump_host: Option<&str>,
         broker: &Arc<SshPrompts>,
         secrets: &SharedSecretStore,
@@ -200,7 +200,7 @@ impl SshConnector {
     async fn through_jumps(
         &self,
         hops: &[JumpLogin],
-        login: &SessionLogin,
+        login: &HostLogin,
         broker: &Arc<SshPrompts>,
         secrets: &SharedSecretStore,
     ) -> Result<Tunnel> {
@@ -255,7 +255,7 @@ impl SshConnector {
         &self,
         tunnel: Option<Tunnel>,
         name: &str,
-        hop: &SessionLogin,
+        hop: &HostLogin,
         next: (&str, u16),
         broker: &Arc<SshPrompts>,
         secrets: &SharedSecretStore,
@@ -349,7 +349,7 @@ async fn tcp(host: &str, port: u16) -> Result<TcpStream> {
 /// A stream to `login`'s host through `proxy`.
 async fn through_proxy(
     proxy: &ProxyLogin,
-    login: &SessionLogin,
+    login: &HostLogin,
     secrets: &SharedSecretStore,
 ) -> Result<TcpStream> {
     let mut socket = TcpStream::connect((proxy.host.as_str(), proxy.port))
@@ -778,7 +778,7 @@ fn read_known_keys(host: &str, port: u16, path: &Path) -> Result<Vec<(usize, Pub
 
 async fn authenticate(
     handle: &mut SshHandle,
-    login: &SessionLogin,
+    login: &HostLogin,
     secrets: &SharedSecretStore,
     agent: &AgentLocation,
     broker: Asker<'_>,
@@ -863,7 +863,7 @@ async fn authenticate(
 
     if method == LoginMethod::Password || partial {
         if methods.contains(&MethodKind::Password) {
-            // Try what the session has saved before bothering anyone.
+            // Try what the host has saved before bothering anyone.
             let mut saved_rejected = false;
             if let Some(saved) = saved_secret(secrets, &login.password) {
                 let result = handle
@@ -873,7 +873,7 @@ async fn authenticate(
                 if result.success() {
                     return Ok(());
                 }
-                // The entry stays: the user typed it into the session dialog,
+                // The entry stays: the user typed it into the host dialog,
                 // and deleting it behind their back would be baffling. This
                 // connection just falls back to asking, and says why.
                 saved_rejected = true;
@@ -1042,7 +1042,7 @@ async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> 
     Err(AgentProblem::Unreachable("这个平台不支持".to_string()))
 }
 
-fn key_paths(login: &SessionLogin) -> Result<Vec<PathBuf>> {
+fn key_paths(login: &HostLogin) -> Result<Vec<PathBuf>> {
     if login.method == LoginMethod::Key {
         return login
             .key_path
@@ -1073,7 +1073,7 @@ async fn load_private_key(
         Err(_) => bail!("无法读取私钥文件：{}", path.display()),
     }
     // Passphrases are saved per key file, so one saved answer unlocks the same
-    // key for every session that uses it.
+    // key for every host that uses it.
     let mut saved_rejected = false;
     if let Some(saved) = saved_secret(secrets, &SecretRef::passphrase(path)) {
         if let Ok(key) = load_secret_key(path, Some(saved.as_str())) {

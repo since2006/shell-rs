@@ -8,8 +8,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, NewLocalTerminal, NewSession, ShowCredentials, ShowForwards, ShowSessions,
-    ShowUpdate, ToggleSessionPanel, ToggleTheme,
+    CatalogIcon, NewHost, NewLocalTerminal, ShowCredentials, ShowForwards, ShowHosts, ShowUpdate,
+    ToggleHostPanel, ToggleTheme,
 };
 use crate::update::UpdateBadge;
 
@@ -31,7 +31,7 @@ pub fn render_title_bar(
     cx: &App,
 ) -> TitleBar {
     let dark = cx.theme().is_dark();
-    let (mode, toggle, new_session, new_local, theme, show_update) = (
+    let (mode, toggle, new_host, new_local, theme, show_update) = (
         target.clone(),
         target.clone(),
         target.clone(),
@@ -60,11 +60,11 @@ pub fn render_title_bar(
                             .ghost()
                             .small()
                             .child(
-                                Button::new("show-sessions")
+                                Button::new("show-hosts")
                                     .icon(CatalogIcon::Server)
                                     .tooltip("主机")
                                     .accessibility_label("主机")
-                                    .selected(sidebar == Some(SidebarMode::Sessions)),
+                                    .selected(sidebar == Some(SidebarMode::Hosts)),
                             )
                             .child(
                                 Button::new("show-forwards")
@@ -91,7 +91,7 @@ pub fn render_title_bar(
                             )
                             .on_click(move |picked: &Vec<usize>, window, cx| {
                                 match picked.first() {
-                                    Some(0) => mode.dispatch_action(&ShowSessions, window, cx),
+                                    Some(0) => mode.dispatch_action(&ShowHosts, window, cx),
                                     Some(1) => mode.dispatch_action(&ShowForwards, window, cx),
                                     Some(2) => mode.dispatch_action(&ShowCredentials, window, cx),
                                     _ => {}
@@ -107,7 +107,7 @@ pub fn render_title_bar(
                 .gap_1()
                 .on_mouse_down(MouseButton::Left, no_drag)
                 .child(
-                    Button::new("toggle-sessions")
+                    Button::new("toggle-hosts")
                         .ghost()
                         .small()
                         .icon(IconName::PanelLeft)
@@ -117,17 +117,17 @@ pub fn render_title_bar(
                             "显示侧栏"
                         })
                         .on_click(move |_, window, cx| {
-                            toggle.dispatch_action(&ToggleSessionPanel, window, cx)
+                            toggle.dispatch_action(&ToggleHostPanel, window, cx)
                         }),
                 )
                 .child(
-                    Button::new("new-session")
+                    Button::new("new-host")
                         .ghost()
                         .small()
                         .icon(IconName::Plus)
                         .label("新建主机…")
                         .on_click(move |_, window, cx| {
-                            new_session.dispatch_action(&NewSession, window, cx)
+                            new_host.dispatch_action(&NewHost, window, cx)
                         }),
                 )
                 .child(

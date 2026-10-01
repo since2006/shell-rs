@@ -21,11 +21,11 @@ use tokio::{
 use super::*;
 use crate::{
     connection::{ConnectionPromptKind, ConnectionPromptReply, ConnectionSecret},
-    secrets::{InMemorySecretStore, SecretRef, SecretStore as _},
-    session::{
-        AuthKind, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, Session,
-        SessionDraft, SessionId, SessionLogin,
+    host::{
+        AuthKind, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, Host,
+        HostDraft, HostId, HostLogin,
     },
+    secrets::{InMemorySecretStore, SecretRef, SecretStore as _},
     ssh::{SshConnectionConfig, SshConnector, SshPrompts},
 };
 
@@ -42,7 +42,7 @@ struct Policy {
     connections: AtomicUsize,
     ended: AtomicUsize,
     /// The logged-in connections, so a test can hang up on them.
-    sessions: Mutex<Vec<server::Handle>>,
+    logged_in: Mutex<Vec<server::Handle>>,
 }
 
 struct TestServer {
@@ -91,7 +91,7 @@ impl server::Handler for Handler {
     }
 
     async fn auth_succeeded(&mut self, session: &mut server::Session) -> Result<(), Self::Error> {
-        self.policy.sessions.lock().unwrap().push(session.handle());
+        self.policy.logged_in.lock().unwrap().push(session.handle());
         Ok(())
     }
 
@@ -191,9 +191,9 @@ impl Drop for Running {
 impl Running {
     /// End every logged-in connection from the server's side.
     async fn hang_up(&self) {
-        let sessions: Vec<_> = self.policy.sessions.lock().unwrap().drain(..).collect();
-        for session in sessions {
-            let _ = session
+        let logged_in: Vec<_> = self.policy.logged_in.lock().unwrap().drain(..).collect();
+        for handle in logged_in {
+            let _ = handle
                 .disconnect(russh::Disconnect::ByApplication, "bye".into(), "en".into())
                 .await;
         }
@@ -292,10 +292,10 @@ impl Fixture {
             .unwrap();
     }
 
-    fn session(&self) -> Session {
-        Session::new(
-            SessionId(1),
-            SessionDraft::new(
+    fn host(&self) -> Host {
+        Host::new(
+            HostId(1),
+            HostDraft::new(
                 "fixture",
                 "127.0.0.1",
                 self.ssh_port,
@@ -323,12 +323,12 @@ impl Fixture {
             ForwardId(1),
             ForwardDraft::new(
                 kind,
-                SessionId(1),
+                HostId(1),
                 ForwardEndpoint::new("127.0.0.1", bind),
                 target.map(|port| ForwardEndpoint::new("127.0.0.1", port)),
             ),
         );
-        let transport = provider.create(&rule, &SessionLogin::of(&self.session(), None));
+        let transport = provider.create(&rule, &HostLogin::of(&self.host(), None));
         let (commands, command_receiver) = async_channel::unbounded();
         let (event_sender, events) = async_channel::unbounded();
         let thread = std::thread::spawn(move || transport.run(command_receiver, event_sender));
@@ -848,7 +848,7 @@ fn a_connection_that_forwards_nothing_refuses_channels_from_the_server() {
         // A terminal's or an SFTP tab's kind of connection.
         let (_shutdown, shutdown) = watch::channel(false);
         let prompts = Arc::new(SshPrompts::new(Arc::new(|_| false), shutdown).non_interactive());
-        let config = SshConnectionConfig::from(&SessionLogin::of(&fixture.session(), None));
+        let config = SshConnectionConfig::from(&HostLogin::of(&fixture.host(), None));
         let (handle, _) = fixture.connector.connect(&config, prompts).await.unwrap();
         let remote = free_port();
         handle

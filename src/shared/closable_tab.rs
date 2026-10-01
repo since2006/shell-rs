@@ -9,7 +9,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::ToggleSessionPanel;
+use crate::app::ToggleHostPanel;
 
 type MenuBuilder = Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
 
@@ -20,9 +20,9 @@ type MenuBuilder = Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) ->
 /// Closing goes through an action rather than `TabGroup::close_panel` on
 /// purpose: the group refuses to close the last panel of a region, while the
 /// workspace wants every tab closable (an empty center shows the recent
-/// sessions instead) and removes the panel from the dock itself.
+/// hosts instead) and removes the panel from the dock itself.
 ///
-/// Double-clicking the title shows or hides the session sidebar, the way a
+/// Double-clicking the title shows or hides the host sidebar, the way a
 /// double click on an editor tab gives it the room elsewhere.
 ///
 /// The context menu and the double click hang on the title rather than on
@@ -97,7 +97,7 @@ impl RenderOnce for ClosableTabTitle {
             // The first click selects the tab as usual.
             .on_click(|event, window, cx| {
                 if event.click_count() == 2 {
-                    window.dispatch_action(Box::new(ToggleSessionPanel), cx);
+                    window.dispatch_action(Box::new(ToggleHostPanel), cx);
                 }
             })
             .test_support()

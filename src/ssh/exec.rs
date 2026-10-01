@@ -1,4 +1,4 @@
-//! Run one command on a session's host and pass on what it prints: the
+//! Run one command on a saved host and pass on what it prints: the
 //! external CLI's `exec`. Nobody is there to answer a question, so the
 //! connection never asks one: a host not trusted yet or a password not saved
 //! fails at once and says so.

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 /// Bumped when a request or reply changes shape. The command and the app
 /// come from the same build, so they differ only while an older copy still
 /// runs, or on Windows while the copy on the PATH has not been updated.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Frames larger than this are refused, so a confused peer cannot make the
 /// other side allocate without bound.
@@ -109,18 +109,18 @@ pub enum Request {
         query: Option<String>,
     },
     Exec {
-        session: String,
+        host: String,
         command: String,
     },
     /// `source` is absolute: the app's working directory is not the
     /// caller's.
     Upload {
-        session: String,
+        host: String,
         source: PathBuf,
         destination: String,
     },
     Download {
-        session: String,
+        host: String,
         source: String,
         destination: PathBuf,
     },
@@ -133,8 +133,8 @@ pub enum Request {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Reply {
-    Sessions {
-        sessions: Vec<SessionInfo>,
+    Hosts {
+        hosts: Vec<HostInfo>,
     },
     /// How far a transfer has come.
     Progress(TransferCounters),
@@ -151,10 +151,10 @@ pub enum Reply {
     },
 }
 
-/// A saved session as the CLI lists it.
+/// A saved host as the CLI lists it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionInfo {
-    /// The session's public ID, the one 复制 ID copies.
+pub struct HostInfo {
+    /// The host's public ID, the one 复制 ID copies.
     pub id: String,
     pub name: String,
     /// The full group path, such as `生产/数据库`; `None` at the root.
@@ -166,7 +166,7 @@ pub struct SessionInfo {
     pub os: Option<String>,
 }
 
-impl SessionInfo {
+impl HostInfo {
     pub fn address(&self) -> String {
         format!("{}@{}:{}", self.user, self.host, self.port)
     }
@@ -200,7 +200,7 @@ pub enum ErrorCode {
     /// 启用外部 CLI is off.
     NotEnabled,
     VersionMismatch,
-    SessionNotFound,
+    HostNotFound,
     HostKeyUnknown,
     HostKeyChanged,
     MissingCredential,
@@ -215,7 +215,7 @@ impl ErrorCode {
             ErrorCode::NotRunning => "not_running",
             ErrorCode::NotEnabled => "not_enabled",
             ErrorCode::VersionMismatch => "version_mismatch",
-            ErrorCode::SessionNotFound => "session_not_found",
+            ErrorCode::HostNotFound => "host_not_found",
             ErrorCode::HostKeyUnknown => "host_key_unknown",
             ErrorCode::HostKeyChanged => "host_key_changed",
             ErrorCode::MissingCredential => "missing_credential",
@@ -254,7 +254,7 @@ mod tests {
             &Envelope {
                 version: PROTOCOL_VERSION,
                 request: Request::Exec {
-                    session: "VmLkf1snMOuPKJ07".into(),
+                    host: "VmLkf1snMOuPKJ07".into(),
                     command: "uname -a".into(),
                 },
             },
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(
             envelope.request,
             Request::Exec {
-                session: "VmLkf1snMOuPKJ07".into(),
+                host: "VmLkf1snMOuPKJ07".into(),
                 command: "uname -a".into(),
             }
         );

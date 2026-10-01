@@ -11,10 +11,10 @@ use std::{
 use unicode_width::UnicodeWidthStr as _;
 
 use super::protocol::{
-    Envelope, ErrorCode, FrameKind, PROTOCOL_VERSION, Reply, Request, SessionInfo,
-    TransferCounters, TransferSummary, parse_json, read_frame, write_json,
+    Envelope, ErrorCode, FrameKind, HostInfo, PROTOCOL_VERSION, Reply, Request, TransferCounters,
+    TransferSummary, parse_json, read_frame, write_json,
 };
-use crate::session::HostOs;
+use crate::host::HostOs;
 
 /// Exit code when the command could not do what was asked at all, as ssh
 /// uses it.
@@ -193,8 +193,8 @@ where
                             progress.show(console.stderr, &progress_line(counters));
                         }
                     }
-                    Reply::Sessions { sessions } => {
-                        print_sessions(&sessions, console)?;
+                    Reply::Hosts { hosts } => {
+                        print_hosts(&hosts, console)?;
                         return Ok(0);
                     }
                     Reply::TransferDone(summary) => return Ok(print_summary(&summary, console)?),
@@ -238,24 +238,23 @@ impl ProgressLine {
     }
 }
 
-fn print_sessions(sessions: &[SessionInfo], console: &mut Console) -> io::Result<()> {
+fn print_hosts(hosts: &[HostInfo], console: &mut Console) -> io::Result<()> {
     if console.json {
-        serde_json::to_writer_pretty(&mut *console.stdout, sessions).map_err(io::Error::other)?;
+        serde_json::to_writer_pretty(&mut *console.stdout, hosts).map_err(io::Error::other)?;
         return writeln!(console.stdout);
     }
-    if sessions.is_empty() {
+    if hosts.is_empty() {
         return writeln!(console.stderr, "没有匹配的主机");
     }
-    let rows: Vec<[String; 5]> = sessions
+    let rows: Vec<[String; 5]> = hosts
         .iter()
-        .map(|session| {
+        .map(|host| {
             [
-                session.id.clone(),
-                session.name.clone(),
-                session.group.clone().unwrap_or_default(),
-                session.address(),
-                session
-                    .os
+                host.id.clone(),
+                host.name.clone(),
+                host.group.clone().unwrap_or_default(),
+                host.address(),
+                host.os
                     .as_deref()
                     .and_then(HostOs::from_stored)
                     .map(|os| os.label().to_string())

@@ -12,9 +12,9 @@ use std::{
 
 use shellrs::app::cli_endpoint;
 use shellrs::cli::{
-    CliBackend, CliError, CliServer, CliTarget, SessionInfo, TransferCounters, TransferSummary,
+    CliBackend, CliError, CliServer, CliTarget, HostInfo, TransferCounters, TransferSummary,
 };
-use shellrs::session::{AuthKind, Session, SessionDraft, SessionId, SessionLogin};
+use shellrs::host::{AuthKind, Host, HostDraft, HostId, HostLogin};
 use shellrs::ssh::ExecStream;
 
 /// More than a pipe's buffer, so the app finishes writing before the
@@ -102,23 +102,19 @@ fn the_command_finds_the_app_through_its_data_directory() {
     let data_dir = tempfile::tempdir().unwrap();
     let backend = Arc::new(FakeBackend::default());
     let server = CliServer::start(cli_endpoint(data_dir.path()), backend.clone()).unwrap();
-    let web = Session::new(
-        SessionId(1),
-        SessionDraft::new("web-01", "10.0.1.12", 22, "root", AuthKind::Password, None),
+    let web = Host::new(
+        HostId(1),
+        HostDraft::new("web-01", "10.0.1.12", 22, "root", AuthKind::Password, None),
     );
-    server.set_targets(vec![CliTarget::new(
-        &web,
-        SessionLogin::of(&web, None),
-        None,
-    )]);
+    server.set_targets(vec![CliTarget::new(&web, HostLogin::of(&web, None), None)]);
     server.set_enabled(true);
     let id = web.public_id.to_string();
 
     // A pipe for stdout means JSON.
     let output = shellrs(data_dir.path(), &["list"], b"");
     assert_eq!(output.status.code(), Some(0));
-    let sessions: Vec<SessionInfo> = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(sessions[0].id, id);
+    let hosts: Vec<HostInfo> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(hosts[0].id, id);
 
     // What PowerShell pipes in: a BOM and CRLF line ends.
     let output = shellrs(

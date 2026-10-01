@@ -10,14 +10,12 @@ use std::{
 use clap::Parser as _;
 
 use super::client::{self, Console};
-use super::protocol::{
-    CliError, ErrorCode, Request, SessionInfo, TransferCounters, TransferSummary,
-};
+use super::protocol::{CliError, ErrorCode, HostInfo, Request, TransferCounters, TransferSummary};
 use super::server::{CliBackend, CliServer, CliTarget};
 use super::{Cli, Command};
 use super::{ConsoleText, normalize_command};
 use crate::app::cli_endpoint;
-use crate::session::{AuthKind, GroupId, Session, SessionDraft, SessionId, SessionLogin};
+use crate::host::{AuthKind, GroupId, Host, HostDraft, HostId, HostLogin};
 use crate::ssh::ExecStream;
 
 /// Records what it was asked and answers from a script.
@@ -36,7 +34,7 @@ impl CliBackend for FakeBackend {
         self.calls
             .lock()
             .unwrap()
-            .push(format!("exec {} {command}", target.session().name));
+            .push(format!("exec {} {command}", target.host().name));
         if command == "unreachable" {
             return Err(CliError::new(ErrorCode::HostKeyUnknown, "尚未信任"));
         }
@@ -54,7 +52,7 @@ impl CliBackend for FakeBackend {
     ) -> Result<TransferSummary, CliError> {
         self.calls.lock().unwrap().push(format!(
             "upload {} {} {destination}",
-            target.session().name,
+            target.host().name,
             source.display()
         ));
         progress(TransferCounters {
@@ -84,10 +82,10 @@ impl CliBackend for FakeBackend {
     }
 }
 
-fn session(id: u64, name: &str, host: &str) -> Session {
-    Session::new(
-        SessionId(id),
-        SessionDraft::new(name, host, 22, "root", AuthKind::Password, Some(GroupId(1))),
+fn host(id: u64, name: &str, host: &str) -> Host {
+    Host::new(
+        HostId(id),
+        HostDraft::new(name, host, 22, "root", AuthKind::Password, Some(GroupId(1))),
     )
 }
 
@@ -96,7 +94,7 @@ struct Fixture {
     socket: PathBuf,
     server: CliServer,
     backend: Arc<FakeBackend>,
-    web: Session,
+    web: Host,
 }
 
 fn fixture() -> Fixture {
@@ -104,11 +102,11 @@ fn fixture() -> Fixture {
     let socket = cli_endpoint(dir.path());
     let backend = Arc::new(FakeBackend::default());
     let server = CliServer::start(socket.clone(), backend.clone()).unwrap();
-    let web = session(1, "web-01", "10.0.1.12");
-    let db = session(2, "db-01", "10.0.2.5");
+    let web = host(1, "web-01", "10.0.1.12");
+    let db = host(2, "db-01", "10.0.2.5");
     server.set_targets(vec![
-        CliTarget::new(&web, SessionLogin::of(&web, None), Some("生产".into())),
-        CliTarget::new(&db, SessionLogin::of(&db, None), Some("生产/数据库".into())),
+        CliTarget::new(&web, HostLogin::of(&web, None), Some("生产".into())),
+        CliTarget::new(&db, HostLogin::of(&db, None), Some("生产/数据库".into())),
     ]);
     server.set_enabled(true);
     Fixture {
@@ -151,8 +149,8 @@ fn local(name: &str) -> PathBuf {
     std::env::temp_dir().join(name)
 }
 
-fn id(session: &Session) -> String {
-    session.public_id.to_string()
+fn id(host: &Host) -> String {
+    host.public_id.to_string()
 }
 
 #[test]
@@ -167,11 +165,8 @@ fn listing_filters_by_name_host_group_or_id() {
             true,
         );
         assert_eq!(code, 0);
-        let sessions: Vec<SessionInfo> = serde_json::from_str(&stdout).unwrap();
-        sessions
-            .into_iter()
-            .map(|session| session.name)
-            .collect::<Vec<_>>()
+        let hosts: Vec<HostInfo> = serde_json::from_str(&stdout).unwrap();
+        hosts.into_iter().map(|host| host.name).collect::<Vec<_>>()
     };
     assert_eq!(list(None), ["web-01", "db-01"]);
     assert_eq!(list(Some("WEB")), ["web-01"]);
@@ -181,10 +176,10 @@ fn listing_filters_by_name_host_group_or_id() {
     assert!(list(Some("nothing")).is_empty());
 
     let (_, stdout, _) = run(&fixture.socket, Request::List { query: None }, true);
-    let sessions: Vec<SessionInfo> = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(sessions[0].id, id(&fixture.web));
-    assert_eq!(sessions[0].group.as_deref(), Some("生产"));
-    assert_eq!(sessions[0].address(), "root@10.0.1.12:22");
+    let hosts: Vec<HostInfo> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(hosts[0].id, id(&fixture.web));
+    assert_eq!(hosts[0].group.as_deref(), Some("生产"));
+    assert_eq!(hosts[0].address(), "root@10.0.1.12:22");
 }
 
 #[test]
@@ -210,7 +205,7 @@ fn exec_passes_output_through_as_bytes_and_exits_with_the_remote_code() {
     let (code, stdout, stderr) = run(
         &fixture.socket,
         Request::Exec {
-            session: id(&fixture.web),
+            host: id(&fixture.web),
             command: "uname -a".into(),
         },
         false,
@@ -230,7 +225,7 @@ fn failures_carry_their_code_and_exit_255() {
     let (code, _, stderr) = run(
         &fixture.socket,
         Request::Exec {
-            session: id(&fixture.web),
+            host: id(&fixture.web),
             command: "unreachable".into(),
         },
         false,
@@ -245,7 +240,7 @@ fn failures_carry_their_code_and_exit_255() {
     let (code, _, stderr) = run(
         &fixture.socket,
         Request::Exec {
-            session: "nobody".into(),
+            host: "nobody".into(),
             command: "true".into(),
         },
         false,
@@ -254,14 +249,14 @@ fn failures_carry_their_code_and_exit_255() {
     assert!(
         String::from_utf8(stderr)
             .unwrap()
-            .contains("[session_not_found]")
+            .contains("[host_not_found]")
     );
 
     // A path relative to the command is meaningless to the app.
     let (code, _, stderr) = run(
         &fixture.socket,
         Request::Upload {
-            session: id(&fixture.web),
+            host: id(&fixture.web),
             source: "relative/file".into(),
             destination: "/tmp".into(),
         },
@@ -283,7 +278,7 @@ fn with_the_switch_off_nothing_reaches_the_backend() {
     let (code, stdout, stderr) = run(
         &fixture.socket,
         Request::Exec {
-            session: id(&fixture.web),
+            host: id(&fixture.web),
             command: "true".into(),
         },
         false,
@@ -370,7 +365,7 @@ fn a_transfer_reports_its_summary_and_exits_1_when_items_failed() {
     let (code, stdout, _) = run(
         &fixture.socket,
         Request::Upload {
-            session: id(&fixture.web),
+            host: id(&fixture.web),
             source: local("dist"),
             destination: "~/dist".into(),
         },
@@ -392,7 +387,7 @@ fn progress_is_rewritten_in_place_without_escape_sequences() {
     let (code, _, stderr) = run_on(
         &fixture.socket,
         Request::Upload {
-            session: id(&fixture.web),
+            host: id(&fixture.web),
             source: local("dist"),
             destination: "~/dist".into(),
         },

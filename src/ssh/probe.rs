@@ -3,7 +3,7 @@
 //! Runs once per successful connection on its own exec channel, so the user's
 //! shell never sees it and its output cannot be confused with theirs.
 
-use crate::session::HostOs;
+use crate::host::HostOs;
 
 /// One question for POSIX hosts: the kernel name, then whatever
 /// `/etc/os-release` says. stderr is dropped because macOS legitimately has no
@@ -165,7 +165,7 @@ impl HostOsProbe {
 #[cfg(test)]
 mod tests {
     use super::{HostOsProbe, MAX_PROBE_OUTPUT, ProbeOutcome, parse_probe, parse_windows_probe};
-    use crate::session::HostOs;
+    use crate::host::HostOs;
 
     #[test]
     fn reads_ubuntu() {

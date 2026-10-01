@@ -8,7 +8,7 @@ use gpui_kit::{Context, Entity, EventEmitter, SharedString, Subscription};
 use super::{ForwardCommand, ForwardEvent, SharedForwardTransportProvider};
 use crate::{
     connection::{ConnectionPrompt, ConnectionPromptReply},
-    session::{ForwardId, SessionId, SessionStore, SessionStoreEvent},
+    host::{ForwardId, HostId, HostStore, HostStoreEvent},
 };
 
 /// How often the workers' events are collected. Worker threads never wake a
@@ -66,7 +66,7 @@ pub enum ForwardManagerEvent {
     StatusChanged(ForwardId),
     /// Logging in needs an answer. The number is the run the question
     /// belongs to: an answer for an earlier run of the rule is stale.
-    PromptRequested(ForwardId, SessionId, u64, ConnectionPrompt),
+    PromptRequested(ForwardId, HostId, u64, ConnectionPrompt),
     /// A forward ended on its own, which the user may not be looking at.
     Failed(ForwardId, SharedString),
 }
@@ -75,7 +75,7 @@ pub enum ForwardManagerEvent {
 struct Link {
     /// Tells this run's questions from those of an earlier one.
     generation: u64,
-    session: SessionId,
+    host: HostId,
     commands: Sender<ForwardCommand>,
     events: Receiver<ForwardEvent>,
     status: ForwardStatus,
@@ -85,10 +85,10 @@ struct Link {
     stopping: Option<bool>,
 }
 
-/// Owns every running forward. The rules themselves live in the session
+/// Owns every running forward. The rules themselves live in the host
 /// store; this holds only what a run adds: a worker and its status.
 pub struct ForwardManager {
-    store: Entity<SessionStore>,
+    store: Entity<HostStore>,
     provider: SharedForwardTransportProvider,
     links: HashMap<ForwardId, Link>,
     /// Why a rule's last run ended, until it starts again or is deleted.
@@ -104,32 +104,29 @@ impl EventEmitter<ForwardManagerEvent> for ForwardManager {}
 
 impl ForwardManager {
     pub fn new(
-        store: Entity<SessionStore>,
+        store: Entity<HostStore>,
         provider: SharedForwardTransportProvider,
         cx: &mut Context<Self>,
     ) -> Self {
         let subscriptions = vec![
             cx.observe(&store, |this, _, cx| this.forget_removed(cx)),
-            cx.subscribe(
-                &store,
-                |this, _, event: &SessionStoreEvent, cx| match event {
-                    // The rule listens or connects somewhere else now.
-                    SessionStoreEvent::ForwardSettingsChanged(id) => this.restart(*id, cx),
-                    // The server moved, or logs in differently.
-                    SessionStoreEvent::ConnectionSettingsChanged(session) => {
-                        let running: Vec<_> = this
-                            .links
-                            .iter()
-                            .filter(|(_, link)| link.session == *session)
-                            .map(|(id, _)| *id)
-                            .collect();
-                        for id in running {
-                            this.restart(id, cx);
-                        }
+            cx.subscribe(&store, |this, _, event: &HostStoreEvent, cx| match event {
+                // The rule listens or connects somewhere else now.
+                HostStoreEvent::ForwardSettingsChanged(id) => this.restart(*id, cx),
+                // The server moved, or logs in differently.
+                HostStoreEvent::ConnectionSettingsChanged(host) => {
+                    let running: Vec<_> = this
+                        .links
+                        .iter()
+                        .filter(|(_, link)| link.host == *host)
+                        .map(|(id, _)| *id)
+                        .collect();
+                    for id in running {
+                        this.restart(id, cx);
                     }
-                    SessionStoreEvent::PersistFailed(_) => {}
-                },
-            ),
+                }
+                HostStoreEvent::PersistFailed(_) => {}
+            }),
         ];
         Self {
             store,
@@ -210,10 +207,10 @@ impl ForwardManager {
         let Some(rule) = store.forward(id) else {
             return;
         };
-        let Some(login) = store.login(rule.session) else {
+        let Some(login) = store.login(rule.host) else {
             return;
         };
-        let session_id = rule.session;
+        let host_id = rule.host;
         let transport = self.provider.create(rule, &login);
         let (commands, command_receiver) = async_channel::unbounded();
         let (event_sender, events) = async_channel::unbounded();
@@ -232,7 +229,7 @@ impl ForwardManager {
             id,
             Link {
                 generation,
-                session: session_id,
+                host: host_id,
                 commands,
                 events,
                 status: ForwardStatus::Connecting,
@@ -289,7 +286,7 @@ impl ForwardManager {
         }
     }
 
-    /// Rules deleted from the store, on their own or with their session,
+    /// Rules deleted from the store, on their own or with their host,
     /// stop running and leave nothing behind.
     fn forget_removed(&mut self, cx: &mut Context<Self>) {
         let store = self.store.read(cx);
@@ -380,9 +377,9 @@ impl ForwardManager {
         let status = match event {
             ForwardEvent::Connecting => ForwardStatus::Connecting,
             ForwardEvent::Prompt(prompt) => {
-                let (session, generation) = (link.session, link.generation);
+                let (host, generation) = (link.host, link.generation);
                 cx.emit(ForwardManagerEvent::PromptRequested(
-                    id, session, generation, prompt,
+                    id, host, generation, prompt,
                 ));
                 return;
             }

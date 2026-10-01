@@ -9,18 +9,18 @@ use gpui_kit::*;
 use crate::app::{CatalogIcon, OpenSettings};
 use crate::credential::CredentialPanel;
 use crate::forward::ForwardPanel;
-use crate::session::SessionPanel;
+use crate::host::HostPanel;
 
 /// Which list the left dock is showing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SidebarMode {
     #[default]
-    Sessions,
+    Hosts,
     Forwards,
     Credentials,
 }
 
-/// The left dock's one panel: the session tree, the port-forwarding list or
+/// The left dock's one panel: the host tree, the port-forwarding list or
 /// the credential list, whichever the title bar's switch picked, over the
 /// 设置 button they share.
 ///
@@ -31,20 +31,20 @@ pub enum SidebarMode {
 /// and its scroll position.
 pub struct Sidebar {
     mode: SidebarMode,
-    sessions: Entity<SessionPanel>,
+    hosts: Entity<HostPanel>,
     forwards: Entity<ForwardPanel>,
     credentials: Entity<CredentialPanel>,
 }
 
 impl Sidebar {
     pub fn new(
-        sessions: Entity<SessionPanel>,
+        hosts: Entity<HostPanel>,
         forwards: Entity<ForwardPanel>,
         credentials: Entity<CredentialPanel>,
     ) -> Self {
         Self {
             mode: SidebarMode::default(),
-            sessions,
+            hosts,
             forwards,
             credentials,
         }
@@ -67,8 +67,8 @@ impl Sidebar {
     /// Put the keyboard in the search field of the list being shown.
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.mode {
-            SidebarMode::Sessions => self
-                .sessions
+            SidebarMode::Hosts => self
+                .hosts
                 .update(cx, |panel, cx| panel.focus_search(window, cx)),
             SidebarMode::Forwards => self
                 .forwards
@@ -85,7 +85,7 @@ impl EventEmitter<PanelEvent> for Sidebar {}
 impl Focusable for Sidebar {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         match self.mode {
-            SidebarMode::Sessions => self.sessions.read(cx).focus_handle(cx),
+            SidebarMode::Hosts => self.hosts.read(cx).focus_handle(cx),
             SidebarMode::Forwards => self.forwards.read(cx).focus_handle(cx),
             SidebarMode::Credentials => self.credentials.read(cx).focus_handle(cx),
         }
@@ -110,8 +110,8 @@ impl BasePanel for Sidebar {
 impl Panel for Sidebar {
     fn title(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         match self.mode {
-            SidebarMode::Sessions => self
-                .sessions
+            SidebarMode::Hosts => self
+                .hosts
                 .update(cx, |panel, cx| panel.title(window, cx).into_any_element()),
             SidebarMode::Forwards => self.forwards.read(cx).title().into_any_element(),
             SidebarMode::Credentials => self.credentials.read(cx).title().into_any_element(),
@@ -124,8 +124,8 @@ impl Panel for Sidebar {
         cx: &mut Context<Self>,
     ) -> Option<Vec<Button>> {
         match self.mode {
-            SidebarMode::Sessions => self
-                .sessions
+            SidebarMode::Hosts => self
+                .hosts
                 .update(cx, |panel, cx| panel.toolbar_buttons(window, cx)),
             SidebarMode::Forwards => Some(self.forwards.read(cx).toolbar_buttons()),
             SidebarMode::Credentials => Some(self.credentials.read(cx).toolbar_buttons()),
@@ -144,7 +144,7 @@ impl Panel for Sidebar {
 impl Render for Sidebar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let list = match self.mode {
-            SidebarMode::Sessions => self.sessions.clone().into_any_element(),
+            SidebarMode::Hosts => self.hosts.clone().into_any_element(),
             SidebarMode::Forwards => self.forwards.clone().into_any_element(),
             SidebarMode::Credentials => self.credentials.clone().into_any_element(),
         };

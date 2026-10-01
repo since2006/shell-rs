@@ -13,11 +13,11 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use zeroize::Zeroizing;
 
-use crate::secrets::SecretRef;
-use crate::session::{
-    CredentialDraft, CredentialId, CredentialKind, DEFAULT_USER, GeneratedKey, KeyAlgorithm,
-    PastedKey, PastedKeyError, SecretFields, SessionStore, read_public_key,
+use crate::host::{
+    CredentialDraft, CredentialId, CredentialKind, DEFAULT_USER, GeneratedKey, HostStore,
+    KeyAlgorithm, PastedKey, PastedKeyError, SecretFields, read_public_key,
 };
+use crate::secrets::SecretRef;
 use crate::shared::{Segment, SegmentedControl, commit_footer, form_error};
 
 /// Where the SSH agent is found, as the form explains it.
@@ -81,7 +81,7 @@ enum PublicKeyView {
 
 /// The body of the new/edit credential dialog.
 pub struct CredentialForm {
-    store: Entity<SessionStore>,
+    store: Entity<HostStore>,
     editing: Option<CredentialId>,
     kind: CredentialKind,
     name: Entity<InputState>,
@@ -119,7 +119,7 @@ pub struct CredentialForm {
 impl CredentialForm {
     pub fn new(
         dialog: CredentialDialog,
-        store: Entity<SessionStore>,
+        store: Entity<HostStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -131,11 +131,11 @@ impl CredentialForm {
             let read = store.read(cx);
             let credential = editing.and_then(|id| read.credential(id)).cloned();
             let using: Vec<_> = editing
-                .map(|id| read.sessions_using(id).collect())
+                .map(|id| read.hosts_using(id).collect())
                 .unwrap_or_default();
             let connected = using
                 .iter()
-                .filter(|session| session.state.is_connected())
+                .filter(|host| host.state.is_connected())
                 .count();
             let kept_key = credential
                 .as_ref()
@@ -849,7 +849,7 @@ impl Render for CredentialForm {
 /// the edit dialog of an existing one.
 pub fn open_credential_dialog(
     dialog: CredentialDialog,
-    store: Entity<SessionStore>,
+    store: Entity<HostStore>,
     window: &mut Window,
     cx: &mut App,
 ) {

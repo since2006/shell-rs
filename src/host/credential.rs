@@ -1,5 +1,5 @@
 //! Saved logins that hosts share: a user name with a password, a private key
-//! file or the SSH agent. They live with the sessions because hosts refer to
+//! file or the SSH agent. They live with the hosts because hosts refer to
 //! them and they are stored in the same database; the `credential` module
 //! that lists and edits them depends on this one, never the reverse.
 

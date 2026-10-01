@@ -5,7 +5,7 @@
 use gpui_kit::component::{Root, notification::Notification};
 use gpui_kit::*;
 
-use shellrs::session::{SessionDatabase, SessionStore};
+use shellrs::host::{HostDatabase, HostStore};
 use shellrs::settings::SettingsStore;
 
 fn main() {
@@ -16,7 +16,7 @@ fn main() {
     if let Some(args) = shellrs::cli::command_line_arguments() {
         std::process::exit(shellrs::cli::main(args));
     }
-    // One ShellRS per data directory. Each keeps the sessions in memory and
+    // One ShellRS per data directory. Each keeps the hosts in memory and
     // writes its changes through, so a second one would write over the
     // first one's; opened again, ShellRS brings the running one forward.
     if shellrs::cli::activate_running_app(&shellrs::app::cli_socket_path()) {
@@ -59,15 +59,15 @@ fn main() {
     shellrs::update::start_handed_over();
 }
 
-/// Load the sessions saved on disk. If the database cannot be opened the
+/// Load the hosts saved on disk. If the database cannot be opened the
 /// window still comes up, on a store that forgets everything when it closes;
 /// the returned message says so.
 ///
 /// Either way the store gets the system keychain, which is where passwords
-/// live. A machine without one still runs; the session form says so and
+/// live. A machine without one still runs; the host form says so and
 /// disables its password field. Pasted and generated private keys go
 /// beside the database.
-fn open_store() -> (SessionStore, Option<SharedString>) {
+fn open_store() -> (HostStore, Option<SharedString>) {
     let secrets = shellrs::secrets::system_secret_store();
     match load_store() {
         // Keys are kept only with a database to remember them: a store
@@ -81,7 +81,7 @@ fn open_store() -> (SessionStore, Option<SharedString>) {
         Err(error) => {
             eprintln!("shellrs: 无法打开本地数据库：{error}");
             (
-                SessionStore::empty().with_secrets(secrets),
+                HostStore::empty().with_secrets(secrets),
                 Some(format!("无法打开本地数据库，本次运行的改动不会被保存：{error}").into()),
             )
         }
@@ -100,7 +100,7 @@ fn open_settings() -> (SettingsStore, Option<SharedString>) {
     }
 }
 
-fn load_store() -> anyhow::Result<SessionStore> {
+fn load_store() -> anyhow::Result<HostStore> {
     let path = shellrs::app::database_path()?;
-    Ok(SessionStore::load(SessionDatabase::open(&path)?)?)
+    Ok(HostStore::load(HostDatabase::open(&path)?)?)
 }

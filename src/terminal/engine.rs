@@ -16,7 +16,7 @@ use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, CursorStyle, Processor, Rgb};
 
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
-use crate::session::HostOs;
+use crate::host::HostOs;
 
 use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
 use super::{

@@ -7,7 +7,7 @@ use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::*;
 
 use crate::app::{CheckForUpdates, DownloadUpdate, OpenDownloadPage, RestartToUpdate, ShowUpdate};
-use crate::session::ConnectionState;
+use crate::host::ConnectionState;
 use crate::terminal::TerminalLifecycle;
 use crate::update::{RestartImpact, UpdaterEvent, open_update_dialog};
 

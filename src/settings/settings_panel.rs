@@ -318,7 +318,7 @@ fn terminal_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     ]
 }
 
-/// 外部 CLI: whether the `shellrs` command may use the saved sessions, the
+/// 外部 CLI: whether the `shellrs` command may use the saved hosts, the
 /// command itself, and the skill that teaches agents to use it.
 fn external_cli_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     let (reader, writer) = (panel.store.clone(), panel.store.clone());

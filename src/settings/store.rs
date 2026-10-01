@@ -14,7 +14,7 @@ pub enum SettingsStoreEvent {
 }
 
 /// The settings, shared by the settings page and the workspace that applies
-/// them. Like `SessionStore`, memory is the source of truth and every change
+/// them. Like `HostStore`, memory is the source of truth and every change
 /// is written through to disk at once; a failed write keeps the change and
 /// says so.
 pub struct SettingsStore {

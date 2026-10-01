@@ -5,7 +5,7 @@ use async_channel::Sender;
 
 use super::{Latency, TerminalSize};
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
-use crate::session::{HostOs, SessionLogin};
+use crate::host::{HostLogin, HostOs};
 
 /// Commands accepted by every terminal byte-stream transport.
 pub enum TerminalTransportCommand {
@@ -68,16 +68,16 @@ pub trait TerminalTransportFactory: Send + Sync + 'static {
     fn create(&self) -> Box<dyn TerminalTransport>;
 }
 
-/// Creates a fresh remote factory from the latest saved login of a session.
+/// Creates a fresh remote factory from the latest saved login of a host.
 /// Keeping this boundary at the workspace makes reconnects pick up edits
 /// immediately and lets UI tests inject a deterministic fake.
 pub trait RemoteTerminalTransportProvider: Send + Sync + 'static {
-    fn factory_for(&self, login: &SessionLogin) -> SharedTerminalTransportFactory;
+    fn factory_for(&self, login: &HostLogin) -> SharedTerminalTransportFactory;
 }
 
 pub type SharedRemoteTerminalTransportProvider = Arc<dyn RemoteTerminalTransportProvider>;
 
-/// Provider useful for tests and embedders that want every session to use the
+/// Provider useful for tests and embedders that want every host to use the
 /// same factory.
 pub struct FixedRemoteTerminalTransportProvider {
     factory: SharedTerminalTransportFactory,
@@ -90,7 +90,7 @@ impl FixedRemoteTerminalTransportProvider {
 }
 
 impl RemoteTerminalTransportProvider for FixedRemoteTerminalTransportProvider {
-    fn factory_for(&self, _: &SessionLogin) -> SharedTerminalTransportFactory {
+    fn factory_for(&self, _: &HostLogin) -> SharedTerminalTransportFactory {
         self.factory.clone()
     }
 }

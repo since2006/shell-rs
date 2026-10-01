@@ -15,12 +15,12 @@ use gpui_kit::{
 use semver::Version;
 use shellrs::app::{
     CenterTab, CheckForUpdates, ClearTerminal, CloseScope, CloseTabs, CollapseAllGroups,
-    ConnectGroup, ConnectSession, CopyCredentialPublicKey, CopySessionHost, CopySessionId,
-    DeleteCredential, DeleteForward, DeleteGroup, DeleteSession, DisconnectSession,
-    DisconnectTerminal, EditCredential, EditForward, EditSession, ExpandAllGroups, FindInTerminal,
-    FindNextInTerminal, FindPreviousInTerminal, FocusSearch, InstallCliCommand, NewLocalTerminal,
-    NewSessionInGroup, OpenExplorer, ReconnectTerminal, RemoveAgentSkill, RenameGroup,
-    RenameTerminal, StartForward, StopForward, ToggleSessionPanel,
+    ConnectGroup, ConnectHost, CopyCredentialPublicKey, CopyHostAddress, CopyHostId,
+    DeleteCredential, DeleteForward, DeleteGroup, DeleteHost, DisconnectHost, DisconnectTerminal,
+    EditCredential, EditForward, EditHost, ExpandAllGroups, FindInTerminal, FindNextInTerminal,
+    FindPreviousInTerminal, FocusSearch, InstallCliCommand, NewHostInGroup, NewLocalTerminal,
+    OpenExplorer, ReconnectTerminal, RemoveAgentSkill, RenameGroup, RenameTerminal, StartForward,
+    StopForward, ToggleHostPanel,
 };
 use shellrs::cli::{AgentKind, IntegrationPaths};
 use shellrs::connection::{
@@ -31,13 +31,13 @@ use shellrs::explorer::ExplorerId;
 use shellrs::forward::{
     ForwardCommand, ForwardEvent, ForwardStatus, ForwardTransport, ForwardTransportProvider,
 };
-use shellrs::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
-use shellrs::session::{
+use shellrs::host::{
     AuthKind, ConnectionState, CredentialDraft, CredentialId, CredentialKind, ForwardDraft,
     ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GeneratedKey, GroupDraft, GroupId,
-    HostOs, JumpLogin, KeyAlgorithm, LoginMethod, LoginRoute, PastedKey, ProxyKind, ProxySettings,
-    Route, SessionDatabase, SessionDraft, SessionId, SessionLogin, SessionStore, read_public_key,
+    HostDatabase, HostDraft, HostId, HostLogin, HostOs, HostStore, JumpLogin, KeyAlgorithm,
+    LoginMethod, LoginRoute, PastedKey, ProxyKind, ProxySettings, Route, read_public_key,
 };
+use shellrs::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
 use shellrs::settings::{Appearance, InterfaceLanguage, SettingsStore};
 use shellrs::sftp::{
     DirectoryEntry, DirectoryListing, EntryKind, FileMetadata, LocalDirectoryProvider, RemotePath,
@@ -55,7 +55,7 @@ use shellrs::update::{
 };
 use shellrs::workspace::Workspace;
 
-/// Seeded session ids, in insertion order (see `SessionStore::seed`).
+/// Seeded host ids, in insertion order (see `HostStore::seed`).
 const WEB_01: u64 = 1;
 const WEB_02: u64 = 2;
 const DB_01: u64 = 3;
@@ -71,26 +71,26 @@ const PRODUCTION: u64 = 1;
 const DEVELOPMENT: u64 = 3;
 
 fn open_workspace(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<Workspace>) {
-    open_workspace_with_store(cx, SessionStore::seed())
+    open_workspace_with_store(cx, HostStore::seed())
 }
 
 /// Production loads the store from the database; the tests hand one in
-/// directly so they get the fixed shape `SessionStore::seed` describes.
+/// directly so they get the fixed shape `HostStore::seed` describes.
 fn open_workspace_with_store(
     cx: &mut TestAppContext,
-    store: SessionStore,
+    store: HostStore,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
     open_workspace_with_tester(cx, store, Arc::new(FakeConnectionTester::default()))
 }
 
-/// Same, with the session dialog's connection test answered by `tester`.
+/// Same, with the host dialog's connection test answered by `tester`.
 ///
 /// Motion is reduced, as in the other fixtures: dialogs would otherwise
 /// slide in over real time, and under a loaded test run a field or button
 /// can move between being found and being clicked.
 fn open_workspace_with_tester(
     cx: &mut TestAppContext,
-    store: SessionStore,
+    store: HostStore,
     tester: Arc<FakeConnectionTester>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
     cx.update(shellrs::init);
@@ -371,7 +371,7 @@ fn open_workspace_with_factory(
     cx.update(|cx| cx.set_reduce_motion(true));
     let mut workspace = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
-        let store = cx.new(|_| SessionStore::seed());
+        let store = cx.new(|_| HostStore::seed());
         let remote = Arc::new(FixedRemoteTerminalTransportProvider::new(Arc::new(
             FakeTerminalFactory::default(),
         )));
@@ -397,7 +397,7 @@ fn open_workspace_with_factory(
 
 fn open_workspace_with_remote_factory(
     cx: &mut TestAppContext,
-    store: SessionStore,
+    store: HostStore,
     factory: Arc<dyn TerminalTransportFactory>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
     cx.update(shellrs::init);
@@ -530,9 +530,9 @@ impl TerminalTransport for PromptTerminalTransport {
     }
 }
 
-fn one_session_store(auth: AuthKind) -> (SessionStore, SessionId) {
-    let mut store = SessionStore::empty();
-    let id = store.insert_unnotified(SessionDraft::new(
+fn one_host_store(auth: AuthKind) -> (HostStore, HostId) {
+    let mut store = HostStore::empty();
+    let id = store.insert_unnotified(HostDraft::new(
         "prompt-host",
         "example.test",
         22,
@@ -547,26 +547,26 @@ fn one_session_store(auth: AuthKind) -> (SessionStore, SessionId) {
 async fn a_host_without_a_password_says_what_it_tries_and_is_saved_as_such(
     cx: &mut TestAppContext,
 ) {
-    let (handle, workspace) = open_workspace_with_store(cx, SessionStore::empty());
-    in_frame(cx, handle, |window, cx| window.click("new-session", cx));
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
     in_frame(cx, handle, |window, cx| {
         // A new host logs in with a password.
-        let sources = window.within("session-auth-source");
+        let sources = window.within("host-auth-source");
         assert_eq!(sources.find(0usize).selected(), Some(true));
-        assert!(window.find("session-password").visible());
-        assert!(window.try_find("session-no-password-note").is_none());
-        window.click("session-name", cx);
+        assert!(window.find("host-password").visible());
+        assert!(window.try_find("host-no-password-note").is_none());
+        window.click("host-name", cx);
         window.input("box", cx);
-        window.click("session-host", cx);
+        window.click("host-address", cx);
         window.input("10.0.0.9", cx);
-        window.within("session-auth-source").click(2usize, cx);
+        window.within("host-auth-source").click(2usize, cx);
     });
     in_frame(cx, handle, |window, cx| {
-        assert!(window.find("session-user").visible());
-        assert!(window.try_find("session-password").is_none());
-        assert!(window.try_find("session-credential").is_none());
+        assert!(window.find("host-user").visible());
+        assert!(window.try_find("host-password").is_none());
+        assert!(window.try_find("host-credential").is_none());
         assert_eq!(
-            window.find("session-no-password-note").label(),
+            window.find("host-no-password-note").label(),
             Some(
                 "依次尝试服务器免认证、SSH Agent 和 ~/.ssh 中的默认私钥；服务器要求密码时连接失败，不会询问。"
             )
@@ -576,11 +576,11 @@ async fn a_host_without_a_password_says_what_it_tries_and_is_saved_as_such(
     wait_for_dialog_to_close(cx, handle).await;
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
-        let session = &store.sessions()[0];
-        assert_eq!(session.auth, AuthKind::NoPassword);
-        assert_eq!(session.credential, None);
+        let host = &store.hosts()[0];
+        assert_eq!(host.auth, AuthKind::NoPassword);
+        assert_eq!(host.credential, None);
         assert_eq!(
-            store.login(session.id).unwrap().method,
+            store.login(host.id).unwrap().method,
             LoginMethod::NoPassword
         );
     });
@@ -588,15 +588,15 @@ async fn a_host_without_a_password_says_what_it_tries_and_is_saved_as_such(
 
 /// A store with three hosts to jump through or to, in this order:
 /// 阿里云99, 禅道 and 内网库.
-fn store_with_jump_hosts() -> (SessionStore, [SessionId; 3]) {
-    let mut store = SessionStore::empty();
+fn store_with_jump_hosts() -> (HostStore, [HostId; 3]) {
+    let mut store = HostStore::empty();
     let ids = [
         ("阿里云99", "120.25.220.186"),
         ("禅道", "8.138.95.125"),
         ("内网库", "10.0.0.5"),
     ]
     .map(|(name, host)| {
-        store.insert_unnotified(SessionDraft::new(
+        store.insert_unnotified(HostDraft::new(
             name,
             host,
             22,
@@ -619,32 +619,29 @@ fn add_jump_host(cx: &mut TestAppContext, handle: WindowHandle<Root>, name: &str
 }
 
 fn chain(window: &mut gpui_kit::Window) -> Option<String> {
-    window
-        .find("session-route-chain")
-        .label()
-        .map(str::to_string)
+    window.find("host-route-chain").label().map(str::to_string)
 }
 
 #[gpui_kit::test]
 async fn a_host_goes_through_the_jump_hosts_it_lists_in_order(cx: &mut TestAppContext) {
     let (store, [aliyun, zentao, _]) = store_with_jump_hosts();
     let (handle, workspace) = open_workspace_with_store(cx, store);
-    in_frame(cx, handle, |window, cx| window.click("new-session", cx));
+    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
     in_frame(cx, handle, |window, cx| {
         // A new host connects directly, with nothing more to fill in.
-        let routes = window.within("session-route");
+        let routes = window.within("host-route");
         assert_eq!(routes.find(0usize).selected(), Some(true));
-        assert!(window.try_find("session-route-chain").is_none());
-        window.click("session-name", cx);
+        assert!(window.try_find("host-route-chain").is_none());
+        window.click("host-name", cx);
         window.input("db", cx);
-        window.click("session-host", cx);
+        window.click("host-address", cx);
         window.input("10.0.9.9", cx);
-        window.within("session-route").click(1usize, cx);
+        window.within("host-route").click(1usize, cx);
     });
     in_frame(cx, handle, |window, cx| {
         assert_eq!(chain(window).as_deref(), Some("本机 → 当前主机"));
         assert_eq!(
-            window.find("session-route-note").label(),
+            window.find("host-route-note").label(),
             Some(
                 "依次经过跳板主机连接到当前主机，可添加多台。跳板主机自己的「连接方式」在这里不生效。"
             )
@@ -682,13 +679,13 @@ async fn a_host_goes_through_the_jump_hosts_it_lists_in_order(cx: &mut TestAppCo
             Some("本机 → 禅道 → 阿里云99 → 当前主机")
         );
         // Off the picker first: a focused picker opens on the commit.
-        window.click("session-name", cx);
+        window.click("host-name", cx);
         window.click("commit", cx);
     });
     wait_for_dialog_to_close(cx, handle).await;
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
-        let created = store.sessions().last().unwrap();
+        let created = store.hosts().last().unwrap();
         assert_eq!(created.name.as_ref(), "db");
         assert_eq!(created.route, Route::Jump(vec![Some(zentao), Some(aliyun)]));
     });
@@ -699,17 +696,17 @@ async fn a_deleted_jump_host_keeps_its_place_until_it_is_removed(cx: &mut TestAp
     let (mut store, [aliyun, zentao, inner]) = store_with_jump_hosts();
     store.update_unnotified(
         inner,
-        SessionDraft::new("内网库", "10.0.0.5", 22, "root", AuthKind::Password, None)
+        HostDraft::new("内网库", "10.0.0.5", 22, "root", AuthKind::Password, None)
             .with_route(Route::Jump(vec![Some(aliyun)])),
     );
     store.remove_unnotified(aliyun);
     let (handle, workspace) = open_workspace_with_store(cx, store);
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(EditSession(inner)), cx)
+        window.dispatch_action(Box::new(EditHost(inner)), cx)
     });
     in_frame(cx, handle, |window, cx| {
         assert_eq!(
-            window.within("session-route").find(1usize).selected(),
+            window.within("host-route").find(1usize).selected(),
             Some(true)
         );
         assert_eq!(
@@ -732,14 +729,14 @@ async fn a_deleted_jump_host_keeps_its_place_until_it_is_removed(cx: &mut TestAp
     add_jump_host(cx, handle, "禅道");
     in_frame(cx, handle, |window, cx| {
         assert_eq!(chain(window).as_deref(), Some("本机 → 禅道 → 当前主机"));
-        window.click("session-name", cx);
+        window.click("host-name", cx);
         window.click("commit", cx);
     });
     wait_for_dialog_to_close(cx, handle).await;
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
         assert_eq!(
-            store.session(inner).unwrap().route,
+            store.host(inner).unwrap().route,
             Route::Jump(vec![Some(zentao)])
         );
     });
@@ -750,17 +747,17 @@ async fn testing_a_connection_through_a_jump_host_sends_its_login(cx: &mut TestA
     let (store, _) = store_with_jump_hosts();
     let tester = Arc::new(FakeConnectionTester::default());
     let (handle, _) = open_workspace_with_tester(cx, store, tester.clone());
-    in_frame(cx, handle, |window, cx| window.click("new-session", cx));
+    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
     in_frame(cx, handle, |window, cx| {
-        window.click("session-name", cx);
+        window.click("host-name", cx);
         window.input("db", cx);
-        window.click("session-host", cx);
+        window.click("host-address", cx);
         window.input("10.0.9.9", cx);
-        window.within("session-route").click(1usize, cx);
+        window.within("host-route").click(1usize, cx);
     });
     add_jump_host(cx, handle, "阿里云");
     in_frame(cx, handle, |window, cx| {
-        window.click("session-name", cx);
+        window.click("host-name", cx);
         window.click("test-connection", cx);
     });
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
@@ -778,20 +775,20 @@ async fn testing_a_connection_through_a_jump_host_sends_its_login(cx: &mut TestA
     assert_eq!(name, "阿里云99");
     assert_eq!(
         **login,
-        SessionLogin::manual("120.25.220.186", 22, "root", AuthKind::Password)
+        HostLogin::manual("120.25.220.186", 22, "root", AuthKind::Password)
     );
 }
 
 #[gpui_kit::test]
 async fn a_hosts_notes_take_several_lines_and_come_back_when_edited(cx: &mut TestAppContext) {
-    let (handle, workspace) = open_workspace_with_store(cx, SessionStore::empty());
-    in_frame(cx, handle, |window, cx| window.click("new-session", cx));
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
     in_frame(cx, handle, |window, cx| {
-        window.click("session-name", cx);
+        window.click("host-name", cx);
         window.input("db", cx);
-        window.click("session-host", cx);
+        window.click("host-address", cx);
         window.input("10.0.9.9", cx);
-        window.click("session-notes", cx);
+        window.click("host-notes", cx);
         window.input("机房 A", cx);
         // Enter starts a new line; it does not submit the dialog.
         window.press("enter", cx);
@@ -804,19 +801,19 @@ async fn a_hosts_notes_take_several_lines_and_come_back_when_edited(cx: &mut Tes
     wait_for_dialog_to_close(cx, handle).await;
     let id = cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
-        let session = &store.sessions()[0];
-        assert_eq!(session.notes.as_ref(), "机房 A\n负责人：张三");
-        session.id
+        let host = &store.hosts()[0];
+        assert_eq!(host.notes.as_ref(), "机房 A\n负责人：张三");
+        host.id
     });
 
     // Edited, the notes are there to change. The closed dialog took the
     // focus with it, so the list takes it back first.
     in_frame(cx, handle, |window, cx| {
-        window.click(("session-row", id.0), cx);
-        window.dispatch_action(Box::new(EditSession(id)), cx)
+        window.click(("host-row", id.0), cx);
+        window.dispatch_action(Box::new(EditHost(id)), cx)
     });
     in_frame(cx, handle, |window, cx| {
-        window.click("session-notes", cx);
+        window.click("host-notes", cx);
         window.press("cmd-a", cx);
         window.input("已下线", cx);
         window.click("commit", cx);
@@ -824,7 +821,7 @@ async fn a_hosts_notes_take_several_lines_and_come_back_when_edited(cx: &mut Tes
     wait_for_dialog_to_close(cx, handle).await;
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
-        assert_eq!(store.session(id).unwrap().notes.as_ref(), "已下线");
+        assert_eq!(store.host(id).unwrap().notes.as_ref(), "已下线");
     });
 }
 
@@ -833,7 +830,7 @@ async fn deleting_a_jump_host_leaves_the_connection_behind_it_alone(cx: &mut Tes
     let (mut store, [aliyun, _, inner]) = store_with_jump_hosts();
     store.update_unnotified(
         inner,
-        SessionDraft::new("内网库", "10.0.0.5", 22, "root", AuthKind::Password, None)
+        HostDraft::new("内网库", "10.0.0.5", 22, "root", AuthKind::Password, None)
             .with_route(Route::Jump(vec![Some(aliyun)])),
     );
     let remote = Arc::new(RecordingRemoteProvider::default());
@@ -844,7 +841,7 @@ async fn deleting_a_jump_host_leaves_the_connection_behind_it_alone(cx: &mut Tes
         Arc::new(FakeConnectionTester::default()),
     );
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(ConnectSession(inner)), cx)
+        window.dispatch_action(Box::new(ConnectHost(inner)), cx)
     });
     // The terminal is given the way there, jump host and all.
     let logins = remote.logins();
@@ -859,14 +856,14 @@ async fn deleting_a_jump_host_leaves_the_connection_behind_it_alone(cx: &mut Tes
     );
 
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(DeleteSession(aliyun)), cx)
+        window.dispatch_action(Box::new(DeleteHost(aliyun)), cx)
     });
     in_frame(cx, handle, |window, cx| window.click("ok", cx));
     cx.run_until_parked();
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
-        assert!(store.session(aliyun).is_none());
-        assert_eq!(store.session(inner).unwrap().route, Route::Jump(vec![None]));
+        assert!(store.host(aliyun).is_none());
+        assert_eq!(store.host(inner).unwrap().route, Route::Jump(vec![None]));
     });
     // Not reconnected: that would only fail now.
     assert_eq!(remote.logins().len(), 1);
@@ -878,38 +875,35 @@ async fn a_host_behind_a_proxy_keeps_the_proxys_password_in_the_keychain(cx: &mu
     let tester = Arc::new(FakeConnectionTester::default());
     let (handle, workspace) = open_workspace_with_tester(
         cx,
-        SessionStore::empty().with_secrets(secrets.clone()),
+        HostStore::empty().with_secrets(secrets.clone()),
         tester.clone(),
     );
-    in_frame(cx, handle, |window, cx| window.click("new-session", cx));
+    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
     in_frame(cx, handle, |window, cx| {
-        window.click("session-name", cx);
+        window.click("host-name", cx);
         window.input("abroad", cx);
-        window.click("session-host", cx);
+        window.click("host-address", cx);
         window.input("203.0.113.7", cx);
-        window.within("session-route").click(2usize, cx);
+        window.within("host-route").click(2usize, cx);
     });
     in_frame(cx, handle, |window, cx| {
-        assert_eq!(window.find("session-proxy-kind").value(), Some("HTTP 代理"));
+        assert_eq!(window.find("host-proxy-kind").value(), Some("HTTP 代理"));
         window.click("commit", cx);
     });
     in_frame(cx, handle, |window, cx| {
         assert_eq!(window.find("form-error").label(), Some("请输入代理地址"));
-        window.within("session-proxy-kind").click("input", cx);
+        window.within("host-proxy-kind").click("input", cx);
     });
     for key in ["down", "enter"] {
         in_frame(cx, handle, |window, cx| window.press(key, cx));
     }
     in_frame(cx, handle, |window, cx| {
-        assert_eq!(
-            window.find("session-proxy-kind").value(),
-            Some("SOCKS5 代理")
-        );
-        window.click("session-proxy-host", cx);
+        assert_eq!(window.find("host-proxy-kind").value(), Some("SOCKS5 代理"));
+        window.click("host-proxy-host", cx);
         window.input("127.0.0.1", cx);
-        window.click("session-proxy-port", cx);
+        window.click("host-proxy-port", cx);
         window.input("7890", cx);
-        window.click("session-proxy-password", cx);
+        window.click("host-proxy-password", cx);
         window.input("hunter2", cx);
         window.click("commit", cx);
     });
@@ -918,7 +912,7 @@ async fn a_host_behind_a_proxy_keeps_the_proxys_password_in_the_keychain(cx: &mu
             window.find("form-error").label(),
             Some("填写代理密码时请同时填写用户名")
         );
-        window.click("session-proxy-user", cx);
+        window.click("host-proxy-user", cx);
         window.input("me", cx);
         window.click("test-connection", cx);
     });
@@ -949,21 +943,21 @@ async fn a_host_behind_a_proxy_keeps_the_proxys_password_in_the_keychain(cx: &mu
     );
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
-        assert_eq!(store.sessions()[0].route, Route::Proxy(proxy));
+        assert_eq!(store.hosts()[0].route, Route::Proxy(proxy));
     });
 }
 
 #[gpui_kit::test]
 async fn authentication_prompt_is_masked_and_drives_connected_state(cx: &mut TestAppContext) {
-    let (store, id) = one_session_store(AuthKind::Password);
+    let (store, id) = one_host_store(AuthKind::Password);
     let factory = Arc::new(PromptTerminalFactory::new(PromptBehavior::Authentication));
     let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .double_click(("session-row", id.0), cx);
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
@@ -1011,7 +1005,7 @@ async fn authentication_prompt_is_masked_and_drives_connected_state(cx: &mut Tes
         workspace
             .store()
             .read(cx)
-            .session(id)
+            .host(id)
             .unwrap()
             .state
             .is_connected()
@@ -1019,16 +1013,16 @@ async fn authentication_prompt_is_masked_and_drives_connected_state(cx: &mut Tes
 }
 
 #[gpui_kit::test]
-async fn canceling_unknown_host_prompt_keeps_session_disconnected(cx: &mut TestAppContext) {
-    let (store, id) = one_session_store(AuthKind::Password);
+async fn canceling_unknown_host_prompt_keeps_host_disconnected(cx: &mut TestAppContext) {
+    let (store, id) = one_host_store(AuthKind::Password);
     let factory = Arc::new(PromptTerminalFactory::new(PromptBehavior::UnknownHost));
     let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .double_click(("session-row", id.0), cx);
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
@@ -1070,19 +1064,19 @@ async fn canceling_unknown_host_prompt_keeps_session_disconnected(cx: &mut TestA
         workspace
             .store()
             .read(cx)
-            .session(id)
+            .host(id)
             .unwrap()
             .state
             .is_connected()
     }));
 
-    // The failed terminal tab remains visible, but connecting the session
+    // The failed terminal tab remains visible, but connecting the host
     // again must start a fresh transport instead of only activating that tab.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .double_click(("session-row", id.0), cx);
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
@@ -1105,7 +1099,7 @@ async fn canceling_unknown_host_prompt_keeps_session_disconnected(cx: &mut TestA
     // restart the exited transport instead of merely activating the tab.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(ConnectSession(id)), cx);
+        window.dispatch_action(Box::new(ConnectHost(id)), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
@@ -1122,15 +1116,15 @@ async fn canceling_unknown_host_prompt_keeps_session_disconnected(cx: &mut TestA
 
 #[gpui_kit::test]
 async fn connection_edits_reconnect_once_but_display_edits_do_not(cx: &mut TestAppContext) {
-    let (store, id) = one_session_store(AuthKind::Password);
+    let (store, id) = one_host_store(AuthKind::Password);
     let factory = Arc::new(FakeTerminalFactory::default());
     let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .double_click(("session-row", id.0), cx);
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
@@ -1143,8 +1137,8 @@ async fn connection_edits_reconnect_once_but_display_edits_do_not(cx: &mut TestA
     cx.update(|cx| {
         let store = workspace.read(cx).store().clone();
         store.update(cx, |store, cx| {
-            let mut draft = store.session(id).unwrap().draft();
-            draft.host = "new.example.test".into();
+            let mut draft = store.host(id).unwrap().draft();
+            draft.address = "new.example.test".into();
             assert!(store.update(id, draft, cx));
         });
     });
@@ -1159,7 +1153,7 @@ async fn connection_edits_reconnect_once_but_display_edits_do_not(cx: &mut TestA
     cx.update(|cx| {
         let store = workspace.read(cx).store().clone();
         store.update(cx, |store, cx| {
-            let mut draft = store.session(id).unwrap().draft();
+            let mut draft = store.host(id).unwrap().draft();
             draft.name = "renamed".into();
             assert!(store.update(id, draft, cx));
         });
@@ -1170,7 +1164,7 @@ async fn connection_edits_reconnect_once_but_display_edits_do_not(cx: &mut TestA
 
 #[gpui_kit::test]
 async fn opening_sftp_updates_connection_state_without_terminal(cx: &mut TestAppContext) {
-    let (store, id) = one_session_store(AuthKind::Password);
+    let (store, id) = one_host_store(AuthKind::Password);
     let (handle, workspace) = open_workspace_with_store(cx, store);
 
     cx.update_window(handle.into(), |_, window, cx| {
@@ -1179,14 +1173,7 @@ async fn opening_sftp_updates_connection_state_without_terminal(cx: &mut TestApp
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
-        workspace
-            .read(cx)
-            .store()
-            .read(cx)
-            .session(id)
-            .unwrap()
-            .state
-            == ConnectionState::Connected
+        workspace.read(cx).store().read(cx).host(id).unwrap().state == ConnectionState::Connected
     })
     .await;
 
@@ -1194,25 +1181,25 @@ async fn opening_sftp_updates_connection_state_without_terminal(cx: &mut TestApp
         let workspace = workspace.read(cx);
         assert_eq!(workspace.explorers_of(id, cx).len(), 1);
         assert_eq!(
-            workspace.store().read(cx).session(id).unwrap().state,
-            shellrs::session::ConnectionState::Connected
+            workspace.store().read(cx).host(id).unwrap().state,
+            shellrs::host::ConnectionState::Connected
         );
     });
 }
 
 #[gpui_kit::test]
-async fn double_click_on_session_opens_terminal_and_updates_status(cx: &mut TestAppContext) {
+async fn double_click_on_host_opens_terminal_and_updates_status(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        // Sessions seeded as connected already have terminal tabs.
+        // Hosts seeded as connected already have terminal tabs.
         assert!(window.find(("terminal", INITIAL_WEB_TERMINAL)).visible());
         assert!(window.try_find(("terminal", FIRST_NEW_TERMINAL)).is_none());
 
         window
-            .within("session-tree")
-            .double_click(("session-row", DB_01), cx);
+            .within("host-tree")
+            .double_click(("host-row", DB_01), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -1235,29 +1222,23 @@ async fn double_click_on_session_opens_terminal_and_updates_status(cx: &mut Test
 
     cx.update(|cx| {
         let workspace = workspace.read(cx);
-        assert!(workspace.terminal(SessionId(DB_01), cx).is_some());
+        assert!(workspace.terminal(HostId(DB_01), cx).is_some());
         let store = workspace.store().read(cx);
-        assert!(
-            store
-                .session(SessionId(DB_01))
-                .unwrap()
-                .state
-                .is_connected()
-        );
+        assert!(store.host(HostId(DB_01)).unwrap().state.is_connected());
     });
 }
 
 #[gpui_kit::test]
-async fn connected_session_opens_an_independent_terminal_each_time(cx: &mut TestAppContext) {
-    let (store, id) = one_session_store(AuthKind::Password);
+async fn connected_host_opens_an_independent_terminal_each_time(cx: &mut TestAppContext) {
+    let (store, id) = one_host_store(AuthKind::Password);
     let factory = Arc::new(FakeTerminalFactory::default());
     let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .double_click(("session-row", id.0), cx);
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
@@ -1269,8 +1250,8 @@ async fn connected_session_opens_an_independent_terminal_each_time(cx: &mut Test
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .double_click(("session-row", id.0), cx);
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
@@ -1282,7 +1263,7 @@ async fn connected_session_opens_an_independent_terminal_each_time(cx: &mut Test
     // The right-click menu's “连接” item dispatches this same action.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(ConnectSession(id)), cx);
+        window.dispatch_action(Box::new(ConnectHost(id)), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
@@ -1292,7 +1273,7 @@ async fn connected_session_opens_an_independent_terminal_each_time(cx: &mut Test
                 .read(cx)
                 .store()
                 .read(cx)
-                .session(id)
+                .host(id)
                 .unwrap()
                 .state
                 .is_connected()
@@ -1319,7 +1300,7 @@ async fn connected_session_opens_an_independent_terminal_each_time(cx: &mut Test
             && workspace
                 .store()
                 .read(cx)
-                .session(id)
+                .host(id)
                 .unwrap()
                 .state
                 .is_connected()
@@ -1332,7 +1313,7 @@ async fn connected_session_opens_an_independent_terminal_each_time(cx: &mut Test
             workspace
                 .store()
                 .read(cx)
-                .session(id)
+                .host(id)
                 .unwrap()
                 .state
                 .is_connected()
@@ -1341,12 +1322,12 @@ async fn connected_session_opens_an_independent_terminal_each_time(cx: &mut Test
 }
 
 #[gpui_kit::test]
-async fn new_session_dialog_validates_then_inserts(cx: &mut TestAppContext) {
+async fn new_host_dialog_validates_then_inserts(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("new-session", cx);
+        window.click("new-host", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -1358,13 +1339,8 @@ async fn new_session_dialog_validates_then_inserts(cx: &mut TestAppContext) {
 
         // The address and its port share a row; the name above them and the
         // user name below each take the row's whole width.
-        let [name, host, port, user] = [
-            "session-name",
-            "session-host",
-            "session-port",
-            "session-user",
-        ]
-        .map(|id| window.find(id).bounds());
+        let [name, host, port, user] = ["host-name", "host-address", "host-port", "host-user"]
+            .map(|id| window.find(id).bounds());
         assert_eq!(host.top(), port.top());
         assert!(host.right() < port.left() && host.size.width > port.size.width);
         assert!(name.bottom() < host.top() && user.top() > host.bottom());
@@ -1374,8 +1350,8 @@ async fn new_session_dialog_validates_then_inserts(cx: &mut TestAppContext) {
         // An empty form is rejected and the dialog stays open. The commit
         // action is dispatched deferred, so the error shows after effects run.
         // The dialog's focus trap owns focus until a field is clicked.
-        window.click("session-name", cx);
-        assert_eq!(window.find("session-name").focused(), Some(true));
+        window.click("host-name", cx);
+        assert_eq!(window.find("host-name").focused(), Some(true));
         window.click("commit", cx);
     })
     .unwrap();
@@ -1391,9 +1367,9 @@ async fn new_session_dialog_validates_then_inserts(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert!(window.find("commit").visible());
 
-        window.click("session-name", cx);
+        window.click("host-name", cx);
         window.input("db-02", cx);
-        window.click("session-host", cx);
+        window.click("host-address", cx);
         window.input("10.0.3.7", cx);
         window.click("commit", cx);
     })
@@ -1407,11 +1383,11 @@ async fn new_session_dialog_validates_then_inserts(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
         let created = store
-            .sessions()
+            .hosts()
             .iter()
-            .find(|session| session.name == "db-02")
+            .find(|host| host.name == "db-02")
             .expect("db-02 inserted");
-        assert_eq!(created.host.as_ref(), "10.0.3.7");
+        assert_eq!(created.address.as_ref(), "10.0.3.7");
         assert_eq!(created.port, 22);
     });
 }
@@ -1429,17 +1405,17 @@ async fn testing_a_connection_logs_in_with_what_the_form_shows(cx: &mut TestAppC
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(EditSession(id)), cx);
+        window.dispatch_action(Box::new(EditHost(id)), cx);
     })
     .unwrap();
     // The saved password is read on a background thread, then fills the field.
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("session-password", cx);
+        window.click("host-password", cx);
         window.press("cmd-a", cx);
         window.input("wrong-password", cx);
-        window.click("session-port", cx);
+        window.click("host-port", cx);
         window.press("cmd-a", cx);
         window.input("2222", cx);
         window.click("test-connection", cx);
@@ -1468,7 +1444,7 @@ async fn testing_a_connection_logs_in_with_what_the_form_shows(cx: &mut TestAppC
     .unwrap();
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
-        assert_eq!(store.session(id).unwrap().port, 22);
+        assert_eq!(store.host(id).unwrap().port, 22);
     });
     assert_eq!(
         secrets
@@ -1484,11 +1460,11 @@ async fn testing_a_connection_logs_in_with_what_the_form_shows(cx: &mut TestAppC
 #[gpui_kit::test]
 async fn a_connection_test_needs_a_host_and_a_user_first(cx: &mut TestAppContext) {
     let tester = Arc::new(FakeConnectionTester::default());
-    let (handle, _) = open_workspace_with_tester(cx, SessionStore::empty(), tester.clone());
+    let (handle, _) = open_workspace_with_tester(cx, HostStore::empty(), tester.clone());
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("new-session", cx);
+        window.click("new-host", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -1509,9 +1485,9 @@ async fn a_connection_test_needs_a_host_and_a_user_first(cx: &mut TestAppContext
         // Reported at once as a failed test; the form shows no result of its own.
         assert_eq!(window.notifications(cx).len(), 1);
         assert!(window.try_find("form-error").is_none());
-        window.click("session-host", cx);
+        window.click("host-address", cx);
         window.input("10.0.3.7", cx);
-        window.click("session-user", cx);
+        window.click("host-user", cx);
         #[cfg(target_os = "macos")]
         window.press("cmd-a", cx);
         #[cfg(not(target_os = "macos"))]
@@ -1530,17 +1506,15 @@ async fn a_connection_test_needs_a_host_and_a_user_first(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
-async fn a_first_seen_host_key_is_put_to_the_user_above_the_session_dialog(
-    cx: &mut TestAppContext,
-) {
+async fn a_first_seen_host_key_is_put_to_the_user_above_the_host_dialog(cx: &mut TestAppContext) {
     let tester = Arc::new(FakeConnectionTester::asking_trust());
-    let (store, id) = one_session_store(AuthKind::Password);
+    let (store, id) = one_host_store(AuthKind::Password);
     let (handle, _) = open_workspace_with_tester(cx, store, tester.clone());
 
     // Trust: the question reaches the tester as a yes.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(EditSession(id)), cx);
+        window.dispatch_action(Box::new(EditHost(id)), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -1566,7 +1540,7 @@ async fn a_first_seen_host_key_is_put_to_the_user_above_the_session_dialog(
     .await;
     assert_eq!(tester.trust_answers(), [true]);
 
-    // Escape dismisses the question, which declines it; the session dialog
+    // Escape dismisses the question, which declines it; the host dialog
     // underneath stays open.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -1605,11 +1579,11 @@ fn search_filters_the_tree(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert!(
             window
-                .within("session-tree")
-                .try_find(("session-row", WEB_01))
+                .within("host-tree")
+                .try_find(("host-row", WEB_01))
                 .is_some()
         );
-        window.click("session-search", cx);
+        window.click("host-search", cx);
         window.input("staging", cx);
     })
     .unwrap();
@@ -1617,9 +1591,9 @@ fn search_filters_the_tree(cx: &mut TestAppContext) {
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        let tree = window.within("session-tree");
-        assert!(tree.try_find(("session-row", STAGING_API)).is_some());
-        assert!(tree.try_find(("session-row", WEB_01)).is_none());
+        let tree = window.within("host-tree");
+        assert!(tree.try_find(("host-row", STAGING_API)).is_some());
+        assert!(tree.try_find(("host-row", WEB_01)).is_none());
     })
     .unwrap();
 }
@@ -1628,19 +1602,19 @@ fn search_filters_the_tree(cx: &mut TestAppContext) {
 fn group_expansion_survives_reopening_the_database(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shellrs.db");
-    let database = SessionDatabase::open(&path).unwrap();
-    let seed = SessionStore::seed();
+    let database = HostDatabase::open(&path).unwrap();
+    let seed = HostStore::seed();
     for group in seed.groups() {
         database.insert_group(group).unwrap();
     }
-    for session in seed.sessions() {
-        database.insert_session(session).unwrap();
+    for host in seed.hosts() {
+        database.insert_host(host).unwrap();
     }
-    let (handle, _) = open_workspace_with_store(cx, SessionStore::load(database).unwrap());
+    let (handle, _) = open_workspace_with_store(cx, HostStore::load(database).unwrap());
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find(("session-row", WEB_01)).visible());
+        assert!(window.find(("host-row", WEB_01)).visible());
         window.click(("group-row", PRODUCTION), cx);
     })
     .unwrap();
@@ -1649,10 +1623,10 @@ fn group_expansion_survives_reopening_the_database(cx: &mut TestAppContext) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find(("group-row", PRODUCTION)).visible());
-        assert!(window.try_find(("session-row", WEB_01)).is_none());
+        assert!(window.try_find(("host-row", WEB_01)).is_none());
     })
     .unwrap();
-    let database = SessionDatabase::open(&path).unwrap();
+    let database = HostDatabase::open(&path).unwrap();
     assert!(
         !database
             .load()
@@ -1664,22 +1638,22 @@ fn group_expansion_survives_reopening_the_database(cx: &mut TestAppContext) {
             .expanded
     );
 
-    let (reopened, _) = open_workspace_with_store(cx, SessionStore::load(database).unwrap());
+    let (reopened, _) = open_workspace_with_store(cx, HostStore::load(database).unwrap());
     cx.update_window(reopened.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find(("group-row", PRODUCTION)).visible());
-        assert!(window.try_find(("session-row", WEB_01)).is_none());
-        assert!(window.find(("session-row", STAGING_API)).visible());
+        assert!(window.try_find(("host-row", WEB_01)).is_none());
+        assert!(window.find(("host-row", STAGING_API)).visible());
         window.click(("group-row", PRODUCTION), cx);
     })
     .unwrap();
     cx.run_until_parked();
     cx.update_window(reopened.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find(("session-row", WEB_01)).visible());
+        assert!(window.find(("host-row", WEB_01)).visible());
     })
     .unwrap();
-    let saved = SessionDatabase::open(&path).unwrap().load().unwrap();
+    let saved = HostDatabase::open(&path).unwrap().load().unwrap();
     assert!(
         saved
             .groups
@@ -1694,22 +1668,22 @@ fn group_expansion_survives_reopening_the_database(cx: &mut TestAppContext) {
 fn expand_and_collapse_all_groups_include_nested_groups_and_persist(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shellrs.db");
-    let database = SessionDatabase::open(&path).unwrap();
-    let mut seed = SessionStore::seed();
+    let database = HostDatabase::open(&path).unwrap();
+    let mut seed = HostStore::seed();
     let nested =
         seed.insert_group_unnotified(GroupDraft::new("内部服务", Some(GroupId(PRODUCTION))));
     for group in seed.groups() {
         database.insert_group(group).unwrap();
     }
-    for session in seed.sessions() {
-        database.insert_session(session).unwrap();
+    for host in seed.hosts() {
+        database.insert_host(host).unwrap();
     }
-    let (handle, _) = open_workspace_with_store(cx, SessionStore::load(database).unwrap());
+    let (handle, _) = open_workspace_with_store(cx, HostStore::load(database).unwrap());
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find(("group-row", nested.0)).visible());
-        assert!(window.find(("session-row", WEB_01)).visible());
+        assert!(window.find(("host-row", WEB_01)).visible());
         window.dispatch_action(Box::new(CollapseAllGroups), cx);
     })
     .unwrap();
@@ -1718,11 +1692,11 @@ fn expand_and_collapse_all_groups_include_nested_groups_and_persist(cx: &mut Tes
         window.render_frame(cx);
         assert!(window.find(("group-row", PRODUCTION)).visible());
         assert!(window.try_find(("group-row", nested.0)).is_none());
-        assert!(window.try_find(("session-row", WEB_01)).is_none());
+        assert!(window.try_find(("host-row", WEB_01)).is_none());
     })
     .unwrap();
     assert!(
-        SessionDatabase::open(&path)
+        HostDatabase::open(&path)
             .unwrap()
             .load()
             .unwrap()
@@ -1739,10 +1713,10 @@ fn expand_and_collapse_all_groups_include_nested_groups_and_persist(cx: &mut Tes
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find(("group-row", nested.0)).visible());
-        assert!(window.find(("session-row", WEB_01)).visible());
+        assert!(window.find(("host-row", WEB_01)).visible());
     })
     .unwrap();
-    let database = SessionDatabase::open(&path).unwrap();
+    let database = HostDatabase::open(&path).unwrap();
     assert!(
         database
             .load()
@@ -1751,22 +1725,22 @@ fn expand_and_collapse_all_groups_include_nested_groups_and_persist(cx: &mut Tes
             .iter()
             .all(|group| group.expanded)
     );
-    let (reopened, _) = open_workspace_with_store(cx, SessionStore::load(database).unwrap());
+    let (reopened, _) = open_workspace_with_store(cx, HostStore::load(database).unwrap());
     cx.update_window(reopened.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find(("group-row", nested.0)).visible());
-        assert!(window.find(("session-row", WEB_01)).visible());
+        assert!(window.find(("host-row", WEB_01)).visible());
     })
     .unwrap();
 }
 
 #[gpui_kit::test]
 fn connect_group_opens_each_host_in_its_subtree(cx: &mut TestAppContext) {
-    let mut store = SessionStore::seed();
+    let mut store = HostStore::seed();
     let child =
         store.insert_group_unnotified(GroupDraft::new("内部服务", Some(GroupId(PRODUCTION))));
     let grandchild = store.insert_group_unnotified(GroupDraft::new("后端", Some(child)));
-    let nested_host = store.insert_unnotified(SessionDraft::new(
+    let nested_host = store.insert_unnotified(HostDraft::new(
         "backend-01",
         "10.0.3.8",
         22,
@@ -1785,9 +1759,9 @@ fn connect_group_opens_each_host_in_its_subtree(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let workspace = workspace.read(cx);
         assert_eq!(workspace.terminal_count(nested_host, cx), 1);
-        assert_eq!(workspace.terminal_count(SessionId(WEB_01), cx), 1);
-        assert_eq!(workspace.terminal_count(SessionId(DB_01), cx), 0);
-        assert_eq!(workspace.terminal_count(SessionId(STAGING_API), cx), 1);
+        assert_eq!(workspace.terminal_count(HostId(WEB_01), cx), 1);
+        assert_eq!(workspace.terminal_count(HostId(DB_01), cx), 0);
+        assert_eq!(workspace.terminal_count(HostId(STAGING_API), cx), 1);
     });
 
     cx.update_window(handle.into(), |_, window, cx| {
@@ -1799,16 +1773,16 @@ fn connect_group_opens_each_host_in_its_subtree(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let workspace = workspace.read(cx);
         assert_eq!(workspace.terminal_count(nested_host, cx), 2);
-        assert_eq!(workspace.terminal_count(SessionId(WEB_01), cx), 2);
-        assert_eq!(workspace.terminal_count(SessionId(WEB_02), cx), 1);
-        assert_eq!(workspace.terminal_count(SessionId(DB_01), cx), 1);
-        assert_eq!(workspace.terminal_count(SessionId(STAGING_API), cx), 1);
-        assert_eq!(workspace.terminal_count(SessionId(DEV_BOX), cx), 0);
+        assert_eq!(workspace.terminal_count(HostId(WEB_01), cx), 2);
+        assert_eq!(workspace.terminal_count(HostId(WEB_02), cx), 1);
+        assert_eq!(workspace.terminal_count(HostId(DB_01), cx), 1);
+        assert_eq!(workspace.terminal_count(HostId(STAGING_API), cx), 1);
+        assert_eq!(workspace.terminal_count(HostId(DEV_BOX), cx), 0);
     });
 }
 
 #[gpui_kit::test]
-fn dragging_a_host_into_a_group_updates_the_session_tree(cx: &mut TestAppContext) {
+fn dragging_a_host_into_a_group_updates_the_host_tree(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
@@ -1821,11 +1795,9 @@ fn dragging_a_host_into_a_group_updates_the_session_tree(cx: &mut TestAppContext
             window.find(("group-count", DEVELOPMENT)).label(),
             Some("1 台主机")
         );
-        window.within("session-tree").drag_to(
-            ("session-row", DB_01),
-            ("group-row", DEVELOPMENT),
-            cx,
-        );
+        window
+            .within("host-tree")
+            .drag_to(("host-row", DB_01), ("group-row", DEVELOPMENT), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -1833,7 +1805,7 @@ fn dragging_a_host_into_a_group_updates_the_session_tree(cx: &mut TestAppContext
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
         assert_eq!(
-            store.session(SessionId(DB_01)).unwrap().group,
+            store.host(HostId(DB_01)).unwrap().group,
             Some(GroupId(DEVELOPMENT))
         );
     });
@@ -1857,9 +1829,9 @@ fn dragging_peers_changes_their_order_and_groups_can_nest(cx: &mut TestAppContex
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .drag_to(("session-row", DB_01), ("session-row", WEB_01), cx);
-        window.within("session-tree").drag_to(
+            .within("host-tree")
+            .drag_to(("host-row", DB_01), ("host-row", WEB_01), cx);
+        window.within("host-tree").drag_to(
             ("group-row", DEVELOPMENT),
             ("group-row", PRODUCTION),
             cx,
@@ -1874,9 +1846,9 @@ fn dragging_peers_changes_their_order_and_groups_can_nest(cx: &mut TestAppContex
             store.group(GroupId(DEVELOPMENT)).unwrap().parent,
             Some(GroupId(PRODUCTION))
         );
-        let db = store.session(SessionId(DB_01)).unwrap();
-        let web = store.session(SessionId(WEB_01)).unwrap();
-        let web02 = store.session(SessionId(2)).unwrap();
+        let db = store.host(HostId(DB_01)).unwrap();
+        let web = store.host(HostId(WEB_01)).unwrap();
+        let web02 = store.host(HostId(2)).unwrap();
         assert!(web.sort_order < db.sort_order && db.sort_order < web02.sort_order);
     });
     cx.update_window(handle.into(), |_, window, cx| {
@@ -1898,15 +1870,15 @@ fn dragging_a_host_to_blank_tree_space_moves_it_to_the_root(cx: &mut TestAppCont
     let (handle, workspace) = open_workspace(cx);
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        let from = window.find(("session-row", DB_01)).bounds().center();
-        let tree = window.find("session-tree").bounds();
+        let from = window.find(("host-row", DB_01)).bounds().center();
+        let tree = window.find("host-tree").bounds();
         window.drag(from, point(tree.center().x, tree.bottom() - px(12.)), cx);
     })
     .unwrap();
     cx.run_until_parked();
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
-        assert_eq!(store.session(SessionId(DB_01)).unwrap().group, None);
+        assert_eq!(store.host(HostId(DB_01)).unwrap().group, None);
     });
 }
 
@@ -1914,31 +1886,31 @@ fn dragging_a_host_to_blank_tree_space_moves_it_to_the_root(cx: &mut TestAppCont
 fn dragged_order_survives_reopening_the_database(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shellrs.db");
-    let database = SessionDatabase::open(&path).unwrap();
-    let seed = SessionStore::seed();
+    let database = HostDatabase::open(&path).unwrap();
+    let seed = HostStore::seed();
     for group in seed.groups() {
         database.insert_group(group).unwrap();
     }
-    for session in seed.sessions() {
-        database.insert_session(session).unwrap();
+    for host in seed.hosts() {
+        database.insert_host(host).unwrap();
     }
-    let (handle, _) = open_workspace_with_store(cx, SessionStore::load(database).unwrap());
+    let (handle, _) = open_workspace_with_store(cx, HostStore::load(database).unwrap());
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .drag_to(("session-row", DB_01), ("session-row", WEB_01), cx);
+            .within("host-tree")
+            .drag_to(("host-row", DB_01), ("host-row", WEB_01), cx);
     })
     .unwrap();
     cx.run_until_parked();
 
-    let reopened = SessionDatabase::open(&path).unwrap().load().unwrap();
+    let reopened = HostDatabase::open(&path).unwrap().load().unwrap();
     let order = |id| {
         reopened
-            .sessions
+            .hosts
             .iter()
-            .find(|session| session.id == SessionId(id))
+            .find(|host| host.id == HostId(id))
             .unwrap()
             .sort_order
     };
@@ -1953,8 +1925,8 @@ async fn sftp_button_opens_explorer_and_navigates(cx: &mut TestAppContext) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .double_click(("session-row", DB_01), cx);
+            .within("host-tree")
+            .double_click(("host-row", DB_01), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -2040,8 +2012,8 @@ fn tab_close_button_closes_the_terminal_and_disconnects(cx: &mut TestAppContext)
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .double_click(("session-row", DB_01), cx);
+            .within("host-tree")
+            .double_click(("host-row", DB_01), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -2073,26 +2045,20 @@ fn tab_close_button_closes_the_terminal_and_disconnects(cx: &mut TestAppContext)
 
     cx.update(|cx| {
         let workspace = workspace.read(cx);
-        assert!(workspace.terminal(SessionId(DB_01), cx).is_none());
+        assert!(workspace.terminal(HostId(DB_01), cx).is_none());
         let store = workspace.store().read(cx);
-        assert!(
-            !store
-                .session(SessionId(DB_01))
-                .unwrap()
-                .state
-                .is_connected()
-        );
+        assert!(!store.host(HostId(DB_01)).unwrap().state.is_connected());
     });
 }
 
 #[gpui_kit::test]
-async fn closing_every_tab_shows_the_recent_sessions(cx: &mut TestAppContext) {
+async fn closing_every_tab_shows_the_recent_hosts(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         // While tabs are open the start page stays out of the way.
-        assert!(window.try_find("recent-sessions").is_none());
+        assert!(window.try_find("recent-hosts").is_none());
         window.click(("close-terminal", INITIAL_WEB_TERMINAL), cx);
     })
     .unwrap();
@@ -2105,7 +2071,7 @@ async fn closing_every_tab_shows_the_recent_sessions(cx: &mut TestAppContext) {
                 .try_find(("terminal", INITIAL_WEB_TERMINAL))
                 .is_none()
         );
-        assert!(window.try_find("recent-sessions").is_none());
+        assert!(window.try_find("recent-hosts").is_none());
         // The last tab closes too (the tab group alone would refuse).
         window.click(("close-terminal", INITIAL_STAGING_TERMINAL), cx);
     })
@@ -2119,24 +2085,24 @@ async fn closing_every_tab_shows_the_recent_sessions(cx: &mut TestAppContext) {
                 .try_find(("terminal", INITIAL_STAGING_TERMINAL))
                 .is_none()
         );
-        assert!(window.find("recent-sessions").visible());
+        assert!(window.find("recent-hosts").visible());
         // The page takes the focus the closed tab held.
-        assert_eq!(window.find("recent-sessions").focused(), Some(true));
-        // Both sessions had been connected, so both are listed.
-        assert!(window.find(("recent-session", WEB_01)).visible());
-        assert!(window.find(("recent-session", STAGING_API)).visible());
+        assert_eq!(window.find("recent-hosts").focused(), Some(true));
+        // Both hosts had been connected, so both are listed.
+        assert!(window.find(("recent-host", WEB_01)).visible());
+        assert!(window.find(("recent-host", STAGING_API)).visible());
         assert_eq!(window.find("status-connection").label(), Some("未连接"));
 
-        window.click(("recent-session", WEB_01), cx);
+        window.click(("recent-host", WEB_01), cx);
     })
     .unwrap();
     cx.run_until_parked();
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find("recent-sessions").visible());
+        assert!(window.find("recent-hosts").visible());
         assert!(window.try_find(("terminal", FIRST_NEW_TERMINAL)).is_none());
-        window.double_click(("recent-session", WEB_01), cx);
+        window.double_click(("recent-host", WEB_01), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -2150,7 +2116,7 @@ async fn closing_every_tab_shows_the_recent_sessions(cx: &mut TestAppContext) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.find(("terminal", FIRST_NEW_TERMINAL)).visible());
-        assert!(window.try_find("recent-sessions").is_none());
+        assert!(window.try_find("recent-hosts").is_none());
         assert_eq!(
             window.find("status-connection").label(),
             Some("已连接 web-01")
@@ -2161,8 +2127,8 @@ async fn closing_every_tab_shows_the_recent_sessions(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
         let recent: Vec<_> = store
-            .recent_sessions()
-            .map(|session| session.name.to_string())
+            .recent_hosts()
+            .map(|host| host.name.to_string())
             .collect();
         // Reconnecting moved web-01 to the front.
         assert_eq!(recent, ["web-01", "staging-api"]);
@@ -2177,7 +2143,7 @@ async fn closing_every_tab_shows_the_recent_sessions(cx: &mut TestAppContext) {
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find("recent-sessions").visible());
+        assert!(window.find("recent-hosts").visible());
         // Reopening the page must not reconnect the old selection on Enter.
         window.press("enter", cx);
     })
@@ -2185,7 +2151,7 @@ async fn closing_every_tab_shows_the_recent_sessions(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find("recent-sessions").visible());
+        assert!(window.find("recent-hosts").visible());
         assert!(
             window
                 .try_find(("terminal", FIRST_NEW_TERMINAL + 1))
@@ -2196,7 +2162,7 @@ async fn closing_every_tab_shows_the_recent_sessions(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-async fn enter_connects_the_selected_recent_session(cx: &mut TestAppContext) {
+async fn enter_connects_the_selected_recent_host(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -2213,13 +2179,13 @@ async fn enter_connects_the_selected_recent_session(cx: &mut TestAppContext) {
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click(("recent-session", STAGING_API), cx);
+        window.click(("recent-host", STAGING_API), cx);
     })
     .unwrap();
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find("recent-sessions").visible());
+        assert!(window.find("recent-hosts").visible());
         window.press("enter", cx);
     })
     .unwrap();
@@ -2232,12 +2198,12 @@ async fn enter_connects_the_selected_recent_session(cx: &mut TestAppContext) {
     .await;
 }
 
-/// The start page's row menu is the session tree's menu. Menus are not
+/// The start page's row menu is the host tree's menu. Menus are not
 /// driven here, so this dispatches what its items dispatch, from the page:
 /// the page is drawn deferred over the dock, and its actions must still
 /// reach the workspace.
 #[gpui_kit::test]
-async fn recent_session_menu_commands_work_from_the_start_page(cx: &mut TestAppContext) {
+async fn recent_host_menu_commands_work_from_the_start_page(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
     for terminal in [INITIAL_WEB_TERMINAL, INITIAL_STAGING_TERMINAL] {
         cx.update_window(handle.into(), |_, window, cx| {
@@ -2250,14 +2216,14 @@ async fn recent_session_menu_commands_work_from_the_start_page(cx: &mut TestAppC
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("recent-sessions").focused(), Some(true));
-        window.dispatch_action(Box::new(EditSession(SessionId(STAGING_API))), cx);
+        assert_eq!(window.find("recent-hosts").focused(), Some(true));
+        window.dispatch_action(Box::new(EditHost(HostId(STAGING_API))), cx);
     })
     .unwrap();
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(window.find("session-name").value(), Some("staging-api"));
+        assert_eq!(window.find("host-name").value(), Some("staging-api"));
         window.press("escape", cx);
     })
     .unwrap();
@@ -2267,13 +2233,13 @@ async fn recent_session_menu_commands_work_from_the_start_page(cx: &mut TestAppC
     // page again, as a right click would.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click(("recent-session", WEB_01), cx);
+        window.click(("recent-host", WEB_01), cx);
     })
     .unwrap();
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(DeleteSession(SessionId(WEB_01))), cx);
+        window.dispatch_action(Box::new(DeleteHost(HostId(WEB_01))), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -2286,14 +2252,14 @@ async fn recent_session_menu_commands_work_from_the_start_page(cx: &mut TestAppC
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find(("recent-session", WEB_01)).is_none());
-        assert!(window.find(("recent-session", STAGING_API)).visible());
+        assert!(window.try_find(("recent-host", WEB_01)).is_none());
+        assert!(window.find(("recent-host", STAGING_API)).visible());
     })
     .unwrap();
 }
 
 #[gpui_kit::test]
-fn settings_open_from_the_session_list_as_one_tab(cx: &mut TestAppContext) {
+fn settings_open_from_the_host_list_as_one_tab(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
@@ -2348,7 +2314,7 @@ fn settings_open_from_the_session_list_as_one_tab(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let settings = workspace.read(cx).settings_tab().expect("settings open");
         let group = settings.read(cx).tab_group().unwrap().upgrade().unwrap();
-        // The two session terminals and a single settings tab.
+        // The two host terminals and a single settings tab.
         assert_eq!(group.read(cx).panels().len(), 3);
     });
 
@@ -2599,8 +2565,8 @@ fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext)
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .double_click(("session-row", DB_01), cx);
+            .within("host-tree")
+            .double_click(("host-row", DB_01), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -2617,7 +2583,7 @@ fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext)
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(window.try_find(("terminal", FIRST_NEW_TERMINAL)).is_none());
-        assert!(window.try_find("recent-sessions").is_none());
+        assert!(window.try_find("recent-hosts").is_none());
         // Keep closing whichever tab the dock displays next.
         window.press("cmd-w", cx);
     })
@@ -2643,7 +2609,7 @@ fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext)
                 .try_find(("terminal", INITIAL_STAGING_TERMINAL))
                 .is_none()
         );
-        assert!(window.find("recent-sessions").visible());
+        assert!(window.find("recent-hosts").visible());
         // With nothing open the shortcut does nothing.
         window.press("cmd-w", cx);
     })
@@ -2652,7 +2618,7 @@ fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext)
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find("recent-sessions").visible());
+        assert!(window.find("recent-hosts").visible());
     })
     .unwrap();
 }
@@ -2903,7 +2869,7 @@ async fn terminal_selection_copies_only_on_command_and_finishes_outside_view(
             cx.read_from_clipboard().and_then(|item| item.text()),
             Some("原剪贴板".into())
         );
-        window.click("session-search", cx);
+        window.click("host-search", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -3319,7 +3285,7 @@ async fn the_status_bar_shows_the_size_of_the_terminal_in_front(cx: &mut TestApp
     let terminal = RemoteTerminalId(FIRST_NEW_TERMINAL);
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(ConnectSession(SessionId(WEB_01))), cx);
+        window.dispatch_action(Box::new(ConnectHost(HostId(WEB_01))), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
@@ -3364,7 +3330,7 @@ async fn the_status_bar_shows_the_size_of_the_terminal_in_front(cx: &mut TestApp
 
     // An SFTP tab has no terminal, so no size either.
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(OpenExplorer(SessionId(WEB_01))), cx);
+        window.dispatch_action(Box::new(OpenExplorer(HostId(WEB_01))), cx);
     });
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
         window
@@ -3395,12 +3361,12 @@ async fn the_status_bar_shows_the_size_of_the_terminal_in_front(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
-async fn disconnecting_one_tab_leaves_the_other_tabs_of_its_session(cx: &mut TestAppContext) {
+async fn disconnecting_one_tab_leaves_the_other_tabs_of_its_host(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let second = RemoteTerminalId(FIRST_NEW_TERMINAL);
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(ConnectSession(SessionId(WEB_01))), cx);
+        window.dispatch_action(Box::new(ConnectHost(HostId(WEB_01))), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
@@ -3424,7 +3390,7 @@ async fn disconnecting_one_tab_leaves_the_other_tabs_of_its_session(cx: &mut Tes
         let workspace = workspace.read(cx);
         let store = workspace.store().read(cx);
         assert_eq!(
-            store.session(SessionId(WEB_01)).unwrap().state,
+            store.host(HostId(WEB_01)).unwrap().state,
             ConnectionState::Connected
         );
         let screen = workspace
@@ -3492,7 +3458,7 @@ async fn new_group_from_the_toolbar_appears_in_the_tree(cx: &mut TestAppContext)
     });
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        let tree = window.within("session-tree");
+        let tree = window.within("host-tree");
         assert!(tree.find(("group-row", created.0)).visible());
         assert_eq!(
             tree.find(("group-count", created.0)).label(),
@@ -3504,21 +3470,21 @@ async fn new_group_from_the_toolbar_appears_in_the_tree(cx: &mut TestAppContext)
 
 /// The action a group row's 新建主机… menu entry dispatches.
 #[gpui_kit::test]
-async fn a_new_session_in_a_group_starts_out_in_that_group(cx: &mut TestAppContext) {
+async fn a_new_host_in_a_group_starts_out_in_that_group(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(NewSessionInGroup(GroupId(DEVELOPMENT))), cx);
+        window.dispatch_action(Box::new(NewHostInGroup(GroupId(DEVELOPMENT))), cx);
     })
     .unwrap();
     cx.run_until_parked();
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("session-name", cx);
+        window.click("host-name", cx);
         window.input("dev-02", cx);
-        window.click("session-host", cx);
+        window.click("host-address", cx);
         window.input("192.168.1.21", cx);
         window.click("commit", cx);
     })
@@ -3532,9 +3498,9 @@ async fn a_new_session_in_a_group_starts_out_in_that_group(cx: &mut TestAppConte
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
         let created = store
-            .sessions()
+            .hosts()
             .iter()
-            .find(|session| session.name == "dev-02")
+            .find(|host| host.name == "dev-02")
             .expect("dev-02 inserted");
         // The form opened with 开发 pre-selected and nothing changed it.
         assert_eq!(created.group, Some(GroupId(DEVELOPMENT)));
@@ -3542,7 +3508,7 @@ async fn a_new_session_in_a_group_starts_out_in_that_group(cx: &mut TestAppConte
 }
 
 #[gpui_kit::test]
-async fn renaming_a_group_keeps_the_sessions_under_it(cx: &mut TestAppContext) {
+async fn renaming_a_group_keeps_the_hosts_under_it(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
@@ -3572,10 +3538,10 @@ async fn renaming_a_group_keeps_the_sessions_under_it(cx: &mut TestAppContext) {
         let group = store.group(GroupId(PRODUCTION)).expect("group kept");
         assert_eq!(group.name.as_ref(), "生产环境");
         assert_eq!(store.group_path(GroupId(PRODUCTION)), "生产环境");
-        // The three sessions still belong to it.
+        // The three hosts still belong to it.
         assert_eq!(
             store
-                .sessions()
+                .hosts()
                 .iter()
                 .filter(|s| s.group == Some(GroupId(PRODUCTION)))
                 .count(),
@@ -3585,23 +3551,23 @@ async fn renaming_a_group_keeps_the_sessions_under_it(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-async fn deleting_a_group_removes_its_sessions_and_closes_their_tabs(cx: &mut TestAppContext) {
+async fn deleting_a_group_removes_its_hosts_and_closes_their_tabs(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     // db-01 joins web-01, which starts connected, in having an open tab.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .double_click(("session-row", DB_01), cx);
+            .within("host-tree")
+            .double_click(("host-row", DB_01), cx);
     })
     .unwrap();
     cx.run_until_parked();
 
     cx.update(|cx| {
         let workspace = workspace.read(cx);
-        assert!(workspace.terminal(SessionId(WEB_01), cx).is_some());
-        assert!(workspace.terminal(SessionId(DB_01), cx).is_some());
+        assert!(workspace.terminal(HostId(WEB_01), cx).is_some());
+        assert!(workspace.terminal(HostId(DB_01), cx).is_some());
     });
 
     cx.update_window(handle.into(), |_, window, cx| {
@@ -3620,32 +3586,32 @@ async fn deleting_a_group_removes_its_sessions_and_closes_their_tabs(cx: &mut Te
 
     cx.update(|cx| {
         let workspace = workspace.read(cx);
-        assert!(workspace.terminal(SessionId(WEB_01), cx).is_none());
-        assert!(workspace.terminal(SessionId(DB_01), cx).is_none());
+        assert!(workspace.terminal(HostId(WEB_01), cx).is_none());
+        assert!(workspace.terminal(HostId(DB_01), cx).is_none());
         // staging-api is in another group and keeps its tab.
-        assert!(workspace.terminal(SessionId(STAGING_API), cx).is_some());
+        assert!(workspace.terminal(HostId(STAGING_API), cx).is_some());
 
         let store = workspace.store().read(cx);
         assert!(store.group(GroupId(PRODUCTION)).is_none());
         assert_eq!(store.groups().len(), 2);
         let names: Vec<_> = store
-            .sessions()
+            .hosts()
             .iter()
-            .map(|session| session.name.as_ref())
+            .map(|host| host.name.as_ref())
             .collect();
         assert_eq!(names, ["staging-api", "qa-runner", "dev-box"]);
     });
 }
 
 #[gpui_kit::test]
-async fn groups_and_sessions_are_read_back_from_the_database(cx: &mut TestAppContext) {
+async fn groups_and_hosts_are_read_back_from_the_database(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("temp dir");
     let path = directory.path().join("shellrs.db");
-    let store = SessionStore::load(SessionDatabase::open(&path).expect("database opened"))
-        .expect("store loaded");
+    let store =
+        HostStore::load(HostDatabase::open(&path).expect("database opened")).expect("store loaded");
     // A first launch starts with nothing at all.
     assert_eq!(store.groups().len(), 0);
-    assert_eq!(store.sessions().len(), 0);
+    assert_eq!(store.hosts().len(), 0);
     let (handle, workspace) = open_workspace_with_store(cx, store);
 
     cx.update_window(handle.into(), |_, window, cx| {
@@ -3673,17 +3639,17 @@ async fn groups_and_sessions_are_read_back_from_the_database(cx: &mut TestAppCon
         window.render_frame(cx);
         // A closed dialog leaves nothing focused, and an action only reaches
         // handlers on the focused element's path.
-        window.click("session-search", cx);
-        window.dispatch_action(Box::new(NewSessionInGroup(group)), cx);
+        window.click("host-search", cx);
+        window.dispatch_action(Box::new(NewHostInGroup(group)), cx);
     })
     .unwrap();
     cx.run_until_parked();
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("session-name", cx);
+        window.click("host-name", cx);
         window.input("web-01", cx);
-        window.click("session-host", cx);
+        window.click("host-address", cx);
         window.input("10.0.1.12", cx);
         window.click("commit", cx);
     })
@@ -3693,14 +3659,14 @@ async fn groups_and_sessions_are_read_back_from_the_database(cx: &mut TestAppCon
     })
     .await;
 
-    let session = cx.update(|cx| workspace.read(cx).store().read(cx).sessions()[0].id);
+    let host = cx.update(|cx| workspace.read(cx).store().read(cx).hosts()[0].id);
 
-    // Connecting is what puts a session on the start page's recent list.
+    // Connecting is what puts a host on the start page's recent list.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .double_click(("session-row", session.0), cx);
+            .within("host-tree")
+            .double_click(("host-row", host.0), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -3713,43 +3679,43 @@ async fn groups_and_sessions_are_read_back_from_the_database(cx: &mut TestAppCon
 
     // Everything above went through the real write path; read it back with a
     // second connection to the same file.
-    let reloaded = SessionStore::load(SessionDatabase::open(&path).expect("database reopened"))
+    let reloaded = HostStore::load(HostDatabase::open(&path).expect("database reopened"))
         .expect("store reloaded");
     assert_eq!(reloaded.groups().len(), 1);
     assert_eq!(reloaded.groups()[0].name.as_ref(), "生产");
-    assert_eq!(reloaded.sessions().len(), 1);
-    let saved = &reloaded.sessions()[0];
+    assert_eq!(reloaded.hosts().len(), 1);
+    let saved = &reloaded.hosts()[0];
     assert_eq!(saved.name.as_ref(), "web-01");
-    assert_eq!(saved.host.as_ref(), "10.0.1.12");
+    assert_eq!(saved.address.as_ref(), "10.0.1.12");
     assert_eq!(saved.port, 22);
     assert_eq!(saved.group, Some(group));
     // Runtime state is not persisted, but the last connection time is.
     assert!(!saved.state.is_connected());
     assert_eq!(
-        reloaded.recent_sessions().map(|s| s.id).collect::<Vec<_>>(),
-        [session]
+        reloaded.recent_hosts().map(|s| s.id).collect::<Vec<_>>(),
+        [host]
     );
 }
 
-/// A session's terminal and SFTP tabs sit side by side in the center, and
+/// A host's terminal and SFTP tabs sit side by side in the center, and
 /// only the active one renders. The tab going inactive used to keep the
 /// window focus, which took its focus handle out of the dispatch tree and
 /// left every 「×」 dead.
 #[gpui_kit::test]
-fn both_tabs_of_one_session_stay_closable(cx: &mut TestAppContext) {
+fn both_tabs_of_one_host_stay_closable(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .double_click(("session-row", DB_01), cx);
+            .within("host-tree")
+            .double_click(("host-row", DB_01), cx);
     })
     .unwrap();
     cx.run_until_parked();
 
     // The terminal tab is active and focused; opening SFTP puts a second tab
-    // for the same session beside it and activates that one.
+    // for the same host beside it and activates that one.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click(("sftp", FIRST_NEW_TERMINAL), cx);
@@ -3788,21 +3754,21 @@ fn both_tabs_of_one_session_stay_closable(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let workspace = workspace.read(cx);
         assert!(workspace.explorer(ExplorerId(SFTP_TAB)).is_none());
-        assert!(workspace.terminal(SessionId(DB_01), cx).is_none());
+        assert!(workspace.terminal(HostId(DB_01), cx).is_none());
     });
 }
 
-/// Double-clicking a tab's title shows or hides the session sidebar; a
+/// Double-clicking a tab's title shows or hides the host sidebar; a
 /// single click only selects the tab.
 #[gpui_kit::test]
-async fn double_clicking_a_tab_toggles_the_session_sidebar(cx: &mut TestAppContext) {
+async fn double_clicking_a_tab_toggles_the_host_sidebar(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
     cx.run_until_parked();
     let sidebar_shown = |cx: &mut TestAppContext| {
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
             window
-                .try_find("session-search")
+                .try_find("host-search")
                 .is_some_and(|search| search.visible())
         })
         .unwrap()
@@ -3827,7 +3793,7 @@ async fn double_clicking_a_tab_toggles_the_session_sidebar(cx: &mut TestAppConte
 }
 
 #[gpui_kit::test]
-async fn a_terminal_tab_can_be_renamed_and_follow_the_session_again(cx: &mut TestAppContext) {
+async fn a_terminal_tab_can_be_renamed_and_follow_the_host_again(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let tab = ("terminal-tab", INITIAL_WEB_TERMINAL);
 
@@ -3866,7 +3832,7 @@ async fn a_terminal_tab_can_be_renamed_and_follow_the_session_again(cx: &mut Tes
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(window.find(tab).label(), Some("日志排查"));
-        // The other tab of the bar keeps its session name.
+        // The other tab of the bar keeps its host name.
         assert_eq!(
             window
                 .find(("terminal-tab", INITIAL_STAGING_TERMINAL))
@@ -3876,18 +3842,18 @@ async fn a_terminal_tab_can_be_renamed_and_follow_the_session_again(cx: &mut Tes
     })
     .unwrap();
     cx.update(|cx| {
-        // A tab title is not a session setting.
+        // A tab title is not a host setting.
         let store = workspace.read(cx).store().read(cx);
-        let session = store.session(SessionId(WEB_01)).expect("session kept");
-        assert_eq!(session.name.as_ref(), "web-01");
+        let host = store.host(HostId(WEB_01)).expect("host kept");
+        assert_eq!(host.name.as_ref(), "web-01");
     });
 
-    // Clearing the field returns the tab to the session name.
+    // Clearing the field returns the tab to the host name.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         // A closed dialog leaves nothing focused, and an action only reaches
         // handlers on the focused element's path.
-        window.click("session-search", cx);
+        window.click("host-search", cx);
         window.dispatch_action(
             Box::new(RenameTerminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))),
             cx,
@@ -3916,12 +3882,12 @@ async fn a_terminal_tab_can_be_renamed_and_follow_the_session_again(cx: &mut Tes
 }
 
 #[gpui_kit::test]
-fn copy_session_host_puts_the_host_on_the_clipboard(cx: &mut TestAppContext) {
+fn copy_host_address_puts_the_host_on_the_clipboard(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(CopySessionHost(SessionId(STAGING_API))), cx);
+        window.dispatch_action(Box::new(CopyHostAddress(HostId(STAGING_API))), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -3934,9 +3900,9 @@ fn copy_session_host_puts_the_host_on_the_clipboard(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn hovering_a_session_row_shows_its_address_beside_the_row(cx: &mut TestAppContext) {
+fn hovering_a_host_row_shows_its_address_beside_the_row(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
-    let row = ("session-row", WEB_01);
+    let row = ("host-row", WEB_01);
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -3948,7 +3914,7 @@ fn hovering_a_session_row_shows_its_address_beside_the_row(cx: &mut TestAppConte
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        let tooltip = window.find("session-tooltip");
+        let tooltip = window.find("host-tooltip");
         assert_eq!(tooltip.label(), Some("root@10.0.1.12:22"));
         // Beside the row, so it never covers the rows below.
         let row_bounds = window.find(row).bounds();
@@ -3961,7 +3927,7 @@ fn hovering_a_session_row_shows_its_address_beside_the_row(cx: &mut TestAppConte
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find("session-tooltip").is_none());
+        assert!(window.try_find("host-tooltip").is_none());
     })
     .unwrap();
 }
@@ -3971,7 +3937,7 @@ fn the_row_tooltip_follows_the_pointer_down_the_list(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
     let move_to = |cx: &mut TestAppContext, id: u64| {
         cx.update_window(handle.into(), |_, window, cx| {
-            let row = window.find(("session-row", id)).bounds();
+            let row = window.find(("host-row", id)).bounds();
             window.dispatch_event(
                 gpui_kit::PlatformInput::MouseMove(MouseMoveEvent {
                     position: point(row.left() + px(40.), row.center().y),
@@ -3990,7 +3956,7 @@ fn the_row_tooltip_follows_the_pointer_down_the_list(cx: &mut TestAppContext) {
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
             window
-                .try_find("session-tooltip")
+                .try_find("host-tooltip")
                 .and_then(|tooltip| tooltip.label().map(str::to_string))
         })
         .unwrap()
@@ -4009,13 +3975,13 @@ fn the_row_tooltip_follows_the_pointer_down_the_list(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn copy_session_id_puts_the_public_id_on_the_clipboard(cx: &mut TestAppContext) {
+fn copy_host_id_puts_the_public_id_on_the_clipboard(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
     let public_id = workspace.read_with(cx, |workspace, cx| {
         workspace
             .store()
             .read(cx)
-            .session(SessionId(STAGING_API))
+            .host(HostId(STAGING_API))
             .unwrap()
             .public_id
             .to_string()
@@ -4023,7 +3989,7 @@ fn copy_session_id_puts_the_public_id_on_the_clipboard(cx: &mut TestAppContext) 
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(CopySessionId(SessionId(STAGING_API))), cx);
+        window.dispatch_action(Box::new(CopyHostId(HostId(STAGING_API))), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -4058,7 +4024,7 @@ fn batch_close_commands_take_the_tabs_around_the_clicked_one(cx: &mut TestAppCon
     };
 
     // [web-01, staging-api, web-01 · SFTP, local]
-    dispatch(cx, Box::new(OpenExplorer(SessionId(WEB_01))));
+    dispatch(cx, Box::new(OpenExplorer(HostId(WEB_01))));
     dispatch(cx, Box::new(NewLocalTerminal));
     cx.update(|cx| {
         let workspace = workspace.read(cx);
@@ -4082,7 +4048,7 @@ fn batch_close_commands_take_the_tabs_around_the_clicked_one(cx: &mut TestAppCon
     );
 
     // [web-01, staging-api, web-01 #2] → left of staging-api.
-    dispatch(cx, Box::new(ConnectSession(SessionId(WEB_01))));
+    dispatch(cx, Box::new(ConnectHost(HostId(WEB_01))));
     dispatch(
         cx,
         close(terminal(INITIAL_STAGING_TERMINAL), CloseScope::Left),
@@ -4093,7 +4059,7 @@ fn batch_close_commands_take_the_tabs_around_the_clicked_one(cx: &mut TestAppCon
     );
 
     // [staging-api, web-01 #2, staging-api #2] → others than web-01 #2.
-    dispatch(cx, Box::new(ConnectSession(SessionId(STAGING_API))));
+    dispatch(cx, Box::new(ConnectHost(HostId(STAGING_API))));
     assert_eq!(open_terminals(cx).len(), 3);
     dispatch(cx, close(terminal(FIRST_NEW_TERMINAL), CloseScope::Others));
     assert_eq!(open_terminals(cx), [FIRST_NEW_TERMINAL]);
@@ -4103,15 +4069,15 @@ fn batch_close_commands_take_the_tabs_around_the_clicked_one(cx: &mut TestAppCon
     assert!(open_terminals(cx).is_empty());
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find("recent-sessions").visible());
+        assert!(window.find("recent-hosts").visible());
     })
     .unwrap();
 }
 
-/// A store holding one session, wired to a keychain the test can inspect.
-fn store_with_secrets(secrets: Arc<InMemorySecretStore>) -> (SessionStore, SessionId, SecretRef) {
-    let mut store = SessionStore::empty();
-    let id = store.insert_unnotified(SessionDraft::new(
+/// A store holding one host, wired to a keychain the test can inspect.
+fn store_with_secrets(secrets: Arc<InMemorySecretStore>) -> (HostStore, HostId, SecretRef) {
+    let mut store = HostStore::empty();
+    let id = store.insert_unnotified(HostDraft::new(
         "db-01",
         "10.0.2.5",
         22,
@@ -4119,30 +4085,30 @@ fn store_with_secrets(secrets: Arc<InMemorySecretStore>) -> (SessionStore, Sessi
         AuthKind::Password,
         None,
     ));
-    let endpoint = store.session(id).unwrap().password_secret();
+    let endpoint = store.host(id).unwrap().password_secret();
     (store.with_secrets(secrets), id, endpoint)
 }
 
 #[gpui_kit::test]
-async fn a_new_session_saves_its_password_to_the_keychain(cx: &mut TestAppContext) {
+async fn a_new_host_saves_its_password_to_the_keychain(cx: &mut TestAppContext) {
     let secrets = Arc::new(InMemorySecretStore::default());
     let (handle, workspace) =
-        open_workspace_with_store(cx, SessionStore::empty().with_secrets(secrets.clone()));
+        open_workspace_with_store(cx, HostStore::empty().with_secrets(secrets.clone()));
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("new-session", cx);
+        window.click("new-host", cx);
     })
     .unwrap();
     cx.run_until_parked();
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("session-name", cx);
+        window.click("host-name", cx);
         window.input("db-02", cx);
-        window.click("session-host", cx);
+        window.click("host-address", cx);
         window.input("10.0.3.7", cx);
-        window.click("session-password", cx);
+        window.click("host-password", cx);
         window.input("hunter2", cx);
         window.click("commit", cx);
     })
@@ -4165,9 +4131,9 @@ async fn a_new_session_saves_its_password_to_the_keychain(cx: &mut TestAppContex
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
         let created = store
-            .sessions()
+            .hosts()
             .iter()
-            .find(|session| session.name == "db-02")
+            .find(|host| host.name == "db-02")
             .expect("db-02 inserted");
         assert!(
             !format!("{created:?}").contains("hunter2"),
@@ -4185,7 +4151,7 @@ async fn editing_the_host_moves_the_saved_password_with_it(cx: &mut TestAppConte
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(EditSession(id)), cx);
+        window.dispatch_action(Box::new(EditHost(id)), cx);
     })
     .unwrap();
     // The saved password is read on a background thread, then fills the field.
@@ -4193,8 +4159,8 @@ async fn editing_the_host_moves_the_saved_password_with_it(cx: &mut TestAppConte
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find("session-password").visible());
-        window.click("session-host", cx);
+        assert!(window.find("host-password").visible());
+        window.click("host-address", cx);
         window.press("cmd-a", cx);
         window.input("10.9.9.9", cx);
         window.click("commit", cx);
@@ -4235,14 +4201,14 @@ async fn clearing_the_password_field_forgets_the_saved_password(cx: &mut TestApp
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(EditSession(id)), cx);
+        window.dispatch_action(Box::new(EditHost(id)), cx);
     })
     .unwrap();
     cx.run_until_parked();
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("session-password", cx);
+        window.click("host-password", cx);
         window.press("cmd-a", cx);
         window.press("backspace", cx);
         window.click("commit", cx);
@@ -4266,7 +4232,7 @@ async fn clearing_the_password_field_forgets_the_saved_password(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
-async fn deleting_the_last_session_on_an_endpoint_forgets_its_password(cx: &mut TestAppContext) {
+async fn deleting_the_last_host_on_an_endpoint_forgets_its_password(cx: &mut TestAppContext) {
     let secrets = Arc::new(InMemorySecretStore::default());
     let (store, id, endpoint) = store_with_secrets(secrets.clone());
     secrets.set(&endpoint, "hunter2").unwrap();
@@ -4274,7 +4240,7 @@ async fn deleting_the_last_session_on_an_endpoint_forgets_its_password(cx: &mut 
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(DeleteSession(id)), cx);
+        window.dispatch_action(Box::new(DeleteHost(id)), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -4299,8 +4265,8 @@ async fn deleting_the_last_session_on_an_endpoint_forgets_its_password(cx: &mut 
 
 #[gpui_kit::test]
 async fn the_tree_falls_back_to_the_first_letter_until_a_host_is_probed(cx: &mut TestAppContext) {
-    let mut store = SessionStore::empty();
-    let probed = store.insert_unnotified(SessionDraft::new(
+    let mut store = HostStore::empty();
+    let probed = store.insert_unnotified(HostDraft::new(
         "web-01",
         "10.0.1.12",
         22,
@@ -4308,7 +4274,7 @@ async fn the_tree_falls_back_to_the_first_letter_until_a_host_is_probed(cx: &mut
         AuthKind::Password,
         None,
     ));
-    let fresh = store.insert_unnotified(SessionDraft::new(
+    let fresh = store.insert_unnotified(HostDraft::new(
         "数据库",
         "10.0.2.5",
         22,
@@ -4321,12 +4287,9 @@ async fn the_tree_falls_back_to_the_first_letter_until_a_host_is_probed(cx: &mut
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
+        assert_eq!(window.find(("host-os", probed.0)).label(), Some("Debian"));
         assert_eq!(
-            window.find(("session-os", probed.0)).label(),
-            Some("Debian")
-        );
-        assert_eq!(
-            window.find(("session-os", fresh.0)).label(),
+            window.find(("host-os", fresh.0)).label(),
             Some("未探测到系统"),
             "没探测过就退回名称首字的中性徽章"
         );
@@ -4339,46 +4302,43 @@ async fn the_tree_falls_back_to_the_first_letter_until_a_host_is_probed(cx: &mut
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find(("session-os", probed.0)).visible());
-        assert!(window.find(("session-os", fresh.0)).visible());
+        assert!(window.find(("host-os", probed.0)).visible());
+        assert!(window.find(("host-os", fresh.0)).visible());
     })
     .unwrap();
 }
 
 #[gpui_kit::test]
-async fn connecting_marks_the_session_with_the_host_operating_system(cx: &mut TestAppContext) {
-    let (store, id) = one_session_store(AuthKind::Password);
+async fn connecting_marks_the_host_with_the_host_operating_system(cx: &mut TestAppContext) {
+    let (store, id) = one_host_store(AuthKind::Password);
     let factory = Arc::new(FakeTerminalFactory::reports_os(HostOs::Fedora));
     let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory);
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert_eq!(
-            window.find(("session-os", id.0)).label(),
-            Some("未探测到系统")
-        );
+        assert_eq!(window.find(("host-os", id.0)).label(), Some("未探测到系统"));
         window
-            .within("session-tree")
-            .double_click(("session-row", id.0), cx);
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
     })
     .unwrap();
     // The engine batches transport events on a 16ms timer, so the mark
     // changes a frame or two after the tab opens.
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
         window.render_frame(cx);
-        window.find(("session-os", id.0)).label() == Some("Fedora")
+        window.find(("host-os", id.0)).label() == Some("Fedora")
     })
     .await;
 
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
-        assert_eq!(store.session(id).unwrap().os, Some(HostOs::Fedora));
+        assert_eq!(store.host(id).unwrap().os, Some(HostOs::Fedora));
     });
 }
 
 #[gpui_kit::test]
 async fn the_tab_bar_shows_the_connection_latency_while_it_runs(cx: &mut TestAppContext) {
-    let (store, id) = one_session_store(AuthKind::Password);
+    let (store, id) = one_host_store(AuthKind::Password);
     let factory = Arc::new(FakeTerminalFactory::reports_latency(Latency::Measured(
         Duration::from_millis(32),
     )));
@@ -4390,8 +4350,8 @@ async fn the_tab_bar_shows_the_connection_latency_while_it_runs(cx: &mut TestApp
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window
-            .within("session-tree")
-            .double_click(("session-row", id.0), cx);
+            .within("host-tree")
+            .double_click(("host-row", id.0), cx);
     })
     .unwrap();
     // Transport events reach the engine on its 16ms batching timer.
@@ -4418,8 +4378,8 @@ async fn the_tab_bar_shows_the_connection_latency_while_it_runs(cx: &mut TestApp
 
 #[gpui_kit::test]
 async fn the_start_page_marks_recent_hosts_with_their_operating_system(cx: &mut TestAppContext) {
-    let mut store = SessionStore::empty();
-    let id = store.insert_unnotified(SessionDraft::new(
+    let mut store = HostStore::empty();
+    let id = store.insert_unnotified(HostDraft::new(
         "web-01",
         "10.0.1.12",
         22,
@@ -4436,9 +4396,9 @@ async fn the_start_page_marks_recent_hosts_with_their_operating_system(cx: &mut 
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find("recent-sessions").visible());
+        assert!(window.find("recent-hosts").visible());
         assert_eq!(
-            window.find(("recent-session-os", id.0)).label(),
+            window.find(("recent-host-os", id.0)).label(),
             Some("Ubuntu"),
             "开始页和主机树用同一个标记"
         );
@@ -4461,7 +4421,7 @@ struct FakeSftpProvider {
     slow_home: bool,
 }
 impl SftpTransportProvider for FakeSftpProvider {
-    fn create(&self, _: &SessionLogin) -> Box<dyn SftpTransport> {
+    fn create(&self, _: &HostLogin) -> Box<dyn SftpTransport> {
         Box::new(FakeSftpTransport {
             requests: self.requests.clone(),
             downloads: self.downloads.clone(),
@@ -4679,7 +4639,7 @@ fn open_workspace_with_services(
     cx.update(|cx| cx.set_reduce_motion(true));
     let mut workspace = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
-        let store = cx.new(|_| SessionStore::seed());
+        let store = cx.new(|_| HostStore::seed());
         let remote = Arc::new(FixedRemoteTerminalTransportProvider::new(Arc::new(
             FakeTerminalFactory::default(),
         )));
@@ -4705,7 +4665,7 @@ fn open_workspace_with_services(
 async fn open_test_explorer(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(OpenExplorer(SessionId(DB_01))), cx);
+        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
@@ -5468,7 +5428,7 @@ async fn click_remote_tool(
 #[gpui_kit::test]
 async fn sftp_toolbar_goes_up_root_home_back_and_forward(cx: &mut TestAppContext) {
     use shellrs::app::{ExplorerAction, ExplorerCommand};
-    use shellrs::session::BookmarkSide;
+    use shellrs::host::BookmarkSide;
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, workspace) = open_workspace_with_sftp(cx, provider);
     open_test_explorer(cx, handle).await;
@@ -5524,7 +5484,7 @@ async fn sftp_toolbar_goes_up_root_home_back_and_forward(cx: &mut TestAppContext
         assert_eq!(remote.back_target().as_deref(), Some("/home"));
     });
 
-    // Bookmarks belong to the session and the pane.
+    // Bookmarks belong to the host and the pane.
     cx.update_window(handle.into(), |_, window, cx| {
         window.dispatch_action(
             Box::new(ExplorerAction::new(
@@ -5542,12 +5502,12 @@ async fn sftp_toolbar_goes_up_root_home_back_and_forward(cx: &mut TestAppContext
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
         assert_eq!(
-            store.bookmarks(SessionId(DB_01), BookmarkSide::Remote),
+            store.bookmarks(HostId(DB_01), BookmarkSide::Remote),
             ["/home/tester"]
         );
         assert!(
             store
-                .bookmarks(SessionId(DB_01), BookmarkSide::Local)
+                .bookmarks(HostId(DB_01), BookmarkSide::Local)
                 .is_empty()
         );
     });
@@ -5571,7 +5531,7 @@ async fn sftp_toolbar_goes_up_root_home_back_and_forward(cx: &mut TestAppContext
                 .read(cx)
                 .store()
                 .read(cx)
-                .bookmarks(SessionId(DB_01), BookmarkSide::Remote)
+                .bookmarks(HostId(DB_01), BookmarkSide::Remote)
                 .is_empty()
         )
     });
@@ -5738,7 +5698,7 @@ async fn sftp_path_label_opens_ancestors_and_the_open_directory_dialog(cx: &mut 
 
 #[gpui_kit::test]
 async fn sftp_bookmark_dialog_adds_orders_removes_and_opens(cx: &mut TestAppContext) {
-    use shellrs::session::BookmarkSide;
+    use shellrs::host::BookmarkSide;
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, workspace) = open_workspace_with_sftp(cx, provider);
     open_test_explorer(cx, handle).await;
@@ -5748,7 +5708,7 @@ async fn sftp_bookmark_dialog_adds_orders_removes_and_opens(cx: &mut TestAppCont
                 .read(cx)
                 .store()
                 .read(cx)
-                .bookmarks(SessionId(DB_01), BookmarkSide::Remote)
+                .bookmarks(HostId(DB_01), BookmarkSide::Remote)
                 .to_vec()
         })
     };
@@ -5933,7 +5893,7 @@ async fn sftp_path_label_folds_the_middle_of_a_long_path(cx: &mut TestAppContext
 }
 
 /// An SFTP tab has a terminal tab's buttons: 打开 SFTP opens another tab of
-/// the session, and 重新连接 connects again, from a dropped connection or a
+/// the host, and 重新连接 connects again, from a dropped connection or a
 /// live one. Its connection, and why it dropped, show in red at the window's
 /// bottom left, so the list is never pushed around.
 /// A new SFTP tab splits its width half and half between the panes, with
@@ -5991,9 +5951,9 @@ async fn sftp_panes_keep_their_split_across_tab_switches(cx: &mut TestAppContext
     let dragged = local_width(cx);
     assert!(dragged < opened - px(100.), "{opened:?} → {dragged:?}");
 
-    // Another SFTP tab of the session comes to the front, then this one.
+    // Another SFTP tab of the host comes to the front, then this one.
     cx.update_window(handle.into(), |_, window, cx| {
-        window.dispatch_action(Box::new(OpenExplorer(SessionId(DB_01))), cx);
+        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -6172,19 +6132,14 @@ async fn sftp_tab_reconnects_from_its_tab_bar_and_reports_at_the_bottom_left(
     )
     .await;
 
-    // 打开 SFTP opens another tab of the same session.
+    // 打开 SFTP opens another tab of the same host.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click(("open-sftp", SFTP_TAB), cx);
     })
     .unwrap();
     cx.run_until_parked();
-    cx.update(|cx| {
-        assert_eq!(
-            workspace.read(cx).explorers_of(SessionId(DB_01), cx).len(),
-            2
-        )
-    });
+    cx.update(|cx| assert_eq!(workspace.read(cx).explorers_of(HostId(DB_01), cx).len(), 2));
 }
 
 /// Click a row in one pane, then press a key with the list focused.
@@ -6765,11 +6720,11 @@ async fn the_sftp_tab_shows_the_host_mark_like_its_terminal_tabs(cx: &mut TestAp
         assert_eq!(window.find(mark).label(), Some("未探测到系统"));
     })
     .unwrap();
-    // A terminal of the same session finds the system; the SFTP tab follows.
+    // A terminal of the same host finds the system; the SFTP tab follows.
     cx.update(|cx| {
         let store = workspace.read(cx).store().clone();
         store.update(cx, |store, cx| {
-            store.set_host_os(SessionId(DB_01), Some(HostOs::Ubuntu), cx)
+            store.set_host_os(HostId(DB_01), Some(HostOs::Ubuntu), cx)
         });
     });
     cx.run_until_parked();
@@ -6781,7 +6736,7 @@ async fn the_sftp_tab_shows_the_host_mark_like_its_terminal_tabs(cx: &mut TestAp
 }
 
 #[gpui_kit::test]
-async fn the_sftp_tab_can_be_renamed_and_follow_the_session_again(cx: &mut TestAppContext) {
+async fn the_sftp_tab_can_be_renamed_and_follow_the_host_again(cx: &mut TestAppContext) {
     use shellrs::app::RenameExplorer;
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, workspace) = open_workspace_with_sftp(cx, provider);
@@ -6789,7 +6744,7 @@ async fn the_sftp_tab_can_be_renamed_and_follow_the_session_again(cx: &mut TestA
     let tab = ("explorer-tab", SFTP_TAB);
     let default = cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
-        format!("{} · SFTP", store.session(SessionId(DB_01)).unwrap().name)
+        format!("{} · SFTP", store.host(HostId(DB_01)).unwrap().name)
     });
 
     cx.update_window(handle.into(), |_, window, cx| {
@@ -6822,7 +6777,7 @@ async fn the_sftp_tab_can_be_renamed_and_follow_the_session_again(cx: &mut TestA
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         // A closed dialog leaves nothing focused.
-        window.click("session-search", cx);
+        window.click("host-search", cx);
         window.dispatch_action(Box::new(RenameExplorer(ExplorerId(SFTP_TAB))), cx);
     })
     .unwrap();
@@ -6901,13 +6856,13 @@ async fn sftp_clicking_empty_list_space_makes_that_pane_current_at_once(cx: &mut
 
 #[gpui_kit::test]
 async fn opening_sftp_again_opens_another_tab_of_its_own(cx: &mut TestAppContext) {
-    use shellrs::app::{DisconnectSession, ExplorerAction, ExplorerCommand};
+    use shellrs::app::{DisconnectHost, ExplorerAction, ExplorerCommand};
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, workspace) = open_workspace_with_sftp(cx, provider);
     open_test_explorer(cx, handle).await;
     let second = ExplorerId(SFTP_TAB + 1);
     cx.update_window(handle.into(), |_, window, cx| {
-        window.dispatch_action(Box::new(OpenExplorer(SessionId(DB_01))), cx);
+        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
@@ -6944,7 +6899,7 @@ async fn opening_sftp_again_opens_another_tab_of_its_own(cx: &mut TestAppContext
         cx.update(|cx| {
             workspace
                 .read(cx)
-                .explorers_of(SessionId(DB_01), cx)
+                .explorers_of(HostId(DB_01), cx)
                 .iter()
                 .map(|panel| panel.read(cx).remote().read(cx).path())
                 .collect::<Vec<_>>()
@@ -6952,7 +6907,7 @@ async fn opening_sftp_again_opens_another_tab_of_its_own(cx: &mut TestAppContext
     };
     assert_eq!(paths(cx), ["/home/tester", "/etc"]);
 
-    // Closing one keeps the other, and the session stays connected.
+    // Closing one keeps the other, and the host stays connected.
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click(("close-explorer", second.0), cx);
@@ -6963,24 +6918,24 @@ async fn opening_sftp_again_opens_another_tab_of_its_own(cx: &mut TestAppContext
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
         assert_eq!(
-            store.session(SessionId(DB_01)).unwrap().state,
+            store.host(HostId(DB_01)).unwrap().state,
             ConnectionState::Connected
         );
     });
 
-    // Disconnecting the session disconnects every SFTP tab of it.
+    // Disconnecting the host disconnects every SFTP tab of it.
     cx.update_window(handle.into(), |_, window, cx| {
-        window.dispatch_action(Box::new(OpenExplorer(SessionId(DB_01))), cx);
+        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx);
     })
     .unwrap();
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
-        window.dispatch_action(Box::new(DisconnectSession(SessionId(DB_01))), cx);
+        window.dispatch_action(Box::new(DisconnectHost(HostId(DB_01))), cx);
     })
     .unwrap();
     cx.run_until_parked();
     cx.update(|cx| {
-        let explorers = workspace.read(cx).explorers_of(SessionId(DB_01), cx);
+        let explorers = workspace.read(cx).explorers_of(HostId(DB_01), cx);
         assert_eq!(explorers.len(), 2);
         assert!(
             explorers
@@ -7000,7 +6955,7 @@ async fn sftp_connecting_shows_under_the_list_without_moving_it(cx: &mut TestApp
     let (handle, _) = open_workspace_with_sftp(cx, provider);
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(OpenExplorer(SessionId(DB_01))), cx);
+        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -7051,7 +7006,7 @@ async fn sftp_list_says_what_it_waits_for_before_saying_empty(cx: &mut TestAppCo
     };
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(OpenExplorer(SessionId(DB_01))), cx);
+        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -7284,7 +7239,7 @@ enum ForwardScript {
 #[derive(Clone)]
 struct FakeForwardRun {
     rule: ForwardRule,
-    session: SessionId,
+    host: HostId,
     /// The worker's end of the event channel: a test sends what a real
     /// forward would report later (a dropped connection, a failure).
     events: async_channel::Sender<ForwardEvent>,
@@ -7324,11 +7279,11 @@ impl FakeForwardProvider {
 }
 
 impl ForwardTransportProvider for FakeForwardProvider {
-    fn create(&self, rule: &ForwardRule, _: &SessionLogin) -> Box<dyn ForwardTransport> {
+    fn create(&self, rule: &ForwardRule, _: &HostLogin) -> Box<dyn ForwardTransport> {
         Box::new(FakeForwardTransport {
             script: self.script.clone(),
             rule: rule.clone(),
-            session: rule.session,
+            host: rule.host,
             runs: self.runs.clone(),
         })
     }
@@ -7337,7 +7292,7 @@ impl ForwardTransportProvider for FakeForwardProvider {
 struct FakeForwardTransport {
     script: ForwardScript,
     rule: ForwardRule,
-    session: SessionId,
+    host: HostId,
     runs: Arc<Mutex<Vec<FakeForwardRun>>>,
 }
 
@@ -7353,7 +7308,7 @@ impl ForwardTransport for FakeForwardTransport {
             .unwrap_or_else(|error| error.into_inner())
             .push(FakeForwardRun {
                 rule: self.rule.clone(),
-                session: self.session,
+                host: self.host,
                 events: events.clone(),
                 stopped: stopped.clone(),
             });
@@ -7396,7 +7351,7 @@ impl ForwardTransport for FakeForwardTransport {
 /// The workspace with a fake forward provider the test keeps hold of.
 fn open_workspace_with_forwards(
     cx: &mut TestAppContext,
-    store: SessionStore,
+    store: HostStore,
     provider: Arc<FakeForwardProvider>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
     open_sized_workspace_with_forwards(cx, store, provider, size(px(1280.), px(800.)))
@@ -7404,7 +7359,7 @@ fn open_workspace_with_forwards(
 
 fn open_sized_workspace_with_forwards(
     cx: &mut TestAppContext,
-    store: SessionStore,
+    store: HostStore,
     provider: Arc<FakeForwardProvider>,
     window_size: gpui_kit::Size<gpui_kit::Pixels>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
@@ -7454,20 +7409,20 @@ fn in_frame<R>(
     result
 }
 
-/// A local forward through a seeded session: `port` on this machine to the
+/// A local forward through a seeded host: `port` on this machine to the
 /// database behind the server.
-fn local_forward(session: u64, port: u16) -> ForwardDraft {
+fn local_forward(host: u64, port: u16) -> ForwardDraft {
     ForwardDraft::new(
         ForwardKind::Local,
-        SessionId(session),
+        HostId(host),
         ForwardEndpoint::new("127.0.0.1", port),
         Some(ForwardEndpoint::new("db.internal", 3306)),
     )
 }
 
 /// The seeded store with one rule, 「数据库」, through db-01.
-fn store_with_forward() -> (SessionStore, ForwardId) {
-    let mut store = SessionStore::seed();
+fn store_with_forward() -> (HostStore, ForwardId) {
+    let mut store = HostStore::seed();
     let id = store
         .insert_forward_unnotified(local_forward(DB_01, 8080).with_name("数据库"))
         .expect("db-01 is seeded");
@@ -7499,10 +7454,10 @@ async fn wait_for_forward_status(
 }
 
 #[gpui_kit::test]
-async fn the_title_bar_switches_the_sidebar_between_sessions_and_forwards(cx: &mut TestAppContext) {
+async fn the_title_bar_switches_the_sidebar_between_hosts_and_forwards(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace_with_forwards(
         cx,
-        SessionStore::seed(),
+        HostStore::seed(),
         Arc::new(FakeForwardProvider::default()),
     );
     cx.run_until_parked();
@@ -7512,28 +7467,28 @@ async fn the_title_bar_switches_the_sidebar_between_sessions_and_forwards(cx: &m
         })
     };
 
-    // Sessions come first, and the switch says so.
-    assert!(showing(cx, "session-search"));
+    // Hosts come first, and the switch says so.
+    assert!(showing(cx, "host-search"));
     assert!(!showing(cx, "forward-search"));
     assert!(showing(cx, "new-group"));
     in_frame(cx, handle, |window, _| {
-        assert_eq!(window.find("show-sessions").checked(), Some(true));
+        assert_eq!(window.find("show-hosts").checked(), Some(true));
         assert_eq!(window.find("show-forwards").checked(), Some(false));
         // A new host, the usual addition, comes before a new group.
-        let host = window.find("new-session-panel").bounds();
+        let host = window.find("new-host-panel").bounds();
         let group = window.find("new-group").bounds();
         assert!(host.right() <= group.left(), "{host:?} {group:?}");
     });
 
     show_forwards(cx, handle).await;
-    assert!(!showing(cx, "session-search"));
+    assert!(!showing(cx, "host-search"));
     // The dock's title bar and toolbar follow the list.
     assert!(showing(cx, "new-forward"));
     assert!(!showing(cx, "new-group"));
     // What both lists share stays.
     assert!(showing(cx, "open-settings"));
     in_frame(cx, handle, |window, _| {
-        assert_eq!(window.find("show-sessions").checked(), Some(false));
+        assert_eq!(window.find("show-hosts").checked(), Some(false));
         assert_eq!(window.find("show-forwards").checked(), Some(true));
         assert_eq!(window.find("forward-empty").label(), Some("还没有端口转发"));
     });
@@ -7549,22 +7504,22 @@ async fn the_title_bar_switches_the_sidebar_between_sessions_and_forwards(cx: &m
 
     // Hidden, the sidebar marks neither; picking a list brings it back.
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(ToggleSessionPanel), cx);
+        window.dispatch_action(Box::new(ToggleHostPanel), cx);
     });
     assert!(!showing(cx, "forward-search"));
     in_frame(cx, handle, |window, _| {
         assert_eq!(window.find("show-forwards").checked(), Some(false));
     });
-    in_frame(cx, handle, |window, cx| window.click("show-sessions", cx));
-    assert!(showing(cx, "session-search"));
+    in_frame(cx, handle, |window, cx| window.click("show-hosts", cx));
+    assert!(showing(cx, "host-search"));
     assert!(!showing(cx, "forward-search"));
-    // And the session list still takes its own commands.
+    // And the host list still takes its own commands.
     in_frame(cx, handle, |window, cx| {
         window.activate_window();
         window.dispatch_action(Box::new(FocusSearch), cx);
     });
     in_frame(cx, handle, |window, _| {
-        assert_eq!(window.find("session-search").focused(), Some(true));
+        assert_eq!(window.find("host-search").focused(), Some(true));
     });
 }
 
@@ -7572,16 +7527,16 @@ async fn the_title_bar_switches_the_sidebar_between_sessions_and_forwards(cx: &m
 async fn a_forward_is_created_edited_and_deleted_through_its_dialog(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace_with_forwards(
         cx,
-        SessionStore::seed(),
+        HostStore::seed(),
         Arc::new(FakeForwardProvider::default()),
     );
     cx.run_until_parked();
     show_forwards(cx, handle).await;
     // The second host of the list, which the test picks below. It is not
     // the one whose tab is in front: a new rule does not take that one.
-    let session = cx.update(|cx| {
+    let host = cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
-        let second = store.sessions()[1].clone();
+        let second = store.hosts()[1].clone();
         assert_ne!(store.active().map(|active| active.id), Some(second.id));
         second
     });
@@ -7603,8 +7558,8 @@ async fn a_forward_is_created_edited_and_deleted_through_its_dialog(cx: &mut Tes
             Some("请选择端口转发经由的主机")
         );
         // The field shows its prompt, not a host.
-        assert_eq!(window.find("forward-session").value(), Some("请选择主机"));
-        window.within("forward-session").click("input", cx);
+        assert_eq!(window.find("forward-host").value(), Some("请选择主机"));
+        window.within("forward-host").click("input", cx);
     });
     // The second entry of the list that opened.
     for key in ["down", "down", "enter"] {
@@ -7612,8 +7567,8 @@ async fn a_forward_is_created_edited_and_deleted_through_its_dialog(cx: &mut Tes
     }
     in_frame(cx, handle, |window, cx| {
         assert_eq!(
-            window.find("forward-session").value(),
-            Some(format!("{}（{}）", session.name, session.address()).as_str())
+            window.find("forward-host").value(),
+            Some(format!("{}（{}）", host.name, host.endpoint()).as_str())
         );
         window.click("forward-bind-port", cx);
         window.input("8080", cx);
@@ -7645,7 +7600,7 @@ async fn a_forward_is_created_edited_and_deleted_through_its_dialog(cx: &mut Tes
         assert_eq!(store.forwards().len(), 1);
         let rule = &store.forwards()[0];
         assert_eq!(rule.kind, ForwardKind::Local);
-        assert_eq!(rule.session, session.id);
+        assert_eq!(rule.host, host.id);
         assert_eq!(rule.bind, ForwardEndpoint::new("127.0.0.1", 8080));
         assert_eq!(rule.target, Some(ForwardEndpoint::new("db.internal", 3306)));
         assert!(!rule.auto_start);
@@ -7792,7 +7747,7 @@ async fn a_forward_starts_and_stops_from_its_row_and_from_the_keyboard(cx: &mut 
     let runs = provider.runs();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].rule.id, first);
-    assert_eq!(runs[0].session, SessionId(DB_01));
+    assert_eq!(runs[0].host, HostId(DB_01));
     in_frame(cx, handle, |window, _| {
         // The title bar says a forward is running, whatever list is up.
         assert_eq!(
@@ -7808,22 +7763,16 @@ async fn a_forward_starts_and_stops_from_its_row_and_from_the_keyboard(cx: &mut 
         .unwrap();
     wait_for_forward_status(cx, handle, first, "运行中，3 个连接").await;
 
-    // A forward is on its own: 断开连接 on its session leaves it running,
-    // and the session does not read as connected because of it.
+    // A forward is on its own: 断开连接 on its host leaves it running,
+    // and the host does not read as connected because of it.
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(DisconnectSession(SessionId(DB_01))), cx);
+        window.dispatch_action(Box::new(DisconnectHost(HostId(DB_01))), cx);
     });
     cx.update(|cx| {
         let workspace = workspace.read(cx);
         assert!(workspace.forwards().read(cx).is_active(first));
         let store = workspace.store().read(cx);
-        assert!(
-            !store
-                .session(SessionId(DB_01))
-                .unwrap()
-                .state
-                .is_connected()
-        );
+        assert!(!store.host(HostId(DB_01)).unwrap().state.is_connected());
     });
     assert_eq!(provider.stopped(), 0);
 
@@ -7945,7 +7894,7 @@ async fn a_forward_that_fails_says_so_in_its_row_and_in_a_notification(cx: &mut 
     )));
     let (handle, workspace) = open_workspace_with_forwards(cx, store, provider.clone());
     cx.run_until_parked();
-    // From the session list: the forward list is not even showing.
+    // From the host list: the forward list is not even showing.
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(StartForward(id)), cx);
     });
@@ -8034,7 +7983,7 @@ async fn a_running_forward_reports_reconnecting_and_giving_up(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
-async fn deleting_a_session_or_its_group_takes_the_forwards_through_it(cx: &mut TestAppContext) {
+async fn deleting_a_host_or_its_group_takes_the_forwards_through_it(cx: &mut TestAppContext) {
     let (mut store, database) = store_with_forward();
     let replica = store
         .insert_forward_unnotified(local_forward(DB_01, 8081))
@@ -8058,9 +8007,9 @@ async fn deleting_a_session_or_its_group_takes_the_forwards_through_it(cx: &mut 
     });
     wait_for_forward_status(cx, handle, web, "运行中").await;
 
-    // The session goes, and both of its rules with it; the running one stops.
+    // The host goes, and both of its rules with it; the running one stops.
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(DeleteSession(SessionId(DB_01))), cx);
+        window.dispatch_action(Box::new(DeleteHost(HostId(DB_01))), cx);
     });
     in_frame(cx, handle, |window, cx| window.click("ok", cx));
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
@@ -8082,7 +8031,7 @@ async fn deleting_a_session_or_its_group_takes_the_forwards_through_it(cx: &mut 
         assert!(workspace.forwards().read(cx).is_active(web));
     });
 
-    // A group takes the rules of every session inside it.
+    // A group takes the rules of every host inside it.
     in_frame(cx, handle, |window, cx| {
         window.click(("forward-row", web.0), cx);
         window.dispatch_action(Box::new(DeleteGroup(GroupId(PRODUCTION))), cx);
@@ -8140,9 +8089,9 @@ async fn a_running_forward_restarts_when_what_it_does_changes(cx: &mut TestAppCo
     // So does the server moving.
     cx.update(|cx| {
         store.update(cx, |store, cx| {
-            let mut draft = store.session(SessionId(DB_01)).unwrap().draft();
-            draft.host = "10.0.2.99".into();
-            store.update(SessionId(DB_01), draft, cx)
+            let mut draft = store.host(HostId(DB_01)).unwrap().draft();
+            draft.address = "10.0.2.99".into();
+            store.update(HostId(DB_01), draft, cx)
         })
     });
     cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
@@ -8193,9 +8142,9 @@ async fn forwards_marked_to_start_with_the_application_do(cx: &mut TestAppContex
 async fn forwards_are_read_back_from_the_database(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("temp dir");
     let path = directory.path().join("shellrs.db");
-    let store = SessionStore::load(SessionDatabase::open(&path).expect("database opened"))
-        .expect("store loaded");
-    let session = SessionDraft::new(
+    let store =
+        HostStore::load(HostDatabase::open(&path).expect("database opened")).expect("store loaded");
+    let host = HostDraft::new(
         "db-01",
         "10.0.2.5",
         22,
@@ -8207,14 +8156,14 @@ async fn forwards_are_read_back_from_the_database(cx: &mut TestAppContext) {
         open_workspace_with_forwards(cx, store, Arc::new(FakeForwardProvider::default()));
     cx.run_until_parked();
     let store = cx.update(|cx| workspace.read(cx).store().clone());
-    let (session, rule) = cx.update(|cx| {
+    let (host, rule) = cx.update(|cx| {
         store.update(cx, |store, cx| {
-            let session = store.insert(session, cx);
+            let host = store.insert(host, cx);
             let rule = store
                 .insert_forward(
                     ForwardDraft::new(
                         ForwardKind::Remote,
-                        session,
+                        host,
                         ForwardEndpoint::new("0.0.0.0", 9000),
                         Some(ForwardEndpoint::new("localhost", 3000)),
                     )
@@ -8222,8 +8171,8 @@ async fn forwards_are_read_back_from_the_database(cx: &mut TestAppContext) {
                     .with_auto_start(true),
                     cx,
                 )
-                .expect("the session exists");
-            (session, rule)
+                .expect("the host exists");
+            (host, rule)
         })
     });
     cx.run_until_parked();
@@ -8234,28 +8183,28 @@ async fn forwards_are_read_back_from_the_database(cx: &mut TestAppContext) {
         );
     });
 
-    let reloaded = SessionStore::load(SessionDatabase::open(&path).expect("database reopened"))
+    let reloaded = HostStore::load(HostDatabase::open(&path).expect("database reopened"))
         .expect("store reloaded");
     assert_eq!(reloaded.forwards().len(), 1);
     let saved = &reloaded.forwards()[0];
     assert_eq!(saved.id, rule);
-    assert_eq!(saved.session, session);
+    assert_eq!(saved.host, host);
     assert_eq!(saved.kind, ForwardKind::Remote);
     assert_eq!(saved.name.as_ref(), "演示站");
     assert_eq!(saved.bind, ForwardEndpoint::new("0.0.0.0", 9000));
     assert_eq!(saved.target, Some(ForwardEndpoint::new("localhost", 3000)));
     assert!(saved.auto_start);
 
-    // Deleting the session on disk takes the rule with it.
-    cx.update(|cx| store.update(cx, |store, cx| store.remove(session, cx)));
-    let reloaded = SessionStore::load(SessionDatabase::open(&path).expect("database reopened"))
+    // Deleting the host on disk takes the rule with it.
+    cx.update(|cx| store.update(cx, |store, cx| store.remove(host, cx)));
+    let reloaded = HostStore::load(HostDatabase::open(&path).expect("database reopened"))
         .expect("store reloaded");
     assert!(reloaded.forwards().is_empty());
 }
 
 #[gpui_kit::test]
 async fn the_forward_dialog_and_a_long_row_fit_the_smallest_window(cx: &mut TestAppContext) {
-    let mut store = SessionStore::seed();
+    let mut store = HostStore::seed();
     let id = store
         .insert_forward_unnotified(
             local_forward(DB_01, 8080)
@@ -8311,13 +8260,13 @@ async fn the_forward_dialog_and_a_long_row_fit_the_smallest_window(cx: &mut Test
 async fn a_click_beside_a_dialog_does_not_close_it(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace_with_forwards(
         cx,
-        SessionStore::seed(),
+        HostStore::seed(),
         Arc::new(FakeForwardProvider::default()),
     );
     cx.run_until_parked();
 
     for (open, field) in [
-        ("new-session", "session-name"),
+        ("new-host", "host-name"),
         ("new-group", "group-name"),
         ("new-forward", "forward-name"),
         ("new-credential", "credential-name"),
@@ -8396,7 +8345,7 @@ async fn the_three_kinds_of_forward_share_one_row(cx: &mut TestAppContext) {
         assert!(cards[2].right() <= picture.right() + (picture.left() - cards[0].left()));
         // Below the picture, the name and the host each take a row.
         let name = window.find("forward-name").bounds();
-        let host = window.find("forward-session").bounds();
+        let host = window.find("forward-host").bounds();
         assert!(host.top() > name.bottom(), "{host:?} beside {name:?}");
         assert_eq!(
             (host.left(), host.size.width),
@@ -8433,7 +8382,7 @@ async fn the_forward_diagram_keeps_showing_its_flow(cx: &mut TestAppContext) {
     };
 
     in_frame(cx, handle, |window, cx| {
-        window.click("session-search", cx);
+        window.click("host-search", cx);
         window.dispatch_action(Box::new(EditForward(id)), cx);
     });
     let entrance = dot(cx).expect("the flow sets out when the dialog opens");
@@ -8465,7 +8414,7 @@ async fn the_forward_diagram_keeps_showing_its_flow(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-async fn disconnecting_a_session_leaves_a_forward_question_open(cx: &mut TestAppContext) {
+async fn disconnecting_a_host_leaves_a_forward_question_open(cx: &mut TestAppContext) {
     let (store, id) = store_with_forward();
     let provider = Arc::new(FakeForwardProvider::with_script(ForwardScript::AsksTrust));
     let (handle, workspace) = open_workspace_with_forwards(cx, store, provider.clone());
@@ -8477,10 +8426,10 @@ async fn disconnecting_a_session_leaves_a_forward_question_open(cx: &mut TestApp
         window.try_find("cancel").is_some()
     })
     .await;
-    // 断开连接 is about the session's tabs; the forward goes on asking.
+    // 断开连接 is about the host's tabs; the forward goes on asking.
     in_frame(cx, handle, |window, cx| {
         // The dialog holds the focus, inside the workspace.
-        window.dispatch_action(Box::new(DisconnectSession(SessionId(DB_01))), cx);
+        window.dispatch_action(Box::new(DisconnectHost(HostId(DB_01))), cx);
     });
     in_frame(cx, handle, |window, cx| {
         assert!(window.try_find("cancel").is_some());
@@ -8503,7 +8452,7 @@ async fn disconnecting_a_session_leaves_a_forward_question_open(cx: &mut TestApp
 fn a_problem_found_while_the_window_is_built_is_shown_once_it_is_open(cx: &mut TestAppContext) {
     cx.update(shellrs::init);
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
-        let store = cx.new(|_| SessionStore::empty());
+        let store = cx.new(|_| HostStore::empty());
         let remote = Arc::new(FixedRemoteTerminalTransportProvider::new(Arc::new(
             FakeTerminalFactory::default(),
         )));
@@ -8533,7 +8482,7 @@ fn a_problem_found_while_the_window_is_built_is_shown_once_it_is_open(cx: &mut T
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(window.notifications(cx).len(), 1);
-        assert!(window.find("session-search").visible());
+        assert!(window.find("host-search").visible());
     })
     .unwrap();
 }
@@ -8547,11 +8496,11 @@ fn a_problem_found_while_the_window_is_built_is_shown_once_it_is_open(cx: &mut T
 #[derive(Default)]
 struct RecordingRemoteProvider {
     factory: Arc<FakeTerminalFactory>,
-    logins: Mutex<Vec<SessionLogin>>,
+    logins: Mutex<Vec<HostLogin>>,
 }
 
 impl RecordingRemoteProvider {
-    fn logins(&self) -> Vec<SessionLogin> {
+    fn logins(&self) -> Vec<HostLogin> {
         self.logins
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -8560,7 +8509,7 @@ impl RecordingRemoteProvider {
 }
 
 impl RemoteTerminalTransportProvider for RecordingRemoteProvider {
-    fn factory_for(&self, login: &SessionLogin) -> SharedTerminalTransportFactory {
+    fn factory_for(&self, login: &HostLogin) -> SharedTerminalTransportFactory {
         self.logins
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -8574,7 +8523,7 @@ impl RemoteTerminalTransportProvider for RecordingRemoteProvider {
 /// fields stay where they were found.
 fn open_workspace_with_credentials(
     cx: &mut TestAppContext,
-    store: SessionStore,
+    store: HostStore,
     remote: Arc<RecordingRemoteProvider>,
     tester: Arc<FakeConnectionTester>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
@@ -8626,10 +8575,8 @@ async fn wait_for_dialog_to_close(cx: &mut TestAppContext, handle: WindowHandle<
 
 /// A store with one password credential, 「运维」 as `deploy`, and the host
 /// db-01 logging in with it; the keychain holds the credential's password.
-fn store_with_credential(
-    secrets: Arc<InMemorySecretStore>,
-) -> (SessionStore, CredentialId, SessionId) {
-    let mut store = SessionStore::empty();
+fn store_with_credential(secrets: Arc<InMemorySecretStore>) -> (HostStore, CredentialId, HostId) {
+    let mut store = HostStore::empty();
     let credential = store.insert_credential_unnotified(CredentialDraft::new(
         "运维",
         CredentialKind::Password,
@@ -8641,32 +8588,32 @@ fn store_with_credential(
             "hunter2",
         )
         .unwrap();
-    let session = store.insert_unnotified(
-        SessionDraft::new("db-01", "10.0.2.5", 22, "root", AuthKind::Password, None)
+    let host = store.insert_unnotified(
+        HostDraft::new("db-01", "10.0.2.5", 22, "root", AuthKind::Password, None)
             .with_credential(credential),
     );
-    (store.with_secrets(secrets), credential, session)
+    (store.with_secrets(secrets), credential, host)
 }
 
 #[gpui_kit::test]
 async fn the_title_bar_switches_the_sidebar_to_credentials(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace_with_credentials(
         cx,
-        SessionStore::seed(),
+        HostStore::seed(),
         Arc::new(RecordingRemoteProvider::default()),
         Arc::new(FakeConnectionTester::default()),
     );
     show_credentials(cx, handle).await;
     in_frame(cx, handle, |window, _| {
         assert_eq!(window.find("show-credentials").checked(), Some(true));
-        assert_eq!(window.find("show-sessions").checked(), Some(false));
+        assert_eq!(window.find("show-hosts").checked(), Some(false));
         assert_eq!(window.find("show-forwards").checked(), Some(false));
         assert_eq!(window.find("credential-empty").label(), Some("还没有凭据"));
         // The dock's toolbar follows the list; the settings footer stays.
         assert!(window.find("new-credential").visible());
         assert!(window.try_find("new-group").is_none());
         assert!(window.find("open-settings").visible());
-        assert!(window.try_find("session-search").is_none());
+        assert!(window.try_find("host-search").is_none());
     });
 
     // The search shortcut goes to the list that is up.
@@ -8678,9 +8625,9 @@ async fn the_title_bar_switches_the_sidebar_to_credentials(cx: &mut TestAppConte
         assert_eq!(window.find("credential-search").focused(), Some(true));
     });
 
-    in_frame(cx, handle, |window, cx| window.click("show-sessions", cx));
+    in_frame(cx, handle, |window, cx| window.click("show-hosts", cx));
     in_frame(cx, handle, |window, _| {
-        assert!(window.find("session-search").visible());
+        assert!(window.find("host-search").visible());
         assert!(window.try_find("credential-search").is_none());
         assert_eq!(window.find("show-credentials").checked(), Some(false));
     });
@@ -8691,7 +8638,7 @@ async fn a_new_password_credential_keeps_its_password_in_the_keychain(cx: &mut T
     let secrets = Arc::new(InMemorySecretStore::default());
     let (handle, workspace) = open_workspace_with_credentials(
         cx,
-        SessionStore::empty().with_secrets(secrets.clone()),
+        HostStore::empty().with_secrets(secrets.clone()),
         Arc::new(RecordingRemoteProvider::default()),
         Arc::new(FakeConnectionTester::default()),
     );
@@ -8746,7 +8693,7 @@ async fn a_new_password_credential_keeps_its_password_in_the_keychain(cx: &mut T
 async fn the_credential_kind_decides_which_fields_show(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace_with_credentials(
         cx,
-        SessionStore::empty(),
+        HostStore::empty(),
         Arc::new(RecordingRemoteProvider::default()),
         Arc::new(FakeConnectionTester::default()),
     );
@@ -8805,7 +8752,7 @@ async fn the_credential_kind_decides_which_fields_show(cx: &mut TestAppContext) 
 
 #[gpui_kit::test]
 async fn the_credential_list_moves_with_the_arrow_keys_and_edits_on_enter(cx: &mut TestAppContext) {
-    let mut store = SessionStore::empty();
+    let mut store = HostStore::empty();
     let first = store.insert_credential_unnotified(CredentialDraft::new(
         "运维",
         CredentialKind::Password,
@@ -8855,42 +8802,39 @@ async fn a_host_can_use_a_credential_instead_of_typing_a_login(cx: &mut TestAppC
         Arc::new(RecordingRemoteProvider::default()),
         Arc::new(FakeConnectionTester::default()),
     );
-    in_frame(cx, handle, |window, cx| window.click("new-session", cx));
+    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
     in_frame(cx, handle, |window, cx| {
-        window.click("session-name", cx);
+        window.click("host-name", cx);
         window.input("web-01", cx);
-        window.click("session-host", cx);
+        window.click("host-address", cx);
         window.input("10.0.1.12", cx);
-        window.within("session-auth-source").click(1usize, cx);
+        window.within("host-auth-source").click(1usize, cx);
     });
     in_frame(cx, handle, |window, cx| {
         // The credential brings the user and the secret: neither is asked.
-        assert!(window.try_find("session-user").is_none());
-        assert!(window.try_find("session-password").is_none());
-        assert_eq!(
-            window.find("session-credential").value(),
-            Some("请选择凭据")
-        );
+        assert!(window.try_find("host-user").is_none());
+        assert!(window.try_find("host-password").is_none());
+        assert_eq!(window.find("host-credential").value(), Some("请选择凭据"));
         window.click("commit", cx);
     });
     in_frame(cx, handle, |window, cx| {
         assert_eq!(window.find("form-error").label(), Some("请选择凭据"));
-        window.within("session-credential").click("input", cx);
+        window.within("host-credential").click("input", cx);
     });
     for key in ["down", "enter"] {
         in_frame(cx, handle, |window, cx| window.press(key, cx));
     }
     in_frame(cx, handle, |window, cx| {
         assert_eq!(
-            window.find("session-credential").value(),
+            window.find("host-credential").value(),
             Some("运维（deploy · 密码）")
         );
         assert_eq!(
-            window.find("session-credential-summary").label(),
+            window.find("host-credential-summary").label(),
             Some("以 deploy 登录，使用凭据保存的密码")
         );
         // Off the select first: a focused select opens on the commit.
-        window.click("session-name", cx);
+        window.click("host-name", cx);
         window.click("commit", cx);
     });
     wait_for_dialog_to_close(cx, handle).await;
@@ -8898,9 +8842,9 @@ async fn a_host_can_use_a_credential_instead_of_typing_a_login(cx: &mut TestAppC
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
         let created = store
-            .sessions()
+            .hosts()
             .iter()
-            .find(|session| session.name == "web-01")
+            .find(|host| host.name == "web-01")
             .expect("web-01 inserted");
         assert_eq!(created.credential, Some(credential));
         assert_eq!(created.user.as_ref(), "deploy");
@@ -8913,7 +8857,7 @@ async fn a_host_can_use_a_credential_instead_of_typing_a_login(cx: &mut TestAppC
 #[gpui_kit::test]
 async fn testing_a_connection_with_a_credential_uses_the_saved_login(cx: &mut TestAppContext) {
     let secrets = Arc::new(InMemorySecretStore::default());
-    let (store, _, session) = store_with_credential(secrets);
+    let (store, _, host) = store_with_credential(secrets);
     let tester = Arc::new(FakeConnectionTester::default());
     let (handle, _) = open_workspace_with_credentials(
         cx,
@@ -8922,15 +8866,15 @@ async fn testing_a_connection_with_a_credential_uses_the_saved_login(cx: &mut Te
         tester.clone(),
     );
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(EditSession(session)), cx)
+        window.dispatch_action(Box::new(EditHost(host)), cx)
     });
     in_frame(cx, handle, |window, cx| {
         // A host using a credential opens that way.
         assert_eq!(
-            window.find("session-credential").value(),
+            window.find("host-credential").value(),
             Some("运维（deploy · 密码）")
         );
-        assert!(window.try_find("session-user").is_none());
+        assert!(window.try_find("host-user").is_none());
         window.click("test-connection", cx);
     });
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
@@ -8949,7 +8893,7 @@ async fn testing_a_connection_with_a_credential_uses_the_saved_login(cx: &mut Te
 #[gpui_kit::test]
 async fn a_terminal_logs_in_with_its_credentials_login(cx: &mut TestAppContext) {
     let secrets = Arc::new(InMemorySecretStore::default());
-    let (store, credential, session) = store_with_credential(secrets);
+    let (store, credential, host) = store_with_credential(secrets);
     let secret = store.credential(credential).unwrap().password_secret();
     let remote = Arc::new(RecordingRemoteProvider::default());
     let (handle, _) = open_workspace_with_credentials(
@@ -8959,7 +8903,7 @@ async fn a_terminal_logs_in_with_its_credentials_login(cx: &mut TestAppContext) 
         Arc::new(FakeConnectionTester::default()),
     );
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(ConnectSession(session)), cx)
+        window.dispatch_action(Box::new(ConnectHost(host)), cx)
     });
     let logins = remote.logins();
     assert_eq!(logins.len(), 1);
@@ -8971,8 +8915,8 @@ async fn a_terminal_logs_in_with_its_credentials_login(cx: &mut TestAppContext) 
 #[gpui_kit::test]
 async fn editing_a_credentials_user_reconnects_the_hosts_using_it(cx: &mut TestAppContext) {
     let secrets = Arc::new(InMemorySecretStore::default());
-    let (mut store, credential, session) = store_with_credential(secrets);
-    let other = store.insert_unnotified(SessionDraft::new(
+    let (mut store, credential, host) = store_with_credential(secrets);
+    let other = store.insert_unnotified(HostDraft::new(
         "web-01",
         "10.0.1.12",
         22,
@@ -8987,9 +8931,9 @@ async fn editing_a_credentials_user_reconnects_the_hosts_using_it(cx: &mut TestA
         remote.clone(),
         Arc::new(FakeConnectionTester::default()),
     );
-    for id in [session, other] {
+    for id in [host, other] {
         in_frame(cx, handle, |window, cx| {
-            window.dispatch_action(Box::new(ConnectSession(id)), cx)
+            window.dispatch_action(Box::new(ConnectHost(id)), cx)
         });
     }
     cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
@@ -8997,8 +8941,8 @@ async fn editing_a_credentials_user_reconnects_the_hosts_using_it(cx: &mut TestA
             .read(cx)
             .store()
             .read(cx)
-            .session(session)
-            .is_some_and(|session| session.state.is_connected())
+            .host(host)
+            .is_some_and(|host| host.state.is_connected())
     })
     .await;
     assert_eq!(remote.logins().len(), 2);
@@ -9041,11 +8985,8 @@ async fn editing_a_credentials_user_reconnects_the_hosts_using_it(cx: &mut TestA
     assert_eq!(logins[2].user, "admin");
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
-        assert_eq!(
-            store.session(session).unwrap().address(),
-            "admin@10.0.2.5:22"
-        );
-        assert_eq!(store.session(other).unwrap().user.as_ref(), "root");
+        assert_eq!(store.host(host).unwrap().endpoint(), "admin@10.0.2.5:22");
+        assert_eq!(store.host(other).unwrap().user.as_ref(), "root");
     });
 }
 
@@ -9054,7 +8995,7 @@ async fn deleting_a_used_credential_leaves_its_hosts_connected_and_logging_in_on
     cx: &mut TestAppContext,
 ) {
     let secrets = Arc::new(InMemorySecretStore::default());
-    let (store, credential, session) = store_with_credential(secrets.clone());
+    let (store, credential, host) = store_with_credential(secrets.clone());
     let secret = store.credential(credential).unwrap().password_secret();
     let remote = Arc::new(RecordingRemoteProvider::default());
     let (handle, workspace) = open_workspace_with_credentials(
@@ -9064,7 +9005,7 @@ async fn deleting_a_used_credential_leaves_its_hosts_connected_and_logging_in_on
         Arc::new(FakeConnectionTester::default()),
     );
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(ConnectSession(session)), cx)
+        window.dispatch_action(Box::new(ConnectHost(host)), cx)
     });
     show_credentials(cx, handle).await;
     in_frame(cx, handle, |window, cx| {
@@ -9081,7 +9022,7 @@ async fn deleting_a_used_credential_leaves_its_hosts_connected_and_logging_in_on
     cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
         assert!(store.credentials().is_empty());
-        let host = store.session(session).unwrap();
+        let host = store.host(host).unwrap();
         assert_eq!(host.credential, None);
         assert_eq!(host.auth, AuthKind::Password);
         assert_eq!(host.user.as_ref(), "deploy");
@@ -9094,7 +9035,7 @@ async fn deleting_a_used_credential_leaves_its_hosts_connected_and_logging_in_on
 
 #[gpui_kit::test]
 async fn a_long_credential_row_fits_the_smallest_window(cx: &mut TestAppContext) {
-    let mut store = SessionStore::seed();
+    let mut store = HostStore::seed();
     let id = store.insert_credential_unnotified(
         CredentialDraft::new(
             "生产环境所有数据库服务器共用的只读巡检账号（不要用于写操作）",
@@ -9120,8 +9061,8 @@ async fn a_long_credential_row_fits_the_smallest_window(cx: &mut TestAppContext)
 
 /// A store that keeps pasted and generated keys under `data`, as the app
 /// keeps them beside its database.
-fn store_keeping_keys(data: &std::path::Path, secrets: Arc<InMemorySecretStore>) -> SessionStore {
-    SessionStore::empty()
+fn store_keeping_keys(data: &std::path::Path, secrets: Arc<InMemorySecretStore>) -> HostStore {
+    HostStore::empty()
         .with_secrets(secrets)
         .with_key_dir(data.join("keys"))
 }
@@ -9332,7 +9273,7 @@ async fn a_key_credentials_public_key_is_copied_from_its_file(cx: &mut TestAppCo
     let key = GeneratedKey::generate(KeyAlgorithm::Ed25519).unwrap();
     let file = data.path().join("id_deploy");
     std::fs::write(&file, key.encode("deploy@laptop", "").unwrap().as_str()).unwrap();
-    let mut store = SessionStore::empty();
+    let mut store = HostStore::empty();
     let credential = store.insert_credential_unnotified(
         CredentialDraft::new("部署", CredentialKind::Key, "deploy")
             .with_key_path(file.display().to_string()),
@@ -9362,14 +9303,14 @@ async fn a_key_credentials_public_key_is_copied_from_its_file(cx: &mut TestAppCo
 async fn a_dialogs_choices_are_equal_segments_of_one_track(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace_with_credentials(
         cx,
-        SessionStore::seed(),
+        HostStore::seed(),
         Arc::new(RecordingRemoteProvider::default()),
         Arc::new(FakeConnectionTester::default()),
     );
-    in_frame(cx, handle, |window, cx| window.click("new-session", cx));
+    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
     in_frame(cx, handle, |window, cx| {
-        let name = window.find("session-name").bounds();
-        let mut group = window.within("session-auth-source");
+        let name = window.find("host-name").bounds();
+        let mut group = window.within("host-auth-source");
         let segments = [0usize, 1, 2].map(|ix| group.find(ix));
         let selected: Vec<_> = segments.iter().map(|segment| segment.selected()).collect();
         assert_eq!(selected, [Some(true), Some(false), Some(false)]);
@@ -9388,10 +9329,10 @@ async fn a_dialogs_choices_are_equal_segments_of_one_track(cx: &mut TestAppConte
         group.click(1usize, cx);
     });
     in_frame(cx, handle, |window, _| {
-        let group = window.within("session-auth-source");
+        let group = window.within("host-auth-source");
         assert_eq!(group.find(1usize).selected(), Some(true));
         assert_eq!(group.find(0usize).selected(), Some(false));
-        assert!(window.find("session-credential").visible());
+        assert!(window.find("host-credential").visible());
     });
 }
 
@@ -9400,7 +9341,7 @@ async fn a_segment_that_cannot_be_chosen_stays_unchosen(cx: &mut TestAppContext)
     // No key directory: pasted and generated keys have nowhere to go.
     let (handle, _) = open_workspace_with_credentials(
         cx,
-        SessionStore::empty(),
+        HostStore::empty(),
         Arc::new(RecordingRemoteProvider::default()),
         Arc::new(FakeConnectionTester::default()),
     );

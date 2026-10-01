@@ -17,9 +17,9 @@ use gpui_kit::*;
 
 use crate::terminal::{TERMINAL_FIND_KEY_CONTEXT, TERMINAL_KEY_CONTEXT, terminal_key_bindings};
 
-/// Key context of the session panel, for bindings that only apply there.
-pub const SESSION_PANEL_CONTEXT: &str = "SessionPanel";
-pub const RECENT_SESSIONS_CONTEXT: &str = "RecentSessions";
+/// Key context of the host panel, for bindings that only apply there.
+pub const HOST_PANEL_CONTEXT: &str = "HostPanel";
+pub const RECENT_HOSTS_CONTEXT: &str = "RecentHosts";
 /// Key context of the port-forwarding list.
 pub const FORWARD_PANEL_CONTEXT: &str = "ForwardPanel";
 /// Key context of the credential list.
@@ -48,9 +48,9 @@ pub(crate) fn deepen_list_hover(cx: &mut App) {
     Theme::sync_base(cx);
 }
 
-/// Give the session tree three times the list hover's contrast against its sidebar.
-/// The recent-session list keeps the shared hover color unchanged.
-pub(crate) fn session_tree_selection_color(theme: &Theme) -> Hsla {
+/// Give the host tree three times the list hover's contrast against its sidebar.
+/// The recent-host list keeps the shared hover color unchanged.
+pub(crate) fn host_tree_selection_color(theme: &Theme) -> Hsla {
     let sidebar = theme.sidebar;
     let hover = sidebar.blend(theme.list_hover);
     let mut selected = hover.alpha(1.0);
@@ -66,9 +66,9 @@ fn key_bindings() -> Vec<KeyBinding> {
 
     let primary = |key: &str| format!("{PRIMARY}-{key}");
     let mut bindings = vec![
-        KeyBinding::new(&primary("n"), NewSession, None),
+        KeyBinding::new(&primary("n"), NewHost, None),
         KeyBinding::new(&primary("shift-n"), NewGroup, None),
-        KeyBinding::new(&primary("b"), ToggleSessionPanel, None),
+        KeyBinding::new(&primary("b"), ToggleHostPanel, None),
         KeyBinding::new(&primary("k"), FocusSearch, None),
         KeyBinding::new(&primary("t"), NewLocalTerminal, None),
         KeyBinding::new(&primary("w"), CloseActiveTab, None),
@@ -78,8 +78,8 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(&primary("0"), ZoomReset, None),
         KeyBinding::new(&primary("q"), Quit, None),
         KeyBinding::new("shift-escape", ToggleZoom, None),
-        KeyBinding::new("enter", ConnectSelected, Some(SESSION_PANEL_CONTEXT)),
-        KeyBinding::new("enter", ConnectSelected, Some(RECENT_SESSIONS_CONTEXT)),
+        KeyBinding::new("enter", ConnectSelected, Some(HOST_PANEL_CONTEXT)),
+        KeyBinding::new("enter", ConnectSelected, Some(RECENT_HOSTS_CONTEXT)),
         KeyBinding::new("enter", ToggleSelectedForward, Some(FORWARD_PANEL_CONTEXT)),
         KeyBinding::new("up", SelectPreviousForward, Some(FORWARD_PANEL_CONTEXT)),
         KeyBinding::new("down", SelectNextForward, Some(FORWARD_PANEL_CONTEXT)),
@@ -103,7 +103,7 @@ fn key_bindings() -> Vec<KeyBinding> {
         #[cfg(not(target_os = "macos"))]
         KeyBinding::new("ctrl-shift-v", PasteTerminal, Some(TERMINAL_KEY_CONTEXT)),
         // In a terminal ⌘K clears, as in other macOS terminals; everywhere
-        // else it still focuses the session search. Inside a terminal, Ctrl
+        // else it still focuses the host search. Inside a terminal, Ctrl
         // with a letter belongs to the shell, so other platforms add Shift, as
         // they do for copy and paste.
         #[cfg(target_os = "macos")]
@@ -186,7 +186,7 @@ fn file_list_key_bindings() -> Vec<KeyBinding> {
             ),
             bind("alt-left", ExplorerCommand::Back { remote }, context),
             bind("alt-right", ExplorerCommand::Forward { remote }, context),
-            // WinSCP's Ctrl+B already toggles the session panel here.
+            // WinSCP's Ctrl+B already toggles the host panel here.
             bind(
                 &format!("{PRIMARY}-d"),
                 ExplorerCommand::AddBookmark { remote, path: None },
