@@ -96,7 +96,7 @@ ShellRS 把 Xshell 式的主机管理和多标签终端、WinSCP 式的双栏 SF
 
 ## 下载
 
-到 [Releases](https://github.com/since2006/shell-rs/releases) 下载对应平台的安装包。目前发布的都是 Beta 版（在 Releases 里标为 Pre-release）。
+到官网 [shellrs.com/download](https://shellrs.com/download) 下载，页面会按你的系统给出对应的安装包；也可以到 GitHub [Releases](https://github.com/since2006/shell-rs/releases) 下载。目前发布的都是 Beta 版（在 Releases 里标为 Pre-release）。
 
 | 系统 | 安装包 | 说明 |
 | --- | --- | --- |

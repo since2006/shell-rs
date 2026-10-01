@@ -96,7 +96,7 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 
 ## Download
 
-Get the package for your platform from [Releases](https://github.com/since2006/shell-rs/releases). All releases so far are betas (marked Pre-release).
+Download from [shellrs.com/download](https://shellrs.com/download), which offers the package for your system, or from GitHub [Releases](https://github.com/since2006/shell-rs/releases). All releases so far are betas (marked Pre-release).
 
 | System | Package | Notes |
 | --- | --- | --- |
