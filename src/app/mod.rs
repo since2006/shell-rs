@@ -4,6 +4,7 @@ mod actions;
 mod app_icon;
 mod assets;
 mod paths;
+mod window_hiding;
 
 pub use actions::*;
 pub use app_icon::show_logo_when_unbundled;
@@ -11,6 +12,7 @@ pub use assets::{AppAssets, CatalogIcon};
 pub use paths::{
     cli_endpoint, cli_socket_path, data_dir, database_path, keys_dir, settings_path, updates_dir,
 };
+pub use window_hiding::{bring_forward, hide_when_closed};
 
 use gpui_kit::component::{Theme, dock::ToggleZoom};
 use gpui_kit::*;

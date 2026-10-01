@@ -251,8 +251,7 @@ impl Workspace {
                         .as_ref()
                         .is_some_and(|server| server.take_activation());
                     if asked {
-                        cx.activate(true);
-                        window.activate_window();
+                        crate::app::bring_forward(window, cx);
                     }
                 });
                 if open.is_err() {

@@ -22,38 +22,43 @@ fn main() {
     if shellrs::cli::activate_running_app(&shellrs::app::cli_socket_path()) {
         return;
     }
-    gpui_kit::application()
-        .with_assets(shellrs::app::AppAssets)
-        .run(|cx| {
-            shellrs::init(cx);
-            shellrs::app::show_logo_when_unbundled(cx);
-            cx.activate(true);
+    let app = gpui_kit::application().with_assets(shellrs::app::AppAssets);
+    // macOS: the Dock icon of a ShellRS whose window was closed, which only
+    // hid it (see `hide_when_closed`).
+    app.on_reopen(|cx| {
+        if let Some(window) = cx.windows().first().copied() {
+            window
+                .update(cx, |_, window, cx| shellrs::app::bring_forward(window, cx))
+                .ok();
+        }
+    });
+    app.run(|cx| {
+        shellrs::init(cx);
+        shellrs::app::show_logo_when_unbundled(cx);
+        cx.activate(true);
 
-            let options = shellrs::workspace::window_options(cx);
-            cx.spawn(async move |cx| {
-                cx.open_window(options, |window, cx| {
-                    window.activate_window();
-                    window.set_window_title("ShellRS");
-                    let (store, problem) = open_store();
-                    let store = cx.new(|_| store);
-                    let (settings, settings_problem) = open_settings();
-                    let settings = cx.new(|_| settings);
-                    let workspace = cx
-                        .new(|cx| shellrs::workspace::Workspace::new(store, settings, window, cx));
-                    // Not pushed here: the window has no `Root` to show it yet.
-                    for problem in [problem, settings_problem].into_iter().flatten() {
-                        shellrs::workspace::notify_once_open(
-                            Notification::error(problem),
-                            window,
-                            cx,
-                        );
-                    }
-                    cx.new(|cx| Root::new(workspace, window, cx))
-                })
-                .expect("failed to open window");
+        let options = shellrs::workspace::window_options(cx);
+        cx.spawn(async move |cx| {
+            cx.open_window(options, |window, cx| {
+                window.activate_window();
+                window.set_window_title("ShellRS");
+                shellrs::app::hide_when_closed(window, cx);
+                let (store, problem) = open_store();
+                let store = cx.new(|_| store);
+                let (settings, settings_problem) = open_settings();
+                let settings = cx.new(|_| settings);
+                let workspace =
+                    cx.new(|cx| shellrs::workspace::Workspace::new(store, settings, window, cx));
+                // Not pushed here: the window has no `Root` to show it yet.
+                for problem in [problem, settings_problem].into_iter().flatten() {
+                    shellrs::workspace::notify_once_open(Notification::error(problem), window, cx);
+                }
+                cx.new(|cx| Root::new(workspace, window, cx))
             })
-            .detach();
-        });
+            .expect("failed to open window");
+        })
+        .detach();
+    });
     // On Windows the event loop ends and `run` returns: an update that is
     // to be installed now starts its setup, which waits for this process.
     shellrs::update::start_handed_over();

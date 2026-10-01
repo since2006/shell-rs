@@ -16,6 +16,7 @@ on:
       - "src/cli/**"
       - "src/update/**"
       - "src/app/paths.rs"
+      - "src/app/window_hiding.rs"
       - "src/main.rs"
       - "src/bin/**"
       - "src/ssh/connection.rs"
