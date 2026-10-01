@@ -10,8 +10,8 @@ use gpui_kit::SharedString;
 
 use crate::secrets::SecretRef;
 
-use super::PublicId;
 use super::private_key::is_kept_in;
+use super::{AuthKind, PublicId};
 
 /// Stable identity of a credential. Never reused within a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -65,6 +65,17 @@ impl CredentialKind {
             "key" => Some(CredentialKind::Key),
             "agent" => Some(CredentialKind::Agent),
             _ => None,
+        }
+    }
+
+    /// How a host that used a credential of this kind logs in once the
+    /// credential is deleted: the nearest it gets on its own. A password
+    /// credential's host is asked for its password; a key's or the agent's
+    /// tries the agent and the default keys.
+    pub fn without_credential(self) -> AuthKind {
+        match self {
+            CredentialKind::Password => AuthKind::Password,
+            CredentialKind::Key | CredentialKind::Agent => AuthKind::NoPassword,
         }
     }
 }

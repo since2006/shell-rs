@@ -87,7 +87,7 @@ impl CliBackend for FakeBackend {
 fn session(id: u64, name: &str, host: &str) -> Session {
     Session::new(
         SessionId(id),
-        SessionDraft::new(name, host, 22, "root", AuthKind::Auto, Some(GroupId(1))),
+        SessionDraft::new(name, host, 22, "root", AuthKind::Password, Some(GroupId(1))),
     )
 }
 

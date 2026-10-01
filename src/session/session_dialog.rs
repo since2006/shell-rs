@@ -9,7 +9,6 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputState},
     notification::Notification,
-    radio::{Radio, RadioGroup},
     select::{Select, SelectState},
     v_flex,
 };
@@ -17,7 +16,6 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::connection::{LoginTest, SharedConnectionTester, TrustCallback, UnknownHostPrompt};
-use crate::secrets::SecretRef;
 
 use super::secret_fields::SecretFields;
 use super::{
@@ -25,31 +23,53 @@ use super::{
     SessionDraft, SessionId, SessionLogin, SessionStore, group_options,
 };
 pub use crate::shared::DeleteHandler;
-use crate::shared::{confirm_delete, form_error, parse_port};
+use crate::shared::{Segment, SegmentedControl, confirm_delete, form_error, parse_port};
 
 /// The label of the row that puts a session at the root of the tree.
 pub const NO_GROUP_LABEL: &str = "（无分组）";
 
-/// Where a host's login comes from.
+/// How a host logs in, as the form's 「认证方式」 offers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AuthSource {
-    /// Typed into this form.
-    Manual,
-    /// A saved credential.
+    /// A password typed into this form, or asked for each time.
+    Password,
+    /// A saved credential: a password several hosts share, a key, the agent.
     Credential,
+    /// Nothing typed: the server lets the user in, or the SSH agent or a
+    /// default key does.
+    NoPassword,
 }
 
 impl AuthSource {
-    /// Both, in the order the form lists them.
-    const ALL: [AuthSource; 2] = [AuthSource::Manual, AuthSource::Credential];
+    /// Every way, in the order the form lists them.
+    const ALL: [AuthSource; 3] = [
+        AuthSource::Password,
+        AuthSource::Credential,
+        AuthSource::NoPassword,
+    ];
 
     fn label(self) -> &'static str {
         match self {
-            AuthSource::Manual => "手动输入",
+            AuthSource::Password => "密码",
             AuthSource::Credential => "使用凭据",
+            AuthSource::NoPassword => "无密码",
+        }
+    }
+
+    /// How a host of its own logs in, for the two ways that are not a
+    /// credential.
+    fn auth(self) -> Option<AuthKind> {
+        match self {
+            AuthSource::Password => Some(AuthKind::Password),
+            AuthSource::NoPassword => Some(AuthKind::NoPassword),
+            AuthSource::Credential => None,
         }
     }
 }
+
+/// What 「无密码」 tries, under the choice.
+const NO_PASSWORD_NOTE: &str =
+    "依次尝试服务器免认证、SSH Agent 和 ~/.ssh 中的默认私钥；服务器要求密码时连接失败，不会询问。";
 
 /// The body of the new/edit session dialog. Owns the field states and
 /// validates on commit; the store is only touched when validation passes.
@@ -61,8 +81,7 @@ pub struct SessionForm {
     port: Entity<InputState>,
     source: AuthSource,
     user: Entity<InputState>,
-    auth: Entity<SelectState<Vec<&'static str>>>,
-    /// The password, key file and passphrase of a login typed here.
+    /// The password of a login typed here.
     fields: Entity<SecretFields>,
     credential: Entity<SelectState<Vec<SharedString>>>,
     /// The credentials as they were when the form opened, parallel to the
@@ -114,7 +133,14 @@ impl SessionForm {
             group_names.push(path);
         }
         let draft = draft.unwrap_or_else(|| {
-            SessionDraft::new("", "", 22, DEFAULT_USER, AuthKind::Auto, preselect_group)
+            SessionDraft::new(
+                "",
+                "",
+                22,
+                DEFAULT_USER,
+                AuthKind::default(),
+                preselect_group,
+            )
         });
 
         let name = cx.new(|cx| {
@@ -137,22 +163,7 @@ impl SessionForm {
                 .placeholder(DEFAULT_USER)
                 .default_value(draft.user.clone())
         });
-        let auth_ix = AuthKind::ALL
-            .iter()
-            .position(|kind| *kind == draft.auth)
-            .unwrap_or(0);
-        let auth = cx.new(|cx| {
-            SelectState::new(
-                AuthKind::ALL
-                    .iter()
-                    .map(|kind| kind.label())
-                    .collect::<Vec<_>>(),
-                Some(IndexPath::new(auth_ix)),
-                window,
-                cx,
-            )
-        });
-        let fields = cx.new(|cx| SecretFields::new(secrets, draft.key_path.clone(), window, cx));
+        let fields = cx.new(|cx| SecretFields::new(secrets, None, window, cx));
         let credential_ix = draft.credential.and_then(|id| {
             credentials
                 .iter()
@@ -177,19 +188,15 @@ impl SessionForm {
         let group =
             cx.new(|cx| SelectState::new(group_names, Some(IndexPath::new(group_ix)), window, cx));
         let subscriptions = vec![
-            cx.observe(&auth, |_, _, cx| cx.notify()),
             cx.observe(&credential, |_, _, cx| cx.notify()),
             cx.observe(&fields, |_, _, cx| cx.notify()),
         ];
 
         if editing.is_some() {
-            // The typed login's secrets, even for a host that uses a
-            // credential now: they are what switching back would show.
+            // The host's own password, even for a host that does not use one
+            // now: it is what switching back would show.
             fields.update(cx, |fields, cx| {
-                let key_path = (draft.auth == AuthKind::Key)
-                    .then(|| draft.key_path.clone())
-                    .flatten();
-                fields.load_saved(Some(draft.password_secret()), key_path, cx)
+                fields.load_saved(Some(draft.password_secret()), None, cx)
             });
         }
         Self {
@@ -198,13 +205,12 @@ impl SessionForm {
             name,
             host,
             port,
-            source: if credential_ix.is_some() {
-                AuthSource::Credential
-            } else {
-                AuthSource::Manual
+            source: match (credential_ix, draft.auth) {
+                (Some(_), _) => AuthSource::Credential,
+                (None, AuthKind::Password) => AuthSource::Password,
+                (None, AuthKind::NoPassword) => AuthSource::NoPassword,
             },
             user,
-            auth,
             fields,
             credential,
             credentials,
@@ -225,15 +231,6 @@ impl SessionForm {
             self.error = None;
             cx.notify();
         }
-    }
-
-    /// The authentication method the form has selected.
-    fn auth(&self, cx: &App) -> AuthKind {
-        self.auth
-            .read(cx)
-            .selected_index(cx)
-            .and_then(|ix| AuthKind::ALL.get(ix.row).copied())
-            .unwrap_or_default()
     }
 
     /// The credential the form has selected.
@@ -259,36 +256,21 @@ impl SessionForm {
     /// there is nothing to test yet.
     fn login_test(&self, cx: &App) -> Result<LoginTest, &'static str> {
         let (host, port) = self.endpoint(cx)?;
-        if self.source == AuthSource::Credential {
+        let Some(auth) = self.source.auth() else {
             let credential = self.selected_credential(cx).ok_or("请选择凭据")?;
             return Ok(LoginTest::saved(SessionLogin::with_credential(
                 host, port, credential,
             )));
-        }
+        };
         let user = self.user.read(cx).value().trim().to_string();
         if user.is_empty() {
             return Err("请输入用户名");
         }
-        let auth = self.auth(cx);
-        let fields = self.fields.read(cx);
-        let key_path = fields.key_path(cx);
-        if auth == AuthKind::Key && key_path.is_empty() {
-            return Err("私钥认证需要选择私钥文件");
-        }
-        let key_path = (auth == AuthKind::Key).then(|| key_path.into());
-        let mut request = LoginTest::typed(SessionLogin::manual(host, port, user, auth, key_path));
-        // Only what the chosen method uses, which is also what the form shows.
-        if uses_password(auth) {
-            let password = fields.password(cx);
-            if !password.is_empty() {
-                request = request.with_password(password);
-            }
-        }
-        if auth == AuthKind::Key {
-            let passphrase = fields.passphrase(cx);
-            if !passphrase.is_empty() {
-                request = request.with_passphrase(passphrase);
-            }
+        let mut request = LoginTest::typed(SessionLogin::manual(host, port, user, auth));
+        // Only what the chosen way uses, which is also what the form shows.
+        let password = self.fields.read(cx).password(cx);
+        if auth == AuthKind::Password && !password.is_empty() {
+            request = request.with_password(password);
         }
         Ok(request)
     }
@@ -371,16 +353,9 @@ impl SessionForm {
 
     /// How the form says the host logs in, or what is missing.
     fn committed_login(&self, cx: &App) -> Result<CommittedLogin, &'static str> {
-        match self.source {
-            AuthSource::Manual => {
-                let auth = self.auth(cx);
-                let key_path = self.fields.read(cx).key_path(cx);
-                if auth == AuthKind::Key && key_path.is_empty() {
-                    return Err("私钥认证需要选择私钥文件");
-                }
-                Ok(CommittedLogin::Typed { auth, key_path })
-            }
-            AuthSource::Credential => self
+        match self.source.auth() {
+            Some(auth) => Ok(CommittedLogin::Own(auth)),
+            None => self
                 .selected_credential(cx)
                 .map(|credential| CommittedLogin::Saved {
                     credential: credential.id,
@@ -414,34 +389,27 @@ impl SessionForm {
             .selected_index(cx)
             .and_then(|ix| self.group_ids.get(ix.row).copied())
             .unwrap_or(None);
-        // Secrets never ride along in the draft, which derives `Debug`. They
-        // go to the keychain separately, under the endpoint the draft names;
-        // a login through a credential leaves the host's own entries alone.
-        let mut secret_changes: Vec<(SecretRef, Option<String>)> = Vec::new();
+        // The password never rides along in the draft, which derives
+        // `Debug`. It goes to the keychain separately, under the endpoint the
+        // draft names; any other way of logging in leaves that entry alone.
+        let mut password_change = None;
         let draft = match login {
             CommittedLogin::Saved { credential, user } => {
-                SessionDraft::new(name, host, port, user, AuthKind::Auto, group)
+                SessionDraft::new(name, host, port, user, AuthKind::default(), group)
                     .with_credential(credential)
             }
-            CommittedLogin::Typed { auth, key_path } => {
+            CommittedLogin::Own(auth) => {
                 let user = self.user.read(cx).value().trim().to_string();
                 let user = if user.is_empty() {
                     DEFAULT_USER.to_string()
                 } else {
                     user
                 };
-                let mut draft = SessionDraft::new(name, host, port, user, auth, group);
-                let fields = self.fields.read(cx);
-                if uses_password(auth)
-                    && let Some(change) = fields.password_change(cx)
+                let draft = SessionDraft::new(name, host, port, user, auth, group);
+                if auth == AuthKind::Password
+                    && let Some(change) = self.fields.read(cx).password_change(cx)
                 {
-                    secret_changes.push((draft.password_secret(), change));
-                }
-                if auth == AuthKind::Key {
-                    if let Some(change) = fields.passphrase_change(cx) {
-                        secret_changes.push((SecretRef::passphrase(&key_path), change));
-                    }
-                    draft = draft.with_key_path(key_path);
+                    password_change = Some((draft.password_secret(), change));
                 }
                 draft
             }
@@ -459,7 +427,7 @@ impl SessionForm {
             }
             // `update` above may have dropped the entry for the endpoint the
             // session just left; this writes the one it moved to.
-            for (secret, change) in secret_changes {
+            if let Some((secret, change)) = password_change {
                 store.save_secret(secret, change, cx);
             }
         });
@@ -471,48 +439,21 @@ impl SessionForm {
         true
     }
 
-    /// The fields of a login typed into the form.
-    fn manual_fields(&self, form: Form, cx: &mut Context<Self>) -> Form {
-        let auth = self.auth(cx);
-        let fields = self.fields.read(cx);
+    /// The fields of a host that logs in on its own: its user, and its
+    /// password when it has one.
+    fn own_fields(&self, form: Form, auth: AuthKind, cx: &App) -> Form {
         form.child(
             Field::new()
                 .label("用户名")
                 .col_span(4)
                 .child(Input::new(&self.user).id("session-user").small()),
         )
-        .child(
-            Field::new()
-                .label("认证类型")
-                .col_span(4)
-                .child(Select::new(&self.auth).id("session-auth").small()),
-        )
-        .when(uses_password(auth), |form| {
+        .when(auth == AuthKind::Password, |form| {
             form.child(
                 Field::new()
                     .label("密码")
                     .col_span(4)
-                    .child(fields.password_input("session-password")),
-            )
-        })
-        .when(auth == AuthKind::Key, |form| {
-            form.child(
-                Field::new()
-                    .label("私钥文件")
-                    .required(true)
-                    .col_span(4)
-                    .child(SecretFields::key_path_input(
-                        &self.fields,
-                        "session-key-path",
-                        "choose-key",
-                        cx,
-                    )),
-            )
-            .child(
-                Field::new()
-                    .label("私钥口令")
-                    .col_span(4)
-                    .child(fields.passphrase_input("session-passphrase")),
+                    .child(self.fields.read(cx).password_input("session-password")),
             )
         })
     }
@@ -590,23 +531,32 @@ impl Render for SessionForm {
                     .child(Input::new(&self.port).id("session-port").small()),
             )
             .child(
-                Field::new().label("认证方式").col_span(4).child(
-                    RadioGroup::horizontal("session-auth-source")
-                        .selected_index(AuthSource::ALL.iter().position(|each| *each == source))
-                        .on_change(cx.listener(|this, ix: &usize, _, cx| {
-                            if let Some(source) = AuthSource::ALL.get(*ix) {
-                                this.set_source(*source, cx);
-                            }
-                        }))
-                        .children(
-                            AuthSource::ALL
-                                .map(|each| Radio::new(each.label()).label(each.label()).small()),
-                        ),
-                ),
+                Field::new()
+                    .label("认证方式")
+                    .col_span(4)
+                    .child(
+                        SegmentedControl::new("session-auth-source")
+                            .selected_index(AuthSource::ALL.iter().position(|each| *each == source))
+                            .on_change(cx.listener(|this, ix: &usize, _, cx| {
+                                if let Some(source) = AuthSource::ALL.get(*ix) {
+                                    this.set_source(*source, cx);
+                                }
+                            }))
+                            .segments(AuthSource::ALL.map(|each| Segment::new(each.label()))),
+                    )
+                    .when(source == AuthSource::NoPassword, |field| {
+                        field.description_fn(|_, _| {
+                            div()
+                                .id("session-no-password-note")
+                                .test_support()
+                                .aria_label(NO_PASSWORD_NOTE)
+                                .child(NO_PASSWORD_NOTE)
+                        })
+                    }),
             );
-        let form = match source {
-            AuthSource::Manual => self.manual_fields(form, cx),
-            AuthSource::Credential => form.child(self.credential_field(cx)),
+        let form = match source.auth() {
+            Some(auth) => self.own_fields(form, auth, cx),
+            None => form.child(self.credential_field(cx)),
         };
         v_flex()
             .gap_3()
@@ -619,7 +569,7 @@ impl Render for SessionForm {
                         .child(Select::new(&self.group).small()),
                 ),
             )
-            .when(source == AuthSource::Manual, |form| {
+            .when(source == AuthSource::Password, |form| {
                 form.child(
                     div()
                         .text_sm()
@@ -643,10 +593,8 @@ impl Render for SessionForm {
 
 /// How a host the form commits logs in.
 enum CommittedLogin {
-    Typed {
-        auth: AuthKind,
-        key_path: String,
-    },
+    /// On its own.
+    Own(AuthKind),
     Saved {
         credential: CredentialId,
         user: SharedString,
@@ -726,10 +674,6 @@ fn connection_test_notification(result: Result<(), String>) -> Notification {
 
 /// Whether this authentication kind can end up asking for a password.
 /// `Auto` walks agent, then keys, then password, so it can.
-fn uses_password(auth: AuthKind) -> bool {
-    matches!(auth, AuthKind::Auto | AuthKind::Password)
-}
-
 /// Open the new-session (`editing == None`) or edit-session dialog.
 /// `preselect_group` fills in the group field of a new session, so creating
 /// one from a group's context menu lands it in that group. `tester` backs the
@@ -856,7 +800,7 @@ fn describe_session_delete(
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthKind, describe_session_delete, uses_password};
+    use super::describe_session_delete;
 
     #[test]
     fn deleting_a_session_says_what_goes_with_it() {
@@ -877,12 +821,5 @@ mod tests {
             describe_session_delete(true, 0, 1).as_deref(),
             Some("会一并关闭该主机已打开的终端和 SFTP 标签。将同时删除经由该主机的 1 条端口转发。")
         );
-    }
-
-    #[test]
-    fn auto_and_password_can_reach_a_password_prompt() {
-        assert!(uses_password(AuthKind::Auto));
-        assert!(uses_password(AuthKind::Password));
-        assert!(!uses_password(AuthKind::Key));
     }
 }

@@ -104,7 +104,7 @@ fn the_command_finds_the_app_through_its_data_directory() {
     let server = CliServer::start(cli_endpoint(data_dir.path()), backend.clone()).unwrap();
     let web = Session::new(
         SessionId(1),
-        SessionDraft::new("web-01", "10.0.1.12", 22, "root", AuthKind::Auto, None),
+        SessionDraft::new("web-01", "10.0.1.12", 22, "root", AuthKind::Password, None),
     );
     server.set_targets(vec![CliTarget::new(
         &web,

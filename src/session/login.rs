@@ -9,12 +9,16 @@ use crate::secrets::SecretRef;
 
 use super::{AuthKind, Credential, CredentialKind, Session};
 
-/// Which authentication methods a login tries.
+/// Which authentication methods a login tries. Each one starts by asking
+/// the server to let the user in with nothing at all, which a server without
+/// authentication grants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoginMethod {
-    /// The SSH agent, then the default keys in `~/.ssh`, then a password.
-    Auto,
+    /// A password, saved or asked for.
     Password,
+    /// Whatever needs nothing typed: the SSH agent, then the default keys in
+    /// `~/.ssh`. A server that wants a password is refused, not asked.
+    NoPassword,
     /// One private key file.
     Key,
     /// Only the SSH agent's keys.
@@ -35,26 +39,24 @@ pub struct SessionLogin {
     /// method.
     pub key_path: Option<PathBuf>,
     /// The keychain entry the password step reads: the endpoint's own, or a
-    /// password credential's. Key and agent logins keep the endpoint's for a
+    /// password credential's. Every other login keeps the endpoint's for a
     /// server that asks for a password after the key.
     pub password: SecretRef,
 }
 
 impl SessionLogin {
-    /// A login typed into the host form rather than taken from a credential.
+    /// A login of the host's own rather than taken from a credential.
     pub fn manual(
         host: impl Into<String>,
         port: u16,
         user: impl Into<String>,
         auth: AuthKind,
-        key_path: Option<PathBuf>,
     ) -> Self {
         let host = host.into();
         let user = user.into();
-        let (method, key_path) = match auth {
-            AuthKind::Auto => (LoginMethod::Auto, None),
-            AuthKind::Password => (LoginMethod::Password, None),
-            AuthKind::Key => (LoginMethod::Key, key_path),
+        let method = match auth {
+            AuthKind::Password => LoginMethod::Password,
+            AuthKind::NoPassword => LoginMethod::NoPassword,
         };
         Self {
             password: SecretRef::password(&user, &host, port),
@@ -62,7 +64,7 @@ impl SessionLogin {
             port,
             user,
             method,
-            key_path,
+            key_path: None,
         }
     }
 
@@ -106,7 +108,6 @@ impl SessionLogin {
                 session.port,
                 session.user.as_ref(),
                 session.auth,
-                session.key_path.as_deref().map(PathBuf::from),
             ),
         }
     }
@@ -140,7 +141,7 @@ mod tests {
 
     fn using(kind: CredentialKind) -> (Session, Credential) {
         let credential = credential(kind);
-        let mut session = session(AuthKind::Auto);
+        let mut session = session(AuthKind::Password);
         session.credential = Some(credential.id);
         (session, credential)
     }
@@ -155,16 +156,11 @@ mod tests {
     }
 
     #[test]
-    fn auto_ignores_a_leftover_key_path() {
-        let mut host = session(AuthKind::Auto);
-        host.key_path = Some("/tmp/id_old".into());
-        assert_eq!(SessionLogin::of(&host, None).key_path, None);
-
-        host.auth = AuthKind::Key;
-        assert_eq!(
-            SessionLogin::of(&host, None).key_path,
-            Some(PathBuf::from("/tmp/id_old"))
-        );
+    fn a_host_without_a_password_keeps_its_endpoint_for_a_partial_success() {
+        let login = SessionLogin::of(&session(AuthKind::NoPassword), None);
+        assert_eq!(login.method, LoginMethod::NoPassword);
+        assert_eq!(login.key_path, None);
+        assert_eq!(login.password, SecretRef::password("root", "10.0.0.1", 22));
     }
 
     #[test]
@@ -197,8 +193,8 @@ mod tests {
     #[test]
     fn a_credential_the_host_does_not_name_is_not_used() {
         let credential = credential(CredentialKind::Password);
-        let login = SessionLogin::of(&session(AuthKind::Auto), Some(&credential));
-        assert_eq!(login.method, LoginMethod::Auto);
+        let login = SessionLogin::of(&session(AuthKind::NoPassword), Some(&credential));
+        assert_eq!(login.method, LoginMethod::NoPassword);
         assert_eq!(login.user, "root");
     }
 

@@ -268,7 +268,7 @@ mod tests {
                 "10.0.0.1",
                 22,
                 "root",
-                AuthKind::Key,
+                AuthKind::NoPassword,
                 group,
             ));
         }

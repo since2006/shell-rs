@@ -4,10 +4,12 @@ mod closable_tab;
 mod dialog;
 mod host_mark;
 mod rename_tab_dialog;
+mod segmented_control;
 mod tab_menu;
 
 pub use closable_tab::ClosableTabTitle;
 pub use dialog::{DeleteHandler, commit_footer, confirm_delete, form_error, parse_port};
 pub use host_mark::HostMark;
 pub use rename_tab_dialog::{RenamableTab, open_rename_tab_dialog};
+pub use segmented_control::{Segment, SegmentedControl};
 pub use tab_menu::close_tab_items;

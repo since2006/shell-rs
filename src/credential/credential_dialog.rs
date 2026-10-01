@@ -7,7 +7,6 @@ use gpui_kit::component::{
     form::{Field, Form},
     h_flex,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
-    radio::{Radio, RadioGroup},
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -19,7 +18,7 @@ use crate::session::{
     CredentialDraft, CredentialId, CredentialKind, DEFAULT_USER, GeneratedKey, KeyAlgorithm,
     PastedKey, PastedKeyError, SecretFields, SessionStore, read_public_key,
 };
-use crate::shared::{commit_footer, form_error};
+use crate::shared::{Segment, SegmentedControl, commit_footer, form_error};
 
 /// Where the SSH agent is found, as the form explains it.
 #[cfg(windows)]
@@ -61,14 +60,6 @@ impl KeySource {
             KeySource::File => "本机文件",
             KeySource::Paste => "粘贴",
             KeySource::Generate => "生成新密钥",
-        }
-    }
-
-    fn id(self) -> &'static str {
-        match self {
-            KeySource::File => "file",
-            KeySource::Paste => "paste",
-            KeySource::Generate => "generate",
         }
     }
 }
@@ -602,22 +593,19 @@ impl CredentialForm {
                 .as_ref()
                 .is_some_and(|kept| fields.key_path(cx) == kept.as_ref());
 
-        let sources = RadioGroup::horizontal("credential-key-source")
+        let sources = SegmentedControl::new("credential-key-source")
             .selected_index(KeySource::ALL.iter().position(|each| *each == source))
             .on_change(cx.listener(|this, ix: &usize, window, cx| {
                 if let Some(source) = KeySource::ALL.get(*ix) {
                     this.set_source(*source, window, cx);
                 }
             }))
-            .children(KeySource::ALL.map(|each| {
-                Radio::new(each.id()).label(each.label()).small().when(
-                    each != KeySource::File && !can_keep,
-                    |radio| {
-                        radio
-                            .disabled(true)
-                            .tooltip("本地数据库没有打开，这次运行无法保存私钥")
-                    },
-                )
+            .segments(KeySource::ALL.map(|each| {
+                Segment::new(each.label()).when(each != KeySource::File && !can_keep, |segment| {
+                    segment
+                        .disabled(true)
+                        .tooltip("本地数据库没有打开，这次运行无法保存私钥")
+                })
             }));
         // A generated key has nothing to fill in under the choice.
         let key = match source {
@@ -658,7 +646,7 @@ impl CredentialForm {
                 Field::new()
                     .label("算法")
                     .child(
-                        RadioGroup::horizontal("credential-key-algorithm")
+                        SegmentedControl::new("credential-key-algorithm")
                             .selected_index(
                                 KeyAlgorithm::ALL
                                     .iter()
@@ -669,11 +657,7 @@ impl CredentialForm {
                                     this.set_algorithm(*algorithm, cx);
                                 }
                             }))
-                            .children(
-                                KeyAlgorithm::ALL.map(|each| {
-                                    Radio::new(each.label()).label(each.label()).small()
-                                }),
-                            ),
+                            .segments(KeyAlgorithm::ALL.map(|each| Segment::new(each.label()))),
                     )
                     .when(self.algorithm == KeyAlgorithm::Rsa, |field| {
                         field.description("只在服务器不支持 Ed25519 时选它（OpenSSH 6.5 以前）。")
@@ -774,17 +758,14 @@ impl Render for CredentialForm {
         let form = Form::new()
             .child(
                 Field::new().label("类型").child(
-                    RadioGroup::horizontal("credential-kind")
+                    SegmentedControl::new("credential-kind")
                         .selected_index(CredentialKind::ALL.iter().position(|each| *each == kind))
                         .on_change(cx.listener(|this, ix: &usize, _, cx| {
                             if let Some(kind) = CredentialKind::ALL.get(*ix) {
                                 this.set_kind(*kind, cx);
                             }
                         }))
-                        .children(
-                            CredentialKind::ALL
-                                .map(|each| Radio::new(each.as_str()).label(each.label()).small()),
-                        ),
+                        .segments(CredentialKind::ALL.map(|each| Segment::new(each.label()))),
                 ),
             )
             .child(

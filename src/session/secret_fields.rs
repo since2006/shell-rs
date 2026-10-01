@@ -1,8 +1,8 @@
-//! The password, private key and passphrase fields a login form shares: the
-//! host form for a login typed there, the credential form for a saved one.
-//! Each form lays the fields out in its own grid under its own ids; this owns
-//! their state, reads back what the keychain saved for them, and says what a
-//! commit should write.
+//! The password, private key and passphrase fields of a login form: the
+//! host form's password, and the credential form's password or key file and
+//! passphrase. Each form lays the fields out in its own grid under its own
+//! ids; this owns their state, reads back what the keychain saved for them,
+//! and says what a commit should write.
 
 use gpui_kit::component::{
     Sizable as _,

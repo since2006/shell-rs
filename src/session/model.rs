@@ -65,45 +65,37 @@ impl std::fmt::Display for PublicId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GroupId(pub u64);
 
-/// How a session authenticates.
+/// How a session logs in on its own, without a credential. A key, or a
+/// password shared by several hosts, is a credential.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum AuthKind {
+    /// A password typed into the host form, or asked for at each connection
+    /// when none was saved.
     #[default]
-    Auto,
     Password,
-    Key,
+    /// Nothing typed: the server lets the user in as they are, or the SSH
+    /// agent or a default key in `~/.ssh` does. A server that wants a
+    /// password is refused rather than asked.
+    NoPassword,
 }
 
 impl AuthKind {
-    /// Every kind, in the order the session form lists them.
-    pub const ALL: [AuthKind; 3] = [AuthKind::Auto, AuthKind::Password, AuthKind::Key];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            AuthKind::Auto => "自动",
-            AuthKind::Password => "密码",
-            AuthKind::Key => "私钥文件",
-        }
-    }
-
-    /// The stored spelling. Kept separate from `label` so translating the UI
-    /// cannot rewrite what is already in the database.
+    /// The stored spelling. Kept separate from any label so translating the
+    /// UI cannot rewrite what is already in the database.
     pub fn as_str(self) -> &'static str {
         match self {
-            AuthKind::Auto => "auto",
             AuthKind::Password => "password",
-            AuthKind::Key => "key",
+            AuthKind::NoPassword => "no-password",
         }
     }
 
-    /// Parse a stored spelling, falling back to the default for anything a
-    /// newer version might have written.
+    /// Parse a stored spelling. Anything else, including what versions
+    /// before 10 wrote (`auto`, `key`), is a password: version 10's
+    /// migration turned those rows into passwords and key credentials.
     pub fn from_stored(value: &str) -> Self {
         match value {
-            "auto" => AuthKind::Auto,
-            "password" => AuthKind::Password,
-            "key" => AuthKind::Key,
-            _ => AuthKind::Auto,
+            "no-password" => AuthKind::NoPassword,
+            _ => AuthKind::Password,
         }
     }
 }
@@ -295,10 +287,9 @@ pub struct Session {
     /// The user it logs in as. For a session using a credential this is the
     /// credential's user, which the store keeps in step.
     pub user: SharedString,
-    /// How a session typed into the form logs in. A session using a
-    /// credential keeps [`AuthKind::Auto`] and no key file here.
+    /// How a session logs in on its own. A session using a credential keeps
+    /// the default here.
     pub auth: AuthKind,
-    pub key_path: Option<SharedString>,
     /// The credential it logs in with instead of `auth`, if any.
     pub credential: Option<CredentialId>,
     pub group: Option<GroupId>,
@@ -323,7 +314,6 @@ impl Session {
             port: draft.port,
             user: draft.user,
             auth: draft.auth,
-            key_path: draft.key_path,
             credential: draft.credential,
             group: draft.group,
             sort_order: 0,
@@ -358,7 +348,6 @@ impl Session {
             port: self.port,
             user: self.user.clone(),
             auth: self.auth,
-            key_path: self.key_path.clone(),
             credential: self.credential,
             group: self.group,
         }
@@ -419,7 +408,6 @@ pub struct SessionDraft {
     pub port: u16,
     pub user: SharedString,
     pub auth: AuthKind,
-    pub key_path: Option<SharedString>,
     pub credential: Option<CredentialId>,
     pub group: Option<GroupId>,
 }
@@ -439,7 +427,6 @@ impl SessionDraft {
             port,
             user: user.into(),
             auth,
-            key_path: None,
             credential: None,
             group,
         }
@@ -456,21 +443,6 @@ impl SessionDraft {
     /// [`Session::password_secret`] once the draft is applied.
     pub fn password_secret(&self) -> SecretRef {
         SecretRef::password(self.user.as_ref(), self.host.as_ref(), self.port)
-    }
-
-    /// Set the private key used by [`AuthKind::Key`]. Keeping this as a
-    /// builder preserves the existing six-argument constructor for callers.
-    pub fn with_key_path(mut self, path: impl Into<SharedString>) -> Self {
-        let path = path.into();
-        self.key_path = (!path.trim().is_empty()).then_some(path);
-        self
-    }
-
-    pub(crate) fn with_optional_key_path(mut self, path: Option<String>) -> Self {
-        self.key_path = path
-            .filter(|path| !path.trim().is_empty())
-            .map(SharedString::from);
-        self
     }
 }
 
@@ -544,17 +516,20 @@ mod tests {
     fn a_new_session_has_not_been_probed_yet() {
         let session = Session::new(
             SessionId(1),
-            SessionDraft::new("s", "h", 22, "root", AuthKind::Auto, None),
+            SessionDraft::new("s", "h", 22, "root", AuthKind::Password, None),
         );
         assert_eq!(session.os, None);
     }
 
     #[test]
-    fn auto_is_the_default_and_key_path_is_opt_in() {
-        assert_eq!(AuthKind::default(), AuthKind::Auto);
-        let draft = SessionDraft::new("server", "host", 22, "me", AuthKind::Key, None)
-            .with_key_path("/tmp/id_ed25519");
-        assert_eq!(draft.key_path.as_deref(), Some("/tmp/id_ed25519"));
+    fn a_password_is_the_default_and_old_spellings_read_as_one() {
+        assert_eq!(AuthKind::default(), AuthKind::Password);
+        for auth in [AuthKind::Password, AuthKind::NoPassword] {
+            assert_eq!(AuthKind::from_stored(auth.as_str()), auth);
+        }
+        // What versions before 10 wrote.
+        assert_eq!(AuthKind::from_stored("auto"), AuthKind::Password);
+        assert_eq!(AuthKind::from_stored("key"), AuthKind::Password);
     }
 }
 

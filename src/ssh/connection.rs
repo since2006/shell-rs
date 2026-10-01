@@ -548,9 +548,9 @@ async fn authenticate(
     let mut methods = remaining_methods(first);
     let mut partial = false;
 
-    // Automatic logins try the agent quietly and move on; a login that is
-    // only the agent says what went wrong with it.
-    if matches!(method, LoginMethod::Auto | LoginMethod::Agent) {
+    // A login without a password tries the agent quietly and moves on; a
+    // login that is only the agent says what went wrong with it.
+    if matches!(method, LoginMethod::NoPassword | LoginMethod::Agent) {
         if methods.contains(&MethodKind::PublicKey) {
             match try_agent(handle, user, agent).await? {
                 Ok(result) => {
@@ -571,7 +571,7 @@ async fn authenticate(
         }
     }
 
-    if matches!(method, LoginMethod::Auto | LoginMethod::Key)
+    if matches!(method, LoginMethod::NoPassword | LoginMethod::Key)
         && methods.contains(&MethodKind::PublicKey)
     {
         let paths = key_paths(login)?;
@@ -602,7 +602,19 @@ async fn authenticate(
         }
     }
 
-    if matches!(method, LoginMethod::Auto | LoginMethod::Password) || partial {
+    // Nothing typed is all a login without a password has. A server that
+    // wants more is told no here, not answered with a question; a code it
+    // asks for after a key is still asked, below.
+    if method == LoginMethod::NoPassword && !partial {
+        if methods.contains(&MethodKind::Password)
+            || methods.contains(&MethodKind::KeyboardInteractive)
+        {
+            bail!("服务器要求密码，「无密码」不会询问；请改用「密码」或「使用凭据」");
+        }
+        bail!("服务器未接受 SSH Agent 和 ~/.ssh 中的任何私钥");
+    }
+
+    if method == LoginMethod::Password || partial {
         if methods.contains(&MethodKind::Password) {
             // Try what the session has saved before bothering anyone.
             let mut saved_rejected = false;

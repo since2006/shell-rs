@@ -12,7 +12,7 @@ use crate::app::{
     NewCredential, ShowCredentials,
 };
 use crate::credential::{CredentialDialog, open_credential_dialog};
-use crate::session::read_public_key;
+use crate::session::{AuthKind, CredentialKind, read_public_key};
 use crate::shared::confirm_delete;
 
 use super::{sidebar::SidebarMode, workspace_view::Workspace};
@@ -111,9 +111,9 @@ impl Workspace {
     ) {
         let id = action.0;
         let store = self.store.read(cx);
-        let Some(name) = store
+        let Some((name, kind)) = store
             .credential(id)
-            .map(|credential| credential.name.clone())
+            .map(|credential| (credential.name.clone(), credential.kind))
         else {
             return;
         };
@@ -121,7 +121,7 @@ impl Workspace {
         let store = self.store.clone();
         confirm_delete(
             &name,
-            describe_credential_delete(hosts),
+            describe_credential_delete(hosts, kind),
             Rc::new(move |_, cx| {
                 store.update(cx, |store, cx| {
                     store.remove_credential(id, cx);
@@ -135,26 +135,34 @@ impl Workspace {
 
 /// What the delete dialog says happens to the hosts using the credential.
 /// `None` when no host uses it.
-fn describe_credential_delete(hosts: usize) -> Option<SharedString> {
-    (hosts > 0).then(|| {
-        format!(
-            "有 {hosts} 台主机正在使用此凭据。删除后它们改为手动输入，认证类型为「自动」，用户名不变。"
-        )
-        .into()
-    })
+fn describe_credential_delete(hosts: usize, kind: CredentialKind) -> Option<SharedString> {
+    let after = match kind.without_credential() {
+        AuthKind::Password => "改为「密码」，连接时询问密码",
+        AuthKind::NoPassword => "改为「无密码」，用 SSH Agent 和 ~/.ssh 中的私钥登录",
+    };
+    (hosts > 0)
+        .then(|| format!("有 {hosts} 台主机正在使用此凭据。删除后它们{after}，用户名不变。").into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::describe_credential_delete;
+    use crate::session::CredentialKind;
 
     #[test]
     fn deleting_a_credential_says_how_many_hosts_and_what_they_become() {
-        assert_eq!(describe_credential_delete(0), None);
         assert_eq!(
-            describe_credential_delete(3).as_deref(),
+            describe_credential_delete(0, CredentialKind::Password),
+            None
+        );
+        assert_eq!(
+            describe_credential_delete(3, CredentialKind::Password).as_deref(),
+            Some("有 3 台主机正在使用此凭据。删除后它们改为「密码」，连接时询问密码，用户名不变。")
+        );
+        assert_eq!(
+            describe_credential_delete(1, CredentialKind::Agent).as_deref(),
             Some(
-                "有 3 台主机正在使用此凭据。删除后它们改为手动输入，认证类型为「自动」，用户名不变。"
+                "有 1 台主机正在使用此凭据。删除后它们改为「无密码」，用 SSH Agent 和 ~/.ssh 中的私钥登录，用户名不变。"
             )
         );
     }

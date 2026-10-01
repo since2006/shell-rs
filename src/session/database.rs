@@ -5,7 +5,10 @@
 //! The store keeps memory as the source of truth and mirrors each change
 //! here, so a failed write costs the user persistence, never the edit.
 
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 use rusqlite::{Connection, params};
 
@@ -31,7 +34,7 @@ fn from_sql(id: i64) -> u64 {
 ///
 /// The steps start at 7 rather than 1 because the databases of development
 /// builds were already at 7 when the older steps were folded into `SCHEMA`.
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 /// The port-forwarding rules, added in version 8. A macro rather than a
 /// constant so that `SCHEMA` and the step from version 7 are built from the
@@ -90,25 +93,34 @@ CREATE INDEX session_credentials_credential_id ON session_credentials(credential
     };
 }
 
-/// The steps from each older version to the next, in order. Each is one
-/// transaction that ends by recording the version it reached.
-const STEPS: [(i64, &str); 2] = [
+/// One step from a version to the next: one transaction that ends by
+/// recording the version it reached.
+enum Step {
+    /// Statements that make their own transaction.
+    Sql(&'static str),
+    /// A change of rows SQL alone does not express well.
+    Code(fn(&Connection) -> rusqlite::Result<()>),
+}
+
+/// The steps from each older version to the next, in order.
+const STEPS: [(i64, Step); 3] = [
     (
         7,
-        concat!(
+        Step::Sql(concat!(
             "BEGIN;\n",
             forwards_table!(),
             "\nPRAGMA user_version = 8;\nCOMMIT;"
-        ),
+        )),
     ),
     (
         8,
-        concat!(
+        Step::Sql(concat!(
             "BEGIN;\n",
             credential_tables!(),
             "\nPRAGMA user_version = 9;\nCOMMIT;"
-        ),
+        )),
     ),
+    (9, Step::Code(keys_into_credentials)),
 ];
 
 /// The whole schema, as a new database gets it.
@@ -222,7 +234,7 @@ impl SessionDatabase {
             .connection
             .prepare(
                 "SELECT s.id, s.name, s.host, s.port, s.username, s.auth, s.group_id, \
-                 s.key_path, s.os, s.sort_order, s.public_id, c.credential_id \
+                 s.os, s.sort_order, s.public_id, c.credential_id \
                  FROM sessions s LEFT JOIN session_credentials c ON c.session_id = s.id \
                  ORDER BY s.id",
             )?
@@ -234,9 +246,8 @@ impl SessionDatabase {
                 let user: String = row.get(4)?;
                 let auth: String = row.get(5)?;
                 let group: Option<i64> = row.get(6)?;
-                let key_path: Option<String> = row.get(7)?;
-                let os: Option<String> = row.get(8)?;
-                let credential: Option<i64> = row.get(11)?;
+                let os: Option<String> = row.get(7)?;
+                let credential: Option<i64> = row.get(10)?;
                 let mut session = Session::new(
                     SessionId(from_sql(id)),
                     SessionDraft::new(
@@ -246,12 +257,11 @@ impl SessionDatabase {
                         user,
                         AuthKind::from_stored(&auth),
                         group.map(|id| GroupId(from_sql(id))),
-                    )
-                    .with_optional_key_path(key_path),
+                    ),
                 );
                 session.os = os.as_deref().and_then(HostOs::from_stored);
-                session.sort_order = row.get(9)?;
-                session.public_id = PublicId::from_stored(row.get(10)?);
+                session.sort_order = row.get(8)?;
+                session.public_id = PublicId::from_stored(row.get(9)?);
                 session.credential = credential.map(|id| CredentialId(from_sql(id)));
                 Ok(session)
             })?
@@ -421,8 +431,8 @@ impl SessionDatabase {
     pub fn insert_session(&self, session: &Session) -> rusqlite::Result<()> {
         let transaction = self.connection.unchecked_transaction()?;
         transaction.execute(
-            "INSERT INTO sessions (id, name, host, port, username, auth, group_id, key_path, os, sort_order, public_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO sessions (id, name, host, port, username, auth, group_id, os, sort_order, public_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 to_sql(session.id.0),
                 session.name.as_ref(),
@@ -431,7 +441,6 @@ impl SessionDatabase {
                 session.user.as_ref(),
                 session.auth.as_str(),
                 session.group.map(|group| to_sql(group.0)),
-                session.key_path.as_deref(),
                 session.os.map(HostOs::as_str),
                 session.sort_order,
                 session.public_id.as_str(),
@@ -449,7 +458,7 @@ impl SessionDatabase {
         let transaction = self.connection.unchecked_transaction()?;
         transaction.execute(
             "UPDATE sessions SET name = ?2, host = ?3, port = ?4, username = ?5, \
-             auth = ?6, group_id = ?7, key_path = ?8, sort_order = ?9 WHERE id = ?1",
+             auth = ?6, group_id = ?7, sort_order = ?8 WHERE id = ?1",
             params![
                 to_sql(session.id.0),
                 session.name.as_ref(),
@@ -458,7 +467,6 @@ impl SessionDatabase {
                 session.user.as_ref(),
                 session.auth.as_str(),
                 session.group.map(|group| to_sql(group.0)),
-                session.key_path.as_deref(),
                 session.sort_order,
             ],
         )?;
@@ -645,14 +653,14 @@ impl SessionDatabase {
     }
 
     /// Delete a credential. The sessions using it go back to logging in on
-    /// their own, automatically, keeping the user name they had; the links
-    /// go through `ON DELETE CASCADE`.
-    pub fn remove_credential(&self, id: CredentialId) -> rusqlite::Result<()> {
+    /// their own with `auth`, keeping the user name they had; the links go
+    /// through `ON DELETE CASCADE`.
+    pub fn remove_credential(&self, id: CredentialId, auth: AuthKind) -> rusqlite::Result<()> {
         let transaction = self.connection.unchecked_transaction()?;
         transaction.execute(
-            "UPDATE sessions SET auth = ?2, key_path = NULL WHERE id IN \
+            "UPDATE sessions SET auth = ?2 WHERE id IN \
              (SELECT session_id FROM session_credentials WHERE credential_id = ?1)",
-            params![to_sql(id.0), AuthKind::Auto.as_str()],
+            params![to_sql(id.0), auth.as_str()],
         )?;
         transaction.execute(
             "DELETE FROM credentials WHERE id = ?1",
@@ -706,11 +714,84 @@ fn migrate(connection: &Connection) -> rusqlite::Result<()> {
     }
     for (from, step) in STEPS {
         if version == from {
-            connection.execute_batch(step)?;
+            match step {
+                Step::Sql(sql) => connection.execute_batch(sql)?,
+                Step::Code(change) => change(connection)?,
+            }
             version = from + 1;
         }
     }
     Ok(())
+}
+
+/// The step from version 9: a host logs in on its own with a password or
+/// with nothing typed, and a private key is always a credential's.
+///
+/// A host that picked a key file of its own now uses a key credential for
+/// that file and user, one for each pair, named after the file. `auto`
+/// hosts become password hosts, asked for one when none is saved. The
+/// `key_path` column stays, empty: dropping a column rebuilds the table.
+fn keys_into_credentials(connection: &Connection) -> rusqlite::Result<()> {
+    let transaction = connection.unchecked_transaction()?;
+    let keyed = transaction
+        .prepare(
+            "SELECT id, username, key_path FROM sessions s \
+             WHERE auth = 'key' AND key_path IS NOT NULL AND trim(key_path) <> '' \
+             AND NOT EXISTS (SELECT 1 FROM session_credentials c WHERE c.session_id = s.id) \
+             ORDER BY id",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut keychain_ids = transaction
+        .prepare("SELECT keychain_id FROM credentials")?
+        .query_map([], |row| row.get::<_, String>(0).map(PublicId::from_stored))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
+    let mut sort_order: i64 = transaction.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) FROM credentials",
+        [],
+        |row| row.get(0),
+    )?;
+    let mut made: HashMap<(String, String), i64> = HashMap::new();
+    for (session, user, key_path) in keyed {
+        let pair = (user, key_path);
+        let credential = match made.get(&pair) {
+            Some(credential) => *credential,
+            None => {
+                let (user, key_path) = &pair;
+                let name = Path::new(key_path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(key_path);
+                let keychain_id = PublicId::generate_unused(|id| keychain_ids.contains(id));
+                sort_order += 1;
+                transaction.execute(
+                    "INSERT INTO credentials (keychain_id, name, kind, username, key_path, sort_order) \
+                     VALUES (?1, ?2, 'key', ?3, ?4, ?5)",
+                    params![keychain_id.as_str(), name, user, key_path, sort_order],
+                )?;
+                keychain_ids.insert(keychain_id);
+                let credential = transaction.last_insert_rowid();
+                made.insert(pair.clone(), credential);
+                credential
+            }
+        };
+        transaction.execute(
+            "INSERT INTO session_credentials (session_id, credential_id) VALUES (?1, ?2)",
+            params![session, credential],
+        )?;
+    }
+    transaction.execute_batch(
+        "UPDATE sessions SET auth = 'password' WHERE auth <> 'no-password';\n\
+         UPDATE sessions SET key_path = NULL;\n\
+         PRAGMA user_version = 10;",
+    )?;
+    transaction.commit()
 }
 
 /// Give every session without a [`PublicId`] one, which is any row added by
@@ -916,15 +997,112 @@ PRAGMA user_version = 8;";
         assert_eq!(version, SCHEMA_VERSION);
         let data = db.load().unwrap();
         assert_eq!(data.sessions[0].user.as_ref(), "deploy");
-        assert_eq!(data.sessions[0].auth, AuthKind::Key);
-        assert_eq!(data.sessions[0].credential, None);
         assert_eq!(data.forwards.len(), 1);
-        assert!(data.credentials.is_empty());
+        // On through version 10, its key file became a credential.
+        assert_eq!(data.credentials.len(), 1);
+        assert_eq!(data.sessions[0].credential, Some(data.credentials[0].id));
         let fresh = SessionDatabase::in_memory().unwrap();
         assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
 
         drop(db);
         assert!(SessionDatabase::open(&path).is_ok());
+    }
+
+    /// The credential tables version 9 added, frozen like `SCHEMA_V7`.
+    const SCHEMA_V9_CREDENTIALS: &str = "
+CREATE TABLE credentials (
+    id          INTEGER PRIMARY KEY,
+    keychain_id TEXT NOT NULL UNIQUE,
+    name        TEXT NOT NULL,
+    kind        TEXT NOT NULL CHECK (kind IN ('password', 'key', 'agent')),
+    username    TEXT NOT NULL,
+    key_path    TEXT,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    CHECK ((kind = 'key') = (key_path IS NOT NULL))
+);
+CREATE TABLE session_credentials (
+    session_id    INTEGER PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    credential_id INTEGER NOT NULL REFERENCES credentials(id) ON DELETE CASCADE
+);
+CREATE INDEX session_credentials_credential_id ON session_credentials(credential_id);
+PRAGMA user_version = 9;";
+
+    #[test]
+    fn a_version_9_database_moves_host_keys_into_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(SCHEMA_V7).unwrap();
+            old.execute_batch(SCHEMA_V8_FORWARDS).unwrap();
+            old.execute_batch(SCHEMA_V9_CREDENTIALS).unwrap();
+            old.execute_batch(
+                "INSERT INTO credentials (id, keychain_id, name, kind, username, sort_order) \
+                 VALUES (1, 'kept0000kept0000', 'agent', 'agent', 'me', 0);
+                 INSERT INTO sessions (id, name, host, port, username, auth, key_path, public_id) VALUES
+                 (1, 'auto', 'a.test', 22, 'root', 'auto', NULL, 'p000000000000001'),
+                 (2, 'web', 'b.test', 22, 'deploy', 'key', '/home/me/.ssh/id_deploy', 'p000000000000002'),
+                 (3, 'api', 'c.test', 22, 'deploy', 'key', '/home/me/.ssh/id_deploy', 'p000000000000003'),
+                 (4, 'ops', 'd.test', 22, 'root', 'key', '/home/me/.ssh/id_deploy', 'p000000000000004'),
+                 (5, 'db', 'e.test', 22, 'postgres', 'password', NULL, 'p000000000000005'),
+                 (6, 'jump', 'f.test', 22, 'me', 'auto', NULL, 'p000000000000006');
+                 INSERT INTO session_credentials (session_id, credential_id) VALUES (6, 1);",
+            )
+            .unwrap();
+        }
+
+        let db = SessionDatabase::open(&path).unwrap();
+        let data = db.load().unwrap();
+        // One key credential for each user and key file, named after the
+        // file, after the credential that was there.
+        let names: Vec<_> = data
+            .credentials
+            .iter()
+            .map(|credential| (credential.name.as_ref(), credential.user.as_ref()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("agent", "me"),
+                ("id_deploy", "deploy"),
+                ("id_deploy", "root")
+            ]
+        );
+        let deploy = &data.credentials[1];
+        assert_eq!(deploy.kind, CredentialKind::Key);
+        assert_eq!(deploy.key_path.as_deref(), Some("/home/me/.ssh/id_deploy"));
+        assert_ne!(deploy.keychain_id, data.credentials[2].keychain_id);
+        let uses: Vec<_> = data.sessions.iter().map(|s| s.credential).collect();
+        assert_eq!(
+            uses,
+            [
+                None,
+                Some(deploy.id),
+                Some(deploy.id),
+                Some(data.credentials[2].id),
+                None,
+                Some(CredentialId(1)),
+            ]
+        );
+        // Everything left logs in with a password, asked for when none is
+        // saved; no host keeps a key file of its own.
+        assert!(data.sessions.iter().all(|s| s.auth == AuthKind::Password));
+        let key_files: i64 = db
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE key_path IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(key_files, 0);
+        let fresh = SessionDatabase::in_memory().unwrap();
+        assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
+
+        // Opening it again finds nothing left to do.
+        drop(db);
+        let again = SessionDatabase::open(&path).unwrap().load().unwrap();
+        assert_eq!(again.credentials.len(), 3);
     }
 
     fn credential(id: u64, name: &str, kind: CredentialKind) -> Credential {
@@ -939,7 +1117,7 @@ PRAGMA user_version = 8;";
     fn using(mut session: Session, credential: &Credential) -> Session {
         session.credential = Some(credential.id);
         session.user = credential.user.clone();
-        session.auth = AuthKind::Auto;
+        session.auth = AuthKind::Password;
         session
     }
 
@@ -993,23 +1171,19 @@ PRAGMA user_version = 8;";
     }
 
     #[test]
-    fn removing_a_credential_turns_its_hosts_into_auto_and_drops_the_link() {
+    fn removing_a_credential_leaves_its_hosts_on_their_own_and_drops_the_link() {
         let db = SessionDatabase::in_memory().unwrap();
         let key = credential(1, "部署", CredentialKind::Key);
         db.insert_credential(&key).unwrap();
-        let mut web = using(session(1, "web", None), &key);
-        // Against the invariant, to show the delete does not rely on it.
-        web.auth = AuthKind::Key;
-        web.key_path = Some("/tmp/id_other".into());
-        db.insert_session(&web).unwrap();
+        db.insert_session(&using(session(1, "web", None), &key))
+            .unwrap();
         db.insert_session(&session(2, "db", None)).unwrap();
 
-        db.remove_credential(key.id).unwrap();
+        db.remove_credential(key.id, AuthKind::NoPassword).unwrap();
         let data = db.load().unwrap();
         assert!(data.credentials.is_empty());
         assert_eq!(data.sessions[0].credential, None);
-        assert_eq!(data.sessions[0].auth, AuthKind::Auto);
-        assert_eq!(data.sessions[0].key_path, None);
+        assert_eq!(data.sessions[0].auth, AuthKind::NoPassword);
         assert_eq!(data.sessions[0].user.as_ref(), "deploy");
         // A host that never used it is untouched.
         assert_eq!(data.sessions[1].auth, AuthKind::Password);
@@ -1141,15 +1315,13 @@ PRAGMA user_version = 8;";
 
         let mut moved = session(1, "web-01", Some(2));
         moved.port = 2222;
-        moved.auth = AuthKind::Key;
-        moved.key_path = Some("/tmp/test-key".into());
+        moved.auth = AuthKind::NoPassword;
         db.update_session(&moved).unwrap();
         db.update_group(&group(2, "预发", None)).unwrap();
 
         let data = db.load().unwrap();
         assert_eq!(data.sessions[0].port, 2222);
-        assert_eq!(data.sessions[0].auth, AuthKind::Key);
-        assert_eq!(data.sessions[0].key_path.as_deref(), Some("/tmp/test-key"));
+        assert_eq!(data.sessions[0].auth, AuthKind::NoPassword);
         assert_eq!(data.sessions[0].group, Some(GroupId(2)));
         assert_eq!(data.groups[1].name.as_ref(), "预发");
     }
@@ -1304,7 +1476,7 @@ PRAGMA user_version = 8;";
         let db = SessionDatabase::in_memory().unwrap();
         let session = Session::new(
             SessionId(1),
-            SessionDraft::new("web", "10.0.0.1", 22, "root", AuthKind::Auto, None),
+            SessionDraft::new("web", "10.0.0.1", 22, "root", AuthKind::Password, None),
         );
         db.insert_session(&session).unwrap();
         assert_eq!(db.load().unwrap().sessions[0].os, None);

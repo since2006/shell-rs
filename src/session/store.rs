@@ -143,7 +143,6 @@ impl SessionStore {
             let draft = normalized(&credentials, session.draft());
             session.user = draft.user;
             session.auth = draft.auth;
-            session.key_path = draft.key_path;
             session.credential = draft.credential;
         }
         Ok(Self {
@@ -178,7 +177,7 @@ impl SessionStore {
                 "10.0.1.12",
                 22,
                 "root",
-                AuthKind::Auto,
+                AuthKind::Password,
                 Some(production),
             ),
             SessionDraft::new(
@@ -186,7 +185,7 @@ impl SessionStore {
                 "10.0.1.13",
                 22,
                 "root",
-                AuthKind::Auto,
+                AuthKind::Password,
                 Some(production),
             ),
             SessionDraft::new(
@@ -202,7 +201,7 @@ impl SessionStore {
                 "10.0.9.20",
                 2222,
                 "deploy",
-                AuthKind::Auto,
+                AuthKind::Password,
                 Some(staging),
             ),
             SessionDraft::new(
@@ -218,7 +217,7 @@ impl SessionStore {
                 "192.168.1.20",
                 22,
                 "xuz",
-                AuthKind::Auto,
+                AuthKind::Password,
                 Some(development),
             ),
         ];
@@ -876,7 +875,8 @@ impl SessionStore {
             return Vec::new();
         };
         let released = self.remove_credential_unnotified(id);
-        self.persist("删除凭据", cx, |db| db.remove_credential(id));
+        let auth = credential.kind.without_credential();
+        self.persist("删除凭据", cx, |db| db.remove_credential(id, auth));
         if credential.kind == CredentialKind::Password {
             self.save_secret(credential.password_secret(), None, cx);
         }
@@ -888,17 +888,19 @@ impl SessionStore {
     }
 
     pub fn remove_credential_unnotified(&mut self, id: CredentialId) -> Vec<SessionId> {
-        let before = self.credentials.len();
-        self.credentials.retain(|credential| credential.id != id);
-        if self.credentials.len() == before {
+        let Some(index) = self
+            .credentials
+            .iter()
+            .position(|credential| credential.id == id)
+        else {
             return Vec::new();
-        }
+        };
+        let auth = self.credentials.remove(index).kind.without_credential();
         let mut released = Vec::new();
         for session in &mut self.sessions {
             if session.credential == Some(id) {
                 session.credential = None;
-                session.auth = AuthKind::Auto;
-                session.key_path = None;
+                session.auth = auth;
                 released.push(session.id);
             }
         }
@@ -1183,20 +1185,13 @@ impl SessionStore {
             .is_some_and(|dir| is_kept_in(dir, Path::new(path)))
     }
 
-    /// How many credentials and hosts log in with the key file at `path`.
-    /// A host using a credential has no key file of its own.
+    /// How many credentials log in with the key file at `path`. Hosts have
+    /// no key files of their own.
     fn key_file_users(&self, path: &str) -> usize {
-        let credentials = self
-            .credentials
+        self.credentials
             .iter()
             .filter(|credential| credential.key_path.as_deref() == Some(path))
-            .count();
-        let sessions = self
-            .sessions
-            .iter()
-            .filter(|session| session.key_path.as_deref() == Some(path))
-            .count();
-        credentials + sessions
+            .count()
     }
 
     /// Delete a key file ShellRS keeps, with its saved passphrase, once
@@ -1373,8 +1368,7 @@ fn normalized(credentials: &[Credential], mut draft: SessionDraft) -> SessionDra
     match credential {
         Some(credential) => {
             draft.user = credential.user.clone();
-            draft.auth = AuthKind::Auto;
-            draft.key_path = None;
+            draft.auth = AuthKind::default();
         }
         None => draft.credential = None,
     }
@@ -1387,7 +1381,7 @@ mod tests {
     use super::*;
 
     fn draft(name: &str, group: Option<GroupId>) -> SessionDraft {
-        SessionDraft::new(name, "10.0.0.1", 22, "root", AuthKind::Auto, group)
+        SessionDraft::new(name, "10.0.0.1", 22, "root", AuthKind::Password, group)
     }
 
     #[test]
@@ -1521,15 +1515,13 @@ mod tests {
         let credential = password_credential(&mut store, "deploy");
         let mut form = draft("web", None).with_credential(credential);
         // Whatever the form still held of its own login is dropped.
-        form.auth = AuthKind::Key;
-        form.key_path = Some("/tmp/id".into());
+        form.auth = AuthKind::NoPassword;
         let web = store.insert_unnotified(form);
 
         let session = store.session(web).unwrap();
         assert_eq!(session.credential, Some(credential));
         assert_eq!(session.user.as_ref(), "deploy");
-        assert_eq!(session.auth, AuthKind::Auto);
-        assert_eq!(session.key_path, None);
+        assert_eq!(session.auth, AuthKind::Password);
         let login = store.login(web).unwrap();
         assert_eq!(login.user, "deploy");
         assert_eq!(
@@ -1587,7 +1579,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_credential_leaves_its_hosts_manual_auto_with_the_user() {
+    fn deleting_a_credential_leaves_its_hosts_on_their_own_with_the_user() {
         let mut store = SessionStore::empty();
         let credential = store.insert_credential_unnotified(
             CredentialDraft::new("部署", CredentialKind::Key, "deploy").with_key_path("/tmp/id"),
@@ -1599,11 +1591,17 @@ mod tests {
         assert!(store.credentials().is_empty());
         let session = store.session(web).unwrap();
         assert_eq!(session.credential, None);
-        assert_eq!(session.auth, AuthKind::Auto);
-        assert_eq!(session.key_path, None);
+        // Without its key, it tries the agent and the default keys.
+        assert_eq!(session.auth, AuthKind::NoPassword);
         assert_eq!(session.user.as_ref(), "deploy");
         assert_eq!(store.session(db).unwrap().user.as_ref(), "root");
         assert!(store.remove_credential_unnotified(credential).is_empty());
+
+        // Without its password, it asks for one.
+        let credential = password_credential(&mut store, "deploy");
+        let api = store.insert_unnotified(draft("api", None).with_credential(credential));
+        store.remove_credential_unnotified(credential);
+        assert_eq!(store.session(api).unwrap().auth, AuthKind::Password);
     }
 
     #[test]
@@ -1642,13 +1640,13 @@ mod tests {
         database.insert_credential(&credential).unwrap();
         let mut stale = Session::new(SessionId(1), draft("web", None));
         stale.credential = Some(credential.id);
-        stale.auth = AuthKind::Password;
+        stale.auth = AuthKind::NoPassword;
         database.insert_session(&stale).unwrap();
 
         let mut store = SessionStore::load(database).unwrap();
         let session = store.session(SessionId(1)).unwrap();
         assert_eq!(session.user.as_ref(), "deploy");
-        assert_eq!(session.auth, AuthKind::Auto);
+        assert_eq!(session.auth, AuthKind::Password);
         assert_eq!(
             store.credential(CredentialId(4)).unwrap().keychain_id,
             credential.keychain_id
@@ -1698,11 +1696,8 @@ mod tests {
         );
         assert_eq!(read(&path), "two");
 
-        // Not when a host logs in with that file as well.
-        let mut host = draft("web", None);
-        host.auth = AuthKind::Key;
-        host.key_path = Some(path.clone());
-        store.insert_unnotified(host);
+        // Not when another credential logs in with that file as well.
+        key_credential(&mut store, &path);
         let moved = store.save_private_key(Some(credential), "three").unwrap();
         assert_ne!(moved, path);
         assert_eq!(read(&path), "two");
@@ -1821,7 +1816,7 @@ mod tests {
         let mut store = SessionStore::empty();
         let id = store.insert_unnotified(draft("web", None));
         let endpoint = store.session(id).unwrap().password_secret();
-        let moved = SessionDraft::new("web", "10.0.0.1", 2222, "root", AuthKind::Auto, None);
+        let moved = SessionDraft::new("web", "10.0.0.1", 2222, "root", AuthKind::Password, None);
         store.update_unnotified(id, moved);
         assert!(!store.password_in_use(&endpoint));
     }
@@ -1832,7 +1827,14 @@ mod tests {
         let group = store.insert_group_unnotified(GroupDraft::new("生产", None));
         store.insert_unnotified(draft("web-01", Some(group)));
         store.insert_unnotified(draft("web-02", Some(group)));
-        let other = SessionDraft::new("db", "10.0.0.2", 22, "root", AuthKind::Auto, Some(group));
+        let other = SessionDraft::new(
+            "db",
+            "10.0.0.2",
+            22,
+            "root",
+            AuthKind::Password,
+            Some(group),
+        );
         store.insert_unnotified(other);
 
         let endpoints = store.endpoints_of(&store.sessions_under(group));
@@ -1881,16 +1883,12 @@ mod tests {
         let mut store = SessionStore::seed();
         let web01 = store.sessions()[0].id;
         let mut draft = store.session(web01).unwrap().draft();
-        draft.auth = AuthKind::Key;
-        draft.key_path = Some("/tmp/id_ed25519".into());
+        draft.auth = AuthKind::NoPassword;
         assert!(store.update_unnotified(web01, draft));
         let copy = store.duplicate_unnotified(web01).unwrap();
         assert_eq!(store.sessions()[1].id, copy);
         assert_eq!(store.sessions()[1].name.as_ref(), "web-01 副本");
-        assert_eq!(
-            store.sessions()[1].key_path.as_deref(),
-            Some("/tmp/id_ed25519")
-        );
+        assert_eq!(store.sessions()[1].auth, AuthKind::NoPassword);
         assert_eq!(store.sessions()[1].state, ConnectionState::Disconnected);
         assert_ne!(
             store.sessions()[1].public_id,

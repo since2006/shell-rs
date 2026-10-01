@@ -344,6 +344,8 @@ fn open_workspace_with_factory(
     factory: Arc<FakeTerminalFactory>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
     cx.update(shellrs::init);
+    // Dialogs still, as in every fixture: see `open_workspace_with_tester`.
+    cx.update(|cx| cx.set_reduce_motion(true));
     let mut workspace = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
         let store = cx.new(|_| SessionStore::seed());
@@ -376,6 +378,8 @@ fn open_workspace_with_remote_factory(
     factory: Arc<dyn TerminalTransportFactory>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
     cx.update(shellrs::init);
+    // Dialogs still, as in every fixture: see `open_workspace_with_tester`.
+    cx.update(|cx| cx.set_reduce_motion(true));
     let mut workspace = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
         let store = cx.new(|_| store);
@@ -517,50 +521,46 @@ fn one_session_store(auth: AuthKind) -> (SessionStore, SessionId) {
 }
 
 #[gpui_kit::test]
-async fn session_form_switches_to_key_and_uses_native_path_picker(cx: &mut TestAppContext) {
-    let (handle, _) = open_workspace_with_store(cx, SessionStore::empty());
-
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        window.click("new-session", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find("session-key-path").is_none());
-        window.within("session-auth").click("input", cx);
-        window.within("session-auth").press("down", cx);
-        window.within("session-auth").press("down", cx);
-        window.within("session-auth").press("enter", cx);
-    })
-    .unwrap();
-    cx.run_until_parked();
-
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
-        assert!(window.find("session-key-path").visible());
-        window.click("choose-key", cx);
-    })
-    .unwrap();
-    assert!(cx.did_prompt_for_paths());
-    cx.simulate_path_prompt_response(|options| {
-        assert!(options.files);
-        assert!(!options.directories);
-        assert!(!options.multiple);
-        Some(vec!["/tmp/id_ed25519".into()])
+async fn a_host_without_a_password_says_what_it_tries_and_is_saved_as_such(
+    cx: &mut TestAppContext,
+) {
+    let (handle, workspace) = open_workspace_with_store(cx, SessionStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("new-session", cx));
+    in_frame(cx, handle, |window, cx| {
+        // A new host logs in with a password.
+        let sources = window.within("session-auth-source");
+        assert_eq!(sources.find(0usize).selected(), Some(true));
+        assert!(window.find("session-password").visible());
+        assert!(window.try_find("session-no-password-note").is_none());
+        window.click("session-name", cx);
+        window.input("box", cx);
+        window.click("session-host", cx);
+        window.input("10.0.0.9", cx);
+        window.within("session-auth-source").click(2usize, cx);
     });
-    cx.run_until_parked();
-
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.render_frame(cx);
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("session-user").visible());
+        assert!(window.try_find("session-password").is_none());
+        assert!(window.try_find("session-credential").is_none());
         assert_eq!(
-            window.find("session-key-path").value(),
-            Some("/tmp/id_ed25519")
+            window.find("session-no-password-note").label(),
+            Some(
+                "依次尝试服务器免认证、SSH Agent 和 ~/.ssh 中的默认私钥；服务器要求密码时连接失败，不会询问。"
+            )
         );
-    })
-    .unwrap();
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let session = &store.sessions()[0];
+        assert_eq!(session.auth, AuthKind::NoPassword);
+        assert_eq!(session.credential, None);
+        assert_eq!(
+            store.login(session.id).unwrap().method,
+            LoginMethod::NoPassword
+        );
+    });
 }
 
 #[gpui_kit::test]
@@ -630,7 +630,7 @@ async fn authentication_prompt_is_masked_and_drives_connected_state(cx: &mut Tes
 
 #[gpui_kit::test]
 async fn canceling_unknown_host_prompt_keeps_session_disconnected(cx: &mut TestAppContext) {
-    let (store, id) = one_session_store(AuthKind::Auto);
+    let (store, id) = one_session_store(AuthKind::Password);
     let factory = Arc::new(PromptTerminalFactory::new(PromptBehavior::UnknownHost));
     let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
 
@@ -732,7 +732,7 @@ async fn canceling_unknown_host_prompt_keeps_session_disconnected(cx: &mut TestA
 
 #[gpui_kit::test]
 async fn connection_edits_reconnect_once_but_display_edits_do_not(cx: &mut TestAppContext) {
-    let (store, id) = one_session_store(AuthKind::Auto);
+    let (store, id) = one_session_store(AuthKind::Password);
     let factory = Arc::new(FakeTerminalFactory::default());
     let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
 
@@ -780,7 +780,7 @@ async fn connection_edits_reconnect_once_but_display_edits_do_not(cx: &mut TestA
 
 #[gpui_kit::test]
 async fn opening_sftp_updates_connection_state_without_terminal(cx: &mut TestAppContext) {
-    let (store, id) = one_session_store(AuthKind::Auto);
+    let (store, id) = one_session_store(AuthKind::Password);
     let (handle, workspace) = open_workspace_with_store(cx, store);
 
     cx.update_window(handle.into(), |_, window, cx| {
@@ -859,7 +859,7 @@ async fn double_click_on_session_opens_terminal_and_updates_status(cx: &mut Test
 
 #[gpui_kit::test]
 async fn connected_session_opens_an_independent_terminal_each_time(cx: &mut TestAppContext) {
-    let (store, id) = one_session_store(AuthKind::Auto);
+    let (store, id) = one_session_store(AuthKind::Password);
     let factory = Arc::new(FakeTerminalFactory::default());
     let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
 
@@ -1381,7 +1381,7 @@ fn connect_group_opens_each_host_in_its_subtree(cx: &mut TestAppContext) {
         "10.0.3.8",
         22,
         "deploy",
-        AuthKind::Auto,
+        AuthKind::Password,
         Some(grandchild),
     ));
     let (handle, workspace) = open_workspace_with_store(cx, store);
@@ -3915,7 +3915,7 @@ async fn the_tree_falls_back_to_the_first_letter_until_a_host_is_probed(cx: &mut
         "10.0.1.12",
         22,
         "root",
-        AuthKind::Auto,
+        AuthKind::Password,
         None,
     ));
     let fresh = store.insert_unnotified(SessionDraft::new(
@@ -3923,7 +3923,7 @@ async fn the_tree_falls_back_to_the_first_letter_until_a_host_is_probed(cx: &mut
         "10.0.2.5",
         22,
         "root",
-        AuthKind::Auto,
+        AuthKind::Password,
         None,
     ));
     store.set_host_os_unnotified(probed, Some(HostOs::Debian));
@@ -3957,7 +3957,7 @@ async fn the_tree_falls_back_to_the_first_letter_until_a_host_is_probed(cx: &mut
 
 #[gpui_kit::test]
 async fn connecting_marks_the_session_with_the_host_operating_system(cx: &mut TestAppContext) {
-    let (store, id) = one_session_store(AuthKind::Auto);
+    let (store, id) = one_session_store(AuthKind::Password);
     let factory = Arc::new(FakeTerminalFactory::reports_os(HostOs::Fedora));
     let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory);
 
@@ -3988,7 +3988,7 @@ async fn connecting_marks_the_session_with_the_host_operating_system(cx: &mut Te
 
 #[gpui_kit::test]
 async fn the_tab_bar_shows_the_connection_latency_while_it_runs(cx: &mut TestAppContext) {
-    let (store, id) = one_session_store(AuthKind::Auto);
+    let (store, id) = one_session_store(AuthKind::Password);
     let factory = Arc::new(FakeTerminalFactory::reports_latency(Latency::Measured(
         Duration::from_millis(32),
     )));
@@ -4034,7 +4034,7 @@ async fn the_start_page_marks_recent_hosts_with_their_operating_system(cx: &mut 
         "10.0.1.12",
         22,
         "root",
-        AuthKind::Auto,
+        AuthKind::Password,
         None,
     ));
     // Connecting once puts it on the start page; disconnecting keeps it there
@@ -7129,6 +7129,10 @@ async fn the_title_bar_switches_the_sidebar_between_sessions_and_forwards(cx: &m
     in_frame(cx, handle, |window, _| {
         assert_eq!(window.find("show-sessions").checked(), Some(true));
         assert_eq!(window.find("show-forwards").checked(), Some(false));
+        // A new host, the usual addition, comes before a new group.
+        let host = window.find("new-session-panel").bounds();
+        let group = window.find("new-group").bounds();
+        assert!(host.right() <= group.left(), "{host:?} {group:?}");
     });
 
     show_forwards(cx, handle).await;
@@ -7801,7 +7805,14 @@ async fn forwards_are_read_back_from_the_database(cx: &mut TestAppContext) {
     let path = directory.path().join("shellrs.db");
     let store = SessionStore::load(SessionDatabase::open(&path).expect("database opened"))
         .expect("store loaded");
-    let session = SessionDraft::new("db-01", "10.0.2.5", 22, "postgres", AuthKind::Auto, None);
+    let session = SessionDraft::new(
+        "db-01",
+        "10.0.2.5",
+        22,
+        "postgres",
+        AuthKind::Password,
+        None,
+    );
     let (handle, workspace) =
         open_workspace_with_forwards(cx, store, Arc::new(FakeForwardProvider::default()));
     cx.run_until_parked();
@@ -8241,7 +8252,7 @@ fn store_with_credential(
         )
         .unwrap();
     let session = store.insert_unnotified(
-        SessionDraft::new("db-01", "10.0.2.5", 22, "root", AuthKind::Auto, None)
+        SessionDraft::new("db-01", "10.0.2.5", 22, "root", AuthKind::Password, None)
             .with_credential(credential),
     );
     (store.with_secrets(secrets), credential, session)
@@ -8503,7 +8514,7 @@ async fn a_host_can_use_a_credential_instead_of_typing_a_login(cx: &mut TestAppC
             .expect("web-01 inserted");
         assert_eq!(created.credential, Some(credential));
         assert_eq!(created.user.as_ref(), "deploy");
-        assert_eq!(created.auth, AuthKind::Auto);
+        assert_eq!(created.auth, AuthKind::Password);
     });
     // Nothing of the host's own went to the keychain.
     assert_eq!(secrets.len(), 1);
@@ -8576,7 +8587,7 @@ async fn editing_a_credentials_user_reconnects_the_hosts_using_it(cx: &mut TestA
         "10.0.1.12",
         22,
         "root",
-        AuthKind::Auto,
+        AuthKind::Password,
         None,
     ));
     let remote = Arc::new(RecordingRemoteProvider::default());
@@ -8682,7 +8693,7 @@ async fn deleting_a_used_credential_leaves_its_hosts_connected_and_logging_in_on
         assert!(store.credentials().is_empty());
         let host = store.session(session).unwrap();
         assert_eq!(host.credential, None);
-        assert_eq!(host.auth, AuthKind::Auto);
+        assert_eq!(host.auth, AuthKind::Password);
         assert_eq!(host.user.as_ref(), "deploy");
     });
     // The working connection was left alone, and the password went with the
@@ -8955,4 +8966,67 @@ async fn a_key_credentials_public_key_is_copied_from_its_file(cx: &mut TestAppCo
         cx.read_from_clipboard().and_then(|item| item.text()),
         Some(key.public_key_line("deploy@laptop"))
     );
+}
+
+#[gpui_kit::test]
+async fn a_dialogs_choices_are_equal_segments_of_one_track(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace_with_credentials(
+        cx,
+        SessionStore::seed(),
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    in_frame(cx, handle, |window, cx| window.click("new-session", cx));
+    in_frame(cx, handle, |window, cx| {
+        let name = window.find("session-name").bounds();
+        let mut group = window.within("session-auth-source");
+        let segments = [0usize, 1, 2].map(|ix| group.find(ix));
+        let selected: Vec<_> = segments.iter().map(|segment| segment.selected()).collect();
+        assert_eq!(selected, [Some(true), Some(false), Some(false)]);
+        let [password, saved, keyless] = segments.map(|segment| segment.bounds());
+        // Side by side in one row, sharing the track equally (to the
+        // layout's rounding). The track spans the form like the name field
+        // above it, and the segments fill it but for its inset.
+        for segment in [saved, keyless] {
+            assert_eq!(segment.top(), password.top());
+            assert_eq!(segment.size.height, password.size.height);
+            assert!((segment.size.width - password.size.width).abs() <= px(1.));
+        }
+        assert!(password.right() <= saved.left() && saved.right() <= keyless.left());
+        assert!(name.left() < password.left() && keyless.right() < name.right());
+        assert!(password.size.width * 3. > name.size.width * 0.95);
+        group.click(1usize, cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        let group = window.within("session-auth-source");
+        assert_eq!(group.find(1usize).selected(), Some(true));
+        assert_eq!(group.find(0usize).selected(), Some(false));
+        assert!(window.find("session-credential").visible());
+    });
+}
+
+#[gpui_kit::test]
+async fn a_segment_that_cannot_be_chosen_stays_unchosen(cx: &mut TestAppContext) {
+    // No key directory: pasted and generated keys have nowhere to go.
+    let (handle, _) = open_workspace_with_credentials(
+        cx,
+        SessionStore::empty(),
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    show_credentials(cx, handle).await;
+    in_frame(cx, handle, |window, cx| window.click("new-credential", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("credential-kind").click(1usize, cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.within("credential-key-source").click(1usize, cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        let sources = window.within("credential-key-source");
+        assert_eq!(sources.find(0usize).selected(), Some(true));
+        assert_eq!(sources.find(1usize).selected(), Some(false));
+        assert!(window.find("credential-key-path").visible());
+        assert!(window.try_find("credential-key-text").is_none());
+    });
 }

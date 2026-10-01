@@ -655,7 +655,13 @@ mod tests {
         known_hosts: &Path,
         answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
     ) {
-        connect(session, known_hosts, Arc::new(NoSecretStore), false, answer);
+        connect(
+            SessionLogin::of(&session, None),
+            known_hosts,
+            Arc::new(NoSecretStore),
+            false,
+            answer,
+        );
     }
 
     fn connect_with_secrets(
@@ -664,7 +670,13 @@ mod tests {
         secrets: SharedSecretStore,
         answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
     ) -> ConnectionReport {
-        connect(session, known_hosts, secrets, false, answer)
+        connect(
+            SessionLogin::of(&session, None),
+            known_hosts,
+            secrets,
+            false,
+            answer,
+        )
     }
 
     /// Same, but waits for the host-operating-system probe and the first
@@ -674,7 +686,13 @@ mod tests {
         known_hosts: &Path,
         answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
     ) -> ConnectionReport {
-        connect(session, known_hosts, Arc::new(NoSecretStore), true, answer)
+        connect(
+            SessionLogin::of(&session, None),
+            known_hosts,
+            Arc::new(NoSecretStore),
+            true,
+            answer,
+        )
     }
 
     /// What one connection told the UI about itself.
@@ -688,7 +706,7 @@ mod tests {
     /// Connect, answer whatever is asked, then shut down. The report says what
     /// was raised along the way, so a test can assert that nothing was.
     fn connect(
-        session: Session,
+        login: SessionLogin,
         known_hosts: &Path,
         secrets: SharedSecretStore,
         wait_for_host_os: bool,
@@ -697,7 +715,7 @@ mod tests {
         let mut report = ConnectionReport::default();
         let provider =
             SshTerminalTransportProvider::with_connector(SshConnector::new(known_hosts, secrets));
-        let factory = provider.factory_for(&SessionLogin::of(&session, None));
+        let factory = provider.factory_for(&login);
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = async_channel::unbounded();
         let (done_tx, done_rx) = mpsc::channel();
@@ -949,7 +967,6 @@ mod tests {
             port,
             "tester",
             AuthKind::Password,
-            None,
         ))
     }
 
@@ -1179,7 +1196,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn automatic_login_tries_the_same_agent() {
+    fn a_login_without_a_password_tries_the_same_agent() {
         let key = random_key();
         let Some(server) = start_server(TestAuth::PublicKey(key.public_key().clone())) else {
             eprintln!("loopback sockets are unavailable in this sandbox; skipping");
@@ -1187,7 +1204,7 @@ mod tests {
         };
         let directory = tempfile::tempdir().unwrap();
         let agent = start_agent(&[key]);
-        let login = SessionLogin::manual("127.0.0.1", server.port, "tester", AuthKind::Auto, None);
+        let login = SessionLogin::manual("127.0.0.1", server.port, "tester", AuthKind::NoPassword);
         let connector = SshConnector::new(
             directory.path().join("known_hosts"),
             Arc::new(NoSecretStore),
@@ -1236,6 +1253,26 @@ mod tests {
         assert_eq!(
             agent_login(password_server.port, agent.path.clone(), &known_hosts),
             Err("服务器不接受公钥登录，无法使用 SSH Agent".to_string())
+        );
+    }
+
+    #[test]
+    fn a_login_without_a_password_refuses_a_server_that_wants_one() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let connector = SshConnector::new(
+            directory.path().join("known_hosts"),
+            Arc::new(NoSecretStore),
+        );
+        let login = SessionLogin::manual("127.0.0.1", server.port, "tester", AuthKind::NoPassword);
+        // Refused outright: the connection test cannot ask, and would say a
+        // password was missing if this login tried to.
+        assert_eq!(
+            test_through(connector, crate::connection::LoginTest::typed(login)),
+            Err("服务器要求密码，「无密码」不会询问；请改用「密码」或「使用凭据」".to_string())
         );
     }
 
@@ -1602,21 +1639,20 @@ mod tests {
         client_key
             .write_openssh_file(&key_path, russh::keys::ssh_key::LineEnding::LF)
             .unwrap();
-        let key_session = Session::new(
-            crate::session::SessionId(1),
-            crate::session::SessionDraft::new(
+        let key_credential = crate::session::Credential::new(
+            crate::session::CredentialId(1),
+            crate::session::CredentialDraft::new(
                 "key-test",
-                "127.0.0.1",
-                key_server.port,
+                crate::session::CredentialKind::Key,
                 "tester",
-                AuthKind::Key,
-                None,
             )
             .with_key_path(key_path.to_string_lossy().into_owned()),
         );
-        connect_then_shutdown(
-            key_session,
+        connect(
+            SessionLogin::with_credential("127.0.0.1", key_server.port, &key_credential),
             &directory.path().join("key-known-hosts"),
+            Arc::new(NoSecretStore),
+            false,
             |prompt| match prompt {
                 ConnectionPromptKind::UnknownHost(_) => ConnectionPromptReply::TrustAndSave,
                 other => panic!("unexpected key-auth prompt: {other:?}"),

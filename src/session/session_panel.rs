@@ -362,15 +362,16 @@ impl Panel for SessionPanel {
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
+        // A new host first: it is what the list is mostly added to.
         Some(vec![
-            Button::new("new-group")
-                .icon(Icon::new(CatalogIcon::FolderPlus))
-                .tooltip("新建分组…")
-                .on_click(|_, window, cx| window.dispatch_action(Box::new(NewGroup), cx)),
             Button::new("new-session-panel")
                 .icon(IconName::Plus)
                 .tooltip("新建主机…")
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(NewSession), cx)),
+            Button::new("new-group")
+                .icon(Icon::new(CatalogIcon::FolderPlus))
+                .tooltip("新建分组…")
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(NewGroup), cx)),
         ])
     }
 
