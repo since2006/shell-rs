@@ -4,7 +4,7 @@ version = "0.1.0-beta.4"
 edition = "2024"
 publish = false
 description = "SSH client and host manager: terminal, SFTP, port forwarding"
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-only"
 repository = "https://github.com/since2006/shell-rs"
 default-run = "shellrs"
 
