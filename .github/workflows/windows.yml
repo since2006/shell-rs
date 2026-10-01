@@ -1,10 +1,32 @@
 # The Windows build, which the Macs this is developed on cannot compile:
 # the whole crate through clippy, the external CLI's tests, including the
 # named pipe between two processes, and the updater's.
+#
+# A push runs it only when it touches code that differs on Windows (the
+# files with `cfg(windows)` and friends), the build script or the
+# dependencies. Windows code added to another file goes in this list too;
+# until then, run it by hand (Actions › windows › Run workflow). Tags never
+# run it: the release workflow builds Windows itself.
 name: windows
 
 on:
   push:
+    branches: ["**"]
+    paths:
+      - "src/cli/**"
+      - "src/update/**"
+      - "src/app/paths.rs"
+      - "src/main.rs"
+      - "src/bin/**"
+      - "src/ssh/connection.rs"
+      - "src/sftp/download.rs"
+      - "src/credential/credential_dialog.rs"
+      - "src/settings/settings_panel.rs"
+      - "tests/cli_bin.rs"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
   workflow_dispatch:
 
 jobs:
