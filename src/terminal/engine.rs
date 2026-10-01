@@ -15,12 +15,12 @@ use alacritty_terminal::term::color::COUNT;
 use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, CursorStyle, Processor, Rgb};
 
-use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
+use crate::connection::{ConnectionPrompt, ConnectionPromptReply, Latency};
 use crate::host::HostOs;
 
 use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
 use super::{
-    Latency, SharedTerminalTransportFactory, TerminalLifecycle, TerminalSize, TerminalStatus,
+    SharedTerminalTransportFactory, TerminalLifecycle, TerminalSize, TerminalStatus,
     TerminalTransportCommand, TerminalTransportEvent,
 };
 

@@ -1,11 +1,13 @@
 use super::{
     connection::{SshConnectionConfig, SshConnector, SshHandle, SshPrompts},
+    latency::{LATENCY_INTERVAL, round_trip},
     probe::{HostOsProbe, ProbeOutcome},
 };
 use crate::{
+    connection::Latency,
     host::HostLogin,
     terminal::{
-        Latency, RemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalSize,
+        RemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalSize,
         TerminalTransport, TerminalTransportCommand, TerminalTransportEvent,
         TerminalTransportFactory,
     },
@@ -22,15 +24,11 @@ use std::{
         mpsc,
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tokio::sync::{mpsc as tokio_mpsc, watch};
 use tokio::time::MissedTickBehavior;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
-/// How often the connection's round trip is measured while the shell runs.
-const LATENCY_INTERVAL: Duration = Duration::from_secs(5);
-/// A ping unanswered for this long reads as timed out.
-const LATENCY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Production remote-terminal adapter for the shared SSH connector.
 pub struct SshTerminalTransportProvider {
@@ -249,14 +247,7 @@ impl SshTerminalTransport {
                     }
                 },
                 _ = latency_ticker.tick(), if ping.is_none() => {
-                    let handle = &handle;
-                    ping = Some(Box::pin(async move {
-                        let sent = Instant::now();
-                        match tokio::time::timeout(LATENCY_TIMEOUT, handle.send_ping()).await {
-                            Ok(Ok(())) => Latency::Measured(sent.elapsed()),
-                            _ => Latency::TimedOut,
-                        }
-                    }));
+                    ping = Some(Box::pin(round_trip(&handle)));
                 },
                 latency = async { ping.as_mut().expect("guarded").await }, if ping.is_some() => {
                     ping = None;

@@ -23,12 +23,12 @@ use crate::app::{
     CatalogIcon, ClearTerminal, CopyTerminal, DismissTerminalFind, FindInTerminal,
     FindNextInTerminal, FindPreviousInTerminal, PasteTerminal,
 };
-use crate::connection::ConnectionPromptReply;
+use crate::connection::{ConnectionPromptReply, Latency};
 
 use super::search::SearchMark;
 use super::{
-    Latency, SearchDirection, SharedTerminalTransportFactory, TerminalEngine, TerminalEvent,
-    TerminalFont, TerminalLifecycle, TerminalSize, TerminalSnapshot, TerminalStatus,
+    SearchDirection, SharedTerminalTransportFactory, TerminalEngine, TerminalEvent, TerminalFont,
+    TerminalLifecycle, TerminalSize, TerminalSnapshot, TerminalStatus,
 };
 
 pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";

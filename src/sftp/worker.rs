@@ -13,19 +13,23 @@ use super::{
 };
 use crate::{
     host::HostLogin,
-    ssh::{SshConnectionConfig, SshConnector, SshPrompts},
+    ssh::{LATENCY_INTERVAL, SshConnectionConfig, SshConnector, SshPrompts},
 };
 use anyhow::{Result, anyhow};
 use async_channel::{Receiver, Sender};
 use std::{
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Weak,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{RwLock, watch};
+
+/// How often the latency task looks for a connection to measure, and for
+/// the one it is measuring to be dropped.
+const LATENCY_POLL: Duration = Duration::from_millis(250);
 
 pub struct SshSftpTransportProvider {
     connector: SshConnector,
@@ -243,6 +247,7 @@ impl SshSftpTransport {
                 prompts.cancel_all();
             })
         };
+        let latency = tokio::spawn(measure_latency(client.clone(), events.clone()));
         let control = TransferControl {
             events: events.clone(),
             cancel,
@@ -536,8 +541,54 @@ impl SshSftpTransport {
             events.send(SftpEvent::Idle).await?;
         }
         router.abort();
+        latency.abort();
         *client.write().await = None;
         Ok(())
+    }
+}
+
+/// Measure the connection in use every [`LATENCY_INTERVAL`], and a new one
+/// at once, transfers or not. The client is held only for a ping, and let go
+/// as soon as it is no longer the one in use, so 断开 still closes the
+/// connection at once.
+async fn measure_latency(shared: Arc<RwLock<Option<Arc<SftpClient>>>>, events: Sender<SftpEvent>) {
+    let mut measured = Weak::new();
+    let mut last = Instant::now();
+    loop {
+        tokio::time::sleep(LATENCY_POLL).await;
+        let Some(connected) = shared.read().await.clone() else {
+            continue;
+        };
+        let fresh = !Weak::ptr_eq(&measured, &Arc::downgrade(&connected));
+        if !fresh && last.elapsed() < LATENCY_INTERVAL {
+            continue;
+        }
+        measured = Arc::downgrade(&connected);
+        last = Instant::now();
+        let latency = tokio::select! {
+            latency = connected.round_trip() => latency,
+            () = replaced(&shared, &connected) => None,
+        };
+        drop(connected);
+        if let Some(latency) = latency
+            && events.send(SftpEvent::Latency(latency)).await.is_err()
+        {
+            break;
+        }
+    }
+}
+
+/// Resolves once `connected` is no longer the client in use.
+async fn replaced(shared: &RwLock<Option<Arc<SftpClient>>>, connected: &Arc<SftpClient>) {
+    loop {
+        tokio::time::sleep(LATENCY_POLL).await;
+        let current = shared.read().await;
+        if !current
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, connected))
+        {
+            return;
+        }
     }
 }
 

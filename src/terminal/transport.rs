@@ -3,7 +3,8 @@ use std::sync::{Arc, mpsc};
 use anyhow::Result;
 use async_channel::Sender;
 
-use super::{Latency, TerminalSize};
+use super::TerminalSize;
+use crate::connection::Latency;
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::host::{HostLogin, HostOs};
 

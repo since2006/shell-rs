@@ -1,4 +1,7 @@
-//! Shared connection questions. Secrets are never serialized or printed.
+//! Shared connection questions, and the round trips measured on a live
+//! connection. Secrets are never serialized or printed.
+use std::time::Duration;
+
 use zeroize::Zeroizing;
 
 /// One field requested by an SSH keyboard-interactive challenge.
@@ -374,3 +377,66 @@ pub trait ConnectionTester: Send + Sync + 'static {
 }
 
 pub type SharedConnectionTester = std::sync::Arc<dyn ConnectionTester>;
+
+/// The last round trip measured on a remote connection: how long the server
+/// took to answer, or that it did not answer in time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Latency {
+    Measured(Duration),
+    TimedOut,
+}
+
+/// How a latency reads to someone typing: echo is instant below 100 ms,
+/// noticeable up to 200 ms, and sluggish beyond.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LatencyLevel {
+    Good,
+    Fair,
+    Poor,
+}
+
+impl Latency {
+    pub fn level(self) -> LatencyLevel {
+        match self {
+            Latency::Measured(rtt) if rtt < Duration::from_millis(100) => LatencyLevel::Good,
+            Latency::Measured(rtt) if rtt <= Duration::from_millis(200) => LatencyLevel::Fair,
+            Latency::Measured(_) | Latency::TimedOut => LatencyLevel::Poor,
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Latency::Measured(rtt) => format!("{} ms", rtt.as_millis()),
+            Latency::TimedOut => "超时".into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod latency_tests {
+    use std::time::Duration;
+
+    use super::{Latency, LatencyLevel};
+
+    fn ms(millis: u64) -> Latency {
+        Latency::Measured(Duration::from_millis(millis))
+    }
+
+    #[test]
+    fn latency_levels_split_at_100_and_200_ms() {
+        assert_eq!(ms(99).level(), LatencyLevel::Good);
+        assert_eq!(ms(100).level(), LatencyLevel::Fair);
+        assert_eq!(ms(200).level(), LatencyLevel::Fair);
+        assert_eq!(ms(201).level(), LatencyLevel::Poor);
+        assert_eq!(Latency::TimedOut.level(), LatencyLevel::Poor);
+    }
+
+    #[test]
+    fn latency_labels_show_whole_milliseconds() {
+        assert_eq!(
+            Latency::Measured(Duration::from_micros(32_900)).label(),
+            "32 ms"
+        );
+        assert_eq!(Latency::TimedOut.label(), "超时");
+    }
+}

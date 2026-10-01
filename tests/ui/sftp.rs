@@ -937,6 +937,45 @@ async fn sftp_remote_commands_while_disconnected_offer_to_reconnect(cx: &mut Tes
     assert_eq!(*provider.reconnects.lock().unwrap(), 1);
 }
 
+/// Like a terminal tab, an SFTP tab shows its connection's round trip beside
+/// its buttons, and only while it is connected.
+#[gpui_kit::test]
+async fn the_sftp_tab_bar_shows_the_connection_latency_while_connected(cx: &mut TestAppContext) {
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, _) = open_workspace_with_sftp(cx, provider.clone());
+    open_test_explorer(cx, handle).await;
+    let latency = ("sftp-latency", SFTP_TAB);
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find(latency).is_none(), "nothing measured yet");
+    });
+
+    let events = provider.events.lock().unwrap()[0].clone();
+    for millis in [32, 180] {
+        events
+            .send_blocking(SftpEvent::Latency(Latency::Measured(
+                Duration::from_millis(millis),
+            )))
+            .unwrap();
+        let shown = format!("{millis} ms");
+        cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find(latency)
+                .is_some_and(|element| element.label() == Some(shown.as_str()))
+        })
+        .await;
+    }
+
+    events
+        .send_blocking(SftpEvent::Disconnected("SFTP 连接中断，请重新连接".into()))
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find(latency).is_none()
+    })
+    .await;
+}
+
 #[gpui_kit::test]
 async fn sftp_tab_reconnects_from_its_tab_bar_and_reports_at_the_bottom_left(
     cx: &mut TestAppContext,

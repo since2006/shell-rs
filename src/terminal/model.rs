@@ -1,5 +1,4 @@
 use std::fmt;
-use std::time::Duration;
 
 use alacritty_terminal::grid::Dimensions;
 
@@ -10,40 +9,6 @@ pub struct LocalTerminalId(pub u64);
 /// Stable identity for one remote-terminal connection and its Dock tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RemoteTerminalId(pub u64);
-
-/// The last round trip measured on a remote connection: how long the server
-/// took to answer, or that it did not answer in time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Latency {
-    Measured(Duration),
-    TimedOut,
-}
-
-/// How a latency reads to someone typing: echo is instant below 100 ms,
-/// noticeable up to 200 ms, and sluggish beyond.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LatencyLevel {
-    Good,
-    Fair,
-    Poor,
-}
-
-impl Latency {
-    pub fn level(self) -> LatencyLevel {
-        match self {
-            Latency::Measured(rtt) if rtt < Duration::from_millis(100) => LatencyLevel::Good,
-            Latency::Measured(rtt) if rtt <= Duration::from_millis(200) => LatencyLevel::Fair,
-            Latency::Measured(_) | Latency::TimedOut => LatencyLevel::Poor,
-        }
-    }
-
-    pub fn label(self) -> String {
-        match self {
-            Latency::Measured(rtt) => format!("{} ms", rtt.as_millis()),
-            Latency::TimedOut => "超时".into(),
-        }
-    }
-}
 
 /// The dimensions shared by the emulator and a terminal transport.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,34 +130,5 @@ impl TerminalStatus {
 
     pub fn rows(&self) -> usize {
         self.rows
-    }
-}
-
-#[cfg(test)]
-mod latency_tests {
-    use std::time::Duration;
-
-    use super::{Latency, LatencyLevel};
-
-    fn ms(millis: u64) -> Latency {
-        Latency::Measured(Duration::from_millis(millis))
-    }
-
-    #[test]
-    fn latency_levels_split_at_100_and_200_ms() {
-        assert_eq!(ms(99).level(), LatencyLevel::Good);
-        assert_eq!(ms(100).level(), LatencyLevel::Fair);
-        assert_eq!(ms(200).level(), LatencyLevel::Fair);
-        assert_eq!(ms(201).level(), LatencyLevel::Poor);
-        assert_eq!(Latency::TimedOut.level(), LatencyLevel::Poor);
-    }
-
-    #[test]
-    fn latency_labels_show_whole_milliseconds() {
-        assert_eq!(
-            Latency::Measured(Duration::from_micros(32_900)).label(),
-            "32 ms"
-        );
-        assert_eq!(Latency::TimedOut.label(), "超时");
     }
 }

@@ -22,7 +22,7 @@ pub use shellrs::app::{
 pub use shellrs::cli::{AgentKind, IntegrationPaths};
 pub use shellrs::connection::{
     ConnectionPrompt, ConnectionPromptField, ConnectionPromptKind, ConnectionPromptReply,
-    ConnectionTester, LoginTest, TrustCallback,
+    ConnectionTester, Latency, LoginTest, TrustCallback,
 };
 pub use shellrs::explorer::ExplorerId;
 pub use shellrs::forward::{
@@ -41,7 +41,7 @@ pub use shellrs::sftp::{
     SftpCommand, SftpEvent, SftpTransport, SftpTransportProvider, UploadRequest,
 };
 pub use shellrs::terminal::{
-    FixedRemoteTerminalTransportProvider, Latency, LocalTerminalId, RemoteTerminalId,
+    FixedRemoteTerminalTransportProvider, LocalTerminalId, RemoteTerminalId,
     RemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalFont,
     TerminalLifecycle, TerminalSize, TerminalTransport, TerminalTransportCommand,
     TerminalTransportEvent, TerminalTransportFactory,

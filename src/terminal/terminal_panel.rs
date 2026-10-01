@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _,
+    Icon, IconName, Sizable as _,
     button::Button,
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     menu::PopupMenu,
@@ -14,11 +14,11 @@ use crate::app::{
 };
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::host::{HostId, HostOs, HostStore};
-use crate::shared::{ClosableTabTitle, HostMark, RenamableTab, close_tab_items};
+use crate::shared::{ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items};
 
 use super::{
-    LatencyLevel, RemoteTerminalId, SharedRemoteTerminalTransportProvider, TerminalEvent,
-    TerminalLifecycle, TerminalMenuItems, TerminalStatus, TerminalView,
+    RemoteTerminalId, SharedRemoteTerminalTransportProvider, TerminalEvent, TerminalLifecycle,
+    TerminalMenuItems, TerminalStatus, TerminalView,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -246,25 +246,7 @@ impl Panel for TerminalPanel {
             return None;
         }
         let latency = terminal.latency(cx)?;
-        let color = match latency.level() {
-            LatencyLevel::Good => cx.theme().success,
-            LatencyLevel::Fair => cx.theme().warning,
-            LatencyLevel::Poor => cx.theme().danger,
-        };
-        let label = latency.label();
-        Some(
-            div()
-                .id(("terminal-latency", self.id.0))
-                .test_support()
-                .aria_label(label.clone())
-                // Keeps the buttons beside it still as the digits change.
-                .min_w_12()
-                .text_xs()
-                .font_weight(FontWeight::BOLD)
-                .text_right()
-                .text_color(color)
-                .child(label),
-        )
+        Some(LatencyLabel::new(("terminal-latency", self.id.0), latency))
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {

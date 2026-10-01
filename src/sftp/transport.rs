@@ -3,7 +3,7 @@ use super::{
     TransferProgress, TransferQuestion, UploadRequest,
 };
 use crate::{
-    connection::{ConnectionPrompt, ConnectionPromptReply},
+    connection::{ConnectionPrompt, ConnectionPromptReply, Latency},
     host::HostLogin,
 };
 use anyhow::Result;
@@ -86,6 +86,9 @@ pub enum SftpEvent {
     Question(TransferQuestion),
     Notice(String),
     Idle,
+    /// The connection's latest round trip: every few seconds while connected,
+    /// and right after connecting, transfers or not.
+    Latency(Latency),
 }
 /// One worker lifetime; the caller runs it on its own thread.
 pub trait SftpTransport: Send + 'static {

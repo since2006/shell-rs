@@ -8,14 +8,14 @@ use crate::{
         CatalogIcon, CenterTab, CloseExplorer, CopyHostAddress, ExplorerAction, ExplorerCommand,
         OpenExplorer, RenameExplorer,
     },
-    connection::{ConnectionPrompt, ConnectionPromptReply},
+    connection::{ConnectionPrompt, ConnectionPromptReply, Latency},
     host::{BookmarkSide, ConnectionState, HostId, HostStore},
     sftp::{
         DownloadRequest, RemotePath, SftpCommand, SftpEvent, SharedLocalDirectoryProvider,
         SharedSftpTransportProvider, TransferDirection, TransferPhase, TransferQuestion,
         UploadRequest,
     },
-    shared::{ClosableTabTitle, HostMark, RenamableTab, close_tab_items},
+    shared::{ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items},
 };
 use gpui_kit::component::{
     Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
@@ -58,6 +58,9 @@ pub struct ExplorerPanel {
     pub(super) next_operation: u64,
     commands: async_channel::Sender<SftpCommand>,
     state: ConnectionState,
+    /// The connection's latest round trip; none until the first one after
+    /// connecting comes back.
+    latency: Option<Latency>,
     /// Batches waiting, running and ended, WinSCP's queue. The engine runs
     /// one at a time and the panel hands it the next.
     pub(super) queue: TransferQueue,
@@ -211,6 +214,7 @@ impl ExplorerPanel {
             next_operation: 0,
             commands,
             state: ConnectionState::Connecting,
+            latency: None,
             queue: TransferQueue::default(),
             engine_busy: false,
             question: None,
@@ -445,6 +449,7 @@ impl ExplorerPanel {
             SftpEvent::Connecting => {
                 self.generation = NEXT_GENERATION.fetch_add(1, Ordering::Relaxed);
                 self.state = ConnectionState::Connecting;
+                self.latency = None;
                 cx.emit(ExplorerPanelEvent::StateChanged(self.id, self.host_id));
             }
             SftpEvent::Connected { home } => {
@@ -456,6 +461,7 @@ impl ExplorerPanel {
             }
             SftpEvent::Disconnected(message) => {
                 self.state = ConnectionState::Disconnected;
+                self.latency = None;
                 self.abandon_remote_operations(cx);
                 self.remote
                     .update(cx, |pane, cx| pane.disconnected(message, cx));
@@ -528,6 +534,7 @@ impl ExplorerPanel {
             SftpEvent::Notice(message) => {
                 window.push_notification(Notification::error(message), cx);
             }
+            SftpEvent::Latency(latency) => self.latency = Some(latency),
         }
         self.sync_available(cx);
         cx.notify();
@@ -848,6 +855,14 @@ impl Panel for ExplorerPanel {
         cx: &mut Context<Self>,
     ) -> PopupMenu {
         self.tab_menu(cx).build(menu, cx)
+    }
+    /// The connection's latest round trip, as on a terminal tab. Shown only
+    /// while connected, so a dropped connection leaves no stale number.
+    fn title_suffix(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<impl IntoElement> {
+        let latency = self
+            .latency
+            .filter(|_| self.state == ConnectionState::Connected)?;
+        Some(LatencyLabel::new(("sftp-latency", self.id.0), latency))
     }
     /// A terminal tab's buttons that apply here too.
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {

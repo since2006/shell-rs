@@ -1,4 +1,5 @@
 use super::{DirectoryEntry, DirectoryListing, EntryKind, FileMetadata, RemotePath};
+use crate::connection::Latency;
 use crate::ssh::{SshConnectionConfig, SshConnector, SshHandle, SshPrompts};
 use anyhow::{Result, anyhow, bail};
 use futures::StreamExt as _;
@@ -52,7 +53,7 @@ pub(crate) trait RemoteFs {
 
 pub(crate) struct SftpClient {
     raw: RawSftpSession,
-    _ssh: Option<SshHandle>,
+    ssh: Option<SshHandle>,
     /// Turns true once the server side of the SFTP stream has ended.
     closed: watch::Receiver<bool>,
     fingerprint: String,
@@ -97,7 +98,7 @@ impl SftpClient {
             .is_some_and(|v| v == "1");
         Ok(Self {
             raw,
-            _ssh: ssh,
+            ssh,
             closed,
             fingerprint,
             atomic_replace,
@@ -126,6 +127,11 @@ impl SftpClient {
     }
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
+    }
+    /// The SSH connection's round trip, measured as a terminal's is. `None`
+    /// for the tests' local sftp-server, which has no SSH connection.
+    pub async fn round_trip(&self) -> Option<Latency> {
+        Some(crate::ssh::round_trip(self.ssh.as_ref()?).await)
     }
     /// Resolves once the server side of the SFTP session has gone, which
     /// russh-sftp otherwise only tells the next request. It does not hold on

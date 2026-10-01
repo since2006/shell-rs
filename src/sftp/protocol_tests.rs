@@ -1,7 +1,7 @@
 //! Loopback-only SSH/SFTP worker tests. No user hosts, credentials or shell.
 use super::*;
 use crate::{
-    connection::{ConnectionPromptKind, ConnectionPromptReply, ConnectionSecret},
+    connection::{ConnectionPromptKind, ConnectionPromptReply, ConnectionSecret, Latency},
     host::{AuthKind, Host, HostDraft, HostId, HostLogin},
     secrets::InMemorySecretStore,
     ssh::SshConnector,
@@ -402,6 +402,36 @@ fn an_idle_connection_that_drops_is_reported_without_a_request() {
         })
         .await
         .expect("the connection stayed open after 断开");
+    });
+}
+
+/// Like a terminal's, the connection's round trip is reported right after
+/// connecting, with nothing asked of it.
+#[test]
+fn a_connection_reports_its_round_trip_right_after_connecting() {
+    runtime().block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let Some(server) = server(temp.path().into(), 0, false).await else {
+            return;
+        };
+        let worker = worker(server.port, temp.path());
+        loop {
+            match next(&worker).await {
+                SftpEvent::Connected { .. } => break,
+                SftpEvent::Disconnected(e) => panic!("connect failed: {e}"),
+                _ => {}
+            }
+        }
+        let latency = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let SftpEvent::Latency(latency) = next(&worker).await {
+                    break latency;
+                }
+            }
+        })
+        .await
+        .expect("no round trip after connecting");
+        assert!(matches!(latency, Latency::Measured(_)), "{latency:?}");
     });
 }
 

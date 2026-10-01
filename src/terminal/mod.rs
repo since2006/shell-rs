@@ -18,8 +18,7 @@ pub use font::{
 pub use local_pty::LocalPtyTransportFactory;
 pub use local_terminal_panel::{LocalTerminalPanel, LocalTerminalPanelEvent};
 pub use model::{
-    Latency, LatencyLevel, LocalTerminalId, RemoteTerminalId, TerminalLifecycle, TerminalSize,
-    TerminalStatus,
+    LocalTerminalId, RemoteTerminalId, TerminalLifecycle, TerminalSize, TerminalStatus,
 };
 pub use search::{SearchDirection, SearchMark, SearchPosition};
 pub use terminal_panel::{TerminalPanel, TerminalPanelEvent};
