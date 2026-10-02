@@ -71,6 +71,7 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(&primary("n"), NewHost, None),
         KeyBinding::new(&primary("shift-n"), NewGroup, None),
         KeyBinding::new(&primary("b"), ToggleHostPanel, None),
+        KeyBinding::new(&primary("alt-b"), ToggleToolSidebar, None),
         KeyBinding::new(&primary("k"), FocusSearch, None),
         KeyBinding::new(&primary("t"), NewLocalTerminal, None),
         KeyBinding::new(&primary("w"), CloseActiveTab, None),

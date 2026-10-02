@@ -746,3 +746,180 @@ fn a_problem_found_while_the_window_is_built_is_shown_once_it_is_open(cx: &mut T
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn the_tool_switch_shows_a_tool_and_hides_it_again(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
+    });
+    let sidebar = ("tool-sidebar", INITIAL_WEB_TERMINAL);
+    in_frame(cx, handle, |window, _| {
+        // Hidden at first: the switch is there, none of it pressed.
+        assert!(window.try_find(sidebar).is_none());
+        assert_eq!(window.find("tool-monitor").checked(), Some(false));
+    });
+
+    in_frame(cx, handle, |window, cx| window.click("tool-monitor", cx));
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find(sidebar).label(), Some("系统监控"));
+        assert_eq!(
+            window.find("tool-placeholder").label(),
+            Some("web-01 的 CPU、内存、网络和磁盘。")
+        );
+        assert_eq!(window.find("tool-monitor").checked(), Some(true));
+        // Between the center and the switch.
+        let bounds = window.find(sidebar).bounds();
+        let switch = window.find("tool-switch").bounds();
+        assert!(bounds.right() <= switch.left(), "{bounds:?} {switch:?}");
+        // The switch is the sidebar's only control: no collapse button in
+        // the center's tab bar.
+        assert!(window.try_find("toggle-dock:Right").is_none());
+    });
+
+    // Another tool takes its place.
+    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find(sidebar).label(), Some("历史命令"));
+        assert_eq!(window.find("tool-monitor").checked(), Some(false));
+        assert_eq!(window.find("tool-history").checked(), Some(true));
+    });
+
+    // The tool showing hides the sidebar.
+    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find(sidebar).is_none());
+        assert_eq!(window.find("tool-history").checked(), Some(false));
+    });
+
+    // The shortcut brings back the tool shown last.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ToggleToolSidebar), cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find(sidebar).label(), Some("历史命令"));
+    });
+}
+
+#[gpui_kit::test]
+fn a_tool_follows_the_terminal_in_front_and_leaves_it_the_keyboard(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| {
+        window.activate_window();
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx);
+    });
+    in_frame(cx, handle, |window, cx| window.click("tool-monitor", cx));
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .try_find(("tool-sidebar", INITIAL_WEB_TERMINAL))
+                .is_some()
+        );
+        // The switch does not take the keyboard from the terminal.
+        assert_eq!(
+            window.find(("terminal", INITIAL_WEB_TERMINAL)).focused(),
+            Some(true)
+        );
+    });
+
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_STAGING_TERMINAL), cx)
+    });
+    let sidebar = ("tool-sidebar", INITIAL_STAGING_TERMINAL);
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find(sidebar).is_some());
+        assert_eq!(
+            window.find("tool-placeholder").label(),
+            Some("staging-api 的 CPU、内存、网络和磁盘。")
+        );
+    });
+
+    // A click in the sidebar takes the focus there; hiding the sidebar
+    // hands it back to the terminal, so the shortcuts keep working.
+    in_frame(cx, handle, |window, cx| {
+        window.click("tool-placeholder", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find(sidebar).focused(), Some(true));
+    });
+    in_frame(cx, handle, |window, cx| window.click("tool-monitor", cx));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find(sidebar).is_none());
+        assert_eq!(
+            window
+                .find(("terminal", INITIAL_STAGING_TERMINAL))
+                .focused(),
+            Some(true)
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn the_tool_sidebar_goes_with_terminals_only(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace_with_sftp(cx, Arc::new(FakeSftpProvider::default()));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("tool-monitor", cx));
+    let shown = |cx: &mut TestAppContext| {
+        in_frame(cx, handle, |window, _| {
+            let switch = window.try_find("tool-switch").is_some();
+            let remote = [INITIAL_WEB_TERMINAL, INITIAL_STAGING_TERMINAL]
+                .into_iter()
+                .any(|id| window.try_find(("tool-sidebar", id)).is_some());
+            let local = window.try_find(("local-tool-sidebar", 1_u64)).is_some();
+            (switch, remote || local)
+        })
+    };
+    assert_eq!(shown(cx), (true, true));
+
+    // An SFTP tab in front: neither the sidebar nor its switch.
+    open_test_explorer(cx, handle).await;
+    assert_eq!(shown(cx), (false, false));
+
+    // Nor the settings, which the shortcut leaves alone too.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(OpenSettings), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ToggleToolSidebar), cx)
+    });
+    assert_eq!(shown(cx), (false, false));
+
+    // A local terminal brings it back as it was, working on this machine.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(NewLocalTerminal), cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        let sidebar = window.find(("local-tool-sidebar", 1_u64));
+        assert_eq!(sidebar.label(), Some("系统监控"));
+        assert_eq!(
+            window.find("tool-placeholder").label(),
+            Some("本机的 CPU、内存、网络和磁盘。")
+        );
+        assert_eq!(window.find("tool-monitor").checked(), Some(true));
+    });
+
+    // So does an SSH terminal, working on its host.
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_STAGING_TERMINAL), cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        let sidebar = window.find(("tool-sidebar", INITIAL_STAGING_TERMINAL));
+        assert_eq!(sidebar.label(), Some("系统监控"));
+        assert_eq!(
+            window.find("tool-placeholder").label(),
+            Some("staging-api 的 CPU、内存、网络和磁盘。")
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn the_start_page_has_no_tool_switch(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("recent-hosts").visible());
+        assert!(window.try_find("tool-switch").is_none());
+    });
+}

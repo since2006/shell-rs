@@ -1,5 +1,6 @@
-//! The window shell: title bar, dock area with its sidebar, status bar, and
-//! the start page (recent hosts) the center shows while no tab is open.
+//! The window shell: title bar, dock area with its sidebars, the switch of
+//! the right sidebar's tools, status bar, and the start page (recent hosts)
+//! the center shows while no tab is open.
 
 mod credentials;
 mod dock_skin;
@@ -8,6 +9,8 @@ mod recent_hosts;
 mod sidebar;
 mod status_bar;
 mod title_bar;
+mod tool_sidebar;
+mod tools;
 mod updates;
 mod workspace_view;
 

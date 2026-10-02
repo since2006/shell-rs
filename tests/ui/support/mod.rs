@@ -16,8 +16,8 @@ pub use shellrs::app::{
     DeleteCredential, DeleteForward, DeleteGroup, DeleteHost, DisconnectHost, DisconnectTerminal,
     EditCredential, EditForward, EditHost, ExpandAllGroups, FindInTerminal, FindNextInTerminal,
     FindPreviousInTerminal, FocusSearch, InstallCliCommand, NewHostInGroup, NewLocalTerminal,
-    OpenExplorer, ReconnectTerminal, RemoveAgentSkill, RenameGroup, RenameTerminal, StartForward,
-    StopForward, ToggleHostPanel,
+    OpenExplorer, OpenSettings, ReconnectTerminal, RemoveAgentSkill, RenameGroup, RenameTerminal,
+    StartForward, StopForward, ToggleHostPanel, ToggleToolSidebar,
 };
 pub use shellrs::cli::{AgentKind, IntegrationPaths};
 pub use shellrs::connection::{

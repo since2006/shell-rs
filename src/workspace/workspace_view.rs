@@ -11,6 +11,7 @@ use gpui_kit::component::{
     dialog::DialogButtonProps,
     dock::{DockArea, DockEvent, DockLayout, DockPlacement, PanelId, TabGroup, panel_handle},
     form::{Field, Form},
+    h_flex,
     input::{Input, InputContentType, InputState},
     notification::Notification,
     v_flex,
@@ -62,8 +63,13 @@ use crate::terminal::{
 use crate::update::{UpdateServices, Updater, UpdaterEvent};
 
 use super::{
-    dock_skin::WorkspaceDockSkin, recent_hosts::RecentHosts, sidebar::Sidebar,
-    status_bar::WorkspaceStatus, title_bar::render_title_bar,
+    dock_skin::WorkspaceDockSkin,
+    recent_hosts::RecentHosts,
+    sidebar::Sidebar,
+    status_bar::WorkspaceStatus,
+    title_bar::render_title_bar,
+    tool_sidebar::{ToolSidebar, render_tool_switch},
+    tools::set_right_dock_open,
 };
 
 const DOCK_ID: &str = "shellrs-dock";
@@ -128,6 +134,8 @@ pub struct Workspace {
     skin: Rc<WorkspaceDockSkin>,
     /// The left dock's panel: the host tree or the forward list.
     pub(super) sidebar: Entity<Sidebar>,
+    /// The right dock's panel: the tools for the host of the tab in front.
+    pub(super) tools: Entity<ToolSidebar>,
     host_panel: Entity<HostPanel>,
     /// The port forwards that are running, each on a connection of its own.
     pub(super) forwards: Entity<ForwardManager>,
@@ -162,7 +170,12 @@ pub struct Workspace {
     next_local_terminal_id: u64,
     next_explorer_id: u64,
     /// The center tab displayed most recently; `CloseActiveTab` closes it.
-    active_tab: Option<CenterTab>,
+    /// Changed through `set_active_tab`, which shows or hides the right
+    /// sidebar with it.
+    pub(super) active_tab: Option<CenterTab>,
+    /// Whether the right sidebar is to show while a terminal is in front.
+    /// It hides with any other tab and comes back with the next terminal.
+    pub(super) tool_sidebar_wanted: bool,
     pub(super) prompt_queue: VecDeque<(PromptOwner, HostId, ConnectionPrompt)>,
     pub(super) active_prompt: Option<(PromptOwner, HostId, u64)>,
     /// Dispatch target for the title bar and start page: actions sent to it
@@ -317,6 +330,7 @@ impl Workspace {
         let credential_panel =
             cx.new(|cx| CredentialPanel::new(store.clone(), focus_handle.clone(), window, cx));
         let sidebar = cx.new(|_| Sidebar::new(host_panel.clone(), forward_panel, credential_panel));
+        let tools = cx.new(|cx| ToolSidebar::new(store.clone(), cx));
         // Start with focus in the host panel so window-level actions have a
         // dispatch path. The workspace's own handle is never focused: the
         // dialog layer is its child, and a focused ancestor would keep the
@@ -441,6 +455,16 @@ impl Workspace {
             // Dock geometry is an API boundary that takes `Pixels`.
             area.set_dock_size(DockPlacement::Left, px(280.), window, cx);
             area.set_dock_collapsible(DockPlacement::Left, true, window, cx);
+            area.set_dock(
+                DockPlacement::Right,
+                DockLayout::tabs().panel_view(panel_handle(tools.clone()), cx),
+                window,
+                cx,
+            );
+            area.set_dock_size(DockPlacement::Right, px(320.), window, cx);
+            // Hidden until a tool is picked; see `set_right_dock_open`.
+            set_right_dock_open(area, false, window, cx);
+            area.set_dock_collapsible(DockPlacement::Right, false, window, cx);
         });
         // Settled before the first `LayoutChanged` arrives, so the handler
         // does not take the initial state for a tab having just closed.
@@ -454,6 +478,7 @@ impl Workspace {
             dock_area,
             skin,
             sidebar,
+            tools,
             host_panel,
             forwards,
             recent,
@@ -474,6 +499,7 @@ impl Workspace {
             next_local_terminal_id: 1,
             next_explorer_id: 1,
             active_tab: None,
+            tool_sidebar_wanted: false,
             prompt_queue: VecDeque::new(),
             active_prompt: None,
             focus_handle,
@@ -567,6 +593,38 @@ impl Workspace {
 
     pub fn updater(&self) -> &Entity<Updater> {
         &self.updater
+    }
+
+    /// Give the focus to the center: the tab shown last, or the start page
+    /// while there is none. For when the focus is about to go off screen.
+    pub(super) fn focus_center(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let tab = match self.active_tab {
+            Some(CenterTab::Terminal(id)) => self
+                .terminals
+                .get(&id)
+                .map(|panel| panel.read(cx).focus_handle(cx)),
+            Some(CenterTab::Explorer(id)) => self
+                .explorers
+                .get(&id)
+                .map(|panel| panel.read(cx).focus_handle(cx)),
+            Some(CenterTab::LocalTerminal(id)) => self
+                .local_terminals
+                .get(&id)
+                .map(|panel| panel.read(cx).focus_handle(cx)),
+            Some(CenterTab::Settings) => self
+                .settings_tab
+                .as_ref()
+                .map(|panel| panel.read(cx).focus_handle(cx)),
+            None => None,
+        };
+        let handle = tab.or_else(|| {
+            self.skin
+                .is_center_empty()
+                .then(|| self.recent.read(cx).focus_handle(cx))
+        });
+        if let Some(handle) = handle {
+            window.focus(&handle, cx);
+        }
     }
 
     /// Keep the start page and focus in step with the center: once its last
@@ -1016,22 +1074,26 @@ impl Workspace {
         integration.update(cx, |integration, cx| integration.refresh(cx));
         let updater = self.updater.clone();
         let panel = cx.new(|cx| SettingsPanel::new(store, integration, updater, cx));
-        let subscription = cx.subscribe(&panel, |this, _, event: &SettingsPanelEvent, cx| {
-            match event {
-                SettingsPanelEvent::Activated => {
-                    this.store
-                        .update(cx, |store, cx| store.set_active(None, cx));
-                    this.active_tab = Some(CenterTab::Settings);
-                }
-                SettingsPanelEvent::Closed => {
-                    this.settings_tab = None;
-                    if this.active_tab == Some(CenterTab::Settings) {
-                        this.active_tab = None;
+        let subscription = cx.subscribe_in(
+            &panel,
+            window,
+            |this, _, event: &SettingsPanelEvent, window, cx| {
+                match event {
+                    SettingsPanelEvent::Activated => {
+                        this.store
+                            .update(cx, |store, cx| store.set_active(None, cx));
+                        this.set_active_tab(Some(CenterTab::Settings), window, cx);
+                    }
+                    SettingsPanelEvent::Closed => {
+                        this.settings_tab = None;
+                        if this.active_tab == Some(CenterTab::Settings) {
+                            this.set_active_tab(None, window, cx);
+                        }
                     }
                 }
-            }
-            cx.notify();
-        });
+                cx.notify();
+            },
+        );
         self._subscriptions.push(subscription);
         self.settings_tab = Some(panel.clone());
         self.dock_area.update(cx, |area, cx| {
@@ -1892,13 +1954,13 @@ fn new_terminal_panel(
         window,
         |this, _, event: &TerminalPanelEvent, window, cx| match event {
             TerminalPanelEvent::Activated(terminal_id, _) => {
-                this.active_tab = Some(CenterTab::Terminal(*terminal_id))
+                this.set_active_tab(Some(CenterTab::Terminal(*terminal_id)), window, cx)
             }
             TerminalPanelEvent::Closed(terminal_id, host_id) => {
                 this.cancel_prompts_for_terminal(*terminal_id, window, cx);
                 this.terminals.remove(terminal_id);
                 if this.active_tab == Some(CenterTab::Terminal(*terminal_id)) {
-                    this.active_tab = None;
+                    this.set_active_tab(None, window, cx);
                 }
                 this.refresh_host_connection_state(*host_id, cx);
                 if !this.has_tabs(*host_id, cx)
@@ -2007,11 +2069,13 @@ fn new_explorer_panel(
         &panel,
         window,
         |this, _, event: &ExplorerPanelEvent, window, cx| match event {
-            ExplorerPanelEvent::Activated(id) => this.active_tab = Some(CenterTab::Explorer(*id)),
+            ExplorerPanelEvent::Activated(id) => {
+                this.set_active_tab(Some(CenterTab::Explorer(*id)), window, cx)
+            }
             ExplorerPanelEvent::Closed(id, host_id) => {
                 this.explorers.remove(id);
                 if this.active_tab == Some(CenterTab::Explorer(*id)) {
-                    this.active_tab = None;
+                    this.set_active_tab(None, window, cx);
                 }
                 this.refresh_host_connection_state(*host_id, cx);
             }
@@ -2049,26 +2113,26 @@ fn new_local_terminal_panel(
     cx: &mut Context<Workspace>,
 ) -> (Entity<LocalTerminalPanel>, Subscription) {
     let panel = cx.new(|cx| LocalTerminalPanel::new(id, factory, window, cx));
-    let subscription =
-        cx.subscribe(
-            &panel,
-            |this, _, event: &LocalTerminalPanelEvent, cx| match event {
-                LocalTerminalPanelEvent::Activated(id) => {
-                    this.store
-                        .update(cx, |store, cx| store.set_active(None, cx));
-                    this.active_tab = Some(CenterTab::LocalTerminal(*id));
-                    cx.notify();
+    let subscription = cx.subscribe_in(
+        &panel,
+        window,
+        |this, _, event: &LocalTerminalPanelEvent, window, cx| match event {
+            LocalTerminalPanelEvent::Activated(id) => {
+                this.store
+                    .update(cx, |store, cx| store.set_active(None, cx));
+                this.set_active_tab(Some(CenterTab::LocalTerminal(*id)), window, cx);
+                cx.notify();
+            }
+            LocalTerminalPanelEvent::Closed(id) => {
+                this.local_terminals.remove(id);
+                if this.active_tab == Some(CenterTab::LocalTerminal(*id)) {
+                    this.set_active_tab(None, window, cx);
                 }
-                LocalTerminalPanelEvent::Closed(id) => {
-                    this.local_terminals.remove(id);
-                    if this.active_tab == Some(CenterTab::LocalTerminal(*id)) {
-                        this.active_tab = None;
-                    }
-                    cx.notify();
-                }
-                LocalTerminalPanelEvent::StatusChanged(_) => cx.notify(),
-            },
-        );
+                cx.notify();
+            }
+            LocalTerminalPanelEvent::StatusChanged(_) => cx.notify(),
+        },
+    );
     (panel, subscription)
 }
 
@@ -2102,6 +2166,8 @@ impl Render for Workspace {
         };
         let sidebar = self.sidebar_showing(cx);
         let running_forwards = self.forwards.read(cx).active_count();
+        let tool = self.tool_showing(cx);
+        let terminal_in_front = self.tool_terminal(cx).is_some();
 
         div()
             .id("workspace")
@@ -2160,6 +2226,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_dismiss_terminal_find))
             .on_action(cx.listener(Self::on_clear_terminal))
             .on_action(cx.listener(Self::on_toggle_host_panel))
+            .on_action(cx.listener(Self::on_toggle_tool_sidebar))
+            .on_action(cx.listener(Self::on_toggle_tool))
             .on_action(cx.listener(Self::on_show_hosts))
             .on_action(cx.listener(Self::on_show_forwards))
             .on_action(cx.listener(Self::on_new_forward))
@@ -2191,7 +2259,22 @@ impl Render for Workspace {
                 &self.focus_handle,
                 cx,
             ))
-            .child(div().flex_1().min_h_0().child(self.dock_area.clone()))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(self.dock_area.clone()),
+                    )
+                    // The switch comes and goes with the terminals.
+                    .when(terminal_in_front, |area| {
+                        area.child(render_tool_switch(tool, &self.focus_handle, cx))
+                    }),
+            )
             .child(status)
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_dialog_layer(window, cx))

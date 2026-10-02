@@ -47,7 +47,11 @@ icon_assets!(
         RectangleEllipsis,
         FileKey,
         UserRoundKey,
-        CircleArrowUp
+        CircleArrowUp,
+        CodeXml,
+        RotateCcwClock,
+        Container,
+        Activity
     ]
 );
 

@@ -36,6 +36,8 @@ gpui_kit::actions!(
         ClearTerminal,
         /// Show or hide the left dock, whichever list it is showing.
         ToggleHostPanel,
+        /// Show or hide the right sidebar, whichever tool it is showing.
+        ToggleToolSidebar,
         /// Show the host list in the left dock.
         ShowHosts,
         /// Show the port-forwarding list in the left dock.
@@ -178,6 +180,10 @@ id_actions! {
     /// Show the SFTP 大小 column in another format, from its title's menu.
     SetFileSizeFormat(FileSizeFormat);
 
+    /// Show a tool in the right sidebar, or hide the sidebar if it is
+    /// already showing that tool.
+    ToggleTool(ToolKind);
+
     /// Start a port forward over a connection of its own.
     StartForward(ForwardId);
     /// Stop a running port forward and log out its connection.
@@ -213,6 +219,25 @@ pub enum CenterTab {
     LocalTerminal(LocalTerminalId),
     /// There is at most one settings tab.
     Settings,
+}
+
+/// A tool of the right sidebar, in the order of the switch beside it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ToolKind {
+    #[default]
+    Snippets,
+    History,
+    Docker,
+    Monitor,
+}
+
+impl ToolKind {
+    pub const ALL: [ToolKind; 4] = [
+        ToolKind::Snippets,
+        ToolKind::History,
+        ToolKind::Docker,
+        ToolKind::Monitor,
+    ];
 }
 
 /// Which tabs of a tab bar a batch close takes, relative to one tab.
