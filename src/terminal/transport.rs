@@ -16,7 +16,25 @@ pub enum TerminalTransportCommand {
         request_id: u64,
         reply: ConnectionPromptReply,
     },
+    /// Run a command beside the shell. Only a transport with a connection of
+    /// its own runs it; the others drop the request.
+    Exec(ExecRequest),
     Shutdown,
+}
+
+/// What a command run beside the shell printed, or why it did not run.
+pub type ExecResult = Result<String, String>;
+
+/// A command to run beside the shell, on the terminal's own SSH connection:
+/// how the right sidebar's tools read the host, with no login of their own.
+/// The command gets no terminal and no input.
+///
+/// Answered once on `reply` with the command's standard output, or with
+/// why it could not run. A transport without a connection (a local PTY)
+/// drops the request, which the asker sees as the reply channel closing.
+pub struct ExecRequest {
+    pub command: String,
+    pub reply: mpsc::Sender<ExecResult>,
 }
 
 impl std::fmt::Debug for TerminalTransportCommand {
@@ -28,6 +46,10 @@ impl std::fmt::Debug for TerminalTransportCommand {
                 .debug_struct("PromptReply")
                 .field("request_id", request_id)
                 .field("reply", reply)
+                .finish(),
+            Self::Exec(request) => formatter
+                .debug_tuple("Exec")
+                .field(&request.command.len())
                 .finish(),
             Self::Shutdown => formatter.write_str("Shutdown"),
         }

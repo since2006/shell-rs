@@ -7,7 +7,7 @@ use crate::{
     connection::Latency,
     host::HostLogin,
     terminal::{
-        RemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalSize,
+        ExecRequest, RemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalSize,
         TerminalTransport, TerminalTransportCommand, TerminalTransportEvent,
         TerminalTransportFactory,
     },
@@ -16,6 +16,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use async_channel::Sender;
 use russh::{ChannelMsg, client};
 use std::{
+    collections::VecDeque,
     future::Future,
     pin::Pin,
     sync::{
@@ -29,6 +30,12 @@ use std::{
 use tokio::sync::{mpsc as tokio_mpsc, watch};
 use tokio::time::MissedTickBehavior;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a command run beside the shell may take. Generous: a slow disk
+/// can hold `df` up for seconds.
+const EXEC_TIMEOUT: Duration = Duration::from_secs(10);
+/// The most output kept from a command run beside the shell; the rest is
+/// dropped.
+const EXEC_OUTPUT_LIMIT: usize = 1 << 20;
 
 /// Production remote-terminal adapter for the shared SSH connector.
 pub struct SshTerminalTransportProvider {
@@ -190,9 +197,20 @@ impl SshTerminalTransport {
         latency_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut ping: Option<Pin<Box<dyn Future<Output = Latency> + Send + '_>>> = None;
 
+        // Commands for the right sidebar's tools, one at a time: a tool
+        // asking again before its last answer came back waits its turn
+        // rather than piling channels onto the server.
+        let mut exec_queue: VecDeque<ExecRequest> = VecDeque::new();
+        let mut exec: Option<Pin<Box<dyn Future<Output = ()> + Send + '_>>> = None;
+
         let mut exit_code = 0;
         let mut exit_signal = None;
         loop {
+            if exec.is_none()
+                && let Some(request) = exec_queue.pop_front()
+            {
+                exec = Some(Box::pin(run_exec(&handle, request)));
+            }
             tokio::select! {
                 command = io_rx.recv() => match command {
                     Some(TerminalTransportCommand::Write(bytes)) => {
@@ -218,7 +236,11 @@ impl SshTerminalTransport {
                         router.abort();
                         return Ok(());
                     }
+                    Some(TerminalTransportCommand::Exec(request)) => exec_queue.push_back(request),
                     Some(TerminalTransportCommand::PromptReply { .. }) => {}
+                },
+                () = async { exec.as_mut().expect("guarded").await }, if exec.is_some() => {
+                    exec = None;
                 },
                 // Only armed while a probe channel is open, so a host that
                 // never answers costs one idle channel and nothing else.
@@ -287,6 +309,39 @@ fn pixel_dimension(cells: usize, cell_size: u16) -> u32 {
     cells
         .saturating_mul(usize::from(cell_size))
         .min(u32::MAX as usize) as u32
+}
+
+/// Run one command beside the shell and answer its request: what it printed
+/// on standard output, or why it did not run. Its standard error is dropped.
+async fn run_exec(handle: &SshHandle, request: ExecRequest) {
+    let ExecRequest { command, reply } = request;
+    let result = tokio::time::timeout(EXEC_TIMEOUT, async {
+        let mut channel = handle
+            .channel_open_session()
+            .await
+            .map_err(|_| "无法打开 SSH 通道".to_string())?;
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|_| "无法发送命令".to_string())?;
+        let mut output = Vec::new();
+        loop {
+            match channel.wait().await {
+                Some(ChannelMsg::Data { data }) => {
+                    let room = EXEC_OUTPUT_LIMIT.saturating_sub(output.len());
+                    output.extend_from_slice(&data[..data.len().min(room)]);
+                }
+                Some(ChannelMsg::Failure) => return Err("服务器拒绝执行命令".to_string()),
+                Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
+                _ => {}
+            }
+        }
+        Ok(String::from_utf8_lossy(&output).into_owned())
+    })
+    .await
+    .unwrap_or_else(|_| Err("命令超时".to_string()));
+    // The asker may have stopped waiting.
+    let _ = reply.send(result);
 }
 
 /// Open a channel and run one probe command on it. Best effort throughout: a
@@ -651,6 +706,7 @@ mod tests {
             known_hosts,
             Arc::new(NoSecretStore),
             false,
+            &[],
             answer,
         );
     }
@@ -666,6 +722,7 @@ mod tests {
             known_hosts,
             secrets,
             false,
+            &[],
             answer,
         )
     }
@@ -682,6 +739,7 @@ mod tests {
             known_hosts,
             Arc::new(NoSecretStore),
             true,
+            &[],
             answer,
         )
     }
@@ -692,6 +750,8 @@ mod tests {
         prompts: Vec<ConnectionPromptKind>,
         host_os: Option<HostOs>,
         latency: Option<Latency>,
+        /// The answers to the commands run beside the shell, in order.
+        execs: Vec<crate::terminal::ExecResult>,
     }
 
     /// Connect, answer whatever is asked, then shut down. The report says what
@@ -701,6 +761,7 @@ mod tests {
         known_hosts: &Path,
         secrets: SharedSecretStore,
         wait_for_host_os: bool,
+        execs: &[&str],
         mut answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
     ) -> ConnectionReport {
         let mut report = ConnectionReport::default();
@@ -759,6 +820,27 @@ mod tests {
                     Err(async_channel::TryRecvError::Closed) => break,
                 }
             }
+        }
+        // All sent at once: the transport runs them one after another.
+        let replies: Vec<_> = execs
+            .iter()
+            .map(|command| {
+                let (reply, receiver) = mpsc::channel();
+                command_tx
+                    .send(TerminalTransportCommand::Exec(ExecRequest {
+                        command: command.to_string(),
+                        reply,
+                    }))
+                    .unwrap();
+                receiver
+            })
+            .collect();
+        for receiver in replies {
+            report.execs.push(
+                receiver
+                    .recv_timeout(EXEC_TIMEOUT)
+                    .expect("a command beside the shell was never answered"),
+            );
         }
         command_tx.send(TerminalTransportCommand::Shutdown).unwrap();
         done_rx
@@ -1549,6 +1631,60 @@ mod tests {
         );
     }
 
+    /// A host whose shell answers the right sidebar's commands.
+    fn tool_reply(command: &str) -> Option<&'static str> {
+        match command {
+            "echo one" => Some("one\n"),
+            "echo two" => Some("two\n"),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn commands_beside_the_shell_run_on_the_terminals_own_connection() {
+        let Some(server) = start_server_replying(TestAuth::Password, tool_reply) else {
+            eprintln!(
+                "loopback sockets are unavailable in this sandbox; skipping integration body"
+            );
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+
+        let report = connect(
+            HostLogin::of(&password_host(server.port), None),
+            &known_hosts,
+            Arc::new(NoSecretStore),
+            false,
+            &["echo one", "echo two"],
+            trust_and_type_password,
+        );
+
+        // Answered in order, each with its own output, and with no second
+        // login: the password was asked for once.
+        assert_eq!(
+            report.execs,
+            vec![Ok("one\n".to_string()), Ok("two\n".to_string())]
+        );
+        let authentications = report
+            .prompts
+            .iter()
+            .filter(|kind| matches!(kind, ConnectionPromptKind::Authentication(_)))
+            .count();
+        assert_eq!(authentications, 1);
+        // The operating-system probe runs alongside; these two came in order.
+        let execs: Vec<String> = server
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .execs
+            .iter()
+            .filter(|command| command.starts_with("echo"))
+            .cloned()
+            .collect();
+        assert_eq!(execs, ["echo one", "echo two"]);
+    }
+
     #[test]
     fn a_host_that_has_no_uname_is_asked_again_the_windows_way() {
         let Some(server) = start_server_replying(TestAuth::Password, windows_probe_reply) else {
@@ -1638,6 +1774,7 @@ mod tests {
             &directory.path().join("key-known-hosts"),
             Arc::new(NoSecretStore),
             false,
+            &[],
             |prompt| match prompt {
                 ConnectionPromptKind::UnknownHost(_) => ConnectionPromptReply::TrustAndSave,
                 other => panic!("unexpected key-auth prompt: {other:?}"),

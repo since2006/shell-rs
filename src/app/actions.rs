@@ -7,6 +7,7 @@ use crate::{
     cli::AgentKind,
     explorer::{ExplorerId, FileSizeFormat},
     host::{CredentialId, ForwardId, GroupId, HostId, HostNode, NodeDrop},
+    monitor::MonitorDetail,
     terminal::{LocalTerminalId, RemoteTerminalId},
 };
 
@@ -183,6 +184,8 @@ id_actions! {
     /// Show a tool in the right sidebar, or hide the sidebar if it is
     /// already showing that tool.
     ToggleTool(ToolKind);
+    /// Unfold a part of the system monitor, or fold it away again.
+    ToggleMonitorDetail(MonitorDetail);
 
     /// Start a port forward over a connection of its own.
     StartForward(ForwardId);

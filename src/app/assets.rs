@@ -51,7 +51,8 @@ icon_assets!(
         CodeXml,
         RotateCcwClock,
         Container,
-        Activity
+        Activity,
+        Monitor
     ]
 );
 

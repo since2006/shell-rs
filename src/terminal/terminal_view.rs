@@ -308,6 +308,21 @@ impl TerminalView {
         self.engine.read(cx).latency()
     }
 
+    /// Which connection the terminal is on: counts up with every reconnect.
+    pub fn generation(&self, cx: &App) -> u64 {
+        self.engine.read(cx).generation()
+    }
+
+    /// Run `command` beside the shell, on this terminal's own connection;
+    /// see [`super::ExecRequest`]. `None` while the shell is not running.
+    pub fn exec(
+        &self,
+        command: String,
+        cx: &App,
+    ) -> Option<std::sync::mpsc::Receiver<super::ExecResult>> {
+        self.engine.read(cx).exec(command)
+    }
+
     pub fn screen_text(&self, cx: &App) -> String {
         self.engine.read(cx).snapshot().visible_text()
     }

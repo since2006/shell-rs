@@ -558,6 +558,7 @@ impl Render for ForwardPanel {
                 div()
                     .id("forward-list")
                     .test_support()
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .child(
@@ -568,7 +569,6 @@ impl Render for ForwardPanel {
                             .gap_0p5()
                             .overflow_y_scroll()
                             .track_scroll(&self.scroll_handle)
-                            .vertical_scrollbar(&self.scroll_handle)
                             .map(|list| {
                                 if rows.is_empty() {
                                     list.child(self.render_empty(cx))
@@ -579,6 +579,10 @@ impl Render for ForwardPanel {
                                 }
                             }),
                     )
+                    // On the list, which does not scroll, rather than on
+                    // the rows, which do: there the bar would scroll away
+                    // with them.
+                    .vertical_scrollbar(&self.scroll_handle)
                     .capture_any_mouse_down(move |event, _, _| {
                         if matches!(event.button, MouseButton::Left | MouseButton::Right) {
                             clear_hit.set(None);

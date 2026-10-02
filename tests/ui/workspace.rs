@@ -757,17 +757,17 @@ fn the_tool_switch_shows_a_tool_and_hides_it_again(cx: &mut TestAppContext) {
     in_frame(cx, handle, |window, _| {
         // Hidden at first: the switch is there, none of it pressed.
         assert!(window.try_find(sidebar).is_none());
-        assert_eq!(window.find("tool-monitor").checked(), Some(false));
+        assert_eq!(window.find("tool-history").checked(), Some(false));
     });
 
-    in_frame(cx, handle, |window, cx| window.click("tool-monitor", cx));
+    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
     in_frame(cx, handle, |window, _| {
-        assert_eq!(window.find(sidebar).label(), Some("系统监控"));
+        assert_eq!(window.find(sidebar).label(), Some("历史命令"));
         assert_eq!(
             window.find("tool-placeholder").label(),
-            Some("web-01 的 CPU、内存、网络和磁盘。")
+            Some("web-01 上执行过的命令，可以搜索、再次执行。")
         );
-        assert_eq!(window.find("tool-monitor").checked(), Some(true));
+        assert_eq!(window.find("tool-history").checked(), Some(true));
         // Between the center and the switch.
         let bounds = window.find(sidebar).bounds();
         let switch = window.find("tool-switch").bounds();
@@ -778,18 +778,18 @@ fn the_tool_switch_shows_a_tool_and_hides_it_again(cx: &mut TestAppContext) {
     });
 
     // Another tool takes its place.
-    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
+    in_frame(cx, handle, |window, cx| window.click("tool-docker", cx));
     in_frame(cx, handle, |window, _| {
-        assert_eq!(window.find(sidebar).label(), Some("历史命令"));
-        assert_eq!(window.find("tool-monitor").checked(), Some(false));
-        assert_eq!(window.find("tool-history").checked(), Some(true));
+        assert_eq!(window.find(sidebar).label(), Some("Docker"));
+        assert_eq!(window.find("tool-history").checked(), Some(false));
+        assert_eq!(window.find("tool-docker").checked(), Some(true));
     });
 
     // The tool showing hides the sidebar.
-    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
+    in_frame(cx, handle, |window, cx| window.click("tool-docker", cx));
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find(sidebar).is_none());
-        assert_eq!(window.find("tool-history").checked(), Some(false));
+        assert_eq!(window.find("tool-docker").checked(), Some(false));
     });
 
     // The shortcut brings back the tool shown last.
@@ -797,7 +797,7 @@ fn the_tool_switch_shows_a_tool_and_hides_it_again(cx: &mut TestAppContext) {
         window.dispatch_action(Box::new(ToggleToolSidebar), cx)
     });
     in_frame(cx, handle, |window, _| {
-        assert_eq!(window.find(sidebar).label(), Some("历史命令"));
+        assert_eq!(window.find(sidebar).label(), Some("Docker"));
     });
 }
 
@@ -808,7 +808,7 @@ fn a_tool_follows_the_terminal_in_front_and_leaves_it_the_keyboard(cx: &mut Test
         window.activate_window();
         window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx);
     });
-    in_frame(cx, handle, |window, cx| window.click("tool-monitor", cx));
+    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
     in_frame(cx, handle, |window, _| {
         assert!(
             window
@@ -830,7 +830,7 @@ fn a_tool_follows_the_terminal_in_front_and_leaves_it_the_keyboard(cx: &mut Test
         assert!(window.try_find(sidebar).is_some());
         assert_eq!(
             window.find("tool-placeholder").label(),
-            Some("staging-api 的 CPU、内存、网络和磁盘。")
+            Some("staging-api 上执行过的命令，可以搜索、再次执行。")
         );
     });
 
@@ -842,7 +842,7 @@ fn a_tool_follows_the_terminal_in_front_and_leaves_it_the_keyboard(cx: &mut Test
     in_frame(cx, handle, |window, _| {
         assert_eq!(window.find(sidebar).focused(), Some(true));
     });
-    in_frame(cx, handle, |window, cx| window.click("tool-monitor", cx));
+    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find(sidebar).is_none());
         assert_eq!(
@@ -855,21 +855,20 @@ fn a_tool_follows_the_terminal_in_front_and_leaves_it_the_keyboard(cx: &mut Test
 }
 
 #[gpui_kit::test]
-async fn the_tool_sidebar_goes_with_terminals_only(cx: &mut TestAppContext) {
+async fn the_tool_sidebar_goes_with_ssh_terminals_only(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace_with_sftp(cx, Arc::new(FakeSftpProvider::default()));
     cx.run_until_parked();
     in_frame(cx, handle, |window, cx| {
         window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
     });
-    in_frame(cx, handle, |window, cx| window.click("tool-monitor", cx));
+    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
     let shown = |cx: &mut TestAppContext| {
         in_frame(cx, handle, |window, _| {
             let switch = window.try_find("tool-switch").is_some();
-            let remote = [INITIAL_WEB_TERMINAL, INITIAL_STAGING_TERMINAL]
+            let sidebar = [INITIAL_WEB_TERMINAL, INITIAL_STAGING_TERMINAL]
                 .into_iter()
                 .any(|id| window.try_find(("tool-sidebar", id)).is_some());
-            let local = window.try_find(("local-tool-sidebar", 1_u64)).is_some();
-            (switch, remote || local)
+            (switch, sidebar)
         })
     };
     assert_eq!(shown(cx), (true, true));
@@ -878,40 +877,28 @@ async fn the_tool_sidebar_goes_with_terminals_only(cx: &mut TestAppContext) {
     open_test_explorer(cx, handle).await;
     assert_eq!(shown(cx), (false, false));
 
-    // Nor the settings, which the shortcut leaves alone too.
+    // Nor the settings, nor a local terminal, which the shortcut leaves
+    // alone too.
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(OpenSettings), cx)
+    });
+    assert_eq!(shown(cx), (false, false));
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(NewLocalTerminal), cx)
     });
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(ToggleToolSidebar), cx)
     });
     assert_eq!(shown(cx), (false, false));
 
-    // A local terminal brings it back as it was, working on this machine.
-    in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(NewLocalTerminal), cx)
-    });
-    in_frame(cx, handle, |window, _| {
-        let sidebar = window.find(("local-tool-sidebar", 1_u64));
-        assert_eq!(sidebar.label(), Some("系统监控"));
-        assert_eq!(
-            window.find("tool-placeholder").label(),
-            Some("本机的 CPU、内存、网络和磁盘。")
-        );
-        assert_eq!(window.find("tool-monitor").checked(), Some(true));
-    });
-
-    // So does an SSH terminal, working on its host.
+    // The next SSH terminal brings it back as it was, working on that one.
     in_frame(cx, handle, |window, cx| {
         window.click(("terminal-tab", INITIAL_STAGING_TERMINAL), cx)
     });
     in_frame(cx, handle, |window, _| {
         let sidebar = window.find(("tool-sidebar", INITIAL_STAGING_TERMINAL));
-        assert_eq!(sidebar.label(), Some("系统监控"));
-        assert_eq!(
-            window.find("tool-placeholder").label(),
-            Some("staging-api 的 CPU、内存、网络和磁盘。")
-        );
+        assert_eq!(sidebar.label(), Some("历史命令"));
+        assert_eq!(window.find("tool-history").checked(), Some(true));
     });
 }
 
@@ -922,4 +909,71 @@ fn the_start_page_has_no_tool_switch(cx: &mut TestAppContext) {
         assert!(window.find("recent-hosts").visible());
         assert!(window.try_find("tool-switch").is_none());
     });
+}
+
+#[gpui_kit::test]
+fn the_tool_sidebar_drags_wider_but_never_narrower_than_it_opens(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
+    let sidebar = ("tool-sidebar", INITIAL_WEB_TERMINAL);
+    let bounds =
+        |cx: &mut TestAppContext| in_frame(cx, handle, |window, _| window.find(sidebar).bounds());
+    // Drag the sidebar's edge, the dock's resize handle, from `from` to `to`.
+    let drag = |cx: &mut TestAppContext, from: gpui_kit::Point<gpui_kit::Pixels>, by: f32| {
+        let to = point(from.x + px(by), from.y);
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseDown(gpui_kit::MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: from,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            // Past the drag threshold, then where the drag goes.
+            for position in [point(from.x + px(by.signum() * 6.), from.y), to] {
+                window.dispatch_event(
+                    gpui_kit::PlatformInput::MouseMove(MouseMoveEvent {
+                        position,
+                        pressed_button: Some(MouseButton::Left),
+                        modifiers: Default::default(),
+                    }),
+                    cx,
+                );
+            }
+            window.dispatch_event(
+                gpui_kit::PlatformInput::MouseUp(gpui_kit::MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: to,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                }),
+                cx,
+            );
+        });
+    };
+
+    let opened = bounds(cx);
+    let edge = point(opened.left() + px(2.), opened.center().y);
+    drag(cx, edge, -100.);
+    let wider = bounds(cx);
+    // The dock goes by where the pointer is, which was pressed a little
+    // inside the edge.
+    assert!(
+        (wider.size.width - opened.size.width - px(100.)).abs() < px(3.),
+        "{opened:?} → {wider:?}"
+    );
+
+    // Dragged back past where it opened: it stops there.
+    drag(cx, point(wider.left() + px(2.), wider.center().y), 250.);
+    let narrowed = bounds(cx);
+    assert!(
+        (narrowed.size.width - opened.size.width).abs() < px(1.),
+        "{opened:?} → {narrowed:?}"
+    );
 }

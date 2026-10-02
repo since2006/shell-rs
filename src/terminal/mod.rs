@@ -28,7 +28,7 @@ pub use terminal_view::{
 };
 pub(crate) use transport::send_event;
 pub use transport::{
-    FixedRemoteTerminalTransportProvider, RemoteTerminalTransportProvider,
+    ExecRequest, ExecResult, FixedRemoteTerminalTransportProvider, RemoteTerminalTransportProvider,
     SharedRemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalTransport,
     TerminalTransportCommand, TerminalTransportEvent, TerminalTransportFactory,
 };

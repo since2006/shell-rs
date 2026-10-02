@@ -18,9 +18,35 @@ pub struct FakeTerminalFactory {
     pub behavior: FakeBehavior,
     pub writes: Arc<Mutex<Vec<Vec<u8>>>>,
     pub resizes: Arc<Mutex<Vec<TerminalSize>>>,
+    /// What the commands run beside the shell print, one after another; the
+    /// last one repeats. With none the requests are dropped, the way a
+    /// local PTY drops them.
+    pub exec_outputs: Arc<Mutex<std::collections::VecDeque<String>>>,
+    /// The commands run beside the shell, in order.
+    pub exec_commands: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeTerminalFactory {
+    pub fn answering(outputs: &[&str]) -> Self {
+        Self {
+            exec_outputs: Arc::new(Mutex::new(
+                outputs.iter().map(|output| output.to_string()).collect(),
+            )),
+            ..Self::default()
+        }
+    }
+
+    pub fn exec_commands(&self) -> Vec<String> {
+        self.exec_commands
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    pub fn exec_count(&self) -> usize {
+        self.exec_commands().len()
+    }
+
     pub fn exit_first() -> Self {
         Self {
             behavior: FakeBehavior::ExitFirst,
@@ -74,6 +100,8 @@ impl TerminalTransportFactory for FakeTerminalFactory {
             behavior: self.behavior,
             writes: self.writes.clone(),
             resizes: self.resizes.clone(),
+            exec_outputs: self.exec_outputs.clone(),
+            exec_commands: self.exec_commands.clone(),
         })
     }
 }
@@ -83,6 +111,8 @@ pub struct FakeTerminalTransport {
     pub behavior: FakeBehavior,
     pub writes: Arc<Mutex<Vec<Vec<u8>>>>,
     pub resizes: Arc<Mutex<Vec<TerminalSize>>>,
+    pub exec_outputs: Arc<Mutex<std::collections::VecDeque<String>>>,
+    pub exec_commands: Arc<Mutex<Vec<String>>>,
 }
 
 impl TerminalTransport for FakeTerminalTransport {
@@ -130,6 +160,24 @@ impl TerminalTransport for FakeTerminalTransport {
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
                         .push(size);
+                }
+                TerminalTransportCommand::Exec(request) => {
+                    self.exec_commands
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(request.command.clone());
+                    let mut outputs = self
+                        .exec_outputs
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    let output = if outputs.len() > 1 {
+                        outputs.pop_front()
+                    } else {
+                        outputs.front().cloned()
+                    };
+                    if let Some(output) = output {
+                        let _ = request.reply.send(Ok(output));
+                    }
                 }
                 TerminalTransportCommand::PromptReply { .. } => {}
                 TerminalTransportCommand::Shutdown => break,

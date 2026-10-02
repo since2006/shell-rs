@@ -332,6 +332,17 @@ host_os! {
     NetBsd   => "netbsd",    "NetBSD",           "netbsd",      Some(0xFF_6600);
 }
 
+impl HostOs {
+    /// Whether the host runs Linux, any distribution of it: what the system
+    /// monitor can read.
+    pub fn is_linux(self) -> bool {
+        !matches!(
+            self,
+            HostOs::MacOs | HostOs::Windows | HostOs::FreeBsd | HostOs::OpenBsd | HostOs::NetBsd
+        )
+    }
+}
+
 /// Drawn on top of a light brand colour.
 const BRAND_DARK_MARK: u32 = 0x00_0000;
 /// Drawn on top of every other brand colour.
@@ -577,6 +588,19 @@ impl HostDraft {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_distributions_are_linux_and_the_rest_are_not() {
+        let not_linux: Vec<_> = HostOs::ALL
+            .iter()
+            .filter(|os| !os.is_linux())
+            .map(|os| os.label())
+            .collect();
+        assert_eq!(
+            not_linux,
+            ["macOS", "Windows", "FreeBSD", "OpenBSD", "NetBSD"]
+        );
+    }
 
     #[test]
     fn public_ids_are_sixteen_letters_and_digits() {

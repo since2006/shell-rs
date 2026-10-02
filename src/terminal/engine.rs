@@ -20,8 +20,8 @@ use crate::host::HostOs;
 
 use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
 use super::{
-    SharedTerminalTransportFactory, TerminalLifecycle, TerminalSize, TerminalStatus,
-    TerminalTransportCommand, TerminalTransportEvent,
+    ExecRequest, ExecResult, SharedTerminalTransportFactory, TerminalLifecycle, TerminalSize,
+    TerminalStatus, TerminalTransportCommand, TerminalTransportEvent,
 };
 
 pub type AlacrittyTerm = Term<TerminalEventProxy>;
@@ -396,6 +396,22 @@ impl TerminalEngine {
         self.latency
     }
 
+    /// Counts the transports started: every reconnect is a new connection,
+    /// possibly to another machine.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Run `command` beside the shell, on the terminal's own connection; see
+    /// [`ExecRequest`]. `None` while the shell is not running, and so there
+    /// is no connection to run it on.
+    pub fn exec(&self, command: String) -> Option<mpsc::Receiver<ExecResult>> {
+        if !matches!(self.lifecycle, TerminalLifecycle::Running) {
+            return None;
+        }
+        self.runtime.exec(command)
+    }
+
     pub fn status(&self) -> TerminalStatus {
         TerminalStatus::new(
             self.lifecycle.clone(),
@@ -605,6 +621,17 @@ impl TerminalRuntime {
 
     fn shutdown(&self) {
         let _ = self.commands.send(TerminalTransportCommand::Shutdown);
+    }
+
+    fn exec(&self, command: String) -> Option<mpsc::Receiver<ExecResult>> {
+        let (reply, receiver) = mpsc::channel();
+        self.commands
+            .send(TerminalTransportCommand::Exec(ExecRequest {
+                command,
+                reply,
+            }))
+            .ok()?;
+        Some(receiver)
     }
 
     fn reply_to_prompt(&self, request_id: u64, reply: ConnectionPromptReply) {

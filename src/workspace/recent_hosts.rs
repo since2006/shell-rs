@@ -235,18 +235,11 @@ impl Render for RecentHosts {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.rows(cx);
 
-        div()
-            .id("recent-hosts")
-            .test_support()
-            .track_focus(&self.focus_handle)
-            .key_context(RECENT_HOSTS_CONTEXT)
-            .on_action(cx.listener(Self::on_connect_selected))
+        let page = div()
+            .id("recent-host-page")
             .size_full()
             .overflow_y_scroll()
             .track_scroll(&self.scroll_handle)
-            .vertical_scrollbar(&self.scroll_handle)
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
             .flex()
             .flex_col()
             .items_center()
@@ -264,6 +257,20 @@ impl Render for RecentHosts {
                             page.child(self.render_list(rows, cx))
                         }
                     }),
-            )
+            );
+        // The bar goes on this, which does not scroll, rather than on the
+        // page, which does: there it would scroll away with it.
+        div()
+            .id("recent-hosts")
+            .test_support()
+            .track_focus(&self.focus_handle)
+            .key_context(RECENT_HOSTS_CONTEXT)
+            .on_action(cx.listener(Self::on_connect_selected))
+            .relative()
+            .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .child(page)
+            .vertical_scrollbar(&self.scroll_handle)
     }
 }

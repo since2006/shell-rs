@@ -69,7 +69,7 @@ use super::{
     status_bar::WorkspaceStatus,
     title_bar::render_title_bar,
     tool_sidebar::{ToolSidebar, render_tool_switch},
-    tools::set_right_dock_open,
+    tools::{TOOL_SIDEBAR_WIDTH, set_right_dock_open},
 };
 
 const DOCK_ID: &str = "shellrs-dock";
@@ -173,8 +173,8 @@ pub struct Workspace {
     /// Changed through `set_active_tab`, which shows or hides the right
     /// sidebar with it.
     pub(super) active_tab: Option<CenterTab>,
-    /// Whether the right sidebar is to show while a terminal is in front.
-    /// It hides with any other tab and comes back with the next terminal.
+    /// Whether the right sidebar is to show while an SSH terminal is in
+    /// front. It hides with any other tab and comes back with the next one.
     pub(super) tool_sidebar_wanted: bool,
     pub(super) prompt_queue: VecDeque<(PromptOwner, HostId, ConnectionPrompt)>,
     pub(super) active_prompt: Option<(PromptOwner, HostId, u64)>,
@@ -330,7 +330,7 @@ impl Workspace {
         let credential_panel =
             cx.new(|cx| CredentialPanel::new(store.clone(), focus_handle.clone(), window, cx));
         let sidebar = cx.new(|_| Sidebar::new(host_panel.clone(), forward_panel, credential_panel));
-        let tools = cx.new(|cx| ToolSidebar::new(store.clone(), cx));
+        let tools = cx.new(|cx| ToolSidebar::new(store.clone(), focus_handle.clone(), cx));
         // Start with focus in the host panel so window-level actions have a
         // dispatch path. The workspace's own handle is never focused: the
         // dialog layer is its child, and a focused ancestor would keep the
@@ -341,8 +341,14 @@ impl Workspace {
         crate::settings::apply(settings.read(cx).settings(), window, cx);
 
         let mut subscriptions = vec![
-            cx.observe(&store, |this, _, cx| {
+            // The right sidebar is never dragged narrower than it opens.
+            cx.observe_in(&dock_area, window, |this, _, window, cx| {
+                this.hold_tool_sidebar_width(window, cx)
+            }),
+            cx.observe_in(&store, window, |this, _, window, cx| {
                 this.sync_cli_server(cx);
+                // The system a host runs decides which tools it is offered.
+                this.sync_tool_sidebar(window, cx);
                 cx.notify()
             }),
             cx.subscribe_in(
@@ -461,7 +467,7 @@ impl Workspace {
                 window,
                 cx,
             );
-            area.set_dock_size(DockPlacement::Right, px(320.), window, cx);
+            area.set_dock_size(DockPlacement::Right, TOOL_SIDEBAR_WIDTH, window, cx);
             // Hidden until a tool is picked; see `set_right_dock_open`.
             set_right_dock_open(area, false, window, cx);
             area.set_dock_collapsible(DockPlacement::Right, false, window, cx);
@@ -2167,7 +2173,7 @@ impl Render for Workspace {
         let sidebar = self.sidebar_showing(cx);
         let running_forwards = self.forwards.read(cx).active_count();
         let tool = self.tool_showing(cx);
-        let terminal_in_front = self.tool_terminal(cx).is_some();
+        let offered_tools = self.offered_tools(cx);
 
         div()
             .id("workspace")
@@ -2228,6 +2234,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_host_panel))
             .on_action(cx.listener(Self::on_toggle_tool_sidebar))
             .on_action(cx.listener(Self::on_toggle_tool))
+            .on_action(cx.listener(Self::on_toggle_monitor_detail))
             .on_action(cx.listener(Self::on_show_hosts))
             .on_action(cx.listener(Self::on_show_forwards))
             .on_action(cx.listener(Self::on_new_forward))
@@ -2270,9 +2277,14 @@ impl Render for Workspace {
                             .h_full()
                             .child(self.dock_area.clone()),
                     )
-                    // The switch comes and goes with the terminals.
-                    .when(terminal_in_front, |area| {
-                        area.child(render_tool_switch(tool, &self.focus_handle, cx))
+                    // The switch comes and goes with the SSH terminals.
+                    .when(!offered_tools.is_empty(), |area| {
+                        area.child(render_tool_switch(
+                            tool,
+                            &offered_tools,
+                            &self.focus_handle,
+                            cx,
+                        ))
                     }),
             )
             .child(status)
