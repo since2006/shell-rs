@@ -8,12 +8,22 @@
 //! on the host in front (the monitor on a host known not to run Linux) is
 //! not offered there: no button, and no sidebar while it is the one picked.
 
-use gpui_kit::component::dock::{DockArea, DockPlacement};
+use std::rc::Rc;
+
+use gpui_kit::component::{
+    WindowExt as _,
+    dock::{DockArea, DockPlacement},
+    notification::Notification,
+};
 use gpui_kit::*;
 
 use crate::app::{
-    CenterTab, RefreshConnections, ToggleMonitorDetail, ToggleTool, ToggleToolSidebar, ToolKind,
+    CenterTab, EndProcess, RefreshConnections, RefreshProcesses, ShowProcess, SortProcesses,
+    ToggleMonitorDetail, ToggleTool, ToggleToolSidebar, ToolKind,
 };
+use crate::processes::{end_command, ended, open_process_dialog};
+use crate::shared::confirm_danger;
+use crate::terminal::exec_answer;
 
 use super::{Workspace, tool_sidebar::ToolTerminal};
 
@@ -132,6 +142,139 @@ impl Workspace {
     ) {
         self.tools
             .update(cx, |tools, cx| tools.refresh_connections(cx));
+    }
+
+    /// 进程管理's 刷新: read the host's processes again.
+    pub(super) fn on_refresh_processes(
+        &mut self,
+        _: &RefreshProcesses,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tools
+            .update(cx, |tools, cx| tools.refresh_processes(cx));
+    }
+
+    /// 进程管理's sort buttons.
+    pub(super) fn on_sort_processes(
+        &mut self,
+        action: &SortProcesses,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let by = action.0;
+        self.tools
+            .update(cx, |tools, cx| tools.sort_processes(by, cx));
+    }
+
+    /// A process's details, from 进程管理's list and its command line.
+    pub(super) fn on_show_process(
+        &mut self,
+        action: &ShowProcess,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(terminal) = self.tool_terminal(cx) else {
+            return;
+        };
+        let Some(details) = self.tools.read(cx).process_details(action.0, cx) else {
+            return;
+        };
+        open_process_dialog(
+            details,
+            terminal.view,
+            self.focus_handle.clone(),
+            window,
+            cx,
+        );
+    }
+
+    /// Ask, naming the process, then send it SIGTERM, or SIGKILL when
+    /// forced, over the SSH terminal's own connection. How that went is a
+    /// notification, and the list is read again a moment later.
+    pub(super) fn on_end_process(
+        &mut self,
+        action: &EndProcess,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(terminal) = self.tool_terminal(cx) else {
+            return;
+        };
+        let EndProcess { pid, force } = *action;
+        let Some(process) = self.tools.read(cx).process(pid, cx) else {
+            return;
+        };
+        let name = process.name;
+        let user = process.user.unwrap_or_else(|| "—".into());
+        let (title, description, verb) = if force {
+            (
+                format!("强制结束进程“{name}”？"),
+                format!(
+                    "PID {pid}，用户 {user}。进程会立即被终止（SIGKILL），来不及保存数据；                     只在「结束进程」不起作用时使用。"
+                ),
+                "强制结束",
+            )
+        } else {
+            (
+                format!("结束进程“{name}”？"),
+                format!(
+                    "PID {pid}，用户 {user}。进程会收到结束信号（SIGTERM），可以先做完收尾再退出。"
+                ),
+                "结束进程",
+            )
+        };
+        let workspace = cx.entity().downgrade();
+        confirm_danger(
+            title.into(),
+            Some(description.into()),
+            verb,
+            Rc::new(move |window, cx| {
+                let Some(view) = terminal.view.upgrade() else {
+                    return;
+                };
+                let Some(reply) = view.read(cx).exec(end_command(pid, force), cx) else {
+                    window.push_notification(
+                        Notification::error(format!("无法结束 {name}（PID {pid}）：终端没有连接")),
+                        cx,
+                    );
+                    return;
+                };
+                let (workspace, name) = (workspace.clone(), name.clone());
+                window
+                    .spawn(cx, async move |cx| {
+                        let outcome = match exec_answer(reply, cx).await {
+                            None => Err("终端没有连接".to_string()),
+                            Some(Err(error)) => Err(error),
+                            Some(Ok(output)) => ended(&output),
+                        };
+                        cx.update(|window, cx| {
+                            let notification = match outcome {
+                                Ok(()) if force => {
+                                    Notification::success(format!("已强制结束 {name}（PID {pid}）"))
+                                }
+                                Ok(()) => Notification::success(format!(
+                                    "已向 {name}（PID {pid}）发送结束信号"
+                                )),
+                                Err(why) => Notification::error(format!(
+                                    "无法结束 {name}（PID {pid}）：{why}"
+                                )),
+                            };
+                            window.push_notification(notification, cx);
+                            workspace
+                                .update(cx, |this, cx| {
+                                    this.tools
+                                        .update(cx, |tools, cx| tools.refresh_processes_soon(cx))
+                                })
+                                .ok();
+                        })
+                        .ok();
+                    })
+                    .detach();
+            }),
+            window,
+            cx,
+        );
     }
 
     /// Hide the sidebar, or show the tool shown last; the first tool on

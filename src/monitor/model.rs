@@ -2,6 +2,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::shared::format_bytes;
+
 /// One look at a host: its counters at that moment, and the parts read
 /// less often when this reading asked for them.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -248,50 +250,12 @@ impl Load {
     }
 }
 
-const UNITS: [&str; 5] = ["KB", "MB", "GB", "TB", "PB"];
-
-/// 「421.02 MB」, in units of 1024.
-pub fn format_bytes(bytes: u64) -> String {
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    let mut value = bytes as f64 / 1024.;
-    let mut unit = 0;
-    while value >= 1024. && unit + 1 < UNITS.len() {
-        value /= 1024.;
-        unit += 1;
-    }
-    format!("{value:.2} {}", UNITS[unit])
-}
-
 /// 「5.44 KB/s」.
 pub fn format_rate(bytes_per_second: f64) -> String {
     format!(
         "{}/s",
         format_bytes(bytes_per_second.max(0.).round() as u64)
     )
-}
-
-/// 「43.3%」.
-pub fn format_percent(percent: f32) -> String {
-    format!("{percent:.1}%")
-}
-
-/// 「32 天 23:40:26」, or 「23:40:26」 within the first day.
-pub fn format_uptime(uptime: Duration) -> String {
-    let seconds = uptime.as_secs();
-    let days = seconds / 86_400;
-    let clock = format!(
-        "{:02}:{:02}:{:02}",
-        seconds / 3600 % 24,
-        seconds / 60 % 60,
-        seconds % 60
-    );
-    if days > 0 {
-        format!("{days} 天 {clock}")
-    } else {
-        clock
-    }
 }
 
 /// How many of the per-core bars fit on a row `width` wide, at the
@@ -423,22 +387,8 @@ mod tests {
     }
 
     #[test]
-    fn sizes_rates_and_uptimes_read_naturally() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(512), "512 B");
-        assert_eq!(format_bytes(441_470_976), "421.02 MB");
-        assert_eq!(format_bytes(9_889_644_544), "9.21 GB");
+    fn rates_read_naturally() {
         assert_eq!(format_rate(5570.), "5.44 KB/s");
-        assert_eq!(format_percent(43.27), "43.3%");
-        assert_eq!(
-            format_uptime(Duration::from_secs(32 * 86_400 + 23 * 3600 + 40 * 60 + 26)),
-            "32 天 23:40:26"
-        );
-        assert_eq!(
-            format_uptime(Duration::from_secs_f64(5. * 3600. + 12. * 60. + 9.7)),
-            "05:12:09"
-        );
-        assert_eq!(format_uptime(Duration::from_secs(30)), "00:00:30");
     }
 
     #[test]

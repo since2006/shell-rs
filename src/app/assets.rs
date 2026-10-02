@@ -56,7 +56,10 @@ icon_assets!(
         Network,
         RadioTower,
         ArrowDownLeft,
-        ArrowUpRight
+        ArrowUpRight,
+        ListFilter,
+        CircleStop,
+        OctagonX
     ]
 );
 

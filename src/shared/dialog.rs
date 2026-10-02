@@ -68,7 +68,26 @@ pub fn confirm_delete(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let title: SharedString = format!("删除“{name}”？").into();
+    confirm_danger(
+        format!("删除“{name}”？").into(),
+        description,
+        "删除",
+        on_delete,
+        window,
+        cx,
+    );
+}
+
+/// A confirmation of something that cannot be taken back: `title` asks,
+/// `description` says what follows, and the danger button names the verb.
+pub fn confirm_danger(
+    title: SharedString,
+    description: Option<SharedString>,
+    verb: &'static str,
+    on_ok: DeleteHandler,
+    window: &mut Window,
+    cx: &mut App,
+) {
     window.open_alert_dialog(cx, move |alert, _, _| {
         alert
             .title(title.clone())
@@ -77,15 +96,15 @@ pub fn confirm_delete(
             })
             .button_props(
                 DialogButtonProps::default()
-                    .ok_text("删除")
+                    .ok_text(verb)
                     .ok_variant(ButtonVariant::Danger)
                     .cancel_text("取消"),
             )
             .show_cancel(true)
             .on_ok({
-                let on_delete = on_delete.clone();
+                let on_ok = on_ok.clone();
                 move |_, window, cx| {
-                    on_delete(window, cx);
+                    on_ok(window, cx);
                     true
                 }
             })

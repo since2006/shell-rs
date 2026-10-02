@@ -8,6 +8,7 @@ use crate::{
     explorer::{ExplorerId, FileSizeFormat},
     host::{CredentialId, ForwardId, GroupId, HostId, HostNode, NodeDrop},
     monitor::MonitorDetail,
+    processes::ProcessSort,
     terminal::{LocalTerminalId, RemoteTerminalId},
 };
 
@@ -41,6 +42,8 @@ gpui_kit::actions!(
         ToggleToolSidebar,
         /// Read the network connections of the SSH terminal's host again.
         RefreshConnections,
+        /// Read the processes of the SSH terminal's host again.
+        RefreshProcesses,
         /// Show the host list in the left dock.
         ShowHosts,
         /// Show the port-forwarding list in the left dock.
@@ -188,6 +191,12 @@ id_actions! {
     ToggleTool(ToolKind);
     /// Unfold a part of the system monitor, or fold it away again.
     ToggleMonitorDetail(MonitorDetail);
+    /// Sort the process list by memory or CPU, the most first; by the same
+    /// again, the other way.
+    SortProcesses(ProcessSort);
+    /// Open the details of a process of the host of the SSH terminal in
+    /// front, by its PID.
+    ShowProcess(u32);
 
     /// Start a port forward over a connection of its own.
     StartForward(ForwardId);
@@ -216,6 +225,15 @@ pub struct MoveHostNode {
     pub destination: NodeDrop,
 }
 
+/// Ask for confirmation, then end a process of the host of the SSH terminal
+/// in front: with SIGTERM, or with `force` SIGKILL.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct EndProcess {
+    pub pid: u32,
+    pub force: bool,
+}
+
 /// One tab of the center area, by the identity of what it shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CenterTab {
@@ -233,15 +251,17 @@ pub enum ToolKind {
     Snippets,
     History,
     Docker,
+    Processes,
     Connections,
     Monitor,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 5] = [
+    pub const ALL: [ToolKind; 6] = [
         ToolKind::Snippets,
         ToolKind::History,
         ToolKind::Docker,
+        ToolKind::Processes,
         ToolKind::Connections,
         ToolKind::Monitor,
     ];

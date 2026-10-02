@@ -11,6 +11,7 @@ use crate::app::{CatalogIcon, ToggleTool, ToolKind};
 use crate::host::{HostId, HostOs, HostStore};
 use crate::monitor::{MonitorDetail, MonitorPanel};
 use crate::netstat::NetstatPanel;
+use crate::processes::{Process, ProcessDetails, ProcessPanel, ProcessSort};
 use crate::terminal::{ExecTarget, RemoteTerminalId, TerminalView};
 
 impl ToolKind {
@@ -19,6 +20,7 @@ impl ToolKind {
             ToolKind::Snippets => "命令片段",
             ToolKind::History => "历史命令",
             ToolKind::Docker => "Docker",
+            ToolKind::Processes => "进程管理",
             ToolKind::Connections => "网络连接",
             ToolKind::Monitor => "系统监控",
         }
@@ -29,6 +31,7 @@ impl ToolKind {
             ToolKind::Snippets => CatalogIcon::CodeXml,
             ToolKind::History => CatalogIcon::RotateCcwClock,
             ToolKind::Docker => CatalogIcon::Container,
+            ToolKind::Processes => CatalogIcon::ListFilter,
             ToolKind::Connections => CatalogIcon::Network,
             ToolKind::Monitor => CatalogIcon::Activity,
         }
@@ -38,7 +41,9 @@ impl ToolKind {
     /// yet gets every tool, and is told if one cannot work there.
     pub fn works_on(self, os: Option<HostOs>) -> bool {
         match self {
-            ToolKind::Connections | ToolKind::Monitor => os.is_none_or(HostOs::is_linux),
+            ToolKind::Processes | ToolKind::Connections | ToolKind::Monitor => {
+                os.is_none_or(HostOs::is_linux)
+            }
             ToolKind::Snippets | ToolKind::History | ToolKind::Docker => true,
         }
     }
@@ -49,6 +54,7 @@ impl ToolKind {
             ToolKind::Snippets => "tool-snippets",
             ToolKind::History => "tool-history",
             ToolKind::Docker => "tool-docker",
+            ToolKind::Processes => "tool-processes",
             ToolKind::Connections => "tool-connections",
             ToolKind::Monitor => "tool-monitor",
         }
@@ -61,6 +67,7 @@ impl ToolKind {
             ToolKind::Snippets => "常用的命令存在这里，点一下就发送到当前终端。".into(),
             ToolKind::History => format!("{host} 上执行过的命令，可以搜索、再次执行。"),
             ToolKind::Docker => format!("{host} 上的容器：状态、日志，启动和停止。"),
+            ToolKind::Processes => format!("{host} 上的进程：内存、CPU，结束进程。"),
             ToolKind::Connections => format!("{host} 上的 TCP、UDP 连接和监听端口。"),
             ToolKind::Monitor => format!("{host} 的 CPU、内存、网络和磁盘。"),
         }
@@ -96,6 +103,7 @@ pub struct ToolSidebar {
     /// Whether the right dock is open.
     shown: bool,
     monitor: Entity<MonitorPanel>,
+    processes: Entity<ProcessPanel>,
     netstat: Entity<NetstatPanel>,
     store: Entity<HostStore>,
     focus_handle: FocusHandle,
@@ -118,6 +126,7 @@ impl ToolSidebar {
             terminal: None,
             shown: false,
             monitor: cx.new(|_| MonitorPanel::new(dispatch.clone())),
+            processes: cx.new(|cx| ProcessPanel::new(dispatch.clone(), window, cx)),
             netstat: cx.new(|cx| NetstatPanel::new(dispatch, window, cx)),
             store,
             focus_handle: cx.focus_handle(),
@@ -155,6 +164,34 @@ impl ToolSidebar {
         self.netstat.update(cx, |netstat, cx| netstat.refresh(cx));
     }
 
+    /// 进程管理's 刷新.
+    pub fn refresh_processes(&mut self, cx: &mut Context<Self>) {
+        self.processes
+            .update(cx, |processes, cx| processes.refresh(cx));
+    }
+
+    /// Read the processes again in a moment, once one was told to end.
+    pub fn refresh_processes_soon(&mut self, cx: &mut Context<Self>) {
+        self.processes
+            .update(cx, |processes, cx| processes.refresh_soon(cx));
+    }
+
+    /// 进程管理's sort buttons.
+    pub fn sort_processes(&mut self, by: ProcessSort, cx: &mut Context<Self>) {
+        self.processes
+            .update(cx, |processes, cx| processes.sort(by, cx));
+    }
+
+    /// A process of the host in front, as 进程管理 last showed it.
+    pub fn process(&self, pid: u32, cx: &App) -> Option<Process> {
+        self.processes.read(cx).process(pid)
+    }
+
+    /// The same with its family, for its details.
+    pub fn process_details(&self, pid: u32, cx: &App) -> Option<ProcessDetails> {
+        self.processes.read(cx).details(pid)
+    }
+
     /// Point each tool at the terminal, running only the one on screen.
     fn sync_tools(&mut self, cx: &mut Context<Self>) {
         let target = self.terminal.as_ref().map(|terminal| ExecTarget {
@@ -162,9 +199,16 @@ impl ToolSidebar {
             view: terminal.view.clone(),
         });
         let showing = |tool| self.shown && self.tool == tool;
-        let (monitor, netstat) = (showing(ToolKind::Monitor), showing(ToolKind::Connections));
+        let (monitor, netstat, processes) = (
+            showing(ToolKind::Monitor),
+            showing(ToolKind::Connections),
+            showing(ToolKind::Processes),
+        );
         self.monitor.update(cx, |panel, cx| {
             panel.set_target(target.clone(), monitor, cx)
+        });
+        self.processes.update(cx, |panel, cx| {
+            panel.set_target(target.clone(), processes, cx)
         });
         self.netstat
             .update(cx, |panel, cx| panel.set_target(target, netstat, cx));
@@ -262,6 +306,9 @@ impl Render for ToolSidebar {
                     }
                     ToolKind::Connections => {
                         sidebar.child(div().flex_1().min_h_0().child(self.netstat.clone()))
+                    }
+                    ToolKind::Processes => {
+                        sidebar.child(div().flex_1().min_h_0().child(self.processes.clone()))
                     }
                     _ => sidebar.child(self.render_placeholder(terminal.host, cx)),
                 }

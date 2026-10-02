@@ -21,9 +21,10 @@ use super::MonitorDetail;
 use super::linux::{self, Parsed, Parts};
 use super::model::{
     DiskUsage, InterfaceRate, Load, Memory, Snapshot, SystemInfo, Tracker, bars_per_row,
-    format_bytes, format_percent, format_rate, format_uptime,
+    format_rate,
 };
 use crate::app::{CatalogIcon, ToggleMonitorDetail};
+use crate::shared::{format_bytes, format_duration, format_percent};
 use crate::terminal::{ExecResult, ExecTarget, RemoteTerminalId, exec_answer};
 
 /// Time between readings of the load. The second comes sooner: the CPU's
@@ -419,7 +420,7 @@ fn render_system(system: &SystemInfo, uptime: Option<Duration>, cx: &App) -> imp
             .child(field(
                 "monitor-uptime",
                 "运行时长",
-                uptime.map(format_uptime).unwrap_or_default(),
+                uptime.map(format_duration).unwrap_or_default(),
             )),
     )
 }

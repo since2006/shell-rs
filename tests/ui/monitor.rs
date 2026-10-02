@@ -257,6 +257,7 @@ fn the_monitor_is_not_offered_on_a_host_known_not_to_run_linux(cx: &mut TestAppC
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find("tool-monitor").is_none());
         assert!(window.try_find("tool-connections").is_none());
+        assert!(window.try_find("tool-processes").is_none());
         assert!(window.find("tool-history").visible());
         assert!(
             window
