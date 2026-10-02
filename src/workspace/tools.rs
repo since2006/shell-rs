@@ -11,12 +11,14 @@
 use gpui_kit::component::dock::{DockArea, DockPlacement};
 use gpui_kit::*;
 
-use crate::app::{CenterTab, ToggleMonitorDetail, ToggleTool, ToggleToolSidebar, ToolKind};
+use crate::app::{
+    CenterTab, RefreshConnections, ToggleMonitorDetail, ToggleTool, ToggleToolSidebar, ToolKind,
+};
 
 use super::{Workspace, tool_sidebar::ToolTerminal};
 
 /// How wide the right sidebar opens, and the narrowest it can be dragged:
-/// the monitor's cards are laid out for this width.
+/// the monitor's and the connections' cards are laid out for this width.
 pub(super) const TOOL_SIDEBAR_WIDTH: Pixels = px(320.);
 
 impl Workspace {
@@ -119,6 +121,17 @@ impl Workspace {
         let detail = action.0;
         self.tools
             .update(cx, |tools, cx| tools.toggle_monitor_detail(detail, cx));
+    }
+
+    /// 网络连接's 刷新: read the host's sockets again.
+    pub(super) fn on_refresh_connections(
+        &mut self,
+        _: &RefreshConnections,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tools
+            .update(cx, |tools, cx| tools.refresh_connections(cx));
     }
 
     /// Hide the sidebar, or show the tool shown last; the first tool on

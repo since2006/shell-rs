@@ -6,7 +6,7 @@ mod linux;
 mod model;
 mod monitor_panel;
 
-pub use monitor_panel::{MonitorPanel, MonitorTarget};
+pub use monitor_panel::MonitorPanel;
 
 /// A part of the system monitor that is folded away until asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

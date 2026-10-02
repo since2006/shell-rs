@@ -13,6 +13,7 @@ mod forward;
 mod host_dialog;
 mod host_tree;
 mod monitor;
+mod netstat;
 mod settings;
 mod sftp;
 mod terminal;

@@ -52,7 +52,11 @@ icon_assets!(
         RotateCcwClock,
         Container,
         Activity,
-        Monitor
+        Monitor,
+        Network,
+        RadioTower,
+        ArrowDownLeft,
+        ArrowUpRight
     ]
 );
 

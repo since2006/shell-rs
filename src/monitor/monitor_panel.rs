@@ -1,7 +1,6 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::{
@@ -25,7 +24,7 @@ use super::model::{
     format_bytes, format_percent, format_rate, format_uptime,
 };
 use crate::app::{CatalogIcon, ToggleMonitorDetail};
-use crate::terminal::{ExecResult, RemoteTerminalId, TerminalView};
+use crate::terminal::{ExecResult, ExecTarget, RemoteTerminalId, exec_answer};
 
 /// Time between readings of the load. The second comes sooner: the CPU's
 /// load and the network's rates need two, and the panel should not sit on
@@ -35,18 +34,6 @@ const SECOND_READING: Duration = Duration::from_secs(1);
 /// Disks are read this seldom: they fill slowly, and `df` is the slowest
 /// part of a reading.
 const DISK_INTERVAL: Duration = Duration::from_secs(30);
-/// How often a reading on its way is looked for. The answer comes from the
-/// terminal's transport thread, which must not wake the UI itself.
-const POLL: Duration = Duration::from_millis(50);
-
-/// The terminal whose host the monitor reads, over that terminal's own
-/// connection.
-#[derive(Clone, PartialEq)]
-pub struct MonitorTarget {
-    pub terminal: RemoteTerminalId,
-    pub view: WeakEntity<TerminalView>,
-}
-
 /// 系统监控: the CPU, memory, network and disks of the host of the SSH
 /// terminal in front, read every two seconds while the panel shows.
 ///
@@ -58,7 +45,7 @@ pub struct MonitorTarget {
 /// each terminal's host showed last is kept, so coming back to a terminal
 /// shows its numbers at once.
 pub struct MonitorPanel {
-    target: Option<MonitorTarget>,
+    target: Option<ExecTarget>,
     active: bool,
     hosts: HashMap<RemoteTerminalId, HostState>,
     /// Every core's load, not only the first row of it.
@@ -144,12 +131,7 @@ impl MonitorPanel {
     }
 
     /// Read `target`'s host while `active`, the panel showing it.
-    pub fn set_target(
-        &mut self,
-        target: Option<MonitorTarget>,
-        active: bool,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn set_target(&mut self, target: Option<ExecTarget>, active: bool, cx: &mut Context<Self>) {
         if self.target == target && self.active == active {
             return;
         }
@@ -188,7 +170,12 @@ impl MonitorPanel {
                 let Ok(request) = request else { break };
                 let (outcome, connection) = match request {
                     None => (Outcome::NotConnected, 0),
-                    Some((reply, connection)) => (wait_for(reply, cx).await, connection),
+                    Some((reply, connection)) => (
+                        exec_answer(reply, cx)
+                            .await
+                            .map_or(Outcome::NotConnected, Outcome::Output),
+                        connection,
+                    ),
                 };
                 if this
                     .update(cx, |this, cx| {
@@ -232,18 +219,6 @@ impl MonitorPanel {
             },
         };
         cx.notify();
-    }
-}
-
-/// Look for the answer until it comes, or until the transport drops the
-/// request: the terminal went away.
-async fn wait_for(reply: mpsc::Receiver<ExecResult>, cx: &mut AsyncApp) -> Outcome {
-    loop {
-        match reply.try_recv() {
-            Ok(result) => return Outcome::Output(result),
-            Err(mpsc::TryRecvError::Empty) => cx.background_executor().timer(POLL).await,
-            Err(mpsc::TryRecvError::Disconnected) => return Outcome::NotConnected,
-        }
     }
 }
 

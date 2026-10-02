@@ -39,6 +39,8 @@ gpui_kit::actions!(
         ToggleHostPanel,
         /// Show or hide the right sidebar, whichever tool it is showing.
         ToggleToolSidebar,
+        /// Read the network connections of the SSH terminal's host again.
+        RefreshConnections,
         /// Show the host list in the left dock.
         ShowHosts,
         /// Show the port-forwarding list in the left dock.
@@ -231,14 +233,16 @@ pub enum ToolKind {
     Snippets,
     History,
     Docker,
+    Connections,
     Monitor,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 4] = [
+    pub const ALL: [ToolKind; 5] = [
         ToolKind::Snippets,
         ToolKind::History,
         ToolKind::Docker,
+        ToolKind::Connections,
         ToolKind::Monitor,
     ];
 }

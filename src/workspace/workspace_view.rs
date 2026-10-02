@@ -330,7 +330,7 @@ impl Workspace {
         let credential_panel =
             cx.new(|cx| CredentialPanel::new(store.clone(), focus_handle.clone(), window, cx));
         let sidebar = cx.new(|_| Sidebar::new(host_panel.clone(), forward_panel, credential_panel));
-        let tools = cx.new(|cx| ToolSidebar::new(store.clone(), focus_handle.clone(), cx));
+        let tools = cx.new(|cx| ToolSidebar::new(store.clone(), focus_handle.clone(), window, cx));
         // Start with focus in the host panel so window-level actions have a
         // dispatch path. The workspace's own handle is never focused: the
         // dialog layer is its child, and a focused ancestor would keep the
@@ -2235,6 +2235,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_toggle_tool_sidebar))
             .on_action(cx.listener(Self::on_toggle_tool))
             .on_action(cx.listener(Self::on_toggle_monitor_detail))
+            .on_action(cx.listener(Self::on_refresh_connections))
             .on_action(cx.listener(Self::on_show_hosts))
             .on_action(cx.listener(Self::on_show_forwards))
             .on_action(cx.listener(Self::on_new_forward))

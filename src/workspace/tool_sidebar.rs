@@ -9,8 +9,9 @@ use gpui_kit::*;
 
 use crate::app::{CatalogIcon, ToggleTool, ToolKind};
 use crate::host::{HostId, HostOs, HostStore};
-use crate::monitor::{MonitorDetail, MonitorPanel, MonitorTarget};
-use crate::terminal::{RemoteTerminalId, TerminalView};
+use crate::monitor::{MonitorDetail, MonitorPanel};
+use crate::netstat::NetstatPanel;
+use crate::terminal::{ExecTarget, RemoteTerminalId, TerminalView};
 
 impl ToolKind {
     pub fn label(self) -> &'static str {
@@ -18,6 +19,7 @@ impl ToolKind {
             ToolKind::Snippets => "命令片段",
             ToolKind::History => "历史命令",
             ToolKind::Docker => "Docker",
+            ToolKind::Connections => "网络连接",
             ToolKind::Monitor => "系统监控",
         }
     }
@@ -27,6 +29,7 @@ impl ToolKind {
             ToolKind::Snippets => CatalogIcon::CodeXml,
             ToolKind::History => CatalogIcon::RotateCcwClock,
             ToolKind::Docker => CatalogIcon::Container,
+            ToolKind::Connections => CatalogIcon::Network,
             ToolKind::Monitor => CatalogIcon::Activity,
         }
     }
@@ -35,7 +38,7 @@ impl ToolKind {
     /// yet gets every tool, and is told if one cannot work there.
     pub fn works_on(self, os: Option<HostOs>) -> bool {
         match self {
-            ToolKind::Monitor => os.is_none_or(HostOs::is_linux),
+            ToolKind::Connections | ToolKind::Monitor => os.is_none_or(HostOs::is_linux),
             ToolKind::Snippets | ToolKind::History | ToolKind::Docker => true,
         }
     }
@@ -46,6 +49,7 @@ impl ToolKind {
             ToolKind::Snippets => "tool-snippets",
             ToolKind::History => "tool-history",
             ToolKind::Docker => "tool-docker",
+            ToolKind::Connections => "tool-connections",
             ToolKind::Monitor => "tool-monitor",
         }
     }
@@ -57,6 +61,7 @@ impl ToolKind {
             ToolKind::Snippets => "常用的命令存在这里，点一下就发送到当前终端。".into(),
             ToolKind::History => format!("{host} 上执行过的命令，可以搜索、再次执行。"),
             ToolKind::Docker => format!("{host} 上的容器：状态、日志，启动和停止。"),
+            ToolKind::Connections => format!("{host} 上的 TCP、UDP 连接和监听端口。"),
             ToolKind::Monitor => format!("{host} 的 CPU、内存、网络和磁盘。"),
         }
     }
@@ -91,6 +96,7 @@ pub struct ToolSidebar {
     /// Whether the right dock is open.
     shown: bool,
     monitor: Entity<MonitorPanel>,
+    netstat: Entity<NetstatPanel>,
     store: Entity<HostStore>,
     focus_handle: FocusHandle,
     _subscription: Subscription,
@@ -99,14 +105,20 @@ pub struct ToolSidebar {
 impl ToolSidebar {
     /// `dispatch` is the workspace's focus handle, which the tools' buttons
     /// dispatch on.
-    pub fn new(store: Entity<HostStore>, dispatch: FocusHandle, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        store: Entity<HostStore>,
+        dispatch: FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         // A host renamed is named anew.
         let subscription = cx.observe(&store, |_, _, cx| cx.notify());
         Self {
             tool: ToolKind::default(),
             terminal: None,
             shown: false,
-            monitor: cx.new(|_| MonitorPanel::new(dispatch)),
+            monitor: cx.new(|_| MonitorPanel::new(dispatch.clone())),
+            netstat: cx.new(|cx| NetstatPanel::new(dispatch, window, cx)),
             store,
             focus_handle: cx.focus_handle(),
             _subscription: subscription,
@@ -138,15 +150,24 @@ impl ToolSidebar {
             .update(cx, |monitor, cx| monitor.toggle(detail, cx));
     }
 
+    /// 网络连接's 刷新.
+    pub fn refresh_connections(&mut self, cx: &mut Context<Self>) {
+        self.netstat.update(cx, |netstat, cx| netstat.refresh(cx));
+    }
+
     /// Point each tool at the terminal, running only the one on screen.
     fn sync_tools(&mut self, cx: &mut Context<Self>) {
-        let target = self.terminal.as_ref().map(|terminal| MonitorTarget {
+        let target = self.terminal.as_ref().map(|terminal| ExecTarget {
             terminal: terminal.id,
             view: terminal.view.clone(),
         });
-        let active = self.shown && self.tool == ToolKind::Monitor;
-        self.monitor
-            .update(cx, |monitor, cx| monitor.set_target(target, active, cx));
+        let showing = |tool| self.shown && self.tool == tool;
+        let (monitor, netstat) = (showing(ToolKind::Monitor), showing(ToolKind::Connections));
+        self.monitor.update(cx, |panel, cx| {
+            panel.set_target(target.clone(), monitor, cx)
+        });
+        self.netstat
+            .update(cx, |panel, cx| panel.set_target(target, netstat, cx));
     }
 
     /// Show another tool. A focus inside the one going away moves to the
@@ -238,6 +259,9 @@ impl Render for ToolSidebar {
                 match self.tool {
                     ToolKind::Monitor => {
                         sidebar.child(div().flex_1().min_h_0().child(self.monitor.clone()))
+                    }
+                    ToolKind::Connections => {
+                        sidebar.child(div().flex_1().min_h_0().child(self.netstat.clone()))
                     }
                     _ => sidebar.child(self.render_placeholder(terminal.host, cx)),
                 }
