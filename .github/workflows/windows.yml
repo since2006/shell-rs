@@ -26,6 +26,7 @@ on:
       - "src/sftp/upload.rs"
       - "src/credential/credential_dialog.rs"
       - "src/settings/settings_panel.rs"
+      - "src/testing.rs"
       - "tests/cli_bin.rs"
       - "build.rs"
       - "Cargo.toml"
