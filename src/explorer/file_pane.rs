@@ -614,6 +614,8 @@ impl FilePane {
         let origin = point(a.x.min(b.x), a.y.min(b.y)) - list.origin;
         let size = size((a.x - b.x).abs(), (a.y - b.y).abs());
         let theme = cx.theme();
+        // The colors of a selected name: the rectangle is about to select
+        // what it covers.
         Some(
             div()
                 .id("selection-rectangle")
@@ -623,8 +625,8 @@ impl FilePane {
                 .w(size.width)
                 .h(size.height)
                 .border_1()
-                .border_color(theme.primary)
-                .bg(theme.primary.opacity(0.12)),
+                .border_color(theme.table_active_border)
+                .bg(theme.tokens.table_active),
         )
     }
 
