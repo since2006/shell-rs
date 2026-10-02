@@ -11,6 +11,7 @@ mod connection;
 mod credential;
 mod docker;
 mod forward;
+mod history;
 mod host_dialog;
 mod host_tree;
 mod monitor;

@@ -757,17 +757,17 @@ fn the_tool_switch_shows_a_tool_and_hides_it_again(cx: &mut TestAppContext) {
     in_frame(cx, handle, |window, _| {
         // Hidden at first: the switch is there, none of it pressed.
         assert!(window.try_find(sidebar).is_none());
-        assert_eq!(window.find("tool-history").checked(), Some(false));
+        assert_eq!(window.find("tool-snippets").checked(), Some(false));
     });
 
-    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
     in_frame(cx, handle, |window, _| {
-        assert_eq!(window.find(sidebar).label(), Some("历史命令"));
+        assert_eq!(window.find(sidebar).label(), Some("命令片段"));
         assert_eq!(
             window.find("tool-placeholder").label(),
-            Some("web-01 上执行过的命令，可以搜索、再次执行。")
+            Some("常用的命令存在这里，点一下就发送到当前终端。")
         );
-        assert_eq!(window.find("tool-history").checked(), Some(true));
+        assert_eq!(window.find("tool-snippets").checked(), Some(true));
         // Between the center and the switch.
         let bounds = window.find(sidebar).bounds();
         let switch = window.find("tool-switch").bounds();
@@ -781,7 +781,7 @@ fn the_tool_switch_shows_a_tool_and_hides_it_again(cx: &mut TestAppContext) {
     in_frame(cx, handle, |window, cx| window.click("tool-docker", cx));
     in_frame(cx, handle, |window, _| {
         assert_eq!(window.find(sidebar).label(), Some("Docker"));
-        assert_eq!(window.find("tool-history").checked(), Some(false));
+        assert_eq!(window.find("tool-snippets").checked(), Some(false));
         assert_eq!(window.find("tool-docker").checked(), Some(true));
     });
 
@@ -808,7 +808,7 @@ fn a_tool_follows_the_terminal_in_front_and_leaves_it_the_keyboard(cx: &mut Test
         window.activate_window();
         window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx);
     });
-    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
     in_frame(cx, handle, |window, _| {
         assert!(
             window
@@ -828,10 +828,7 @@ fn a_tool_follows_the_terminal_in_front_and_leaves_it_the_keyboard(cx: &mut Test
     let sidebar = ("tool-sidebar", INITIAL_STAGING_TERMINAL);
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find(sidebar).is_some());
-        assert_eq!(
-            window.find("tool-placeholder").label(),
-            Some("staging-api 上执行过的命令，可以搜索、再次执行。")
-        );
+        assert!(window.find("tool-placeholder").visible());
     });
 
     // A click in the sidebar takes the focus there; hiding the sidebar
@@ -842,7 +839,7 @@ fn a_tool_follows_the_terminal_in_front_and_leaves_it_the_keyboard(cx: &mut Test
     in_frame(cx, handle, |window, _| {
         assert_eq!(window.find(sidebar).focused(), Some(true));
     });
-    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find(sidebar).is_none());
         assert_eq!(
@@ -861,7 +858,7 @@ async fn the_tool_sidebar_goes_with_ssh_terminals_only(cx: &mut TestAppContext) 
     in_frame(cx, handle, |window, cx| {
         window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
     });
-    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
     let shown = |cx: &mut TestAppContext| {
         in_frame(cx, handle, |window, _| {
             let switch = window.try_find("tool-switch").is_some();
@@ -897,8 +894,8 @@ async fn the_tool_sidebar_goes_with_ssh_terminals_only(cx: &mut TestAppContext) 
     });
     in_frame(cx, handle, |window, _| {
         let sidebar = window.find(("tool-sidebar", INITIAL_STAGING_TERMINAL));
-        assert_eq!(sidebar.label(), Some("历史命令"));
-        assert_eq!(window.find("tool-history").checked(), Some(true));
+        assert_eq!(sidebar.label(), Some("命令片段"));
+        assert_eq!(window.find("tool-snippets").checked(), Some(true));
     });
 }
 
@@ -917,7 +914,7 @@ fn the_tool_sidebar_drags_wider_but_never_narrower_than_it_opens(cx: &mut TestAp
     in_frame(cx, handle, |window, cx| {
         window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
     });
-    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
     let sidebar = ("tool-sidebar", INITIAL_WEB_TERMINAL);
     let bounds =
         |cx: &mut TestAppContext| in_frame(cx, handle, |window, _| window.find(sidebar).bounds());

@@ -233,7 +233,7 @@ async fn the_connections_are_read_each_time_they_come_on_screen_and_only_then(
     .await;
 
     // Another tool: nothing runs.
-    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
     cx.executor().advance_clock(Duration::from_secs(10));
     cx.run_until_parked();
     assert_eq!(factory.exec_count(), 1);

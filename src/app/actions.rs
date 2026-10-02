@@ -50,6 +50,8 @@ gpui_kit::actions!(
         RefreshServices,
         /// Read the Docker of the SSH terminal's host again.
         RefreshDocker,
+        /// Read the bash history of the SSH terminal's host again.
+        RefreshHistory,
         /// Show the host list in the left dock.
         ShowHosts,
         /// Show the port-forwarding list in the left dock.
@@ -209,6 +211,8 @@ id_actions! {
     /// Fold a compose project of the Docker tool away, or unfold it, by
     /// its name.
     ToggleDockerProject(String);
+    /// Copy a command of 历史命令 to the clipboard.
+    CopyCommand(String);
 
     /// Start a port forward over a connection of its own.
     StartForward(ForwardId);
@@ -288,6 +292,15 @@ pub struct RemoveDockerObject {
     /// What Docker knows it by: the ID, or a volume's name.
     pub id: String,
     pub name: String,
+}
+
+/// Put a command on the input line of the SSH terminal in front, in place
+/// of what is typed there, and with `run` run it.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct EnterCommand {
+    pub command: String,
+    pub run: bool,
 }
 
 /// One tab of the center area, by the identity of what it shows.

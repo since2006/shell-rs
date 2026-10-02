@@ -9,6 +9,7 @@ use gpui_kit::*;
 
 use crate::app::{CatalogIcon, DOCKER_ICON, ToggleTool, ToolKind};
 use crate::docker::{Container, DockerObject, DockerPanel, ObjectSummary};
+use crate::history::HistoryPanel;
 use crate::host::{HostId, HostOs, HostStore};
 use crate::monitor::{MonitorDetail, MonitorPanel};
 use crate::netstat::NetstatPanel;
@@ -51,9 +52,10 @@ impl ToolKind {
             | ToolKind::Processes
             | ToolKind::Connections
             | ToolKind::Monitor => os.is_none_or(HostOs::is_linux),
-            ToolKind::Snippets | ToolKind::History => true,
-            // Wherever `sh` runs `docker`: Linux, and a Mac with Docker Desktop.
-            ToolKind::Docker => os != Some(HostOs::Windows),
+            ToolKind::Snippets => true,
+            // Wherever `sh` runs `docker`: Linux, and a Mac with Docker
+            // Desktop; and bash's history file wherever `sh` reads it.
+            ToolKind::Docker | ToolKind::History => os != Some(HostOs::Windows),
         }
     }
 
@@ -105,7 +107,7 @@ pub struct ToolTerminal {
 ///
 /// Each tool is a feature module's entity held here, alive while hidden so
 /// it keeps its state, told which terminal is in front and whether it is on
-/// screen; the tools still to come are placeholders.
+/// screen; the tool still to come is a placeholder.
 pub struct ToolSidebar {
     tool: ToolKind,
     /// The terminal in front; `None` while the sidebar is hidden for
@@ -114,6 +116,7 @@ pub struct ToolSidebar {
     /// Whether the right dock is open.
     shown: bool,
     monitor: Entity<MonitorPanel>,
+    history: Entity<HistoryPanel>,
     docker: Entity<DockerPanel>,
     services: Entity<ServicePanel>,
     processes: Entity<ProcessPanel>,
@@ -139,6 +142,7 @@ impl ToolSidebar {
             terminal: None,
             shown: false,
             monitor: cx.new(|_| MonitorPanel::new(dispatch.clone())),
+            history: cx.new(|cx| HistoryPanel::new(dispatch.clone(), window, cx)),
             docker: cx.new(|_| DockerPanel::new(dispatch.clone())),
             services: cx.new(|cx| ServicePanel::new(dispatch.clone(), window, cx)),
             processes: cx.new(|cx| ProcessPanel::new(dispatch.clone(), window, cx)),
@@ -177,6 +181,11 @@ impl ToolSidebar {
     /// 网络连接's 刷新.
     pub fn refresh_connections(&mut self, cx: &mut Context<Self>) {
         self.netstat.update(cx, |netstat, cx| netstat.refresh(cx));
+    }
+
+    /// 历史命令's 刷新.
+    pub fn refresh_history(&mut self, cx: &mut Context<Self>) {
+        self.history.update(cx, |history, cx| history.refresh(cx));
     }
 
     /// Docker's 刷新, and after a command.
@@ -252,13 +261,17 @@ impl ToolSidebar {
             view: terminal.view.clone(),
         });
         let showing = |tool| self.shown && self.tool == tool;
-        let (monitor, netstat, processes, services, docker) = (
+        let (monitor, netstat, processes, services, docker, history) = (
             showing(ToolKind::Monitor),
             showing(ToolKind::Connections),
             showing(ToolKind::Processes),
             showing(ToolKind::Services),
             showing(ToolKind::Docker),
+            showing(ToolKind::History),
         );
+        self.history.update(cx, |panel, cx| {
+            panel.set_target(target.clone(), history, cx)
+        });
         self.docker
             .update(cx, |panel, cx| panel.set_target(target.clone(), docker, cx));
         self.services.update(cx, |panel, cx| {
@@ -375,6 +388,9 @@ impl Render for ToolSidebar {
                     }
                     ToolKind::Docker => {
                         sidebar.child(div().flex_1().min_h_0().child(self.docker.clone()))
+                    }
+                    ToolKind::History => {
+                        sidebar.child(div().flex_1().min_h_0().child(self.history.clone()))
                     }
                     _ => sidebar.child(self.render_placeholder(terminal.host, cx)),
                 }

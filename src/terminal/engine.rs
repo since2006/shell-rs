@@ -255,6 +255,18 @@ impl TerminalEngine {
         self.send_user_input(encode_paste(text, self.mode()));
     }
 
+    /// Put `command` on the shell's input line in place of what is typed
+    /// there, as a paste, and with `run` press Enter: what a click in 历史命令
+    /// does. Says why not while the shell is not running or a full-screen
+    /// program has the keys.
+    pub fn enter_command(&self, command: &str, run: bool) -> Result<(), &'static str> {
+        if !self.lifecycle.accepts_input() {
+            return Err("终端没有连接");
+        }
+        self.send_user_input(encode_command(command, run, self.mode())?);
+        Ok(())
+    }
+
     pub fn resize(&mut self, size: TerminalSize, cx: &mut gpui_kit::Context<Self>) {
         if size == self.size {
             return;
@@ -787,6 +799,28 @@ fn encode_paste(text: &str, mode: TermMode) -> Vec<u8> {
     }
 }
 
+/// What `TerminalEngine::enter_command` types: Ctrl-E and Ctrl-U first, to
+/// the line's end and everything before it away (the emacs keys of bash,
+/// zsh and fish alike), then the command as a paste, then Enter to run it.
+///
+/// A full-screen program would take those keys for its own. A command of
+/// several lines can only be put on the line in a bracketed paste: without
+/// one, its first newline would run it.
+fn encode_command(command: &str, run: bool, mode: TermMode) -> Result<Vec<u8>, &'static str> {
+    if mode.contains(TermMode::ALT_SCREEN) {
+        return Err("终端里正在运行全屏程序，先退出它");
+    }
+    if !run && command.contains('\n') && !mode.contains(TermMode::BRACKETED_PASTE) {
+        return Err("这是一条多行命令，在这个终端里只能直接执行");
+    }
+    let mut bytes = b"\x05\x15".to_vec();
+    bytes.extend(encode_paste(command, mode));
+    if run {
+        bytes.push(b'\r');
+    }
+    Ok(bytes)
+}
+
 /// See `TerminalEngine::clear_keeping_prompt`. Returns whether anything was
 /// cleared.
 fn clear_keeping_cursor_line(term: &mut AlacrittyTerm) -> bool {
@@ -1168,5 +1202,24 @@ mod tests {
             b"\x1b[200~a\nbc\x1b[201~"
         );
         assert_eq!(encode_paste("a\rb", TermMode::default()), b"a\nb");
+    }
+
+    #[test]
+    fn a_command_takes_the_place_of_the_input_line_and_runs_on_enter() {
+        assert_eq!(
+            encode_command("ls -l", false, TermMode::BRACKETED_PASTE),
+            Ok(b"\x05\x15\x1b[200~ls -l\x1b[201~".to_vec())
+        );
+        assert_eq!(
+            encode_command("ls -l", true, TermMode::default()),
+            Ok(b"\x05\x15ls -l\r".to_vec())
+        );
+        // Several lines wait on the line only in a bracketed paste.
+        let lines = "for f in *\ndo echo $f\ndone";
+        assert!(encode_command(lines, false, TermMode::BRACKETED_PASTE).is_ok());
+        assert!(encode_command(lines, false, TermMode::default()).is_err());
+        assert!(encode_command(lines, true, TermMode::default()).is_ok());
+        // vim and less have the keys to themselves.
+        assert!(encode_command("ls", true, TermMode::ALT_SCREEN).is_err());
     }
 }

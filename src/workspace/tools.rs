@@ -18,10 +18,10 @@ use gpui_kit::component::{
 use gpui_kit::*;
 
 use crate::app::{
-    CenterTab, ControlContainers, ControlService, EndProcess, RefreshConnections, RefreshDocker,
-    RefreshProcesses, RefreshServices, RemoveDockerObject, ShowDockerObject, ShowProcess,
-    ShowService, SortProcesses, ToggleDockerProject, ToggleMonitorDetail, ToggleTool,
-    ToggleToolSidebar, ToolKind,
+    CenterTab, ControlContainers, ControlService, CopyCommand, EndProcess, EnterCommand,
+    RefreshConnections, RefreshDocker, RefreshHistory, RefreshProcesses, RefreshServices,
+    RemoveDockerObject, ShowDockerObject, ShowProcess, ShowService, SortProcesses,
+    ToggleDockerProject, ToggleMonitorDetail, ToggleTool, ToggleToolSidebar, ToolKind,
 };
 use crate::docker::{
     self, ContainerCommand, DockerObject, open_container_dialog, open_object_dialog,
@@ -174,6 +174,55 @@ impl Workspace {
         let by = action.0;
         self.tools
             .update(cx, |tools, cx| tools.sort_processes(by, cx));
+    }
+
+    /// 历史命令's 刷新: read the host's bash history again.
+    pub(super) fn on_refresh_history(
+        &mut self,
+        _: &RefreshHistory,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tools.update(cx, |tools, cx| tools.refresh_history(cx));
+    }
+
+    /// A command of 历史命令 onto the input line of the SSH terminal in
+    /// front, run with `run`; the terminal takes the keyboard, to edit it
+    /// or carry on. Why not, when it cannot, is a notification.
+    pub(super) fn on_enter_command(
+        &mut self,
+        action: &EnterCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view) = self
+            .tool_terminal(cx)
+            .and_then(|terminal| terminal.view.upgrade())
+        else {
+            return;
+        };
+        let EnterCommand { command, run } = action;
+        match view.update(cx, |view, cx| view.enter_command(command, *run, cx)) {
+            Ok(()) => {
+                let focus = view.read(cx).focus_handle();
+                window.focus(&focus, cx);
+            }
+            Err(why) => {
+                let verb = if *run { "执行" } else { "输入" };
+                window.push_notification(Notification::error(format!("无法{verb}命令：{why}")), cx);
+            }
+        }
+    }
+
+    /// 历史命令's 复制.
+    pub(super) fn on_copy_command(
+        &mut self,
+        action: &CopyCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.write_to_clipboard(ClipboardItem::new_string(action.0.clone()));
+        window.push_notification(Notification::success("已复制命令"), cx);
     }
 
     /// Docker's 刷新: read the host's Docker again.

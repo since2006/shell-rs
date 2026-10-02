@@ -352,6 +352,22 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Put `command` on the shell's input line in place of what is typed
+    /// there, and with `run` run it; see [`TerminalEngine::enter_command`].
+    pub fn enter_command(
+        &mut self,
+        command: &str,
+        run: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        self.engine.read(cx).enter_command(command, run)?;
+        self.selecting = false;
+        self.scroll_accumulator.reset();
+        self.cursor_visible = true;
+        cx.notify();
+        Ok(())
+    }
+
     /// Add the owner's commands below the terminal's own in the context menu.
     pub fn set_menu_items(&mut self, items: TerminalMenuItems) {
         self.menu_items = Some(items);

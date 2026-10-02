@@ -199,7 +199,7 @@ async fn the_monitor_reads_the_host_only_while_it_shows(cx: &mut TestAppContext)
     .await;
 
     // Nor while another tool is showing.
-    in_frame(cx, handle, |window, cx| window.click("tool-history", cx));
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
     let other = factory.exec_count();
     cx.executor().advance_clock(Duration::from_secs(10));
     cx.run_until_parked();
