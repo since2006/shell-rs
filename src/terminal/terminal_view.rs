@@ -352,15 +352,17 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// Put `command` on the shell's input line in place of what is typed
-    /// there, and with `run` run it; see [`TerminalEngine::enter_command`].
+    /// Put `command` on the shell's input line, with `replace` in place of
+    /// what is typed there, and with `run` run it; see
+    /// [`TerminalEngine::enter_command`].
     pub fn enter_command(
         &mut self,
         command: &str,
         run: bool,
+        replace: bool,
         cx: &mut Context<Self>,
     ) -> Result<(), &'static str> {
-        self.engine.read(cx).enter_command(command, run)?;
+        self.engine.read(cx).enter_command(command, run, replace)?;
         self.selecting = false;
         self.scroll_accumulator.reset();
         self.cursor_visible = true;

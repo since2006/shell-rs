@@ -1,6 +1,7 @@
 //! Small presentation pieces shared by more than one feature.
 
 mod closable_tab;
+mod command_line;
 mod count_tabs;
 mod dialog;
 mod format;
@@ -13,6 +14,7 @@ mod tab_menu;
 mod tint;
 
 pub use closable_tab::ClosableTabTitle;
+pub use command_line::{command_tooltip, one_line};
 pub use count_tabs::count_tabs;
 pub use dialog::{
     DeleteHandler, commit_footer, confirm_danger, confirm_delete, dismiss_form_error,

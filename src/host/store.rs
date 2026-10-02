@@ -13,12 +13,14 @@ use super::{
     AuthKind, BookmarkSide, ConnectionState, Credential, CredentialDraft, CredentialId,
     CredentialKind, ForwardDraft, ForwardId, ForwardRule, GroupDraft, GroupId, Host, HostDatabase,
     HostDraft, HostGroup, HostId, HostLogin, HostNode, HostOs, JumpLogin, LoginRoute, NodeDrop,
-    ProxyLogin, PublicId, Route, StoredData,
+    ProxyLogin, PublicId, Route, Snippet, SnippetCategory, SnippetScope, StoredData,
 };
 
+mod snippets;
+
 /// The single source of truth for hosts, groups, the rules that belong
-/// to hosts (bookmarks, port forwards) and the credentials hosts log in
-/// with. Created once by the workspace and shared with every panel and
+/// to hosts (bookmarks, port forwards), the credentials hosts log in with
+/// and the command snippets. Created once by the workspace and shared with every panel and
 /// dialog; consumers observe it.
 ///
 /// A host using a credential keeps a copy of the credential's user name,
@@ -56,6 +58,11 @@ pub struct HostStore {
     /// Credentials, in the order the credential list shows them.
     credentials: Vec<Credential>,
     next_credential_id: u64,
+    /// Command snippets and their categories, in the order they were made.
+    snippets: Vec<Snippet>,
+    next_snippet_id: u64,
+    snippet_categories: Vec<SnippetCategory>,
+    next_snippet_category_id: u64,
     /// `None` for a memory-only store, as used by tests.
     database: Option<HostDatabase>,
     /// Where passwords go. Defaults to a store that keeps nothing, so unit
@@ -101,6 +108,10 @@ impl HostStore {
             next_forward_id: 1,
             credentials: Vec::new(),
             next_credential_id: 1,
+            snippets: Vec::new(),
+            next_snippet_id: 1,
+            snippet_categories: Vec::new(),
+            next_snippet_category_id: 1,
             database: None,
             secrets: Arc::new(NoSecretStore),
             key_dir: None,
@@ -131,6 +142,8 @@ impl HostStore {
             bookmarks: stored_bookmarks,
             forwards,
             credentials,
+            snippet_categories,
+            snippets,
         } = database.load()?;
         recent.truncate(MAX_RECENT);
         let mut bookmarks: HashMap<_, Vec<String>> = HashMap::new();
@@ -150,8 +163,17 @@ impl HostStore {
             next_host_id: hosts.iter().map(|s| s.id.0).max().unwrap_or(0) + 1,
             next_forward_id: forwards.iter().map(|rule| rule.id.0).max().unwrap_or(0) + 1,
             next_credential_id: credentials.iter().map(|c| c.id.0).max().unwrap_or(0) + 1,
+            next_snippet_id: snippets.iter().map(|s| s.id.0).max().unwrap_or(0) + 1,
+            next_snippet_category_id: snippet_categories
+                .iter()
+                .map(|category| category.id.0)
+                .max()
+                .unwrap_or(0)
+                + 1,
             forwards,
             credentials,
+            snippets,
+            snippet_categories,
             groups,
             hosts,
             active: None,
@@ -429,6 +451,8 @@ impl HostStore {
         // The database drops both through `ON DELETE CASCADE`.
         self.bookmarks.retain(|(host, _), _| *host != id);
         self.forwards.retain(|rule| rule.host != id);
+        self.snippets
+            .retain(|snippet| snippet.scope != SnippetScope::Host(id));
         if self.active == Some(id) {
             self.active = None;
         }
@@ -1121,6 +1145,11 @@ impl HostStore {
         let mut doomed = self.descendant_groups(id);
         doomed.push(id);
         self.groups.retain(|group| !doomed.contains(&group.id));
+        // As the database's `ON DELETE CASCADE` does.
+        self.snippets.retain(|snippet| match snippet.scope {
+            SnippetScope::Group(group) => !doomed.contains(&group),
+            _ => true,
+        });
         for host in &removed {
             self.remove_unnotified(*host);
         }

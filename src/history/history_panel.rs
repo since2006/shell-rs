@@ -11,7 +11,6 @@ use gpui_kit::component::{
     menu::{ContextMenuExt as _, PopupMenu},
     scroll::ScrollableElement as _,
     spinner::Spinner,
-    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -20,14 +19,11 @@ use gpui_kit::*;
 use super::bash::{self, Parsed};
 use super::model::{Entry, History};
 use crate::app::{CatalogIcon, CopyCommand, EnterCommand, RefreshHistory};
+use crate::shared::command_tooltip;
 use crate::terminal::{ExecResult, ExecTarget, RemoteTerminalId, exec_answer};
 
 /// How long a terminal not connected is left before it is asked again.
 const RETRY: Duration = Duration::from_secs(2);
-
-/// About as many characters as a command line shows in the panel at its
-/// narrowest; a longer one has the whole of it in a tooltip.
-const SHOWN_CHARACTERS: usize = 32;
 
 /// 历史命令: the commands bash kept in `~/.bash_history` on the host of the
 /// SSH terminal in front, the newest first, each once. A click puts one on
@@ -459,7 +455,7 @@ fn render_entry(
         command: command.clone(),
         run: true,
     };
-    let long = line.chars().count() > SHOWN_CHARACTERS || command.contains('\n');
+    let tooltip = command_tooltip(&command, cx);
     let mono = cx.theme().mono_font_family.clone();
     h_flex()
         .id(id.clone())
@@ -494,20 +490,7 @@ fn render_entry(
             }
         })
         // The whole of a command too long for its line.
-        .when(long, |card| {
-            let (command, mono) = (command.clone(), mono.clone());
-            card.tooltip(move |window, cx| {
-                let (command, mono) = (command.clone(), mono.clone());
-                Tooltip::element(move |_, _| {
-                    div()
-                        .max_w(rems(24.))
-                        .font_family(mono.clone())
-                        .text_xs()
-                        .child(command.clone())
-                })
-                .build(window, cx)
-            })
-        })
+        .when_some(tooltip, |card, tooltip| card.tooltip(tooltip))
         .child(
             v_flex()
                 .flex_1()
@@ -523,9 +506,9 @@ fn render_entry(
                 ),
         )
         .child(
+            // As tall as the card's two lines allow: an easy target.
             Button::new(SharedString::from(format!("history-run:{command}")))
                 .ghost()
-                .xsmall()
                 .icon(Icon::new(CatalogIcon::Play))
                 .tooltip("执行")
                 .accessibility_label("执行")

@@ -64,7 +64,8 @@ icon_assets!(
         CircleCheck,
         Ban,
         CircleDot,
-        FileText
+        FileText,
+        Zap
     ]
 );
 

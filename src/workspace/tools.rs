@@ -26,6 +26,7 @@ use crate::app::{
 use crate::docker::{
     self, ContainerCommand, DockerObject, open_container_dialog, open_object_dialog,
 };
+use crate::host::HostOs;
 use crate::processes::{end_command, ended, open_process_dialog};
 use crate::services::{ServiceCommand, control_command, controlled, open_service_dialog};
 use crate::shared::confirm_danger;
@@ -186,23 +187,34 @@ impl Workspace {
         self.tools.update(cx, |tools, cx| tools.refresh_history(cx));
     }
 
-    /// A command of 历史命令 onto the input line of the SSH terminal in
-    /// front, run with `run`; the terminal takes the keyboard, to edit it
-    /// or carry on. Why not, when it cannot, is a notification.
+    /// A command of 历史命令 or 命令片段 onto the input line of the SSH
+    /// terminal in front, run with `run`; the terminal takes the keyboard,
+    /// to edit it or carry on. Why not, when it cannot, is a notification.
+    ///
+    /// It takes the place of what is typed there, but on Windows, whose
+    /// shells do not read Ctrl-E and Ctrl-U as line editing.
     pub(super) fn on_enter_command(
         &mut self,
         action: &EnterCommand,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(view) = self
-            .tool_terminal(cx)
-            .and_then(|terminal| terminal.view.upgrade())
-        else {
+        let Some(terminal) = self.tool_terminal(cx) else {
             return;
         };
+        let Some(view) = terminal.view.upgrade() else {
+            return;
+        };
+        let replace = self
+            .store
+            .read(cx)
+            .host(terminal.host)
+            .and_then(|host| host.os)
+            != Some(HostOs::Windows);
         let EnterCommand { command, run } = action;
-        match view.update(cx, |view, cx| view.enter_command(command, *run, cx)) {
+        match view.update(cx, |view, cx| {
+            view.enter_command(command, *run, replace, cx)
+        }) {
             Ok(()) => {
                 let focus = view.read(cx).focus_handle();
                 window.focus(&focus, cx);

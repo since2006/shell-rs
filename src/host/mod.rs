@@ -12,6 +12,7 @@ mod model;
 mod outline;
 mod private_key;
 mod secret_fields;
+mod snippet;
 mod store;
 
 pub use credential::*;
@@ -25,4 +26,5 @@ pub use model::*;
 pub use outline::{HostNode, NodeDrop, group_options, host_tree_items, matches_query};
 pub use private_key::{GeneratedKey, KeyAlgorithm, PastedKey, PastedKeyError, read_public_key};
 pub use secret_fields::SecretFields;
+pub use snippet::*;
 pub use store::{HostStore, HostStoreEvent};

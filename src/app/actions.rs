@@ -7,7 +7,9 @@ use crate::{
     cli::AgentKind,
     docker::{ContainerCommand, DockerObject},
     explorer::{ExplorerId, FileSizeFormat},
-    host::{CredentialId, ForwardId, GroupId, HostId, HostNode, NodeDrop},
+    host::{
+        CredentialId, ForwardId, GroupId, HostId, HostNode, NodeDrop, SnippetCategoryId, SnippetId,
+    },
     monitor::MonitorDetail,
     processes::ProcessSort,
     services::ServiceCommand,
@@ -52,6 +54,10 @@ gpui_kit::actions!(
         RefreshDocker,
         /// Read the bash history of the SSH terminal's host again.
         RefreshHistory,
+        /// Open the new-snippet dialog, for a snippet of no category.
+        NewSnippet,
+        /// Open the new-category dialog of 命令片段.
+        NewSnippetCategory,
         /// Show the host list in the left dock.
         ShowHosts,
         /// Show the port-forwarding list in the left dock.
@@ -211,8 +217,21 @@ id_actions! {
     /// Fold a compose project of the Docker tool away, or unfold it, by
     /// its name.
     ToggleDockerProject(String);
-    /// Copy a command of 历史命令 to the clipboard.
+    /// Copy a command of 历史命令 or 命令片段 to the clipboard.
     CopyCommand(String);
+    /// Open the new-snippet dialog with this category picked.
+    NewSnippetIn(SnippetCategoryId);
+    /// Open the edit-snippet dialog.
+    EditSnippet(SnippetId);
+    /// Ask for confirmation, then delete a snippet.
+    DeleteSnippet(SnippetId);
+    /// Open the rename dialog of a snippet category.
+    RenameSnippetCategory(SnippetCategoryId);
+    /// Ask for confirmation, then delete a snippet category with the
+    /// snippets in it.
+    DeleteSnippetCategory(SnippetCategoryId);
+    /// Fold a category of 命令片段 away, or unfold it; `None` is 未分类.
+    ToggleSnippetCategory(Option<SnippetCategoryId>);
 
     /// Start a port forward over a connection of its own.
     StartForward(ForwardId);

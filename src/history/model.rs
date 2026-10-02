@@ -17,7 +17,7 @@ impl Entry {
     /// The command on one line: a command of several lines shows its line
     /// breaks as 「↵」.
     pub fn one_line(&self) -> String {
-        self.command.replace('\n', " ↵ ")
+        crate::shared::one_line(&self.command)
     }
 
     /// 「3 分钟前 · 执行 5 次」, or without a time 「执行 5 次」.

@@ -15,7 +15,8 @@ use rusqlite::{Connection, params};
 use super::{
     AuthKind, BookmarkSide, Credential, CredentialDraft, CredentialId, CredentialKind,
     ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft, GroupId, Host,
-    HostDraft, HostGroup, HostId, HostOs, ProxyKind, ProxySettings, PublicId, Route,
+    HostDraft, HostGroup, HostId, HostOs, ProxyKind, ProxySettings, PublicId, Route, Snippet,
+    SnippetCategory, SnippetCategoryId, SnippetDraft, SnippetId, SnippetScope,
 };
 
 /// SQLite's only integer type is `i64`, so the `u64` ids cross the boundary
@@ -33,8 +34,9 @@ fn from_sql(id: i64) -> u64 {
 /// schema bumps it and gives `migrate` a step from the version before.
 ///
 /// 13 is the schema as it was rebuilt before the first release. Versions up
-/// to 12 were development builds, and their files are refused.
-const SCHEMA_VERSION: i64 = 13;
+/// to 12 were development builds, and their files are refused. 14 adds the
+/// command snippets.
+const SCHEMA_VERSION: i64 = 14;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -66,6 +68,11 @@ const SCHEMA_VERSION: i64 = 13;
 ///   host, the way WinSCP drops a site's bookmarks with the site.
 /// - **forwards** go with the host they go through. A dynamic forward has
 ///   no target; the other two kinds must have one.
+/// - **snippet_categories** are one level of folders for **snippets**, and
+///   take their snippets with them. A snippet with neither scope column is
+///   for every host, which every snippet is for now; one kept to a group or
+///   a host will go with it. `run_on_click` runs it on a click rather than
+///   only typing it.
 ///
 /// A column added later goes after the table's last column here and is
 /// added to existing files with `ALTER TABLE ADD COLUMN`, which puts it in
@@ -147,11 +154,28 @@ CREATE TABLE forwards (
         OR (kind <> 'dynamic' AND target_host IS NOT NULL
             AND target_port BETWEEN 1 AND 65535))
 ) STRICT;
-CREATE INDEX forwards_host_id ON forwards(host_id);";
+CREATE INDEX forwards_host_id ON forwards(host_id);
+CREATE TABLE snippet_categories (
+    id   INTEGER PRIMARY KEY,
+    name TEXT NOT NULL CHECK (name <> '')
+) STRICT;
+CREATE TABLE snippets (
+    id             INTEGER PRIMARY KEY,
+    category_id    INTEGER REFERENCES snippet_categories(id) ON DELETE CASCADE,
+    name           TEXT NOT NULL CHECK (name <> ''),
+    command        TEXT NOT NULL CHECK (command <> ''),
+    scope_group_id INTEGER REFERENCES groups(id) ON DELETE CASCADE,
+    scope_host_id  INTEGER REFERENCES hosts(id) ON DELETE CASCADE,
+    run_on_click   INTEGER NOT NULL DEFAULT 0 CHECK (run_on_click IN (0, 1)),
+    CHECK (scope_group_id IS NULL OR scope_host_id IS NULL)
+) STRICT;
+CREATE INDEX snippets_category_id ON snippets(category_id);
+CREATE INDEX snippets_scope_group_id ON snippets(scope_group_id);
+CREATE INDEX snippets_scope_host_id ON snippets(scope_host_id);";
 
 /// One step from a version to the next: one transaction that ends by
 /// recording the version it reached.
-// No step exists yet; the first change to `SCHEMA` adds one.
+// No step needs `Code` yet.
 #[allow(dead_code)]
 enum Step {
     /// Statements that make their own transaction.
@@ -163,7 +187,35 @@ enum Step {
 /// The steps from each older version to the next, in order. A file older
 /// than the first of them, or than `SCHEMA_VERSION` while there are none,
 /// cannot be opened.
-const STEPS: [(i64, Step); 0] = [];
+///
+/// A step is history: it says what that version's change was, and stays as
+/// written when `SCHEMA` changes again.
+const STEPS: [(i64, Step); 1] = [(
+    13,
+    // The command snippets.
+    Step::Sql(
+        "BEGIN;
+CREATE TABLE snippet_categories (
+    id   INTEGER PRIMARY KEY,
+    name TEXT NOT NULL CHECK (name <> '')
+) STRICT;
+CREATE TABLE snippets (
+    id             INTEGER PRIMARY KEY,
+    category_id    INTEGER REFERENCES snippet_categories(id) ON DELETE CASCADE,
+    name           TEXT NOT NULL CHECK (name <> ''),
+    command        TEXT NOT NULL CHECK (command <> ''),
+    scope_group_id INTEGER REFERENCES groups(id) ON DELETE CASCADE,
+    scope_host_id  INTEGER REFERENCES hosts(id) ON DELETE CASCADE,
+    run_on_click   INTEGER NOT NULL DEFAULT 0 CHECK (run_on_click IN (0, 1)),
+    CHECK (scope_group_id IS NULL OR scope_host_id IS NULL)
+) STRICT;
+CREATE INDEX snippets_category_id ON snippets(category_id);
+CREATE INDEX snippets_scope_group_id ON snippets(scope_group_id);
+CREATE INDEX snippets_scope_host_id ON snippets(scope_host_id);
+PRAGMA user_version = 14;
+COMMIT;",
+    ),
+)];
 
 /// Everything one launch reads back from disk.
 pub struct StoredData {
@@ -181,6 +233,10 @@ pub struct StoredData {
     pub forwards: Vec<ForwardRule>,
     /// Credentials in the order the credential list shows them.
     pub credentials: Vec<Credential>,
+    /// Snippet categories in id order.
+    pub snippet_categories: Vec<SnippetCategory>,
+    /// Snippets in id order.
+    pub snippets: Vec<Snippet>,
 }
 
 pub struct HostDatabase {
@@ -385,6 +441,47 @@ impl HostDatabase {
             .filter_map(Result::transpose)
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        let snippet_categories = self
+            .connection
+            .prepare("SELECT id, name FROM snippet_categories ORDER BY id")?
+            .query_map([], |row| {
+                Ok(SnippetCategory {
+                    id: SnippetCategoryId(from_sql(row.get(0)?)),
+                    name: row.get::<_, String>(1)?.into(),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let snippets = self
+            .connection
+            .prepare(
+                "SELECT id, category_id, name, command, scope_group_id, scope_host_id, \
+                 run_on_click FROM snippets ORDER BY id",
+            )?
+            .query_map([], |row| {
+                let id: i64 = row.get(0)?;
+                let category: Option<i64> = row.get(1)?;
+                let name: String = row.get(2)?;
+                let command: String = row.get(3)?;
+                let group: Option<i64> = row.get(4)?;
+                let host: Option<i64> = row.get(5)?;
+                let run_on_click: bool = row.get(6)?;
+                let mut draft = SnippetDraft::new(
+                    name,
+                    command,
+                    category.map(|id| SnippetCategoryId(from_sql(id))),
+                )
+                .with_run_on_click(run_on_click);
+                // The table's CHECK keeps at most one of the two.
+                draft.scope = match (group, host) {
+                    (Some(group), _) => SnippetScope::Group(GroupId(from_sql(group))),
+                    (None, Some(host)) => SnippetScope::Host(HostId(from_sql(host))),
+                    (None, None) => SnippetScope::All,
+                };
+                Ok(Snippet::new(SnippetId(from_sql(id)), draft))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
         Ok(StoredData {
             groups,
             hosts,
@@ -392,6 +489,8 @@ impl HostDatabase {
             bookmarks,
             forwards,
             credentials,
+            snippet_categories,
+            snippets,
         })
     }
 
@@ -723,6 +822,73 @@ impl HostDatabase {
         transaction.commit()
     }
 
+    pub fn insert_snippet_category(&self, category: &SnippetCategory) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "INSERT INTO snippet_categories (id, name) VALUES (?1, ?2)",
+            params![to_sql(category.id.0), category.name.as_ref()],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_snippet_category(&self, category: &SnippetCategory) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE snippet_categories SET name = ?2 WHERE id = ?1",
+            params![to_sql(category.id.0), category.name.as_ref()],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a category with the snippets in it: the foreign key cascades.
+    pub fn remove_snippet_category(&self, id: SnippetCategoryId) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "DELETE FROM snippet_categories WHERE id = ?1",
+            params![to_sql(id.0)],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_snippet(&self, snippet: &Snippet) -> rusqlite::Result<()> {
+        let (group, host) = scope_columns(snippet.scope);
+        self.connection.execute(
+            "INSERT INTO snippets (id, category_id, name, command, scope_group_id, scope_host_id, \
+             run_on_click) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                to_sql(snippet.id.0),
+                snippet.category.map(|id| to_sql(id.0)),
+                snippet.name.as_ref(),
+                snippet.command,
+                group,
+                host,
+                snippet.run_on_click,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_snippet(&self, snippet: &Snippet) -> rusqlite::Result<()> {
+        let (group, host) = scope_columns(snippet.scope);
+        self.connection.execute(
+            "UPDATE snippets SET category_id = ?2, name = ?3, command = ?4, \
+             scope_group_id = ?5, scope_host_id = ?6, run_on_click = ?7 WHERE id = ?1",
+            params![
+                to_sql(snippet.id.0),
+                snippet.category.map(|id| to_sql(id.0)),
+                snippet.name.as_ref(),
+                snippet.command,
+                group,
+                host,
+                snippet.run_on_click,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_snippet(&self, id: SnippetId) -> rusqlite::Result<()> {
+        self.connection
+            .execute("DELETE FROM snippets WHERE id = ?1", params![to_sql(id.0)])?;
+        Ok(())
+    }
+
     /// Record the operating system a probe found on the host. `None` clears
     /// it, which is what a failed probe on a rebuilt host leaves behind.
     pub fn set_host_os(&self, id: HostId, os: Option<HostOs>) -> rusqlite::Result<()> {
@@ -844,6 +1010,15 @@ fn migrate(connection: &Connection) -> rusqlite::Result<()> {
         }
     }
     Ok(())
+}
+
+/// A snippet's scope as its two columns: the group's, the host's.
+fn scope_columns(scope: SnippetScope) -> (Option<i64>, Option<i64>) {
+    match scope {
+        SnippetScope::All => (None, None),
+        SnippetScope::Group(group) => (Some(to_sql(group.0)), None),
+        SnippetScope::Host(host) => (None, Some(to_sql(host.0))),
+    }
 }
 
 /// An error that refuses a file without touching it.
@@ -1030,6 +1205,204 @@ ALTER TABLE t ADD COLUMN notes TEXT NOT NULL DEFAULT '';",
         )
         .unwrap();
         assert_eq!(schema_of(&old), schema_of(&new));
+    }
+
+    /// The schema of version 13, as files of that version have it.
+    const SCHEMA_13: &str = "\
+CREATE TABLE groups (
+    id         INTEGER PRIMARY KEY,
+    parent_id  INTEGER REFERENCES groups(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL CHECK (name <> ''),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    expanded   INTEGER NOT NULL DEFAULT 1 CHECK (expanded IN (0, 1))
+) STRICT;
+CREATE INDEX groups_parent_id ON groups(parent_id);
+CREATE TABLE credentials (
+    id          INTEGER PRIMARY KEY,
+    keychain_id TEXT NOT NULL UNIQUE,
+    name        TEXT NOT NULL CHECK (name <> ''),
+    kind        TEXT NOT NULL CHECK (kind IN ('password', 'key', 'agent')),
+    username    TEXT NOT NULL,
+    key_path    TEXT,
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    CHECK ((kind = 'key') = (key_path IS NOT NULL))
+) STRICT;
+CREATE TABLE hosts (
+    id                INTEGER PRIMARY KEY,
+    public_id         TEXT UNIQUE,
+    group_id          INTEGER REFERENCES groups(id) ON DELETE CASCADE,
+    sort_order        INTEGER NOT NULL DEFAULT 0,
+    name              TEXT NOT NULL CHECK (name <> ''),
+    address           TEXT NOT NULL CHECK (address <> ''),
+    port              INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+    auth              TEXT NOT NULL CHECK (auth IN ('password', 'no-password', 'credential')),
+    username          TEXT,
+    credential_id     INTEGER REFERENCES credentials(id),
+    route             TEXT NOT NULL DEFAULT 'direct' CHECK (route IN ('direct', 'jump', 'proxy')),
+    proxy_kind        TEXT CHECK (proxy_kind IN ('http', 'socks5')),
+    proxy_host        TEXT,
+    proxy_port        INTEGER CHECK (proxy_port BETWEEN 1 AND 65535),
+    proxy_username    TEXT,
+    notes             TEXT NOT NULL DEFAULT '',
+    os                TEXT,
+    last_connected_at INTEGER,
+    CHECK ((auth = 'credential') = (credential_id IS NOT NULL)),
+    CHECK ((auth = 'credential') = (username IS NULL)),
+    CHECK ((route = 'proxy') = (proxy_kind IS NOT NULL)),
+    CHECK ((proxy_kind IS NULL) = (proxy_host IS NULL)
+        AND (proxy_kind IS NULL) = (proxy_port IS NULL)),
+    CHECK (proxy_kind IS NOT NULL OR proxy_username IS NULL)
+) STRICT;
+CREATE INDEX hosts_group_id ON hosts(group_id);
+CREATE INDEX hosts_credential_id ON hosts(credential_id);
+CREATE TABLE host_jumps (
+    host_id  INTEGER NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL CHECK (position >= 0),
+    jump_id  INTEGER REFERENCES hosts(id) ON DELETE SET NULL,
+    PRIMARY KEY (host_id, position),
+    CHECK (jump_id <> host_id)
+) STRICT, WITHOUT ROWID;
+CREATE INDEX host_jumps_jump_id ON host_jumps(jump_id);
+CREATE TABLE bookmarks (
+    host_id    INTEGER NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+    side       TEXT NOT NULL CHECK (side IN ('local', 'remote')),
+    path       TEXT NOT NULL,
+    sort_order INTEGER NOT NULL,
+    PRIMARY KEY (host_id, side, path)
+) STRICT, WITHOUT ROWID;
+CREATE TABLE forwards (
+    id          INTEGER PRIMARY KEY,
+    host_id     INTEGER NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL DEFAULT '',
+    kind        TEXT NOT NULL CHECK (kind IN ('local', 'remote', 'dynamic')),
+    bind_host   TEXT NOT NULL,
+    bind_port   INTEGER NOT NULL CHECK (bind_port BETWEEN 1 AND 65535),
+    target_host TEXT,
+    target_port INTEGER,
+    auto_start  INTEGER NOT NULL DEFAULT 0 CHECK (auto_start IN (0, 1)),
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    CHECK ((kind = 'dynamic' AND target_host IS NULL AND target_port IS NULL)
+        OR (kind <> 'dynamic' AND target_host IS NOT NULL
+            AND target_port BETWEEN 1 AND 65535))
+) STRICT;
+CREATE INDEX forwards_host_id ON forwards(host_id);";
+
+    #[test]
+    fn a_version_13_file_gets_the_snippets_and_keeps_its_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(&format!(
+                "BEGIN;\n{SCHEMA_13}\nPRAGMA user_version = 13;\nCOMMIT;"
+            ))
+            .unwrap();
+            old.execute(
+                "INSERT INTO hosts (id, name, address, port, auth, username) \
+                 VALUES (1, 'web', '10.0.0.1', 22, 'password', 'root')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let db = HostDatabase::open(&path).unwrap();
+        let version: i64 = db
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(dir.path().join("shellrs.db.v13.bak").exists());
+        let fresh = HostDatabase::in_memory().unwrap();
+        assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
+        let data = db.load().unwrap();
+        assert_eq!(data.hosts.len(), 1);
+        assert!(data.snippets.is_empty());
+    }
+
+    fn snippet(id: u64, name: &str, category: Option<u64>, scope: SnippetScope) -> Snippet {
+        let mut draft = SnippetDraft::new(
+            name,
+            format!("echo {name}"),
+            category.map(SnippetCategoryId),
+        );
+        draft.scope = scope;
+        Snippet::new(SnippetId(id), draft)
+    }
+
+    #[test]
+    fn snippets_round_trip_and_go_with_their_category() {
+        let db = HostDatabase::in_memory().unwrap();
+        let docker = SnippetCategory {
+            id: SnippetCategoryId(1),
+            name: "Docker".into(),
+        };
+        db.insert_snippet_category(&docker).unwrap();
+        let mut ps = snippet(1, "列出容器", Some(1), SnippetScope::All);
+        ps.command = "docker ps -a\ndocker images".into();
+        db.insert_snippet(&ps).unwrap();
+        db.insert_snippet(&snippet(2, "磁盘", None, SnippetScope::All))
+            .unwrap();
+        let data = db.load().unwrap();
+        assert_eq!(data.snippet_categories, std::slice::from_ref(&docker));
+        assert_eq!(data.snippets[0], ps);
+        assert_eq!(data.snippets[1].category, None);
+
+        db.update_snippet_category(&SnippetCategory {
+            name: "容器".into(),
+            ..docker
+        })
+        .unwrap();
+        ps.name = "所有容器".into();
+        ps.category = None;
+        ps.run_on_click = true;
+        db.update_snippet(&ps).unwrap();
+        let data = db.load().unwrap();
+        assert_eq!(data.snippet_categories[0].name, "容器");
+        assert_eq!(data.snippets[0], ps);
+
+        db.insert_snippet(&snippet(3, "日志", Some(1), SnippetScope::All))
+            .unwrap();
+        db.remove_snippet_category(SnippetCategoryId(1)).unwrap();
+        db.remove_snippet(SnippetId(2)).unwrap();
+        let names: Vec<_> = db
+            .load()
+            .unwrap()
+            .snippets
+            .into_iter()
+            .map(|snippet| snippet.name)
+            .collect();
+        assert_eq!(names, ["所有容器"]);
+    }
+
+    #[test]
+    fn a_snippet_kept_to_a_group_or_a_host_goes_with_it() {
+        let db = HostDatabase::in_memory().unwrap();
+        db.insert_group(&group(1, "生产", None)).unwrap();
+        db.insert_group(&group(2, "web", Some(1))).unwrap();
+        db.insert_host(&host(1, "web-01", Some(2))).unwrap();
+        db.insert_host(&host(2, "db-01", None)).unwrap();
+        let scoped = [
+            snippet(1, "全部", None, SnippetScope::All),
+            snippet(2, "分组", None, SnippetScope::Group(GroupId(2))),
+            snippet(3, "主机", None, SnippetScope::Host(HostId(2))),
+            snippet(4, "分组里的主机", None, SnippetScope::Host(HostId(1))),
+        ];
+        for snippet in &scoped {
+            db.insert_snippet(snippet).unwrap();
+        }
+        assert_eq!(db.load().unwrap().snippets, scoped);
+
+        db.remove_host(HostId(2)).unwrap();
+        // The group's subgroup and the host in it go, and so do theirs.
+        db.remove_group(GroupId(1)).unwrap();
+        let left: Vec<_> = db
+            .load()
+            .unwrap()
+            .snippets
+            .into_iter()
+            .map(|snippet| snippet.id)
+            .collect();
+        assert_eq!(left, [SnippetId(1)]);
     }
 
     #[test]

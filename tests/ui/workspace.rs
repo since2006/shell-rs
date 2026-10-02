@@ -608,6 +608,14 @@ async fn the_start_page_marks_recent_hosts_with_their_operating_system(cx: &mut 
     .unwrap();
 }
 
+/// 命令片段 beside web-01's terminal, where its dialogs open from.
+fn show_snippets(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
+}
+
 /// A dialog holds what was typed into it: a click beside it does not close
 /// it, Escape (like its buttons) does.
 #[gpui_kit::test]
@@ -624,12 +632,17 @@ async fn a_click_beside_a_dialog_does_not_close_it(cx: &mut TestAppContext) {
         ("new-group", "group-name"),
         ("new-forward", "forward-name"),
         ("new-credential", "credential-name"),
+        ("snippets-new", "snippet-name"),
+        ("snippets-new-category", "snippet-category-name"),
     ] {
         if open == "new-forward" {
             show_forwards(cx, handle).await;
         }
         if open == "new-credential" {
             show_credentials(cx, handle).await;
+        }
+        if open == "snippets-new" {
+            show_snippets(cx, handle);
         }
         in_frame(cx, handle, |window, cx| window.click(open, cx));
         in_frame(cx, handle, |window, cx| {
@@ -672,12 +685,21 @@ async fn a_dialog_says_what_is_wrong_in_a_notification_that_goes_with_it(cx: &mu
         ("new-group", "group-name", "请输入分组名称"),
         ("new-forward", "forward-name", "请选择端口转发经由的主机"),
         ("new-credential", "credential-name", "请输入名称"),
+        ("snippets-new", "snippet-name", "请输入名称"),
+        (
+            "snippets-new-category",
+            "snippet-category-name",
+            "请输入分类名称",
+        ),
     ] {
         if open == "new-forward" {
             show_forwards(cx, handle).await;
         }
         if open == "new-credential" {
             show_credentials(cx, handle).await;
+        }
+        if open == "snippets-new" {
+            show_snippets(cx, handle);
         }
         in_frame(cx, handle, |window, cx| window.click(open, cx));
         in_frame(cx, handle, |window, cx| {
@@ -763,10 +785,7 @@ fn the_tool_switch_shows_a_tool_and_hides_it_again(cx: &mut TestAppContext) {
     in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
     in_frame(cx, handle, |window, _| {
         assert_eq!(window.find(sidebar).label(), Some("命令片段"));
-        assert_eq!(
-            window.find("tool-placeholder").label(),
-            Some("常用的命令存在这里，点一下就发送到当前终端。")
-        );
+        assert!(window.find("snippets").visible());
         assert_eq!(window.find("tool-snippets").checked(), Some(true));
         // Between the center and the switch.
         let bounds = window.find(sidebar).bounds();
@@ -828,13 +847,13 @@ fn a_tool_follows_the_terminal_in_front_and_leaves_it_the_keyboard(cx: &mut Test
     let sidebar = ("tool-sidebar", INITIAL_STAGING_TERMINAL);
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find(sidebar).is_some());
-        assert!(window.find("tool-placeholder").visible());
+        assert!(window.find("snippets").visible());
     });
 
     // A click in the sidebar takes the focus there; hiding the sidebar
     // hands it back to the terminal, so the shortcuts keep working.
     in_frame(cx, handle, |window, cx| {
-        window.click("tool-placeholder", cx)
+        window.click("snippets-summary", cx)
     });
     in_frame(cx, handle, |window, _| {
         assert_eq!(window.find(sidebar).focused(), Some(true));

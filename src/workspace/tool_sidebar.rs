@@ -10,11 +10,12 @@ use gpui_kit::*;
 use crate::app::{CatalogIcon, DOCKER_ICON, ToggleTool, ToolKind};
 use crate::docker::{Container, DockerObject, DockerPanel, ObjectSummary};
 use crate::history::HistoryPanel;
-use crate::host::{HostId, HostOs, HostStore};
+use crate::host::{HostId, HostOs, HostStore, SnippetCategoryId};
 use crate::monitor::{MonitorDetail, MonitorPanel};
 use crate::netstat::NetstatPanel;
 use crate::processes::{Process, ProcessDetails, ProcessPanel, ProcessSort};
 use crate::services::{Service, ServicePanel};
+use crate::snippets::SnippetPanel;
 use crate::terminal::{ExecTarget, RemoteTerminalId, TerminalView};
 
 impl ToolKind {
@@ -71,20 +72,6 @@ impl ToolKind {
             ToolKind::Monitor => "tool-monitor",
         }
     }
-
-    /// What a tool still to come is going to show for the terminal in
-    /// front of `host`, said in its place.
-    fn about(self, host: &str) -> String {
-        match self {
-            ToolKind::Snippets => "常用的命令存在这里，点一下就发送到当前终端。".into(),
-            ToolKind::History => format!("{host} 上执行过的命令，可以搜索、再次执行。"),
-            ToolKind::Docker => format!("{host} 上的容器：状态、日志，启动和停止。"),
-            ToolKind::Services => format!("{host} 上的 systemd 服务：启动、停止、日志。"),
-            ToolKind::Processes => format!("{host} 上的进程：内存、CPU，结束进程。"),
-            ToolKind::Connections => format!("{host} 上的 TCP、UDP 连接和监听端口。"),
-            ToolKind::Monitor => format!("{host} 的 CPU、内存、网络和磁盘。"),
-        }
-    }
 }
 
 /// The SSH terminal the right sidebar works on.
@@ -107,7 +94,7 @@ pub struct ToolTerminal {
 ///
 /// Each tool is a feature module's entity held here, alive while hidden so
 /// it keeps its state, told which terminal is in front and whether it is on
-/// screen; the tool still to come is a placeholder.
+/// screen.
 pub struct ToolSidebar {
     tool: ToolKind,
     /// The terminal in front; `None` while the sidebar is hidden for
@@ -116,14 +103,13 @@ pub struct ToolSidebar {
     /// Whether the right dock is open.
     shown: bool,
     monitor: Entity<MonitorPanel>,
+    snippets: Entity<SnippetPanel>,
     history: Entity<HistoryPanel>,
     docker: Entity<DockerPanel>,
     services: Entity<ServicePanel>,
     processes: Entity<ProcessPanel>,
     netstat: Entity<NetstatPanel>,
-    store: Entity<HostStore>,
     focus_handle: FocusHandle,
-    _subscription: Subscription,
 }
 
 impl ToolSidebar {
@@ -135,21 +121,18 @@ impl ToolSidebar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // A host renamed is named anew.
-        let subscription = cx.observe(&store, |_, _, cx| cx.notify());
         Self {
             tool: ToolKind::default(),
             terminal: None,
             shown: false,
             monitor: cx.new(|_| MonitorPanel::new(dispatch.clone())),
+            snippets: cx.new(|cx| SnippetPanel::new(store, dispatch.clone(), window, cx)),
             history: cx.new(|cx| HistoryPanel::new(dispatch.clone(), window, cx)),
             docker: cx.new(|_| DockerPanel::new(dispatch.clone())),
             services: cx.new(|cx| ServicePanel::new(dispatch.clone(), window, cx)),
             processes: cx.new(|cx| ProcessPanel::new(dispatch.clone(), window, cx)),
             netstat: cx.new(|cx| NetstatPanel::new(dispatch, window, cx)),
-            store,
             focus_handle: cx.focus_handle(),
-            _subscription: subscription,
         }
     }
 
@@ -181,6 +164,16 @@ impl ToolSidebar {
     /// 网络连接's 刷新.
     pub fn refresh_connections(&mut self, cx: &mut Context<Self>) {
         self.netstat.update(cx, |netstat, cx| netstat.refresh(cx));
+    }
+
+    /// Fold a category of 命令片段 away, or unfold it.
+    pub fn toggle_snippet_category(
+        &mut self,
+        id: Option<SnippetCategoryId>,
+        cx: &mut Context<Self>,
+    ) {
+        self.snippets
+            .update(cx, |snippets, cx| snippets.toggle_category(id, cx));
     }
 
     /// 历史命令's 刷新.
@@ -301,24 +294,6 @@ impl ToolSidebar {
         self.sync_tools(cx);
         cx.notify();
     }
-
-    fn render_placeholder(&self, host: HostId, cx: &App) -> impl IntoElement {
-        let store = self.store.read(cx);
-        let host = store.host(host).map(|host| host.name.clone());
-        let about = self.tool.about(host.as_deref().unwrap_or_default());
-        v_flex()
-            .id("tool-placeholder")
-            .test_support()
-            .aria_label(about.clone())
-            .items_center()
-            .gap_2()
-            .px_4()
-            .py_8()
-            .text_color(cx.theme().muted_foreground)
-            .child(self.tool.icon().large())
-            .child(div().text_sm().text_center().child(about))
-            .child(div().text_xs().child("即将推出"))
-    }
 }
 
 impl EventEmitter<PanelEvent> for ToolSidebar {}
@@ -372,28 +347,17 @@ impl Render for ToolSidebar {
             .size_full()
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
-            .when_some(self.terminal.as_ref(), |sidebar, terminal| {
-                match self.tool {
-                    ToolKind::Monitor => {
-                        sidebar.child(div().flex_1().min_h_0().child(self.monitor.clone()))
-                    }
-                    ToolKind::Connections => {
-                        sidebar.child(div().flex_1().min_h_0().child(self.netstat.clone()))
-                    }
-                    ToolKind::Processes => {
-                        sidebar.child(div().flex_1().min_h_0().child(self.processes.clone()))
-                    }
-                    ToolKind::Services => {
-                        sidebar.child(div().flex_1().min_h_0().child(self.services.clone()))
-                    }
-                    ToolKind::Docker => {
-                        sidebar.child(div().flex_1().min_h_0().child(self.docker.clone()))
-                    }
-                    ToolKind::History => {
-                        sidebar.child(div().flex_1().min_h_0().child(self.history.clone()))
-                    }
-                    _ => sidebar.child(self.render_placeholder(terminal.host, cx)),
-                }
+            .when(self.terminal.is_some(), |sidebar| {
+                let panel = match self.tool {
+                    ToolKind::Snippets => self.snippets.clone().into_any_element(),
+                    ToolKind::History => self.history.clone().into_any_element(),
+                    ToolKind::Docker => self.docker.clone().into_any_element(),
+                    ToolKind::Services => self.services.clone().into_any_element(),
+                    ToolKind::Processes => self.processes.clone().into_any_element(),
+                    ToolKind::Connections => self.netstat.clone().into_any_element(),
+                    ToolKind::Monitor => self.monitor.clone().into_any_element(),
+                };
+                sidebar.child(div().flex_1().min_h_0().child(panel))
             })
     }
 }
