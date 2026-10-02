@@ -70,7 +70,7 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 **A CLI for AI agents**
 
 - `shellrs list` / `exec` / `upload` / `download`. The running ShellRS logs in on the command's behalf, so the command itself never handles a password or private key.
-- Install `shellrs` into your PATH and an Agent Skill for Claude Code, Codex or OpenCode from the settings page.
+- Install `shellrs` into your PATH and an Agent Skill for Claude Code, Codex, OpenCode or WorkBuddy from the settings page.
 
 **Security and updates**
 

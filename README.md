@@ -70,7 +70,7 @@ ShellRS 把 Xshell 式的主机管理和多标签终端、WinSCP 式的双栏 SF
 **给 AI Agent 用的 CLI**
 
 - `shellrs list` / `exec` / `upload` / `download`，由正在运行的 ShellRS 代为登录，命令本身不接触密码和私钥。
-- 在设置页一键把 `shellrs` 放进 PATH，并为 Claude Code、Codex、OpenCode 安装 Agent Skill。
+- 在设置页一键把 `shellrs` 放进 PATH，并为 Claude Code、Codex、OpenCode、WorkBuddy 安装 Agent Skill。
 
 **安全与更新**
 

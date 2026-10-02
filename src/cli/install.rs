@@ -23,15 +23,17 @@ pub enum AgentKind {
     Codex,
     ClaudeCode,
     OpenCode,
+    WorkBuddy,
 }
 
 impl AgentKind {
     /// In the order the settings page lists them.
-    pub const ALL: [AgentKind; 4] = [
+    pub const ALL: [AgentKind; 5] = [
         AgentKind::Generic,
         AgentKind::Codex,
         AgentKind::ClaudeCode,
         AgentKind::OpenCode,
+        AgentKind::WorkBuddy,
     ];
 
     pub fn label(self) -> &'static str {
@@ -40,6 +42,7 @@ impl AgentKind {
             AgentKind::Codex => "Codex",
             AgentKind::ClaudeCode => "Claude Code",
             AgentKind::OpenCode => "OpenCode",
+            AgentKind::WorkBuddy => "WorkBuddy",
         }
     }
 
@@ -57,6 +60,7 @@ impl AgentKind {
             AgentKind::Codex => "codex",
             AgentKind::ClaudeCode => "claude",
             AgentKind::OpenCode => "opencode",
+            AgentKind::WorkBuddy => "workbuddy",
         }
     }
 
@@ -68,6 +72,7 @@ impl AgentKind {
             AgentKind::Codex => &[".codex", "skills"],
             AgentKind::ClaudeCode => &[".claude", "skills"],
             AgentKind::OpenCode => &[".config", "opencode", "skills"],
+            AgentKind::WorkBuddy => &[".workbuddy", "skills"],
         }
     }
 }
@@ -437,6 +442,13 @@ mod tests {
             paths.skill_file(AgentKind::OpenCode),
             home.join(".config")
                 .join("opencode")
+                .join("skills")
+                .join("shellrs")
+                .join("SKILL.md")
+        );
+        assert_eq!(
+            paths.skill_file(AgentKind::WorkBuddy),
+            home.join(".workbuddy")
                 .join("skills")
                 .join("shellrs")
                 .join("SKILL.md")

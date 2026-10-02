@@ -107,7 +107,7 @@ ShellRS 同一时间只运行一个：已经开着时再打开一次，会把已
   - Linux：链接到 `~/.local/bin/shellrs`。
   - macOS、Linux 上「移除」只删除指向 shellrs 的链接，同名的其他文件不会被改动。
   - Windows：图形程序没有控制台，命令是单独的控制台程序 `shellrs-cli.exe`（与 `shellrs.exe` 放在一起）。「安装」把它复制成 `%LOCALAPPDATA%\ShellRS\bin\shellrs.exe`，并把这个文件夹加入当前用户的 PATH（不需要管理员），重新打开的终端和 Agent 才能找到它。ShellRS 升级后启动时会自动更新这份副本；更新不了时显示「更新」。副本正被使用时也能更新。「移除」删掉副本并把文件夹移出 PATH。
-- **Agent Skills**：把教 Agent 使用 `shellrs` 的 skill 写到通用目录（`~/.agents/skills`）或 Codex、Claude Code、OpenCode 各自的 skills 目录；内容和当前版本不同时显示「更新」。「复制 skills」把 skill 全文复制到剪贴板。
+- **Agent Skills**：把教 Agent 使用 `shellrs` 的 skill 写到通用目录（`~/.agents/skills`）或 Codex、Claude Code、OpenCode、WorkBuddy 各自的 skills 目录；内容和当前版本不同时显示「更新」。「复制 skills」把 skill 全文复制到剪贴板。
 
 命令（`shellrs --help` 查看完整说明）：
 

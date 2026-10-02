@@ -627,7 +627,10 @@ fn skill_actions_item(installable: bool) -> SettingItem {
 
 /// One row per agent, each with where its skill goes and whether it is
 /// there.
-fn skills_item(files: Option<[String; 4]>, status: Option<IntegrationStatus>) -> SettingItem {
+fn skills_item(
+    files: Option<[String; AgentKind::ALL.len()]>,
+    status: Option<IntegrationStatus>,
+) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
         v_flex()
             .w_full()
@@ -641,7 +644,7 @@ fn skills_item(files: Option<[String; 4]>, status: Option<IntegrationStatus>) ->
                     .child(skill_row(*agent, file, skill, cx))
             }))
     })
-    .keywords(["skill", "Agent", "Codex", "Claude", "OpenCode"])
+    .keywords(["skill", "Agent", "Codex", "Claude", "OpenCode", "WorkBuddy"])
 }
 
 fn skill_row(
