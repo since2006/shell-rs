@@ -2,13 +2,9 @@ use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
     rc::Rc,
-    time::Duration,
 };
 
-use gpui_kit::base::animation::{EffectTransition, ease_in_out_cubic, ease_out_cubic};
-use gpui_kit::base::{
-    Placement, TooltipOverlay, TooltipRequest, TooltipTransition, Tree as BaseTree,
-};
+use gpui_kit::base::Tree as BaseTree;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
     button::Button,
@@ -18,7 +14,6 @@ use gpui_kit::component::{
     list::ListItem,
     menu::{ContextMenuExt as _, PopupMenu},
     scroll::ScrollableElement as _,
-    tooltip::Tooltip,
     tree::{TreeEntry, TreeEvent, TreeState},
     v_flex,
 };
@@ -31,7 +26,7 @@ use crate::app::{
     MoveHostNode, NewChildGroup, NewGroup, NewHost, NewHostInGroup, OpenExplorer, RenameGroup,
 };
 
-use crate::shared::HostMark;
+use crate::shared::{HostMark, RowTooltip, RowTooltips};
 
 use super::{
     GroupId, HostId, HostNode, HostOs, HostStore, NodeDrop, host_tree_items, matches_query,
@@ -59,11 +54,8 @@ pub struct HostPanel {
     /// builder, both of which run outside this entity.
     right_clicked: Rc<Cell<Option<HostNode>>>,
     drop_target: Rc<Cell<Option<(HostNode, NodeDrop)>>>,
-    /// Host rows' tooltips, which open beside the row rather than under
-    /// the pointer so they never cover the rows below.
-    row_tooltip: Entity<TooltipOverlay>,
-    /// The row the tooltip was last opened for. See `render_row`.
-    row_tooltip_owner: Rc<Cell<Option<HostId>>>,
+    /// Host rows' tooltips: where the host logs in, and its notes.
+    row_tooltips: RowTooltips<HostId>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -138,8 +130,7 @@ impl HostPanel {
             seen_hosts,
             right_clicked: Rc::new(Cell::new(None)),
             drop_target: Rc::new(Cell::new(None)),
-            row_tooltip: cx.new(|_| TooltipOverlay::new().render_with(animate_row_tooltip)),
-            row_tooltip_owner: Rc::new(Cell::new(None)),
+            row_tooltips: RowTooltips::new("host-tooltip", cx),
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
         }
@@ -395,10 +386,7 @@ impl Render for HostPanel {
                 .hosts()
                 .iter()
                 .map(|host| {
-                    let tooltip = RowTooltip {
-                        endpoint: host.endpoint().into(),
-                        notes: host.notes.clone(),
-                    };
+                    let tooltip = RowTooltip::new(host.endpoint()).note(host.notes.clone());
                     (host.id, tooltip)
                 })
                 .collect(),
@@ -428,8 +416,7 @@ impl Render for HostPanel {
             drop_target,
             can_reorder,
             tooltips,
-            tooltip: self.row_tooltip.clone(),
-            tooltip_owner: self.row_tooltip_owner.clone(),
+            row_tooltips: self.row_tooltips.clone(),
         });
         let tree_scroll = self.tree_state.read(cx).scroll_handle().clone();
 
@@ -521,7 +508,7 @@ impl Render for HostPanel {
                     })
                     .context_menu(move |menu, _, _| build_context_menu(clicked_menu.get(), menu)),
             )
-            .child(self.row_tooltip.clone())
+            .child(self.row_tooltips.overlay())
     }
 }
 
@@ -544,99 +531,7 @@ struct RowInteractions {
     can_reorder: bool,
     /// What every host's row tooltip says.
     tooltips: Rc<HashMap<HostId, RowTooltip>>,
-    tooltip: Entity<TooltipOverlay>,
-    tooltip_owner: Rc<Cell<Option<HostId>>>,
-}
-
-/// What a host row's tooltip says.
-#[derive(Clone, Default)]
-struct RowTooltip {
-    /// Where the host logs in, as `user@address:port`.
-    endpoint: SharedString,
-    /// The host's notes; empty for none.
-    notes: SharedString,
-}
-
-/// The longest notes a row tooltip shows, in lines; longer ones are cut
-/// with an ellipsis. The host form shows them all.
-const TOOLTIP_NOTE_LINES: usize = 6;
-
-/// A host row's tooltip: where the host logs in, as `user@address:port`,
-/// and below it the host's notes, if it has any.
-///
-/// Drawn in the theme's inverse, dark on the light theme and light on the
-/// dark one, so it stands out against the sidebar and the terminal in both.
-/// Only this tooltip: gpui-kit's others share the popover colour with menus.
-fn host_tooltip(tooltip: RowTooltip) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
-    move |window, cx| {
-        let RowTooltip { endpoint, notes } = tooltip.clone();
-        let (background, foreground) = (cx.theme().foreground, cx.theme().background);
-        Tooltip::element(move |_, _| {
-            v_flex()
-                .gap_1()
-                .child(
-                    div()
-                        .id("host-tooltip")
-                        .test_support()
-                        .aria_label(endpoint.clone())
-                        .child(endpoint.clone()),
-                )
-                .when(!notes.is_empty(), |content| {
-                    // Wraps rather than widening the tooltip across the
-                    // window; a step quieter than the address above it.
-                    content.child(
-                        div()
-                            .id("host-tooltip-notes")
-                            .test_support()
-                            .aria_label(notes.clone())
-                            .max_w(rems(20.))
-                            .whitespace_normal()
-                            .line_clamp(TOOLTIP_NOTE_LINES)
-                            .text_xs()
-                            .text_color(foreground.opacity(0.75))
-                            .child(notes.clone()),
-                    )
-                })
-        })
-        .bg(background)
-        .border_color(background)
-        .text_color(foreground)
-        .build(window, cx)
-    }
-}
-
-/// The row tooltip's motion, after gpui-kit's own tooltips: it eases out of
-/// the row when it first opens, then follows the pointer from row to row.
-fn animate_row_tooltip(
-    view: AnyView,
-    transition: TooltipTransition,
-    _: &mut Window,
-    _: &mut App,
-) -> AnyElement {
-    let tooltip = div().child(view);
-    match transition {
-        TooltipTransition::Enter { epoch } => EffectTransition::new(Duration::from_millis(150))
-            .ease(ease_out_cubic)
-            .slide_x(px(-4.), px(0.))
-            .fade(0., 1.)
-            .apply(
-                tooltip,
-                ElementId::NamedInteger("host-tooltip-enter".into(), epoch as u64),
-            )
-            .into_any_element(),
-        TooltipTransition::Switch {
-            epoch,
-            previous,
-            current,
-        } => EffectTransition::new(Duration::from_millis(200))
-            .ease(ease_in_out_cubic)
-            .slide_y(previous.center().y - current.center().y, px(0.))
-            .apply(
-                tooltip,
-                ElementId::NamedInteger("host-tooltip-move".into(), epoch as u64),
-            )
-            .into_any_element(),
-    }
+    row_tooltips: RowTooltips<HostId>,
 }
 
 /// Count hosts in each group, including hosts in nested child groups.
@@ -670,8 +565,7 @@ fn render_row(
         drop_target,
         can_reorder,
         tooltips,
-        tooltip,
-        tooltip_owner,
+        row_tooltips,
     } = interactions;
     let item = entry.item();
     let node = HostNode::parse(&item.id);
@@ -737,47 +631,9 @@ fn render_row(
             })
         })
         .when_some(host_id, |row, id| {
-            let content = Rc::new(host_tooltip(tooltips.get(&id).cloned().unwrap_or_default()));
-            let bounds = Rc::new(Cell::new(Bounds::default()));
-            let (bounds_for_prepaint, show, hide) =
-                (bounds.clone(), tooltip.clone(), tooltip.clone());
-            let (owner, owner_for_click) = (tooltip_owner.clone(), tooltip_owner.clone());
-            // Measures the row for the tooltip. The insets matter: ListItem's
-            // content box is not `relative`, so without them the canvas would
-            // land below the content instead of over it.
-            row.child(
-                canvas(
-                    move |row_bounds, _, _| bounds_for_prepaint.set(row_bounds),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full(),
-            )
-            .on_hover(move |hovered, window, cx| {
-                // Not while a row is being dragged over the others.
-                if *hovered && !cx.has_active_drag() {
-                    owner.set(Some(id));
-                    let content = content.clone();
-                    let request =
-                        TooltipRequest::new(bounds.get(), move |window, cx| content(window, cx))
-                            .placement(Placement::Right);
-                    show.update(cx, |overlay, cx| overlay.request_show(request, window, cx));
-                } else if owner.get() == Some(id) {
-                    // Only the row showing the tooltip may put it away. Going
-                    // down the list, the next row reports the pointer arriving
-                    // before this one reports it leaving, and this row's hide
-                    // would cancel the tooltip the next row just asked for.
-                    owner.set(None);
-                    show.update(cx, |overlay, cx| overlay.request_hide(window, cx));
-                }
-            })
-            // Out of the way of the menu, the click and the drag.
-            .on_any_mouse_down(move |_, _, cx| {
-                owner_for_click.set(None);
-                hide.update(cx, |overlay, cx| overlay.hide(cx));
-            })
+            row_tooltips
+                .row(id, tooltips.get(&id).cloned().unwrap_or_default())
+                .attach(row)
         })
         .when_some(node, |row, node| {
             let right_clicked = right_clicked.clone();

@@ -754,3 +754,55 @@ async fn a_segment_that_cannot_be_chosen_stays_unchosen(cx: &mut TestAppContext)
         assert!(window.try_find("credential-key-text").is_none());
     });
 }
+
+#[gpui_kit::test]
+async fn a_credential_rows_tooltip_opens_beside_it_with_a_keys_whole_path(cx: &mut TestAppContext) {
+    let mut store = HostStore::empty();
+    let key = store.insert_credential_unnotified(
+        CredentialDraft::new("部署", CredentialKind::Key, "deploy")
+            .with_key_path("/Users/someone/.ssh/id_ed25519"),
+    );
+    let password = store.insert_credential_unnotified(CredentialDraft::new(
+        "运维",
+        CredentialKind::Password,
+        "root",
+    ));
+    let (handle, _) = open_workspace_with_credentials(
+        cx,
+        store,
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    show_credentials(cx, handle).await;
+    let hover = |cx: &mut TestAppContext, id: CredentialId| {
+        in_frame(cx, handle, |window, cx| {
+            window.hover(("credential-row", id.0), cx)
+        });
+        // Tooltips wait half a second before they open.
+        cx.executor().advance_clock(Duration::from_millis(1000));
+        cx.run_until_parked();
+    };
+
+    // The row shows the key's file name; the tooltip, under the detail, the
+    // whole path.
+    hover(cx, key);
+    in_frame(cx, handle, |window, _| {
+        let line = window.find("credential-tooltip");
+        let note = window.find("credential-tooltip-note");
+        assert_eq!(line.label(), Some("deploy · id_ed25519"));
+        assert_eq!(note.label(), Some("/Users/someone/.ssh/id_ed25519"));
+        assert!(note.bounds().top() >= line.bounds().bottom());
+        let row = window.find(("credential-row", key.0)).bounds();
+        assert!(line.bounds().left() >= row.right());
+    });
+
+    // A password has no file: the detail stands alone.
+    hover(cx, password);
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("credential-tooltip").label(),
+            Some("root · 密码")
+        );
+        assert!(window.try_find("credential-tooltip-note").is_none());
+    });
+}

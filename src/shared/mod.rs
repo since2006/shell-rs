@@ -5,6 +5,7 @@ mod dialog;
 mod host_mark;
 mod latency_label;
 mod rename_tab_dialog;
+mod row_tooltip;
 mod segmented_control;
 mod tab_menu;
 
@@ -16,5 +17,6 @@ pub use dialog::{
 pub use host_mark::HostMark;
 pub use latency_label::LatencyLabel;
 pub use rename_tab_dialog::{RenamableTab, open_rename_tab_dialog};
+pub use row_tooltip::{RowTooltip, RowTooltipTrigger, RowTooltips};
 pub use segmented_control::{Segment, SegmentedControl};
 pub use tab_menu::close_tab_items;

@@ -9,7 +9,6 @@ use gpui_kit::component::{
     menu::{ContextMenuExt as _, PopupMenu},
     scroll::ScrollableElement as _,
     spinner::Spinner,
-    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -21,6 +20,7 @@ use crate::app::{
     SelectNextForward, SelectPreviousForward, StartForward, StopForward, ToggleSelectedForward,
 };
 use crate::host::{ForwardId, ForwardKind, HostStore, matches_forward_query};
+use crate::shared::{RowTooltip, RowTooltips};
 
 /// The port-forwarding list the left dock shows in place of the hosts:
 /// every rule, whether it is running, and the switch that starts or stops it.
@@ -44,6 +44,9 @@ pub struct ForwardPanel {
     /// The row a right click landed on, for the menu about to open; `None`
     /// for the blank space below the rows.
     menu_hit: Rc<Cell<Option<ForwardId>>>,
+    /// Rows' tooltips: the rule in full, which the row may cut short or
+    /// replace with what went wrong.
+    row_tooltips: RowTooltips<ForwardId>,
     scroll_handle: ScrollHandle,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -99,6 +102,7 @@ impl ForwardPanel {
             selected: None,
             known,
             menu_hit: Rc::new(Cell::new(None)),
+            row_tooltips: RowTooltips::new("forward-tooltip", cx),
             scroll_handle: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
@@ -301,11 +305,14 @@ impl ForwardPanel {
             (_, Some(problem)) if active => (problem.clone(), theme.warning, true),
             _ => (row.detail.clone(), theme.muted_foreground, false),
         };
-        let tooltip = row.detail.clone();
+        let tooltip = self
+            .row_tooltips
+            .row(id, RowTooltip::new(row.detail.clone()));
+        let toggle_tooltip = tooltip.clone();
         let status = row.status.clone();
         let target = self.target.clone();
 
-        ListItem::new(("forward-row", id.0))
+        let item = ListItem::new(("forward-row", id.0))
             .w_full()
             .px_2()
             .py_1p5()
@@ -355,27 +362,33 @@ impl ForwardPanel {
                     .flex_shrink_0()
                     .gap_1()
                     .child(status_mark(id, &status, cx))
+                    // The switch has a tooltip of its own.
                     .child(
-                        Button::new(("forward-toggle", id.0))
-                            .ghost()
-                            .xsmall()
-                            .icon(if active {
-                                CatalogIcon::Square
-                            } else {
-                                CatalogIcon::Play
-                            })
-                            .tooltip(if active { "停止" } else { "启动" })
-                            .accessibility_label(if active { "停止" } else { "启动" })
-                            .on_click(move |_, window, cx| {
-                                // The row's own click must not see this one:
-                                // a double click here is two toggles, not a
-                                // third from the row as well.
-                                cx.stop_propagation();
-                                toggle(id, active, &target, window, cx);
-                            }),
+                        toggle_tooltip.exclude(
+                            div().id(("forward-toggle-area", id.0)).child(
+                                Button::new(("forward-toggle", id.0))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(if active {
+                                        CatalogIcon::Square
+                                    } else {
+                                        CatalogIcon::Play
+                                    })
+                                    .tooltip(if active { "停止" } else { "启动" })
+                                    .accessibility_label(if active { "停止" } else { "启动" })
+                                    .on_click(move |_, window, cx| {
+                                        // The row's own click must not see this one:
+                                        // a double click here is two toggles, not a
+                                        // third from the row as well.
+                                        cx.stop_propagation();
+                                        toggle(id, active, &target, window, cx);
+                                    }),
+                            ),
+                        ),
                     )
-            })
-            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            });
+        tooltip
+            .attach(item)
             // A right click selects the row, as in Finder and Explorer, so
             // the menu visibly belongs to it.
             .on_mouse_down(
@@ -575,5 +588,6 @@ impl Render for ForwardPanel {
                         build_context_menu(menu_hit.get(), manager.read(cx), menu)
                     }),
             )
+            .child(self.row_tooltips.overlay())
     }
 }

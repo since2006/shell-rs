@@ -8,7 +8,6 @@ use gpui_kit::component::{
     list::ListItem,
     menu::{ContextMenuExt as _, PopupMenu},
     scroll::ScrollableElement as _,
-    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -20,6 +19,7 @@ use crate::app::{
     SelectNextCredential, SelectPreviousCredential,
 };
 use crate::host::{CredentialId, CredentialKind, HostStore, matches_credential_query};
+use crate::shared::{RowTooltip, RowTooltips};
 
 /// The credential list the left dock shows in place of the hosts: every
 /// saved login and how many hosts use it.
@@ -42,6 +42,8 @@ pub struct CredentialPanel {
     /// The row a right click landed on, for the menu about to open; `None`
     /// for the blank space below the rows.
     menu_hit: Rc<Cell<Option<CredentialId>>>,
+    /// Rows' tooltips: the detail in full, and a key's whole path.
+    row_tooltips: RowTooltips<CredentialId>,
     scroll_handle: ScrollHandle,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
@@ -54,8 +56,8 @@ struct CredentialRow {
     name: SharedString,
     /// 「root · 密码 · 3 台主机」.
     detail: SharedString,
-    /// The detail with the whole key path, for the tooltip.
-    tooltip: SharedString,
+    /// The whole path of a key's file, which `detail` cuts to its name.
+    key_path: Option<SharedString>,
 }
 
 impl CredentialPanel {
@@ -93,6 +95,7 @@ impl CredentialPanel {
             selected: None,
             known,
             menu_hit: Rc::new(Cell::new(None)),
+            row_tooltips: RowTooltips::new("credential-tooltip", cx),
             scroll_handle: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
@@ -162,16 +165,12 @@ impl CredentialPanel {
                     0 => summary,
                     hosts => format!("{summary} · {hosts} 台主机"),
                 };
-                let tooltip = match credential.key_path.as_deref() {
-                    Some(path) => format!("{} · {path}", credential.user),
-                    None => detail.clone(),
-                };
                 CredentialRow {
                     id: credential.id,
                     kind: credential.kind,
                     name: credential.name.clone(),
                     detail: detail.into(),
-                    tooltip: tooltip.into(),
+                    key_path: credential.key_path.clone(),
                 }
             })
             .collect()
@@ -283,9 +282,12 @@ impl CredentialPanel {
         let theme = cx.theme();
         let id = row.id;
         let selected = self.selected == Some(id);
-        let tooltip = row.tooltip.clone();
+        let tooltip = self.row_tooltips.row(
+            id,
+            RowTooltip::new(row.detail.clone()).note(row.key_path.unwrap_or_default()),
+        );
 
-        ListItem::new(("credential-row", id.0))
+        let item = ListItem::new(("credential-row", id.0))
             .w_full()
             .px_2()
             .py_1p5()
@@ -327,8 +329,9 @@ impl CredentialPanel {
                                     .child(row.detail),
                             ),
                     ),
-            )
-            .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            );
+        tooltip
+            .attach(item)
             // A right click selects the row, as in Finder and Explorer, so
             // the menu visibly belongs to it.
             .on_mouse_down(
@@ -475,5 +478,6 @@ impl Render for CredentialPanel {
                         build_context_menu(hit, menu)
                     }),
             )
+            .child(self.row_tooltips.overlay())
     }
 }

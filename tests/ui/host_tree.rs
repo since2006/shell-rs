@@ -709,7 +709,7 @@ fn a_host_rows_tooltip_shows_its_notes_under_the_address(cx: &mut TestAppContext
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         let address = window.find("host-tooltip");
-        let notes = window.find("host-tooltip-notes");
+        let notes = window.find("host-tooltip-note");
         assert_eq!(address.label(), Some("root@10.0.1.12:22"));
         assert_eq!(notes.label(), Some("机房 A\n负责人：张三"));
         assert!(notes.bounds().top() >= address.bounds().bottom());
@@ -724,7 +724,7 @@ fn a_host_rows_tooltip_shows_its_notes_under_the_address(cx: &mut TestAppContext
             window.find("host-tooltip").label(),
             Some("root@10.0.1.13:22")
         );
-        assert!(window.try_find("host-tooltip-notes").is_none());
+        assert!(window.try_find("host-tooltip-note").is_none());
     })
     .unwrap();
 }

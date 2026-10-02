@@ -981,3 +981,46 @@ async fn disconnecting_a_host_leaves_a_forward_question_open(cx: &mut TestAppCon
     .await;
     assert_eq!(provider.stopped(), 0);
 }
+
+#[gpui_kit::test]
+async fn a_forward_rows_tooltip_opens_beside_it_and_makes_way_for_its_switch(
+    cx: &mut TestAppContext,
+) {
+    let (store, id) = store_with_forward();
+    let (handle, _) =
+        open_workspace_with_forwards(cx, store, Arc::new(FakeForwardProvider::default()));
+    cx.run_until_parked();
+    show_forwards(cx, handle).await;
+    let row = ("forward-row", id.0);
+    let hover = |cx: &mut TestAppContext, target: ElementId| {
+        in_frame(cx, handle, |window, cx| window.hover(target, cx));
+        // Tooltips wait half a second before they open.
+        cx.executor().advance_clock(Duration::from_millis(1000));
+        cx.run_until_parked();
+    };
+
+    hover(cx, row.into());
+    in_frame(cx, handle, |window, _| {
+        let tooltip = window.find("forward-tooltip");
+        assert_eq!(
+            tooltip.label(),
+            Some("本地转发 · 8080 → db.internal:3306 · db-01")
+        );
+        // Beside the row, as the host list's, so it never covers the rows
+        // below.
+        let row = window.find(row).bounds();
+        assert!(tooltip.bounds().left() >= row.right());
+        assert!((tooltip.bounds().center().y - row.center().y).abs() < px(2.));
+    });
+
+    // The switch has a tooltip of its own, and the row's makes way for it.
+    hover(cx, ("forward-toggle", id.0).into());
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("forward-tooltip").is_none());
+    });
+    // Back on the rest of the row, it comes back.
+    hover(cx, row.into());
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("forward-tooltip").is_some());
+    });
+}
