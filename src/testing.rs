@@ -1,7 +1,7 @@
 //! What the unit tests share: starting processes without upsetting the
 //! tests that need a closed socket to stay closed.
 
-use std::process::{Command, Output};
+use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
 
 static FORKS: Mutex<()> = Mutex::new(());
@@ -22,8 +22,9 @@ pub fn no_forks() -> MutexGuard<'static, ()> {
 }
 
 /// Run `script` with this machine's `sh`, with `PATH` set to `path` when
-/// given.
-pub fn sh(script: &str, path: Option<&str>) -> Output {
+/// given. Unix only, like the tests that run scripts for real.
+#[cfg(unix)]
+pub fn sh(script: &str, path: Option<&str>) -> std::process::Output {
     let mut command = Command::new("sh");
     command.args(["-c", script]);
     if let Some(path) = path {
