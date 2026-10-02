@@ -21,15 +21,16 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CollapseAllGroups, ConnectGroup, ConnectHost, ConnectSelected, CopyHostId,
-    DeleteGroup, DeleteHost, DuplicateHost, EditHost, ExpandAllGroups, HOST_PANEL_CONTEXT,
-    MoveHostNode, NewChildGroup, NewGroup, NewHost, NewHostInGroup, OpenExplorer, RenameGroup,
+    CatalogIcon, CollapseAllGroups, ConnectGroup, ConnectHost, ConnectSelected, CopyHostAddress,
+    CopyHostId, DeleteGroup, DeleteHost, DuplicateHost, EditHost, ExpandAllGroups,
+    HOST_PANEL_CONTEXT, MoveHostNode, NewChildGroup, NewGroup, NewHost, NewHostInGroup,
+    OpenExplorer, RenameGroup,
 };
 
 use crate::shared::{HostMark, RowTooltip, RowTooltips};
 
 use super::{
-    GroupId, HostId, HostNode, HostOs, HostStore, NodeDrop, host_tree_items, matches_query,
+    GroupId, Host, HostId, HostNode, HostOs, HostStore, NodeDrop, host_tree_items, matches_query,
 };
 
 /// The host list of the left dock: a searchable, grouped tree of hosts.
@@ -506,7 +507,12 @@ impl Render for HostPanel {
                             },
                         )
                     })
-                    .context_menu(move |menu, _, _| build_context_menu(clicked_menu.get(), menu)),
+                    .context_menu({
+                        let store = self.store.clone();
+                        move |menu, _, cx| {
+                            build_context_menu(clicked_menu.get(), store.read(cx), menu)
+                        }
+                    }),
             )
             .child(self.row_tooltips.overlay())
     }
@@ -778,7 +784,15 @@ fn valid_drop(
 
 /// The menu of one host, wherever it is listed: the host tree and the
 /// start page's recent hosts both build it here, so they cannot drift.
-pub fn host_menu(menu: PopupMenu, id: HostId) -> PopupMenu {
+/// Built as it opens, from the host as it is then.
+pub fn host_menu(menu: PopupMenu, host: &Host) -> PopupMenu {
+    let id = host.id;
+    // Named after what the address is, as in the tabs' menus.
+    let copy_address = if host.address_is_ip() {
+        "复制 IP 地址"
+    } else {
+        "复制主机名"
+    };
     menu.menu_with_icon(
         "连接",
         Icon::new(CatalogIcon::Plug),
@@ -802,6 +816,11 @@ pub fn host_menu(menu: PopupMenu, id: HostId) -> PopupMenu {
     )
     .separator()
     .menu_with_icon(
+        copy_address,
+        Icon::new(CatalogIcon::ClipboardCopy),
+        Box::new(CopyHostAddress(id)),
+    )
+    .menu_with_icon(
         "复制 ID",
         Icon::new(CatalogIcon::ClipboardCopy),
         Box::new(CopyHostId(id)),
@@ -814,9 +833,12 @@ pub fn host_menu(menu: PopupMenu, id: HostId) -> PopupMenu {
     )
 }
 
-fn build_context_menu(node: Option<HostNode>, menu: PopupMenu) -> PopupMenu {
+fn build_context_menu(node: Option<HostNode>, store: &HostStore, menu: PopupMenu) -> PopupMenu {
     match node {
-        Some(HostNode::Host(id)) => host_menu(menu, id),
+        Some(HostNode::Host(id)) => match store.host(id) {
+            Some(host) => host_menu(menu, host),
+            None => menu,
+        },
         Some(HostNode::Group(id)) => menu
             .menu_with_icon(
                 "连接组内主机",

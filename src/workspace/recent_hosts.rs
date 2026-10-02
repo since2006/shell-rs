@@ -144,9 +144,12 @@ impl RecentHosts {
             .gap_1()
             .capture_any_mouse_down(move |_, _, _| clear_hit.set(None))
             .children(rows.into_iter().map(|row| self.render_row(row, cx)))
-            .context_menu(move |menu, _, _| match menu_hit.get() {
-                Some(id) => host_menu(menu, id),
-                None => menu,
+            .context_menu({
+                let store = self.store.clone();
+                move |menu, _, cx| match menu_hit.get().and_then(|id| store.read(cx).host(id)) {
+                    Some(host) => host_menu(menu, host),
+                    None => menu,
+                }
             })
     }
 
