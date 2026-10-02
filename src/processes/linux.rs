@@ -423,10 +423,7 @@ mod tests {
             .strip_prefix("sh -c '")
             .and_then(|rest| rest.strip_suffix('\''))
             .unwrap();
-        let output = std::process::Command::new("sh")
-            .args(["-c", script])
-            .output()
-            .expect("sh runs");
+        let output = crate::testing::sh(script, None);
         let reading = reading(&String::from_utf8(output.stdout).unwrap());
         assert_eq!(reading.memory_total, 2_048_000_000);
         let processes: Vec<(u32, &str, Option<&str>, u64, u64)> = reading
@@ -459,11 +456,7 @@ mod tests {
                 .strip_prefix("sh -c '")
                 .and_then(|rest| rest.strip_suffix('\''))
                 .unwrap();
-            let status = std::process::Command::new("sh")
-                .args(["-n", "-c", script])
-                .status()
-                .expect("sh runs");
-            assert!(status.success());
+            assert!(crate::testing::sh_accepts(script));
         }
     }
 }

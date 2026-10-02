@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use gpui_kit::base::{Radio, RadioGroup};
-use gpui_kit::component::{ActiveTheme as _, tooltip::Tooltip};
+use gpui_kit::component::{ActiveTheme as _, Sizable, Size, tooltip::Tooltip};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
@@ -9,7 +9,9 @@ type ChangeHandler = Rc<dyn Fn(&usize, &mut Window, &mut App)>;
 
 /// One choice out of a few, side by side in one track, the chosen one
 /// standing out as a raised block: a segmented control, for a form's choice
-/// between ways of doing the same thing (密码 / 使用凭据 / 无密码).
+/// between ways of doing the same thing (密码 / 使用凭据 / 无密码), and, small
+/// and with counts, for what a right-sidebar tool's list shows (容器 9 / 卷
+/// 0 …, see `count_tabs`).
 ///
 /// Behavior comes from gpui-base's radio group: activation by pointer, Enter
 /// or Space, a tab stop per segment, and the radio group's semantics for
@@ -22,11 +24,14 @@ pub struct SegmentedControl {
     segments: Vec<Segment>,
     selected: Option<usize>,
     on_change: Option<ChangeHandler>,
+    size: Size,
 }
 
 /// One segment of a [`SegmentedControl`].
 pub struct Segment {
     label: SharedString,
+    /// How many there are of what it shows, quieter beside the label.
+    count: Option<usize>,
     disabled: bool,
     /// Why a disabled segment cannot be chosen.
     tooltip: Option<SharedString>,
@@ -36,9 +41,16 @@ impl Segment {
     pub fn new(label: impl Into<SharedString>) -> Self {
         Self {
             label: label.into(),
+            count: None,
             disabled: false,
             tooltip: None,
         }
+    }
+
+    /// How many there are of what it shows: 「容器 9」.
+    pub fn count(mut self, count: usize) -> Self {
+        self.count = Some(count);
+        self
     }
 
     pub fn disabled(mut self, disabled: bool) -> Self {
@@ -61,6 +73,7 @@ impl SegmentedControl {
             segments: Vec::new(),
             selected: None,
             on_change: None,
+            size: Size::Medium,
         }
     }
 
@@ -82,6 +95,15 @@ impl SegmentedControl {
     }
 }
 
+/// Medium, as tall as a form's other controls; small (or less) as a
+/// right-sidebar tool's tabs.
+impl Sizable for SegmentedControl {
+    fn with_size(mut self, size: impl Into<Size>) -> Self {
+        self.size = size.into();
+        self
+    }
+}
+
 impl RenderOnce for SegmentedControl {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = cx.theme();
@@ -98,12 +120,16 @@ impl RenderOnce for SegmentedControl {
         let total = self.segments.len();
         let selected = self.selected;
         let on_change = self.on_change;
+        let muted = theme.muted_foreground;
 
         RadioGroup::new(self.id)
             .axis(Axis::Horizontal)
             .flex()
             .w_full()
-            .h_8()
+            .map(|track| match self.size {
+                Size::XSmall | Size::Small => track.h_7(),
+                _ => track.h_8(),
+            })
             .p(inset)
             .gap(inset)
             .rounded(theme.radius)
@@ -116,7 +142,10 @@ impl RenderOnce for SegmentedControl {
                 Radio::new(ix)
                     .checked(checked)
                     .disabled(segment.disabled)
-                    .accessibility_label(segment.label.clone())
+                    .accessibility_label(match segment.count {
+                        Some(count) => format!("{} {count}", segment.label).into(),
+                        None => segment.label.clone(),
+                    })
                     .set_position(ix + 1, total)
                     // Equal shares of the track, whatever the labels.
                     .flex_1()
@@ -165,6 +194,15 @@ impl RenderOnce for SegmentedControl {
                         })
                     })
                     .child(div().truncate().child(segment.label))
+                    .when_some(segment.count, |radio, count| {
+                        radio.child(
+                            div()
+                                .flex_shrink_0()
+                                .ml_1()
+                                .text_color(muted)
+                                .child(count.to_string()),
+                        )
+                    })
             }))
     }
 }

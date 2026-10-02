@@ -447,11 +447,7 @@ LoadState=loaded
                 .strip_prefix("sh -c '")
                 .and_then(|rest| rest.strip_suffix('\''))
                 .unwrap();
-            let status = std::process::Command::new("sh")
-                .args(["-n", "-c", script])
-                .status()
-                .expect("sh runs");
-            assert!(status.success(), "{script}");
+            assert!(crate::testing::sh_accepts(script), "{script}");
         }
     }
 
@@ -494,11 +490,7 @@ LoadState=loaded
             bin.display(),
             std::env::var("PATH").unwrap_or_default()
         );
-        let output = std::process::Command::new("sh")
-            .args(["-c", script])
-            .env("PATH", path)
-            .output()
-            .expect("sh runs");
+        let output = crate::testing::sh(script, Some(&path));
         let Parsed::Table(table) = parse(&String::from_utf8(output.stdout).unwrap()) else {
             panic!("not a table");
         };

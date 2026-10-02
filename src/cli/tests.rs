@@ -310,6 +310,8 @@ fn without_the_app_the_command_says_it_is_not_running() {
     #[cfg(unix)]
     {
         let stale = dir.path().join("stale.sock");
+        // No process may start meanwhile and keep the socket open.
+        let _forks = crate::testing::no_forks();
         drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
         let (code, _, stderr) = run(&stale, Request::List { query: None }, true);
         assert_eq!(code, 255);
@@ -354,6 +356,8 @@ fn with_nothing_running_shellrs_is_free_to_start() {
     #[cfg(unix)]
     {
         let stale = dir.path().join("stale.sock");
+        // No process may start meanwhile and keep the socket open.
+        let _forks = crate::testing::no_forks();
         drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
         assert!(!client::activate_running_app(&stale));
     }

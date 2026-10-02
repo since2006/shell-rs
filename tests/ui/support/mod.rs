@@ -194,3 +194,22 @@ pub fn in_frame<R>(
     cx.run_until_parked();
     result
 }
+
+/// That the tabs of a tool's segmented bar, in the box `id`, share its
+/// whole width evenly: `shared::count_tabs`.
+pub fn assert_tabs_share_the_width(window: &mut gpui_kit::Window, id: &'static str, tabs: usize) {
+    let bar = window.find(id).bounds();
+    let widths: Vec<f32> = (0..tabs)
+        .map(|index| f32::from(window.within(id).find(index).bounds().size.width))
+        .collect();
+    let first = window.within(id).find(0usize).bounds();
+    let last = window.within(id).find(tabs - 1).bounds();
+    assert!(
+        f32::from(first.left() - bar.left()) < 8. && f32::from(bar.right() - last.right()) < 8.,
+        "the tabs do not span the bar: {first:?} … {last:?} in {bar:?}"
+    );
+    assert!(
+        widths.iter().all(|width| (width - widths[0]).abs() < 1.),
+        "the tabs are not as wide as each other: {widths:?}"
+    );
+}

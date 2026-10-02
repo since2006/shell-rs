@@ -5,6 +5,7 @@ use gpui_kit::*;
 
 use crate::{
     cli::AgentKind,
+    docker::{ContainerCommand, DockerObject},
     explorer::{ExplorerId, FileSizeFormat},
     host::{CredentialId, ForwardId, GroupId, HostId, HostNode, NodeDrop},
     monitor::MonitorDetail,
@@ -47,6 +48,8 @@ gpui_kit::actions!(
         RefreshProcesses,
         /// Read the services of the SSH terminal's host again.
         RefreshServices,
+        /// Read the Docker of the SSH terminal's host again.
+        RefreshDocker,
         /// Show the host list in the left dock.
         ShowHosts,
         /// Show the port-forwarding list in the left dock.
@@ -203,6 +206,9 @@ id_actions! {
     /// Open the details of a service of the host of the SSH terminal in
     /// front, by its name.
     ShowService(String);
+    /// Fold a compose project of the Docker tool away, or unfold it, by
+    /// its name.
+    ToggleDockerProject(String);
 
     /// Start a port forward over a connection of its own.
     StartForward(ForwardId);
@@ -248,6 +254,40 @@ pub struct EndProcess {
 pub struct ControlService {
     pub name: String,
     pub command: ServiceCommand,
+}
+
+/// Start, stop or restart containers of the host of the SSH terminal in
+/// front: one, or a compose project's all; asks first before stopping or
+/// restarting them.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct ControlContainers {
+    /// What they are, for the question and the notification: 「容器“web”」,
+    /// 「项目“php-56”」.
+    pub subject: String,
+    pub ids: Vec<String>,
+    pub command: ContainerCommand,
+}
+
+/// Open the details of a container, an image, a volume or a network of the
+/// host of the SSH terminal in front.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct ShowDockerObject {
+    pub object: DockerObject,
+    /// What Docker knows it by: the ID, or a volume's name.
+    pub id: String,
+}
+
+/// Ask, then remove a container, an image, a volume or a network of the
+/// host of the SSH terminal in front.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct RemoveDockerObject {
+    pub object: DockerObject,
+    /// What Docker knows it by: the ID, or a volume's name.
+    pub id: String,
+    pub name: String,
 }
 
 /// One tab of the center area, by the identity of what it shows.

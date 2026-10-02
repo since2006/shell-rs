@@ -5,14 +5,13 @@ use std::time::Duration;
 
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
-    button::{Button, ButtonCustomVariant, ButtonVariants as _},
+    button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::{ContextMenuExt as _, PopupMenu},
     scroll::ScrollableElement as _,
     spinner::Spinner,
     tab::{Tab, TabBar},
-    tag::Tag,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -23,6 +22,7 @@ use super::model::{
     ActiveState, Service, ServiceCommand, ServiceFilter, ServiceRow, ServiceTable, file_state_label,
 };
 use crate::app::{CatalogIcon, ControlService, RefreshServices, ShowService};
+use crate::shared::{soft_tag, tinted};
 use crate::terminal::{ExecResult, ExecTarget, RemoteTerminalId, exec_answer};
 
 /// How long a terminal not connected is left before it is asked again.
@@ -285,6 +285,11 @@ impl ServicePanel {
                         .prefix(Icon::new(IconName::Search).small()),
                 )
                 .child(
+                    // gpui-kit's underlined tabs, each as wide as its label and
+                    // count: 「已停止 202」 does not fit an equal share of the
+                    // panel, and where they all do not fit the bar scrolls
+                    // sideways rather than cut a label short (the user's
+                    // choice; Docker's shorter labels share the width).
                     div().id("services-tabs").test_support().child(
                         TabBar::new("services-tab-bar")
                             .underline()
@@ -303,13 +308,11 @@ impl ServicePanel {
                                     Tab::new()
                                         .label(filter.label())
                                         .aria_label(format!("{} {count}", filter.label()))
-                                        .suffix(
+                                        // Beside the label: the suffix would sit
+                                        // outside the label's box.
+                                        .child(
                                             div()
                                                 .ml_1()
-                                                .px_1p5()
-                                                .rounded_full()
-                                                .bg(cx.theme().muted)
-                                                .text_xs()
                                                 .text_color(cx.theme().muted_foreground)
                                                 .child(count.to_string()),
                                         )
@@ -515,14 +518,6 @@ pub(super) fn state_color(state: ActiveState, cx: &App) -> Hsla {
     }
 }
 
-/// A tag in `color`'s tint: 「运行中」.
-pub(super) fn soft_tag(text: &'static str, color: Hsla) -> Tag {
-    Tag::custom(color.opacity(0.12), color, color.opacity(0.3))
-        .small()
-        .rounded_full()
-        .child(text)
-}
-
 /// 「自定义服务 3」.
 fn render_group(custom: bool, count: usize, cx: &App) -> impl IntoElement {
     let label = if custom {
@@ -564,13 +559,6 @@ fn command_button(
     dispatch: &FocusHandle,
     cx: &App,
 ) -> Button {
-    let tint = |color: Hsla| {
-        ButtonCustomVariant::new(cx)
-            .color(color.opacity(0.1))
-            .foreground(color)
-            .hover(color.opacity(0.2))
-            .active(color.opacity(0.25))
-    };
     let button = Button::new(SharedString::from(format!(
         "service-{}:{}",
         command.verb(),
@@ -581,8 +569,8 @@ fn command_button(
     .tooltip(command.label())
     .accessibility_label(command.label());
     let button = match command {
-        ServiceCommand::Stop => button.custom(tint(cx.theme().danger)),
-        ServiceCommand::Start => button.custom(tint(cx.theme().success)),
+        ServiceCommand::Stop => button.custom(tinted(cx.theme().danger, cx)),
+        ServiceCommand::Start => button.custom(tinted(cx.theme().success, cx)),
         _ => button.ghost(),
     };
     let (dispatch, name) = (dispatch.clone(), service.name.clone());

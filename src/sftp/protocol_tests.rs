@@ -115,14 +115,17 @@ impl server::Handler for Handler {
             } else {
                 "/usr/lib/openssh/sftp-server"
             };
-            let mut child = tokio::process::Command::new(executable)
-                .current_dir(directory)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .kill_on_drop(true)
-                .spawn()
-                .unwrap();
+            let mut child = {
+                let _forks = crate::testing::no_forks();
+                tokio::process::Command::new(executable)
+                    .current_dir(directory)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .unwrap()
+            };
             let mut input = child.stdin.take().unwrap();
             let mut output = child.stdout.take().unwrap();
             let (mut reader, mut writer) = tokio::io::split(stream);

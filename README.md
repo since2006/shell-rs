@@ -175,7 +175,7 @@ cargo test
 - [russh](https://github.com/Eugeny/russh) 和 [russh-sftp](https://github.com/AspectUnk/russh-sftp)：SSH 与 SFTP 协议
 - [alacritty_terminal](https://crates.io/crates/alacritty_terminal) 和 [portable-pty](https://crates.io/crates/portable-pty)：终端模拟与本地 PTY
 - [keyring](https://crates.io/crates/keyring)：系统钥匙串
-- [Simple Icons](https://simpleicons.org)：系统徽章使用的 logo（CC0）
+- [Simple Icons](https://simpleicons.org)：系统徽章和右侧栏 Docker 工具使用的 logo（CC0）
 - [WinSCP](https://winscp.net) 和 Xshell：交互设计的参照
 
 ## 许可证

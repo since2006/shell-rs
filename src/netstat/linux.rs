@@ -474,12 +474,7 @@ tcp   ESTAB     0      0     [::ffff:10.0.0.5]:3306    [::ffff:10.0.0.9]:39000 i
 
     #[cfg(unix)]
     fn run(script: &str, path: &str) -> String {
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(script)
-            .env("PATH", path)
-            .output()
-            .expect("sh runs");
+        let output = crate::testing::sh(script, Some(path));
         assert!(output.status.success(), "{output:?}");
         String::from_utf8(output.stdout).expect("utf-8")
     }
@@ -584,10 +579,6 @@ tcp   ESTAB     0      0     [::ffff:10.0.0.5]:3306    [::ffff:10.0.0.9]:39000 i
             .strip_prefix("sh -c '")
             .and_then(|rest| rest.strip_suffix('\''))
             .unwrap();
-        let status = std::process::Command::new("sh")
-            .args(["-n", "-c", script])
-            .status()
-            .expect("sh runs");
-        assert!(status.success());
+        assert!(crate::testing::sh_accepts(script));
     }
 }

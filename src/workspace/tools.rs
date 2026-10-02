@@ -18,16 +18,23 @@ use gpui_kit::component::{
 use gpui_kit::*;
 
 use crate::app::{
-    CenterTab, ControlService, EndProcess, RefreshConnections, RefreshProcesses, RefreshServices,
-    ShowProcess, ShowService, SortProcesses, ToggleMonitorDetail, ToggleTool, ToggleToolSidebar,
-    ToolKind,
+    CenterTab, ControlContainers, ControlService, EndProcess, RefreshConnections, RefreshDocker,
+    RefreshProcesses, RefreshServices, RemoveDockerObject, ShowDockerObject, ShowProcess,
+    ShowService, SortProcesses, ToggleDockerProject, ToggleMonitorDetail, ToggleTool,
+    ToggleToolSidebar, ToolKind,
+};
+use crate::docker::{
+    self, ContainerCommand, DockerObject, open_container_dialog, open_object_dialog,
 };
 use crate::processes::{end_command, ended, open_process_dialog};
 use crate::services::{ServiceCommand, control_command, controlled, open_service_dialog};
 use crate::shared::confirm_danger;
 use crate::terminal::exec_answer;
 
-use super::{Workspace, tool_sidebar::ToolTerminal};
+use super::{
+    Workspace,
+    tool_sidebar::{ToolSidebar, ToolTerminal},
+};
 
 /// How wide the right sidebar opens, and the narrowest it can be dragged:
 /// the monitor's and the connections' cards are laid out for this width.
@@ -169,6 +176,143 @@ impl Workspace {
             .update(cx, |tools, cx| tools.sort_processes(by, cx));
     }
 
+    /// Docker's 刷新: read the host's Docker again.
+    pub(super) fn on_refresh_docker(
+        &mut self,
+        _: &RefreshDocker,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tools.update(cx, |tools, cx| tools.refresh_docker(cx));
+    }
+
+    /// A compose project's line: fold it away, or unfold it.
+    pub(super) fn on_toggle_docker_project(
+        &mut self,
+        action: &ToggleDockerProject,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tools
+            .update(cx, |tools, cx| tools.toggle_docker_project(&action.0, cx));
+    }
+
+    /// A container's details and output, or a volume's, an image's or a
+    /// network's details.
+    pub(super) fn on_show_docker_object(
+        &mut self,
+        action: &ShowDockerObject,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(terminal) = self.tool_terminal(cx) else {
+            return;
+        };
+        let tools = self.tools.read(cx);
+        let dispatch = self.focus_handle.clone();
+        if action.object == DockerObject::Container {
+            if let Some(container) = tools.container(&action.id, cx) {
+                open_container_dialog(container, terminal.view, dispatch, window, cx);
+            }
+        } else if let Some(summary) = tools.docker_summary(action.object, &action.id, cx) {
+            open_object_dialog(summary, terminal.view, dispatch, window, cx);
+        }
+    }
+
+    /// Start, stop or restart containers, asking first before stopping or
+    /// restarting them; how it went is a notification, and the list is
+    /// read again.
+    pub(super) fn on_control_containers(
+        &mut self,
+        action: &ControlContainers,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(terminal) = self.tool_terminal(cx) else {
+            return;
+        };
+        let ControlContainers {
+            subject,
+            ids,
+            command,
+        } = action.clone();
+        let workspace = cx.entity().downgrade();
+        let run = Rc::new({
+            let subject = subject.clone();
+            move |window: &mut Window, cx: &mut App| {
+                run_on_host(
+                    HostCommand {
+                        script: docker::control_command(&ids, command),
+                        outcome: docker::done,
+                        done: format!("{subject}{}", command.done()),
+                        failed: format!("无法{}{subject}", command.label()),
+                        then: ToolSidebar::refresh_docker,
+                    },
+                    &terminal,
+                    workspace.clone(),
+                    window,
+                    cx,
+                )
+            }
+        });
+        let description = match command {
+            ContainerCommand::Start => return run(window, cx),
+            ContainerCommand::Stop => "停止后它提供的服务就不可用了，直到再次启动。",
+            ContainerCommand::Restart => "会先停止再启动，中间短暂不可用。",
+        };
+        confirm_danger(
+            format!("{}{subject}？", command.label()).into(),
+            Some(description.into()),
+            command.label(),
+            run,
+            window,
+            cx,
+        );
+    }
+
+    /// Ask, then remove a container, an image, a volume or a network.
+    pub(super) fn on_remove_docker_object(
+        &mut self,
+        action: &RemoveDockerObject,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(terminal) = self.tool_terminal(cx) else {
+            return;
+        };
+        let RemoveDockerObject { object, id, name } = action.clone();
+        let subject = format!("{}“{name}”", object.label());
+        let description = match object {
+            DockerObject::Container => "容器和它里面没有存进卷的数据会一起删除，不能恢复。",
+            DockerObject::Image => "删除后再要用它，需要重新拉取或构建。",
+            DockerObject::Volume => "卷里的数据会一起删除，不能恢复。",
+            DockerObject::Network => "删除后再要用它，需要重新创建。",
+        };
+        let workspace = cx.entity().downgrade();
+        confirm_danger(
+            format!("删除{subject}？").into(),
+            Some(description.into()),
+            "删除",
+            Rc::new(move |window, cx| {
+                run_on_host(
+                    HostCommand {
+                        script: docker::remove_command(object, &id),
+                        outcome: docker::done,
+                        done: format!("{subject}已删除"),
+                        failed: format!("无法删除{subject}"),
+                        then: ToolSidebar::refresh_docker,
+                    },
+                    &terminal,
+                    workspace.clone(),
+                    window,
+                    cx,
+                )
+            }),
+            window,
+            cx,
+        );
+    }
+
     /// 系统服务's 刷新: read the host's services again.
     pub(super) fn on_refresh_services(
         &mut self,
@@ -219,47 +363,19 @@ impl Workspace {
         let run = Rc::new({
             let name = name.clone();
             move |window: &mut Window, cx: &mut App| {
-                let reply = control_command(&name, command)
-                    .and_then(|script| terminal.view.upgrade()?.read(cx).exec(script, cx));
-                let Some(reply) = reply else {
-                    window.push_notification(
-                        Notification::error(format!(
-                            "无法{} {name}：终端没有连接",
-                            command.label()
-                        )),
-                        cx,
-                    );
-                    return;
-                };
-                let (workspace, name) = (workspace.clone(), name.clone());
-                window
-                    .spawn(cx, async move |cx| {
-                        let outcome = match exec_answer(reply, cx).await {
-                            None => Err("终端没有连接".to_string()),
-                            Some(Err(error)) => Err(error),
-                            Some(Ok(output)) => controlled(&output),
-                        };
-                        cx.update(|window, cx| {
-                            let notification = match outcome {
-                                Ok(()) => {
-                                    Notification::success(format!("{name} {}", command.done()))
-                                }
-                                Err(why) => Notification::error(format!(
-                                    "无法{} {name}：{why}",
-                                    command.label()
-                                )),
-                            };
-                            window.push_notification(notification, cx);
-                            workspace
-                                .update(cx, |this, cx| {
-                                    this.tools
-                                        .update(cx, |tools, cx| tools.refresh_services(cx))
-                                })
-                                .ok();
-                        })
-                        .ok();
-                    })
-                    .detach();
+                run_on_host(
+                    HostCommand {
+                        script: control_command(&name, command),
+                        outcome: controlled,
+                        done: format!("{name} {}", command.done()),
+                        failed: format!("无法{} {name}", command.label()),
+                        then: ToolSidebar::refresh_services,
+                    },
+                    &terminal,
+                    workspace.clone(),
+                    window,
+                    cx,
+                )
             }
         });
         // Stopping and restarting take something away, if only for a
@@ -471,4 +587,62 @@ pub(super) fn set_right_dock_open(
     area.set_dock_collapsible(DockPlacement::Right, true, window, cx);
     area.toggle_dock(DockPlacement::Right, window, cx);
     area.set_dock_collapsible(DockPlacement::Right, false, window, cx);
+}
+
+/// A command a tool runs on the host, and what follows it.
+struct HostCommand {
+    /// `None` when what it names cannot go into a command.
+    script: Option<String>,
+    /// How it went, from what it printed.
+    outcome: fn(&str) -> Result<(), String>,
+    /// The notification when it went: 「nginx.service 已停止」.
+    done: String,
+    /// The notification's start when it did not, before why: 「无法停止
+    /// nginx.service」.
+    failed: String,
+    /// What the sidebar does after: read the tool's list again.
+    then: fn(&mut ToolSidebar, &mut Context<ToolSidebar>),
+}
+
+/// Run `command` on the SSH terminal's own connection; how it went is a
+/// notification, and then the sidebar does what follows.
+fn run_on_host(
+    command: HostCommand,
+    terminal: &ToolTerminal,
+    workspace: WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let HostCommand {
+        script,
+        outcome,
+        done,
+        failed,
+        then,
+    } = command;
+    let reply = script.and_then(|script| terminal.view.upgrade()?.read(cx).exec(script, cx));
+    let Some(reply) = reply else {
+        window.push_notification(Notification::error(format!("{failed}：终端没有连接")), cx);
+        return;
+    };
+    window
+        .spawn(cx, async move |cx| {
+            let result = match exec_answer(reply, cx).await {
+                None => Err("终端没有连接".to_string()),
+                Some(Err(error)) => Err(error),
+                Some(Ok(output)) => outcome(&output),
+            };
+            cx.update(|window, cx| {
+                let notification = match result {
+                    Ok(()) => Notification::success(done),
+                    Err(why) => Notification::error(format!("{failed}：{why}")),
+                };
+                window.push_notification(notification, cx);
+                workspace
+                    .update(cx, |this, cx| this.tools.update(cx, then))
+                    .ok();
+            })
+            .ok();
+        })
+        .detach();
 }

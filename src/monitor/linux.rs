@@ -460,10 +460,7 @@ tmpfs               498304       0    498304       0% /dev/shm
             disks: false,
         });
         let script = script(&full).replace("/proc/", &format!("{}/", proc.display()));
-        let output = std::process::Command::new("sh")
-            .args(["-c", &script])
-            .output()
-            .expect("sh runs");
+        let output = crate::testing::sh(&script, None);
         let output = String::from_utf8(output.stdout).unwrap();
 
         let Parsed::Reading(reading) = parse(&output) else {
@@ -492,11 +489,10 @@ tmpfs               498304       0    498304       0% /dev/shm
     #[test]
     fn every_command_is_valid_sh() {
         for (parts, command) in commands() {
-            let status = std::process::Command::new("sh")
-                .args(["-n", "-c", script(&command)])
-                .status()
-                .expect("sh runs");
-            assert!(status.success(), "{parts:?}: {command}");
+            assert!(
+                crate::testing::sh_accepts(script(&command)),
+                "{parts:?}: {command}"
+            );
         }
     }
 }

@@ -9,6 +9,7 @@ mod support;
 
 mod connection;
 mod credential;
+mod docker;
 mod forward;
 mod host_dialog;
 mod host_tree;

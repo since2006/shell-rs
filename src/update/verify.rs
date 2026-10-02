@@ -295,6 +295,7 @@ pub(crate) mod tests {
     #[test]
     fn the_release_script_signs_what_the_client_accepts() {
         let have = |tool: &str| {
+            let _forks = crate::testing::no_forks();
             std::process::Command::new(tool)
                 .arg(if tool == "jq" { "--version" } else { "-v" })
                 .output()
@@ -306,6 +307,7 @@ pub(crate) mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let (public, secret) = (dir.path().join("key.pub"), dir.path().join("key.sec"));
+        let forks = crate::testing::no_forks();
         let generated = std::process::Command::new("minisign")
             .args(["-G", "-W", "-p"])
             .arg(&public)
@@ -342,6 +344,7 @@ pub(crate) mod tests {
             )
             .output()
             .unwrap();
+        drop(forks);
         assert!(made.status.success(), "{made:?}");
 
         let public = std::fs::read_to_string(&public).unwrap();

@@ -7,7 +7,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::{CatalogIcon, ToggleTool, ToolKind};
+use crate::app::{CatalogIcon, DOCKER_ICON, ToggleTool, ToolKind};
+use crate::docker::{Container, DockerObject, DockerPanel, ObjectSummary};
 use crate::host::{HostId, HostOs, HostStore};
 use crate::monitor::{MonitorDetail, MonitorPanel};
 use crate::netstat::NetstatPanel;
@@ -28,16 +29,18 @@ impl ToolKind {
         }
     }
 
-    fn icon(self) -> CatalogIcon {
-        match self {
+    /// Lucide glyphs, but for Docker, which goes by its whale: a box said
+    /// nothing about Docker.
+    fn icon(self) -> Icon {
+        Icon::new(match self {
             ToolKind::Snippets => CatalogIcon::CodeXml,
             ToolKind::History => CatalogIcon::RotateCcwClock,
-            ToolKind::Docker => CatalogIcon::Container,
+            ToolKind::Docker => return Icon::default().path(DOCKER_ICON),
             ToolKind::Services => CatalogIcon::ServerCog,
             ToolKind::Processes => CatalogIcon::ListFilter,
             ToolKind::Connections => CatalogIcon::Network,
             ToolKind::Monitor => CatalogIcon::Activity,
-        }
+        })
     }
 
     /// Whether the tool works on a host running `os`. A host not identified
@@ -48,7 +51,9 @@ impl ToolKind {
             | ToolKind::Processes
             | ToolKind::Connections
             | ToolKind::Monitor => os.is_none_or(HostOs::is_linux),
-            ToolKind::Snippets | ToolKind::History | ToolKind::Docker => true,
+            ToolKind::Snippets | ToolKind::History => true,
+            // Wherever `sh` runs `docker`: Linux, and a Mac with Docker Desktop.
+            ToolKind::Docker => os != Some(HostOs::Windows),
         }
     }
 
@@ -109,6 +114,7 @@ pub struct ToolSidebar {
     /// Whether the right dock is open.
     shown: bool,
     monitor: Entity<MonitorPanel>,
+    docker: Entity<DockerPanel>,
     services: Entity<ServicePanel>,
     processes: Entity<ProcessPanel>,
     netstat: Entity<NetstatPanel>,
@@ -133,6 +139,7 @@ impl ToolSidebar {
             terminal: None,
             shown: false,
             monitor: cx.new(|_| MonitorPanel::new(dispatch.clone())),
+            docker: cx.new(|_| DockerPanel::new(dispatch.clone())),
             services: cx.new(|cx| ServicePanel::new(dispatch.clone(), window, cx)),
             processes: cx.new(|cx| ProcessPanel::new(dispatch.clone(), window, cx)),
             netstat: cx.new(|cx| NetstatPanel::new(dispatch, window, cx)),
@@ -170,6 +177,33 @@ impl ToolSidebar {
     /// 网络连接's 刷新.
     pub fn refresh_connections(&mut self, cx: &mut Context<Self>) {
         self.netstat.update(cx, |netstat, cx| netstat.refresh(cx));
+    }
+
+    /// Docker's 刷新, and after a command.
+    pub fn refresh_docker(&mut self, cx: &mut Context<Self>) {
+        self.docker.update(cx, |docker, cx| docker.refresh(cx));
+    }
+
+    /// Fold a compose project away, or unfold it.
+    pub fn toggle_docker_project(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.docker
+            .update(cx, |docker, cx| docker.toggle_project(name, cx));
+    }
+
+    /// A container of the host in front, as Docker last showed it.
+    pub fn container(&self, id: &str, cx: &App) -> Option<Container> {
+        self.docker.read(cx).container(id)
+    }
+
+    /// A volume, an image or a network of the host in front, as Docker
+    /// last showed it.
+    pub fn docker_summary(
+        &self,
+        object: DockerObject,
+        id: &str,
+        cx: &App,
+    ) -> Option<ObjectSummary> {
+        self.docker.read(cx).summary_of(object, id)
     }
 
     /// 系统服务's 刷新, and after a command.
@@ -218,12 +252,15 @@ impl ToolSidebar {
             view: terminal.view.clone(),
         });
         let showing = |tool| self.shown && self.tool == tool;
-        let (monitor, netstat, processes, services) = (
+        let (monitor, netstat, processes, services, docker) = (
             showing(ToolKind::Monitor),
             showing(ToolKind::Connections),
             showing(ToolKind::Processes),
             showing(ToolKind::Services),
+            showing(ToolKind::Docker),
         );
+        self.docker
+            .update(cx, |panel, cx| panel.set_target(target.clone(), docker, cx));
         self.services.update(cx, |panel, cx| {
             panel.set_target(target.clone(), services, cx)
         });
@@ -265,7 +302,7 @@ impl ToolSidebar {
             .px_4()
             .py_8()
             .text_color(cx.theme().muted_foreground)
-            .child(Icon::new(self.tool.icon()).large())
+            .child(self.tool.icon().large())
             .child(div().text_sm().text_center().child(about))
             .child(div().text_xs().child("即将推出"))
     }
@@ -297,7 +334,7 @@ impl Panel for ToolSidebar {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         h_flex()
             .gap_1()
-            .child(Icon::new(self.tool.icon()).small())
+            .child(self.tool.icon().small())
             .child(self.tool.label())
     }
 
@@ -336,6 +373,9 @@ impl Render for ToolSidebar {
                     ToolKind::Services => {
                         sidebar.child(div().flex_1().min_h_0().child(self.services.clone()))
                     }
+                    ToolKind::Docker => {
+                        sidebar.child(div().flex_1().min_h_0().child(self.docker.clone()))
+                    }
                     _ => sidebar.child(self.render_placeholder(terminal.host, cx)),
                 }
             })
@@ -370,7 +410,7 @@ pub fn render_tool_switch(
             let target = target.clone();
             Button::new(tool.button_id())
                 .ghost()
-                .icon(Icon::new(tool.icon()))
+                .icon(tool.icon())
                 .selected(showing == Some(tool))
                 // A switch: assistive technology hears it as pressed.
                 .toggled(showing == Some(tool))

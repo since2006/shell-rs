@@ -16,9 +16,9 @@ use super::model::{
     ActiveState, Service, ServiceCommand, ServiceKind, ServiceStatus, file_state_label,
     load_state_label, sub_state_label,
 };
-use super::service_panel::{command_icon, soft_tag, state_color};
+use super::service_panel::{command_icon, state_color};
 use crate::app::{CatalogIcon, ControlService};
-use crate::shared::format_bytes;
+use crate::shared::{format_bytes, soft_tag};
 use crate::terminal::{ExecResult, TerminalView, exec_answer};
 
 /// How wide the dialog is: two columns of a label and a value, and the
