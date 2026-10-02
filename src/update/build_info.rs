@@ -27,6 +27,9 @@ pub const MANIFEST_URL: &str = "https://dl.shellrs.com/update/v1/{channel}.json"
 /// Where a person downloads ShellRS by hand.
 pub const DOWNLOAD_PAGE: &str = "https://shellrs.com/download";
 
+/// What each version changed.
+pub const CHANGELOG_PAGE: &str = "https://shellrs.com/changelog";
+
 /// The minisign public keys a manifest may be signed with: the key in use,
 /// and a spare kept offline so the first can be replaced. Rotating means
 /// shipping a release that knows the new key before signing with it.

@@ -6,9 +6,12 @@ use std::rc::Rc;
 use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::*;
 
-use crate::app::{CheckForUpdates, DownloadUpdate, OpenDownloadPage, RestartToUpdate, ShowUpdate};
+use crate::app::{
+    CheckForUpdates, DownloadUpdate, OpenChangelog, OpenDownloadPage, RestartToUpdate, ShowUpdate,
+};
 use crate::host::ConnectionState;
 use crate::terminal::TerminalLifecycle;
+use crate::update::build_info::CHANGELOG_PAGE;
 use crate::update::{RestartImpact, UpdaterEvent, open_update_dialog};
 
 use super::workspace_view::Workspace;
@@ -74,6 +77,16 @@ impl Workspace {
     ) {
         let page = self.updater.read(cx).download_page();
         cx.open_url(&page);
+    }
+
+    /// The whole changelog, not one version's section.
+    pub(super) fn on_open_changelog(
+        &mut self,
+        _: &OpenChangelog,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.open_url(CHANGELOG_PAGE);
     }
 
     /// The title bar shows the update button only in some phases; the

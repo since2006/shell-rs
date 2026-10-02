@@ -1,6 +1,5 @@
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Selectable as _, Sizable as _, TitleBar,
-    badge::Badge,
     button::{Button, ButtonGroup, ButtonVariants as _},
     h_flex,
 };
@@ -11,6 +10,7 @@ use crate::app::{
     CatalogIcon, NewHost, NewLocalTerminal, ShowCredentials, ShowForwards, ShowHosts, ShowUpdate,
     ToggleHostPanel, ToggleTheme,
 };
+use crate::shared::tinted;
 use crate::update::UpdateBadge;
 
 use super::sidebar::SidebarMode;
@@ -146,25 +146,24 @@ pub fn render_title_bar(
                         }),
                 )
                 .children(update.map(|update| {
-                    // A dot on the icon, in the colour of what it says.
-                    Badge::new()
-                        .dot()
-                        .color(if update.trouble {
-                            cx.theme().warning
-                        } else {
-                            cx.theme().success
+                    // The one coloured button up here, in the colour of
+                    // what it says: the only sign that an update waits.
+                    Button::new("update-available")
+                        .custom(tinted(
+                            if update.trouble {
+                                cx.theme().warning
+                            } else {
+                                cx.theme().success
+                            },
+                            cx,
+                        ))
+                        .small()
+                        .icon(CatalogIcon::CircleArrowUp)
+                        .tooltip(update.label.clone())
+                        .accessibility_label(update.label)
+                        .on_click(move |_, window, cx| {
+                            show_update.dispatch_action(&ShowUpdate, window, cx)
                         })
-                        .child(
-                            Button::new("update-available")
-                                .ghost()
-                                .small()
-                                .icon(CatalogIcon::CircleArrowUp)
-                                .tooltip(update.label.clone())
-                                .accessibility_label(update.label)
-                                .on_click(move |_, window, cx| {
-                                    show_update.dispatch_action(&ShowUpdate, window, cx)
-                                }),
-                        )
                 }))
                 .child(
                     Button::new("theme-toggle")

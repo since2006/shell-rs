@@ -121,12 +121,15 @@ gpui_kit::actions!(
         CheckForUpdates,
         /// Download the newer ShellRS that was found.
         DownloadUpdate,
-        /// Show the newer ShellRS: what changed, and restarting into it.
+        /// Show the newer ShellRS: restarting into it, and where to read
+        /// what changed.
         ShowUpdate,
         /// Restart into the downloaded ShellRS.
         RestartToUpdate,
         /// Open the page to download ShellRS by hand.
         OpenDownloadPage,
+        /// Open the website's changelog.
+        OpenChangelog,
     ]
 );
 

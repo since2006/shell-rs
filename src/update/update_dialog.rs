@@ -1,5 +1,6 @@
-//! The update dialog: what the newer ShellRS brings, how far its download
-//! is, and restarting into it.
+//! The update dialog: how far the newer ShellRS's download is, and
+//! restarting into it. What it changes is not listed here: a button opens
+//! the website's changelog.
 //!
 //! Opened from the title bar button and from 设置 › 关于. What a restart
 //! interrupts is written here, above the button, so restarting needs no
@@ -10,23 +11,20 @@ use std::rc::Rc;
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
-    dialog::{DialogClose, DialogFooter},
+    dialog::DialogFooter,
     progress::Progress,
-    text::TextView,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::{DownloadUpdate, OpenDownloadPage, RestartToUpdate};
+use crate::app::{CatalogIcon, DownloadUpdate, OpenChangelog, OpenDownloadPage, RestartToUpdate};
 
 use super::status::{RestartImpact, UpdateStep, percent, restart_note};
 use super::updater::{Phase, Stage, UpdateSnapshot, Updater};
 
 /// The dialog's width, in rems.
 const DIALOG_WIDTH: f32 = 32.;
-/// The notes scroll beyond this height, in rems.
-const NOTES_HEIGHT: f32 = 18.;
 
 /// Counts what a restart would interrupt, at the time the dialog draws.
 pub type ImpactCounter = Rc<dyn Fn(&App) -> RestartImpact>;
@@ -54,46 +52,31 @@ impl Render for UpdateDialog {
         let snapshot = self.updater.read(cx).snapshot();
         let impact = (self.impact)(cx);
         let muted = cx.theme().muted_foreground;
-        let release = snapshot.release.clone();
+        let versions = match snapshot
+            .release
+            .as_ref()
+            .and_then(|release| release.published_on())
+        {
+            Some(day) => format!("当前版本 {} · 新版本发布于 {day}", snapshot.current),
+            None => format!("当前版本 {}", snapshot.current),
+        };
         v_flex()
             .id("update-dialog")
             .test_support()
             .gap_3()
             .text_sm()
             .child(
-                div()
-                    .text_color(muted)
-                    .child(match (&release, &snapshot.manual) {
-                        (Some(release), _) => match release.published_on() {
-                            Some(day) => format!("当前版本 {} · 发布于 {day}", snapshot.current),
-                            None => format!("当前版本 {}", snapshot.current),
-                        },
-                        _ => format!("当前版本 {}", snapshot.current),
-                    }),
-            )
-            .children(
-                release
-                    .as_ref()
-                    .filter(|release| !release.notes.trim().is_empty())
-                    .map(|release| {
-                        div()
-                            .id("update-notes")
-                            .test_support()
-                            .aria_label(release.notes.clone())
-                            .max_h(rems(NOTES_HEIGHT))
-                            .overflow_y_scroll()
-                            .rounded(cx.theme().radius)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .p_3()
-                            .child(
-                                TextView::markdown(
-                                    SharedString::from(format!("update-notes-{}", release.version)),
-                                    release.notes.clone(),
-                                )
-                                .selectable(true),
-                            )
-                    }),
+                v_flex()
+                    .gap_1()
+                    .when(snapshot.phase == Phase::Ready, |lines| {
+                        lines.child(
+                            div()
+                                .id("update-ready")
+                                .test_support()
+                                .child("新版本已下载，重启 ShellRS 即可完成更新。"),
+                        )
+                    })
+                    .child(div().text_color(muted).child(versions)),
             )
             .when_some(progress(&snapshot), |body, (label, value)| {
                 body.child(
@@ -193,7 +176,8 @@ pub fn open_update_dialog(
     });
 }
 
-/// 稍后, and the one step that applies now.
+/// Where to read what changed, and the one step that applies now. The
+/// dialog closes by its close button or Escape.
 fn footer(snapshot: &UpdateSnapshot, dispatch: FocusHandle) -> DialogFooter {
     let action: Option<(&'static str, &'static str, Box<dyn Action>)> =
         snapshot.step().map(|step| -> (_, _, Box<dyn Action>) {
@@ -213,9 +197,16 @@ fn footer(snapshot: &UpdateSnapshot, dispatch: FocusHandle) -> DialogFooter {
                 ),
             }
         });
-    let close = if action.is_some() { "稍后" } else { "关闭" };
+    let changelog = dispatch.clone();
     DialogFooter::new()
-        .child(DialogClose::new().trigger(move |button| button.label(close)))
+        .child(
+            Button::new("open-changelog")
+                .icon(CatalogIcon::ExternalLink)
+                .label("查看更新内容")
+                .on_click(move |_, window, cx| {
+                    changelog.dispatch_action(&OpenChangelog, window, cx);
+                }),
+        )
         .children(action.map(|(id, label, action)| {
             let dispatch = dispatch.clone();
             Button::new(id)

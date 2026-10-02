@@ -376,7 +376,7 @@ async fn with_automatic_updates_off_a_found_update_waits_for_download(cx: &mut T
 }
 
 #[gpui_kit::test]
-async fn the_update_dialog_shows_the_notes_and_restarts_into_the_new_version(
+async fn the_update_dialog_links_the_changelog_and_restarts_into_the_new_version(
     cx: &mut TestAppContext,
 ) {
     let (handle, workspace) = open_workspace(cx);
@@ -393,13 +393,18 @@ async fn the_update_dialog_shows_the_notes_and_restarts_into_the_new_version(
         window.click("update-available", cx)
     });
     in_frame(cx, handle, |window, _| {
-        let notes = window
-            .find("update-notes")
-            .label()
-            .unwrap_or_default()
-            .to_string();
-        assert!(notes.contains("在线升级"), "{notes}");
+        assert!(window.try_find("update-ready").is_some());
         assert!(window.try_find("restart-to-update").is_some());
+    });
+
+    // What changed is on the website's changelog; the dialog stays.
+    in_frame(cx, handle, |window, cx| window.click("open-changelog", cx));
+    assert_eq!(
+        cx.opened_url().as_deref(),
+        Some("https://shellrs.com/changelog")
+    );
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("update-dialog").is_some());
     });
 
     let restart = cx.expect_restart();

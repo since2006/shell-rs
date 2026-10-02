@@ -65,7 +65,8 @@ icon_assets!(
         Ban,
         CircleDot,
         FileText,
-        Zap
+        Zap,
+        ExternalLink
     ]
 );
 
