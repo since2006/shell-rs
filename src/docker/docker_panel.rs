@@ -50,7 +50,7 @@ pub struct DockerPanel {
     loading: bool,
     tab: DockerTab,
     /// Compose projects folded or unfolded by hand, by name. The rest are
-    /// unfolded when something in them runs.
+    /// as [`Project::unfolded_at_first`] says.
     unfolded: HashMap<String, bool>,
     /// The list's lines differ in height (a project with its containers,
     /// a heading, a container), so it is a list that measures them.
@@ -158,7 +158,7 @@ impl DockerPanel {
         self.unfolded
             .get(&project.name)
             .copied()
-            .unwrap_or(project.running > 0)
+            .unwrap_or_else(|| project.unfolded_at_first())
     }
 
     fn show(&mut self, tab: DockerTab, cx: &mut Context<Self>) {

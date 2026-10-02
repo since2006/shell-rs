@@ -127,6 +127,16 @@ pub struct Project {
     pub running: usize,
 }
 
+impl Project {
+    /// Whether the list shows its containers until folded or unfolded by
+    /// hand: only a project of one container, running. A project of
+    /// several would push the rest of the list down; the card already says
+    /// how many of them run.
+    pub fn unfolded_at_first(&self) -> bool {
+        self.running > 0 && self.containers.len() == 1
+    }
+}
+
 /// What can be done to containers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ContainerCommand {
@@ -706,6 +716,33 @@ mod tests {
             ]
         );
         assert_eq!(table.counts(), [4, 0, 0, 0]);
+    }
+
+    #[test]
+    fn only_a_running_project_of_one_container_starts_unfolded() {
+        let table = DockerTable::new(
+            None,
+            None,
+            vec![
+                container("php56", ContainerState::Running, Some("php-56")),
+                container("vaultwarden", ContainerState::Exited, Some("vaultwarden")),
+                container("db", ContainerState::Running, Some("shop")),
+                container("web", ContainerState::Running, Some("shop")),
+                container("worker", ContainerState::Exited, Some("shop")),
+            ],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let unfolded: Vec<(&str, bool)> = table
+            .projects()
+            .iter()
+            .map(|project| (project.name.as_str(), project.unfolded_at_first()))
+            .collect();
+        assert_eq!(
+            unfolded,
+            [("php-56", true), ("shop", false), ("vaultwarden", false)]
+        );
     }
 
     #[test]

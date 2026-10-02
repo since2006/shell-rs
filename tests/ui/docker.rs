@@ -101,7 +101,7 @@ async fn containers_show_by_project_and_the_rest_on_their_own(cx: &mut TestAppCo
             window.find(("tool-sidebar", INITIAL_WEB_TERMINAL)).label(),
             Some("Docker")
         );
-        // The project with something running is unfolded; the stopped one
+        // The running project of one container is unfolded; the stopped one
         // is not.
         assert_eq!(
             listed(window, &LINES),
