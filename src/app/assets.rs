@@ -59,7 +59,13 @@ icon_assets!(
         ArrowUpRight,
         ListFilter,
         CircleStop,
-        OctagonX
+        OctagonX,
+        ServerCog,
+        RotateCw,
+        CircleCheck,
+        Ban,
+        CircleDot,
+        FileText
     ]
 );
 

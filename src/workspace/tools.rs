@@ -18,10 +18,12 @@ use gpui_kit::component::{
 use gpui_kit::*;
 
 use crate::app::{
-    CenterTab, EndProcess, RefreshConnections, RefreshProcesses, ShowProcess, SortProcesses,
-    ToggleMonitorDetail, ToggleTool, ToggleToolSidebar, ToolKind,
+    CenterTab, ControlService, EndProcess, RefreshConnections, RefreshProcesses, RefreshServices,
+    ShowProcess, ShowService, SortProcesses, ToggleMonitorDetail, ToggleTool, ToggleToolSidebar,
+    ToolKind,
 };
 use crate::processes::{end_command, ended, open_process_dialog};
+use crate::services::{ServiceCommand, control_command, controlled, open_service_dialog};
 use crate::shared::confirm_danger;
 use crate::terminal::exec_answer;
 
@@ -165,6 +167,127 @@ impl Workspace {
         let by = action.0;
         self.tools
             .update(cx, |tools, cx| tools.sort_processes(by, cx));
+    }
+
+    /// 系统服务's 刷新: read the host's services again.
+    pub(super) fn on_refresh_services(
+        &mut self,
+        _: &RefreshServices,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tools
+            .update(cx, |tools, cx| tools.refresh_services(cx));
+    }
+
+    /// A service's details: its state in full and its journal.
+    pub(super) fn on_show_service(
+        &mut self,
+        action: &ShowService,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(terminal) = self.tool_terminal(cx) else {
+            return;
+        };
+        let Some(service) = self.tools.read(cx).service(&action.0, cx) else {
+            return;
+        };
+        open_service_dialog(
+            service,
+            terminal.view,
+            self.focus_handle.clone(),
+            window,
+            cx,
+        );
+    }
+
+    /// Run a command on a service over the SSH terminal's own connection,
+    /// asking first before it stops or restarts one; how it went is a
+    /// notification, and the list is read again.
+    pub(super) fn on_control_service(
+        &mut self,
+        action: &ControlService,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(terminal) = self.tool_terminal(cx) else {
+            return;
+        };
+        let ControlService { name, command } = action.clone();
+        let workspace = cx.entity().downgrade();
+        let run = Rc::new({
+            let name = name.clone();
+            move |window: &mut Window, cx: &mut App| {
+                let reply = control_command(&name, command)
+                    .and_then(|script| terminal.view.upgrade()?.read(cx).exec(script, cx));
+                let Some(reply) = reply else {
+                    window.push_notification(
+                        Notification::error(format!(
+                            "无法{} {name}：终端没有连接",
+                            command.label()
+                        )),
+                        cx,
+                    );
+                    return;
+                };
+                let (workspace, name) = (workspace.clone(), name.clone());
+                window
+                    .spawn(cx, async move |cx| {
+                        let outcome = match exec_answer(reply, cx).await {
+                            None => Err("终端没有连接".to_string()),
+                            Some(Err(error)) => Err(error),
+                            Some(Ok(output)) => controlled(&output),
+                        };
+                        cx.update(|window, cx| {
+                            let notification = match outcome {
+                                Ok(()) => {
+                                    Notification::success(format!("{name} {}", command.done()))
+                                }
+                                Err(why) => Notification::error(format!(
+                                    "无法{} {name}：{why}",
+                                    command.label()
+                                )),
+                            };
+                            window.push_notification(notification, cx);
+                            workspace
+                                .update(cx, |this, cx| {
+                                    this.tools
+                                        .update(cx, |tools, cx| tools.refresh_services(cx))
+                                })
+                                .ok();
+                        })
+                        .ok();
+                    })
+                    .detach();
+            }
+        });
+        // Stopping and restarting take something away, if only for a
+        // moment; starting and the boot settings do not.
+        let ssh = matches!(name.as_str(), "ssh.service" | "sshd.service");
+        let (title, description) = match command {
+            ServiceCommand::Stop => (
+                format!("停止服务“{name}”？"),
+                if ssh {
+                    "这是 SSH 服务：停止后新的连接都连不上这台主机，直到它再次启动。"
+                } else {
+                    "停止后它提供的功能就不可用了，直到再次启动。"
+                },
+            ),
+            ServiceCommand::Restart => (
+                format!("重启服务“{name}”？"),
+                "服务会先停止再启动，中间短暂不可用。",
+            ),
+            _ => return run(window, cx),
+        };
+        confirm_danger(
+            title.into(),
+            Some(description.into()),
+            command.label(),
+            run,
+            window,
+            cx,
+        );
     }
 
     /// A process's details, from 进程管理's list and its command line.

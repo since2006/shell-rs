@@ -15,6 +15,7 @@ mod host_tree;
 mod monitor;
 mod netstat;
 mod processes;
+mod services;
 mod settings;
 mod sftp;
 mod terminal;

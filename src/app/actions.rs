@@ -9,6 +9,7 @@ use crate::{
     host::{CredentialId, ForwardId, GroupId, HostId, HostNode, NodeDrop},
     monitor::MonitorDetail,
     processes::ProcessSort,
+    services::ServiceCommand,
     terminal::{LocalTerminalId, RemoteTerminalId},
 };
 
@@ -44,6 +45,8 @@ gpui_kit::actions!(
         RefreshConnections,
         /// Read the processes of the SSH terminal's host again.
         RefreshProcesses,
+        /// Read the services of the SSH terminal's host again.
+        RefreshServices,
         /// Show the host list in the left dock.
         ShowHosts,
         /// Show the port-forwarding list in the left dock.
@@ -197,6 +200,9 @@ id_actions! {
     /// Open the details of a process of the host of the SSH terminal in
     /// front, by its PID.
     ShowProcess(u32);
+    /// Open the details of a service of the host of the SSH terminal in
+    /// front, by its name.
+    ShowService(String);
 
     /// Start a port forward over a connection of its own.
     StartForward(ForwardId);
@@ -234,6 +240,16 @@ pub struct EndProcess {
     pub force: bool,
 }
 
+/// Start, stop or restart a service of the host of the SSH terminal in
+/// front, or enable or disable it at boot; asks first before stopping or
+/// restarting it.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct ControlService {
+    pub name: String,
+    pub command: ServiceCommand,
+}
+
 /// One tab of the center area, by the identity of what it shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CenterTab {
@@ -251,16 +267,18 @@ pub enum ToolKind {
     Snippets,
     History,
     Docker,
+    Services,
     Processes,
     Connections,
     Monitor,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 6] = [
+    pub const ALL: [ToolKind; 7] = [
         ToolKind::Snippets,
         ToolKind::History,
         ToolKind::Docker,
+        ToolKind::Services,
         ToolKind::Processes,
         ToolKind::Connections,
         ToolKind::Monitor,
