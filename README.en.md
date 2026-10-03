@@ -24,7 +24,7 @@
 
 ## About
 
-ShellRS brings Xshell-style host management and tabbed terminals, a WinSCP-style dual-pane SFTP browser and SSH port forwarding together in one cross-platform app. It is written in Rust, and its UI is built on GPUI, the GPU-accelerated UI framework of the Zed editor (through [gpui-kit](https://gpui-kit.com)). There is no Electron and no JVM.
+ShellRS brings Xshell-style host management and tabbed terminals, a WinSCP-style dual-pane SFTP browser and SSH port forwarding together in one cross-platform app, which bastion hosts such as JumpServer can launch the way they launch Xshell and WinSCP. It is written in Rust, and its UI is built on GPUI, the GPU-accelerated UI framework of the Zed editor (through [gpui-kit](https://gpui-kit.com)). There is no Electron and no JVM.
 
 Hosts, groups, credentials and forwarding rules live in a local SQLite database. Passwords and key passphrases go only into the system keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service); the database never holds a secret. ShellRS also ships a `shellrs` command that lets AI agents such as Claude Code or Codex run commands and transfer files on your saved hosts without ever seeing a password.
 
@@ -55,6 +55,12 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 - Resumable transfers: data goes to a `.filepart` first, dropped connections are retried after 1, 3 and 10 seconds, and after a restart ShellRS offers to resume the same transfer.
 - Delete (local items go to the Trash), rename, create, and change permissions (a 3×3 grid plus octal, optionally recursive).
 - Each SFTP tab has its own connection and asks only for the SFTP subsystem, so no shell is needed on the server.
+
+**Opening from a bastion host**
+
+- Launched the way Xshell and WinSCP are: in the client of a bastion host such as JumpServer, set ShellRS as the SSH or SFTP client. An `ssh://` link opens a terminal, an `sftp://` link an SFTP tab.
+- Understands Xshell's `-url` and `-newtab` and WinSCP's `/sessionname=`. When ShellRS is already running, the link opens there.
+- What opens is an unsaved external connection: it stays out of the host list, keeps the link's password in memory only and goes away with its tabs. Each connection uses a single channel, so bastion hosts that allow no more still work. See the [user manual](docs/manual.md#从堡垒机打开外部连接) (in Chinese).
 
 **Port forwarding**
 

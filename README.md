@@ -24,7 +24,7 @@
 
 ## 简介
 
-ShellRS 把 Xshell 式的主机管理和多标签终端、WinSCP 式的双栏 SFTP 文件管理、SSH 端口转发放进同一个跨平台应用。它用 Rust 编写，界面基于 Zed 编辑器的 GPU 加速 UI 框架 GPUI（通过 [gpui-kit](https://gpui-kit.com)），不依赖 Electron 或 JVM。
+ShellRS 把 Xshell 式的主机管理和多标签终端、WinSCP 式的双栏 SFTP 文件管理、SSH 端口转发放进同一个跨平台应用，JumpServer 等堡垒机也可以像调用 Xshell、WinSCP 一样调用它。它用 Rust 编写，界面基于 Zed 编辑器的 GPU 加速 UI 框架 GPUI（通过 [gpui-kit](https://gpui-kit.com)），不依赖 Electron 或 JVM。
 
 主机、分组、凭据和转发规则保存在本地的 SQLite 数据库里。密码和私钥口令只存进系统钥匙串（macOS 钥匙串、Windows 凭据管理器、Linux Secret Service），数据库里没有任何秘密。ShellRS 还带一个 `shellrs` 命令，让 Claude Code、Codex 等 AI Agent 用你保存的主机执行命令、传输文件，不用把密码交给它们。
 
@@ -55,6 +55,12 @@ ShellRS 把 Xshell 式的主机管理和多标签终端、WinSCP 式的双栏 SF
 - 断点续传：先写 `.filepart`，断线后按 1、3、10 秒自动重连；重启后再传同样的文件，会询问是否续传。
 - 删除（本地移到废纸篓）、重命名、新建、修改权限（3×3 复选框加八进制，可递归）。
 - 每个 SFTP 标签单独建立连接，只请求 SFTP 子系统，不要求服务器提供 shell。
+
+**从堡垒机打开**
+
+- 兼容 Xshell 和 WinSCP 的命令行调用方式：在 JumpServer 等堡垒机的客户端里把 ShellRS 设成 SSH / SFTP 客户端，`ssh://` 链接打开终端，`sftp://` 链接打开 SFTP。
+- 认得 Xshell 的 `-url`、`-newtab` 和 WinSCP 的 `/sessionname=`；ShellRS 已在运行时，链接交给正在运行的那个打开。
+- 打开的是不保存的外部连接：不进主机列表，链接里的密码只留在内存里，标签关掉就没了。每条连接只用一个通道，不允许多开通道的堡垒机也能用。详见[使用手册](docs/manual.md#从堡垒机打开外部连接)。
 
 **端口转发**
 
