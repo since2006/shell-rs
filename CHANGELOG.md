@@ -2,6 +2,12 @@
 
 每个版本一节，标题写成 `## [版本号]`，可以在后面加日期。发布流程（`.github/workflows/release.yml`）把与 tag 同版本的那一节原样作为更新说明：显示在 GitHub Release 和官网的更新日志里（ShellRS 的更新对话框用「查看更新内容」打开官网的更新日志），用 Markdown 书写，面向使用者。
 
+## [0.1.1]
+
+### 改进
+
+- 精简了给 AI Agent 的 Skill 说明。
+
 ## [0.1.0]
 
 ShellRS 的第一个公开版本。
