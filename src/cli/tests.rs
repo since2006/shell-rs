@@ -17,6 +17,7 @@ use super::{Cli, Command};
 use super::{ConsoleText, normalize_command};
 use crate::app::cli_endpoint;
 use crate::host::{AuthKind, GroupId, Host, HostDraft, HostId, HostLogin, HostStore, SshLink};
+use crate::secrets::SecretRef;
 use crate::ssh::ExecStream;
 
 /// Records what it was asked and answers from a script.
@@ -372,7 +373,7 @@ fn opening_shellrs_with_links_hands_them_to_the_running_one_in_order() {
 }
 
 #[test]
-fn a_host_opened_from_a_link_is_not_the_commands() {
+fn a_host_opened_from_a_link_is_listed_as_temporary_and_logged_in_to_afresh() {
     let mut store = HostStore::empty();
     let saved = store.insert_unnotified(HostDraft::new(
         "web",
@@ -382,10 +383,55 @@ fn a_host_opened_from_a_link_is_not_the_commands() {
         AuthKind::Password,
         None,
     ));
-    store.insert_transient_unnotified(SshLink::parse("ssh://token@10.0.0.9", None).unwrap());
+    let link = store.insert_transient_unnotified(
+        SshLink::parse("ssh://token:secret@10.0.0.9:2222", Some("堡垒机")).unwrap(),
+    );
     let targets = CliTarget::all(&store);
-    assert_eq!(targets.len(), 1);
-    assert_eq!(targets[0].host().id, saved);
+    let ids: Vec<HostId> = targets.iter().map(|target| target.host().id).collect();
+    assert_eq!(ids, [saved, link]);
+    // With the link's password, which only memory holds.
+    assert_eq!(targets[1].login().password, SecretRef::transient(link.0));
+
+    let fixture = fixture();
+    fixture.server.set_targets(targets);
+    let (code, stdout, _) = run(&fixture.socket, Request::List { query: None }, true);
+    assert_eq!(code, 0);
+    let hosts: Vec<HostInfo> = serde_json::from_str(&stdout).unwrap();
+    let listed: Vec<(&str, bool)> = hosts
+        .iter()
+        .map(|host| (host.name.as_str(), host.temporary))
+        .collect();
+    assert_eq!(listed, [("web", false), ("堡垒机", true)]);
+    let temporary = store.host(link).unwrap().public_id.to_string();
+    assert_eq!(hosts[1].id, temporary);
+    assert_eq!(hosts[1].address(), "token@10.0.0.9:2222");
+
+    // Reached by that ID like a saved host.
+    let (code, _, _) = run(
+        &fixture.socket,
+        Request::Exec {
+            host: temporary,
+            command: "uptime".into(),
+        },
+        false,
+    );
+    assert_eq!(code, 3);
+
+    // A table says so where the group goes.
+    let (_, table, _) = run(&fixture.socket, Request::List { query: None }, false);
+    assert!(
+        table.lines().nth(2).unwrap().contains("（临时连接）"),
+        "{table}"
+    );
+}
+
+#[test]
+fn an_older_apps_list_reads_as_saved_hosts() {
+    let host: HostInfo = serde_json::from_str(
+        r#"{"id":"VmLkf1snMOuPKJ07","name":"web","group":null,"user":"root","host":"10.0.1.12","port":22,"os":null}"#,
+    )
+    .unwrap();
+    assert!(!host.temporary);
 }
 
 #[test]

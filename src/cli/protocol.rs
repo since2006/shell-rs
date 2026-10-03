@@ -159,7 +159,7 @@ pub enum Reply {
     },
 }
 
-/// A saved host as the CLI lists it.
+/// A host as the CLI lists it: a saved one, or one opened from a link.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostInfo {
     /// The host's public ID, the one 复制 ID copies.
@@ -172,6 +172,12 @@ pub struct HostInfo {
     pub port: u16,
     /// The detected operating system, as stored (`ubuntu`, `macos`, …).
     pub os: Option<String>,
+    /// Opened from a bastion host's link (临时连接) rather than saved: listed
+    /// while its tab is open, under one ID for as long; opened again, it is
+    /// another host with another ID. Missing from an older app's answer,
+    /// which listed saved hosts only.
+    #[serde(default)]
+    pub temporary: bool,
 }
 
 impl HostInfo {

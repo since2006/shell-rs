@@ -79,10 +79,17 @@ impl CliTarget {
                 host: host.address.to_string(),
                 port: host.port,
                 os: host.os.map(|os| os.as_str().to_string()),
+                temporary: false,
             },
             host: host.clone(),
             login,
         }
+    }
+
+    /// Marked as opened from a link, not saved.
+    fn temporary(mut self) -> Self {
+        self.info.temporary = true;
+        self
     }
 
     pub fn host(&self) -> &Host {
@@ -94,23 +101,27 @@ impl CliTarget {
         &self.login
     }
 
-    /// Every host in `store`, with its group path.
+    /// Every host in `store`, with its group path, then the ones opened
+    /// from a link. A request logs in to those afresh too, with the link's
+    /// user and password; a bastion host may refuse a login it gave out for
+    /// one use.
     pub fn all(store: &HostStore) -> Vec<Self> {
-        store
-            .hosts()
+        let saved = store.hosts().iter().map(|host| {
+            let names = host
+                .group
+                .map(|id| store.group_names(id))
+                .unwrap_or_default();
+            Self::new(
+                host,
+                store.login_of(host),
+                (!names.is_empty()).then(|| names.join("/")),
+            )
+        });
+        let temporary = store
+            .transient_hosts()
             .iter()
-            .map(|host| {
-                let names = host
-                    .group
-                    .map(|id| store.group_names(id))
-                    .unwrap_or_default();
-                Self::new(
-                    host,
-                    store.login_of(host),
-                    (!names.is_empty()).then(|| names.join("/")),
-                )
-            })
-            .collect()
+            .map(|host| Self::new(host, store.login_of(host), None).temporary());
+        saved.chain(temporary).collect()
     }
 
     /// The host tree's search, plus the group path and the ID.

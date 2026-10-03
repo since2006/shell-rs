@@ -253,7 +253,11 @@ fn print_hosts(hosts: &[HostInfo], console: &mut Console) -> io::Result<()> {
             [
                 host.id.clone(),
                 host.name.clone(),
-                host.group.clone().unwrap_or_default(),
+                if host.temporary {
+                    "（临时连接）".to_string()
+                } else {
+                    host.group.clone().unwrap_or_default()
+                },
                 host.address(),
                 host.os
                     .as_deref()

@@ -292,6 +292,12 @@ impl HostStore {
             .find(|host| host.id == id)
     }
 
+    /// The hosts opened from a link, oldest first. Only the external CLI
+    /// lists them; nothing else that lists hosts does.
+    pub fn transient_hosts(&self) -> &[Host] {
+        &self.transient
+    }
+
     /// Whether `id` was opened from a link and is not saved.
     pub fn is_transient(&self, id: HostId) -> bool {
         self.transient.iter().any(|host| host.id == id)
@@ -309,7 +315,10 @@ impl HostStore {
     pub fn insert_transient_unnotified(&mut self, link: SshLink) -> HostId {
         let id = HostId(self.next_host_id);
         self.next_host_id += 1;
-        self.transient.push(Host::new(id, link.draft()));
+        let mut host = Host::new(id, link.draft());
+        // What the external CLI knows it by while it lasts.
+        host.public_id = self.unused_public_id();
+        self.transient.push(host);
         if let Some(password) = link.password {
             self.secrets.remember(id.0, password);
         }
@@ -439,7 +448,12 @@ impl HostStore {
 
     /// A [`PublicId`] no host in the store has yet.
     fn unused_public_id(&self) -> PublicId {
-        PublicId::generate_unused(|id| self.hosts.iter().any(|s| &s.public_id == id))
+        PublicId::generate_unused(|id| {
+            self.hosts
+                .iter()
+                .chain(&self.transient)
+                .any(|host| &host.public_id == id)
+        })
     }
 
     /// Replace the editable fields of a host; connection state is kept.

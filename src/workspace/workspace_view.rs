@@ -1513,13 +1513,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The CLI knows saved hosts only: a link's host has no ID to give.
         let Some(public_id) = self
             .store
             .read(cx)
-            .hosts()
-            .iter()
-            .find(|host| host.id == action.0)
+            .host(action.0)
             .map(|host| host.public_id.clone())
         else {
             return;
