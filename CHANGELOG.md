@@ -17,6 +17,19 @@ ShellRS 的第一个公开版本。
 - 外部 CLI：`shellrs` 命令让 AI Agent 用已保存的主机执行命令、传输文件。
 - 在线升级：在后台检查并下载新版本，下好后标题栏右上角提示，重启或退出时安装。
 
+## [0.1.0-beta.6]
+
+### 新增
+
+- 从堡垒机打开：JumpServer 等堡垒机可以像调用 Xshell 一样调用 ShellRS（`ShellRS ssh://用户@地址:端口`，或 `-url ssh://… -newtab 名称`），打开一个终端标签连过去。这是临时连接：不保存到主机列表，标签都关掉后就没了；链接里的密码只留在内存里。ShellRS 已经在运行时，链接交给它打开，不会再起一个。堡垒机里要填的程序：Windows 是安装目录里的 `shellrs.exe`（默认 `%LOCALAPPDATA%\Programs\ShellRS\shellrs.exe`），macOS 是 `/Applications/ShellRS.app/Contents/MacOS/shellrs`。
+- 外部 CLI：`shellrs list` 也列出标签开着的临时连接（标为临时），Agent 可以用它执行命令、传输文件。
+- 外部 CLI：Agent Skills 可以安装到 WorkBuddy。
+
+### 改进
+
+- 新版本下载好后，标题栏右上角的更新按钮改成绿色，更醒目。更新对话框不再列出更新说明，改为「查看更新内容」打开官网的更新日志，旁边是「重启并安装」。
+- Docker：有多个容器的 compose 项目默认折叠，只有一个容器且在运行的项目默认展开。
+
 ## [0.1.0-beta.5]
 
 ### 新增
