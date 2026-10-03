@@ -28,5 +28,5 @@ pub use outline::{HostNode, NodeDrop, group_options, host_tree_items, matches_qu
 pub use private_key::{GeneratedKey, KeyAlgorithm, PastedKey, PastedKeyError, read_public_key};
 pub use secret_fields::SecretFields;
 pub use snippet::*;
-pub use ssh_link::SshLink;
+pub use ssh_link::{LinkKind, SshLink};
 pub use store::{HostStore, HostStoreEvent};

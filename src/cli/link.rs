@@ -1,5 +1,7 @@
 //! The links ShellRS is opened with, the way bastion hosts open Xshell:
-//! `ShellRS ssh://user@host:port`, or `ShellRS -url ssh://… -newtab 名称`.
+//! `ShellRS ssh://user@host:port`, or `ShellRS -url ssh://… -newtab 名称`;
+//! and WinSCP: `ShellRS sftp://user@host:port`, or with
+//! `/sessionname=名称` in front.
 //!
 //! Only told apart from the `shellrs` command's arguments here; the link
 //! itself is read by the app (`host::SshLink`), which says what is wrong
@@ -17,7 +19,7 @@ pub struct OpenLink {
     /// May hold a password. Empty when the arguments named no link, so the
     /// app can say so: a second ShellRS on Windows has no console to.
     pub url: String,
-    /// What to call the tab: Xshell's `-newtab`.
+    /// What to call the tab: Xshell's `-newtab`, WinSCP's `/sessionname`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab: Option<String>,
 }
@@ -54,17 +56,35 @@ const URL_OPTION: &str = "-url";
 const TAB_OPTION: &str = "-newtab";
 const WINDOW_OPTION: &str = "-newwin";
 
+/// WinSCP's switches, written `/name[=value]` or `-name[=value]`:
+/// `/sessionname=名称` names the tab, the others mean nothing to ShellRS
+/// (`/newinstance` asks for a window of its own, `/ini=nul` not to read
+/// WinSCP's settings, `/privatekey=` and `/hostkey=` are ShellRS's to
+/// know).
+const WINSCP_SWITCHES: &[&str] = &[
+    SESSION_NAME,
+    "newinstance",
+    "privatekey",
+    "hostkey",
+    "passphrase",
+    "rawsettings",
+    "ini",
+    "log",
+    "timeout",
+];
+const SESSION_NAME: &str = "sessionname";
+
 /// The link `args` (without the program) open, or `None` when they are the
 /// `shellrs` command's. Only the first argument decides, so `shellrs exec
 /// web "curl http://x"` stays a command: a link launch starts with one of
-/// Xshell's options or with the link itself.
+/// Xshell's options, one of WinSCP's switches or the link itself.
 pub fn link_arguments(args: &[OsString]) -> Option<OpenLink> {
     let args: Vec<String> = args
         .iter()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
     let first = args.first()?;
-    if !is_option(first) && !looks_like_link(first) {
+    if !is_option(first) && winscp_switch(first).is_none() && !looks_like_link(first) {
         return None;
     }
     let mut given = None;
@@ -82,11 +102,11 @@ pub fn link_arguments(args: &[OsString]) -> Option<OpenLink> {
                 .peek()
                 .is_some_and(|next| !next.starts_with('-') && !looks_like_link(next))
             {
-                let name = args.next().unwrap_or_default();
-                let name = name.trim();
-                if !name.is_empty() {
-                    tab = Some(name.to_string());
-                }
+                tab = tab_name(&args.next().unwrap_or_default()).or(tab);
+            }
+        } else if let Some((switch, value)) = winscp_switch(&arg) {
+            if switch == SESSION_NAME {
+                tab = value.and_then(tab_name).or(tab);
             }
         } else if option == WINDOW_OPTION || arg.starts_with('-') {
             // Ignored, like any option ShellRS does not know.
@@ -102,6 +122,26 @@ pub fn link_arguments(args: &[OsString]) -> Option<OpenLink> {
 
 fn is_option(arg: &str) -> bool {
     [URL_OPTION, TAB_OPTION, WINDOW_OPTION].contains(&arg.to_lowercase().as_str())
+}
+
+/// The name and value of one of WinSCP's switches, the name in lower case.
+fn winscp_switch(arg: &str) -> Option<(String, Option<&str>)> {
+    let switch = arg.strip_prefix(['/', '-'])?;
+    let (name, value) = match switch.split_once('=') {
+        Some((name, value)) => (name, Some(value)),
+        None => (switch, None),
+    };
+    let name = name.to_lowercase();
+    WINSCP_SWITCHES
+        .contains(&name.as_str())
+        .then_some((name, value))
+}
+
+/// A tab's name as given, without the spaces or quotes around it; `None`
+/// when that leaves nothing.
+fn tab_name(given: &str) -> Option<String> {
+    let name = given.trim().trim_matches('"').trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// `scheme://…`, whatever the scheme: the app says which ones it opens.
@@ -163,6 +203,36 @@ mod tests {
     }
 
     #[test]
+    fn winscps_switches_are_understood_too() {
+        // How JumpServer opens WinSCP: the link alone.
+        let url = "sftp://b478e26f:secret@172.16.0.28:12024";
+        assert_eq!(link(&[url]), open(url, None));
+        assert_eq!(
+            link(&["/sessionname=生产库", url]),
+            open(url, Some("生产库"))
+        );
+        assert_eq!(
+            link(&[
+                "/newinstance",
+                "/ini=nul",
+                "-SessionName=\"文件 服务器\"",
+                url
+            ]),
+            open(url, Some("文件 服务器"))
+        );
+        assert_eq!(
+            link(&[
+                "/rawsettings",
+                "Compression=1",
+                url,
+                "/hostkey=ssh-ed25519 255 x"
+            ]),
+            open(url, None)
+        );
+        assert_eq!(link(&["/sessionname=生产库"]), open("", Some("生产库")));
+    }
+
+    #[test]
     fn options_without_a_link_still_open_so_the_app_can_say_why() {
         assert_eq!(link(&["-newtab", "生产库"]), open("", Some("生产库")));
         assert_eq!(link(&["-url"]), open("", None));
@@ -180,6 +250,8 @@ mod tests {
             &["--version"],
             &["ssh-not-a-link"],
             &["://nothing-before"],
+            &["/tmp/sessionname"],
+            &["/usr/bin/sftp://x"],
         ] {
             assert_eq!(link(args), None, "{args:?}");
         }

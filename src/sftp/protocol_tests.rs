@@ -2,8 +2,8 @@
 use super::*;
 use crate::{
     connection::{ConnectionPromptKind, ConnectionPromptReply, ConnectionSecret, Latency},
-    host::{AuthKind, Host, HostDraft, HostId, HostLogin},
-    secrets::InMemorySecretStore,
+    host::{AuthKind, Host, HostDraft, HostId, HostLogin, HostStore, SshLink},
+    secrets::{InMemorySecretStore, SharedSecretStore},
     ssh::SshConnector,
 };
 use russh::{
@@ -61,8 +61,19 @@ impl Drop for Handler {
         self.ended.fetch_add(1, Ordering::SeqCst);
     }
 }
+/// Who the server lets in without asking anything: a bastion host's token,
+/// which is the user name alone.
+const TOKEN_USER: &str = "b478e26f-811b-4a90-81c3-74929127898a";
+
 impl server::Handler for Handler {
     type Error = anyhow::Error;
+    async fn auth_none(&mut self, user: &str) -> Result<server::Auth, Self::Error> {
+        Ok(if user == TOKEN_USER {
+            server::Auth::Accept
+        } else {
+            server::Auth::reject()
+        })
+    }
     async fn auth_password(
         &mut self,
         user: &str,
@@ -244,14 +255,6 @@ impl Drop for Worker {
     }
 }
 fn worker(port: u16, data: &std::path::Path) -> Worker {
-    let provider = SshSftpTransportProvider::new(
-        SshConnector::new(
-            data.join("known_hosts"),
-            Arc::new(InMemorySecretStore::default()),
-        ),
-        data.join("upload-resume"),
-        data.join("download-resume"),
-    );
     let host = Host::new(
         HostId(1),
         HostDraft::new(
@@ -263,7 +266,19 @@ fn worker(port: u16, data: &std::path::Path) -> Worker {
             None,
         ),
     );
-    let transport = provider.create(&HostLogin::of(&host, None));
+    worker_for(
+        &HostLogin::of(&host, None),
+        Arc::new(InMemorySecretStore::default()),
+        data,
+    )
+}
+fn worker_for(login: &HostLogin, secrets: SharedSecretStore, data: &std::path::Path) -> Worker {
+    let provider = SshSftpTransportProvider::new(
+        SshConnector::new(data.join("known_hosts"), secrets),
+        data.join("upload-resume"),
+        data.join("download-resume"),
+    );
+    let transport = provider.create(login);
     let (commands, rx) = async_channel::unbounded();
     let (tx, events) = async_channel::unbounded();
     let thread = std::thread::spawn(move || transport.run(rx, tx).unwrap());
@@ -435,6 +450,50 @@ fn a_connection_reports_its_round_trip_right_after_connecting() {
         .await
         .expect("no round trip after connecting");
         assert!(matches!(latency, Latency::Measured(_)), "{latency:?}");
+    });
+}
+
+/// A bastion host lets WinSCP, and so ShellRS, in on its token alone: an
+/// `sftp://token@…` link without a password connects without asking for
+/// one, as Xshell's `ssh://` does.
+#[test]
+fn a_link_without_a_password_connects_where_the_server_asks_for_none() {
+    runtime().block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let Some(server) = server(temp.path().into(), 0, false).await else {
+            return;
+        };
+        let mut store = HostStore::empty();
+        let link = format!("sftp://{TOKEN_USER}@127.0.0.1:{}", server.port);
+        let host = store.insert_external_unnotified(SshLink::parse(&link, None).unwrap());
+        let worker = worker_for(&store.login(host).unwrap(), store.secrets(), temp.path());
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(25), worker.events.recv())
+                .await
+                .expect("worker timed out")
+                .unwrap();
+            match event {
+                SftpEvent::Prompt(prompt) => {
+                    assert!(
+                        matches!(prompt.kind(), ConnectionPromptKind::UnknownHost(_)),
+                        "asked for more than trusting the host key"
+                    );
+                    worker
+                        .commands
+                        .send(SftpCommand::PromptReply {
+                            request_id: prompt.request_id(),
+                            reply: ConnectionPromptReply::TrustAndSave,
+                        })
+                        .await
+                        .unwrap();
+                }
+                SftpEvent::Connected { .. } => break,
+                SftpEvent::Disconnected(error) => panic!("connect failed: {error}"),
+                _ => {}
+            }
+        }
+        assert_eq!(server.connections.load(Ordering::SeqCst), 1);
+        assert_eq!(server.shells.load(Ordering::SeqCst), 0);
     });
 }
 

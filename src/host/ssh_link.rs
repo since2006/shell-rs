@@ -1,6 +1,7 @@
 //! `ssh://user[:password]@host[:port]`: how a bastion host opens Xshell, and
-//! so ShellRS, on a host the user has not saved. ShellRS connects to it as an
-//! 外部连接: not saved, gone with its tabs, the terminal alone.
+//! so ShellRS, on a host the user has not saved; `sftp://…` the same way is
+//! how it opens WinSCP. ShellRS connects to it as an 外部连接: not saved,
+//! gone with its tabs, a terminal or an SFTP tab alone.
 
 use std::fmt;
 
@@ -13,8 +14,18 @@ use super::{AuthKind, HostDraft};
 /// The port when the link names none.
 const SSH_PORT: u16 = 22;
 
+/// What a link opens, by its scheme.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkKind {
+    /// `ssh://`, as for Xshell: a terminal.
+    Ssh,
+    /// `sftp://`, as for WinSCP: an SFTP tab.
+    Sftp,
+}
+
 /// What a link says to connect to.
 pub struct SshLink {
+    pub kind: LinkKind,
     /// The tab's name: what the bastion host called it (Xshell's
     /// `-newtab`), or else the address.
     pub name: String,
@@ -32,9 +43,15 @@ impl SshLink {
     pub fn parse(link: &str, tab: Option<&str>) -> Result<Self, String> {
         let link = link.trim();
         if link.is_empty() {
-            return Err("启动参数里没有要连接的地址，应为 ssh://用户@地址[:端口]。".into());
+            return Err(
+                "启动参数里没有要连接的地址，应为 ssh://用户@地址[:端口]（打开 SFTP 用 sftp://）。"
+                    .into(),
+            );
         }
-        let malformed = || "链接的格式不对，应为 ssh://用户[:密码]@地址[:端口]。".to_string();
+        let malformed = || {
+            "链接的格式不对，应为 ssh://用户[:密码]@地址[:端口]（打开 SFTP 用 sftp://）。"
+                .to_string()
+        };
         // Without `://`, `user:password@host` would read as the scheme
         // `user`, and the error would show it.
         if !link.contains("://") {
@@ -45,9 +62,15 @@ impl SshLink {
             ParseError::EmptyHost => "链接里没有地址。".to_string(),
             _ => malformed(),
         })?;
-        if url.scheme() != "ssh" {
-            return Err(format!("只支持 ssh:// 链接，不支持 {}://。", url.scheme()));
-        }
+        let kind = match url.scheme() {
+            "ssh" => LinkKind::Ssh,
+            "sftp" => LinkKind::Sftp,
+            scheme => {
+                return Err(format!(
+                    "只支持 ssh:// 和 sftp:// 链接，不支持 {scheme}://。"
+                ));
+            }
+        };
         // `ssh` is not one of the schemes the URL standard knows, so an IPv4
         // address and a domain both come back as an opaque domain, which is
         // percent-encoded when it is not ASCII.
@@ -67,7 +90,10 @@ impl SshLink {
         };
         let user = decode(url.username())?;
         if user.is_empty() {
-            return Err("链接里没有用户名，应为 ssh://用户@地址[:端口]。".into());
+            return Err(format!(
+                "链接里没有用户名，应为 {}://用户@地址[:端口]。",
+                url.scheme()
+            ));
         }
         let password = match url.password() {
             Some(password) => Some(Zeroizing::new(decode(password)?)),
@@ -79,6 +105,7 @@ impl SshLink {
             .filter(|tab| !tab.is_empty())
             .map_or_else(|| address.clone(), str::to_string);
         Ok(Self {
+            kind,
             name,
             address,
             port,
@@ -104,6 +131,7 @@ impl SshLink {
 impl fmt::Debug for SshLink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SshLink")
+            .field("kind", &self.kind)
             .field("name", &self.name)
             .field("address", &self.address)
             .field("port", &self.port)
@@ -137,6 +165,7 @@ mod tests {
         assert_eq!(link.port, 12024);
         assert!(link.password.is_none());
         assert_eq!(link.name, "172.16.0.28");
+        assert_eq!(link.kind, LinkKind::Ssh);
 
         let draft = link.draft();
         assert_eq!(draft.address.as_ref(), "172.16.0.28");
@@ -171,6 +200,22 @@ mod tests {
     }
 
     #[test]
+    fn an_sftp_link_is_read_alike_and_opens_sftp() {
+        // How JumpServer opens WinSCP.
+        let link = parse("sftp://b478e26f:p%40ss@172.16.0.28:12024");
+        assert_eq!(link.kind, LinkKind::Sftp);
+        assert_eq!(link.user, "b478e26f");
+        assert_eq!(link.address, "172.16.0.28");
+        assert_eq!(link.port, 12024);
+        assert_eq!(link.password.as_deref().map(String::as_str), Some("p@ss"));
+        assert_eq!(link.draft().auth, AuthKind::Password);
+        // The port is SSH's when not given, and a path is passed over.
+        let link = parse("SFTP://root@files.example/srv/data/");
+        assert_eq!(link.kind, LinkKind::Sftp);
+        assert_eq!((link.address.as_str(), link.port), ("files.example", 22));
+    }
+
+    #[test]
     fn the_user_ends_at_the_last_at_sign() {
         // How JumpServer names the account and the asset in one user name.
         let link = parse("ssh://admin@root@10.1.1.1@jms.example.com:2222");
@@ -197,8 +242,10 @@ mod tests {
         for (link, expected) in [
             ("", "没有要连接的地址"),
             ("   ", "没有要连接的地址"),
-            ("sftp://root:secret@h", "只支持 ssh://"),
+            ("scp://root:secret@h", "只支持 ssh:// 和 sftp://"),
+            ("ftp://root:secret@h", "只支持 ssh:// 和 sftp://"),
             ("ssh://h:22", "没有用户名"),
+            ("sftp://h:22", "应为 sftp://用户@地址"),
             ("ssh://:secret@h", "没有用户名"),
             ("ssh://root:secret@", "没有地址"),
             ("ssh://root:secret@h:0", "端口无效"),

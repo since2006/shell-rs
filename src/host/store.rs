@@ -47,8 +47,9 @@ mod snippets;
 /// the saved ones: found by id like any host, so its tabs work as a saved
 /// host's do, but never listed, never written to the database and gone with
 /// its last tab; its password stays in `secrets`' memory. The only kind so
-/// far is the external one, which a bastion host opened with an `ssh://`
-/// link (外部连接, see [`SshLink`]) and which gets the terminal alone. A
+/// far is the external one, which a bastion host opened with an `ssh://` or
+/// `sftp://` link (外部连接, see [`SshLink`]) and whose terminals get one
+/// channel alone. A
 /// 临时连接 typed into ShellRS, to come, will be temporary with every
 /// feature.
 pub struct HostStore {
@@ -312,15 +313,15 @@ impl HostStore {
     }
 
     /// Whether `id` is a temporary host a link from outside opened (外部连接),
-    /// which gets the terminal alone.
+    /// whose terminals get their own channel alone.
     pub fn is_external(&self, id: HostId) -> bool {
         self.external.contains(&id)
     }
 
-    /// Connect to what an `ssh://` link from outside names without saving
-    /// it (外部连接): a temporary host the tabs find by id, kept in memory
-    /// until [`Self::remove_temporary`], with the link's password in memory
-    /// too.
+    /// Connect to what an `ssh://` or `sftp://` link from outside names
+    /// without saving it (外部连接): a temporary host the tabs find by id,
+    /// kept in memory until [`Self::remove_temporary`], with the link's
+    /// password in memory too.
     pub fn insert_external(&mut self, link: SshLink, cx: &mut Context<Self>) -> HostId {
         let id = self.insert_external_unnotified(link);
         cx.notify();

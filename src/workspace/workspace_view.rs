@@ -1039,7 +1039,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let host_id = action.0;
+        self.open_explorer(action.0, window, cx);
+    }
+
+    pub(super) fn open_explorer(
+        &mut self,
+        host_id: HostId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.store.read(cx).host(host_id).is_none() {
             return;
         }

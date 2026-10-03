@@ -712,6 +712,63 @@ async fn a_link_opens_a_terminal_to_a_host_that_goes_with_its_last_tab(cx: &mut 
 }
 
 #[gpui_kit::test]
+async fn an_sftp_link_opens_an_sftp_tab_across_the_window(cx: &mut TestAppContext) {
+    use shellrs::app::CloseExplorer;
+
+    let remote = Arc::new(RecordingRemoteProvider::default());
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        HostStore::empty(),
+        remote.clone(),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    // How JumpServer opens WinSCP: the link alone.
+    open_link(
+        cx,
+        handle,
+        &workspace,
+        "sftp://token:p%40ss@10.0.0.9:2222",
+        None,
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("status-connection").label() == Some("已连接 10.0.0.9")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("explorer-tab", SFTP_TAB)).label(),
+            Some("10.0.0.9 · SFTP")
+        );
+        // An SFTP tab alone, across the window.
+        assert!(window.try_find(("terminal", LINK_TERMINAL)).is_none());
+        assert_eq!(window.find("show-hosts").checked(), Some(false));
+        assert!(window.try_find(("host-row", LINK_HOST.0)).is_none());
+    })
+    .unwrap();
+    assert!(remote.logins().is_empty());
+    let store = workspace.read_with(cx, |workspace, _| workspace.store().clone());
+    store.read_with(cx, |store, _| {
+        assert!(store.is_external(LINK_HOST));
+        let login = store.login(LINK_HOST).unwrap();
+        assert_eq!(
+            (login.host.as_str(), login.port, login.user.as_str()),
+            ("10.0.0.9", 2222, "token")
+        );
+        assert_eq!(login.password, SecretRef::temporary(LINK_HOST.0));
+    });
+
+    // It goes with its tab.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(CloseExplorer(ExplorerId(SFTP_TAB))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    store.read_with(cx, |store, _| assert!(store.host(LINK_HOST).is_none()));
+}
+
+#[gpui_kit::test]
 async fn a_link_that_cannot_be_read_says_why_and_opens_nothing(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace_with_credentials(
         cx,

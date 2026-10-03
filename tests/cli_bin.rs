@@ -194,6 +194,12 @@ fn shellrs_opened_with_a_link_hands_it_to_the_running_app() {
         Some(0)
     );
     assert_eq!(open_shellrs(data_dir.path(), &[token]), Some(0));
+    // As for WinSCP.
+    let winscp = "sftp://deploy:p%40ss@10.0.0.9:2222";
+    assert_eq!(
+        open_shellrs(data_dir.path(), &["/sessionname=文件", winscp]),
+        Some(0)
+    );
     assert_eq!(
         server.take_activation(),
         Some(vec![
@@ -204,6 +210,10 @@ fn shellrs_opened_with_a_link_hands_it_to_the_running_app() {
             OpenLink {
                 url: token.into(),
                 tab: None,
+            },
+            OpenLink {
+                url: winscp.into(),
+                tab: Some("文件".into()),
             },
         ])
     );
