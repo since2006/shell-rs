@@ -29,7 +29,7 @@ ShellRS brings Xshell-style host management and tabbed terminals, a WinSCP-style
 Hosts, groups, credentials and forwarding rules live in a local SQLite database. Passwords and key passphrases go only into the system keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service); the database never holds a secret. ShellRS also ships a `shellrs` command that lets AI agents such as Claude Code or Codex run commands and transfer files on your saved hosts without ever seeing a password.
 
 > [!NOTE]
-> ShellRS is in beta, and its interface is currently in Simplified Chinese only. An English translation is in progress.
+> ShellRS's interface is currently in Simplified Chinese only. An English translation is in progress.
 
 ## Features
 
@@ -96,7 +96,7 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 
 ## Download
 
-Download from [shellrs.com/download](https://shellrs.com/download), which offers the package for your system, or from GitHub [Releases](https://github.com/since2006/shell-rs/releases). All releases so far are betas (marked Pre-release).
+Download from [shellrs.com/download](https://shellrs.com/download), which offers the package for your system, or from GitHub [Releases](https://github.com/since2006/shell-rs/releases). Betas are marked Pre-release there; to get new features early, switch the update channel to Beta in Settings › About (设置 › 关于).
 
 | System | Package | Notes |
 | --- | --- | --- |

@@ -29,7 +29,7 @@ ShellRS 把 Xshell 式的主机管理和多标签终端、WinSCP 式的双栏 SF
 主机、分组、凭据和转发规则保存在本地的 SQLite 数据库里。密码和私钥口令只存进系统钥匙串（macOS 钥匙串、Windows 凭据管理器、Linux Secret Service），数据库里没有任何秘密。ShellRS 还带一个 `shellrs` 命令，让 Claude Code、Codex 等 AI Agent 用你保存的主机执行命令、传输文件，不用把密码交给它们。
 
 > [!NOTE]
-> 目前是 Beta 版本，界面只有简体中文。
+> 界面目前只有简体中文。
 
 ## 功能
 
@@ -96,7 +96,7 @@ ShellRS 把 Xshell 式的主机管理和多标签终端、WinSCP 式的双栏 SF
 
 ## 下载
 
-到官网 [shellrs.com/download](https://shellrs.com/download) 下载，页面会按你的系统给出对应的安装包；也可以到 GitHub [Releases](https://github.com/since2006/shell-rs/releases) 下载。目前发布的都是 Beta 版（在 Releases 里标为 Pre-release）。
+到官网 [shellrs.com/download](https://shellrs.com/download) 下载，页面会按你的系统给出对应的安装包；也可以到 GitHub [Releases](https://github.com/since2006/shell-rs/releases) 下载。Beta 版在 Releases 里标为 Pre-release，想提前用上新功能，可以在「设置 › 关于」里把更新渠道切到 Beta。
 
 | 系统 | 安装包 | 说明 |
 | --- | --- | --- |
