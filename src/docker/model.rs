@@ -88,8 +88,13 @@ pub struct Volume {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Image {
-    /// 「4a3b5c6d7e8f」.
+    /// 「4a3b5c6d7e8f」. Not unique in the list: an image tagged twice is
+    /// two of its lines, one per tag.
     pub id: String,
+    /// What a command names this line by, unique in the list: 「nginx:1.27」,
+    /// or the ID for an image without a tag. Removing a tag removes the
+    /// image only with its last one, as `docker rmi nginx:1.27` does.
+    pub key: String,
     /// 「nginx:1.27」, `None` for a dangling image (「<none>」).
     pub reference: Option<String>,
     /// 「187.69 MB」.
@@ -306,14 +311,23 @@ impl DockerTable {
                 }) || (by_id && (id.starts_with(&image.id) || image.id.starts_with(id)))
             });
         }
-        // Named ones first, by name; the dangling after.
+        // Tagged ones first, by name; then those without a tag, the ones
+        // without a repository either last.
         images.sort_by(|a, b| {
-            (a.reference.is_none(), &a.reference, &a.id).cmp(&(
-                b.reference.is_none(),
-                &b.reference,
-                &b.id,
-            ))
+            let order = |image: &Image| {
+                (
+                    image.key == image.id,
+                    image.reference.is_none(),
+                    image.reference.clone(),
+                    image.id.clone(),
+                )
+            };
+            order(a).cmp(&order(b))
         });
+        // One card per key: an image without a tag in two repositories is
+        // one image.
+        let mut seen = std::collections::HashSet::new();
+        images.retain(|image| seen.insert(image.key.clone()));
 
         for network in &mut networks {
             network.used_by = using(&|container| container.networks.contains(&network.name));
@@ -352,7 +366,7 @@ impl DockerTable {
             DockerObject::Image => self
                 .images
                 .iter()
-                .find(|image| image.id == id)
+                .find(|image| image.key == id)
                 .map(Image::summary),
             DockerObject::Network => self
                 .networks
@@ -496,7 +510,7 @@ impl Image {
         let in_use = !self.used_by.is_empty();
         ObjectSummary {
             object: DockerObject::Image,
-            id: self.id.clone(),
+            id: self.key.clone(),
             name: self
                 .reference
                 .clone()
@@ -759,6 +773,7 @@ mod tests {
         };
         let image = |id: &str, reference: Option<&str>| Image {
             id: id.into(),
+            key: reference.unwrap_or(id).into(),
             reference: reference.map(str::to_owned),
             size: String::new(),
             created: String::new(),

@@ -193,7 +193,7 @@ async fn the_other_tabs_list_volumes_images_and_networks(cx: &mut TestAppContext
     });
     in_frame(cx, handle, |window, _| {
         assert_eq!(
-            window.find("docker-image:4a3b5c6d7e8f").label(),
+            window.find("docker-image:hello-world:latest").label(),
             Some("hello-world:latest · 4a3b5c6d7e8f · 13.3 kB · 2026-09-07 · 使用中")
         );
     });
@@ -326,6 +326,63 @@ const NETWORK: &str = r#"[{"Name":"bridge","Id":"n1","Driver":"bridge","Scope":"
 "IPAM":{"Config":[{"Subnet":"172.17.0.0/16","Gateway":"172.17.0.1"}]},
 "Containers":{"ccc333":{"Name":"forex-web","IPv4Address":"172.17.0.2/16"}}}]"#;
 
+/// One image under two tags, and one without a tag.
+const TAGGED_TWICE: &str = r#"@@version
+26.0.0
+@@compose
+v2.25.0
+@@containers
+@@volumes
+@@images
+{"CreatedAt":"2026-09-07 10:59:16 +0800 CST","ID":"aaa111bbb222","Repository":"nginx","Size":"187MB","Tag":"latest"}
+{"CreatedAt":"2026-09-07 10:59:16 +0800 CST","ID":"aaa111bbb222","Repository":"nginx","Size":"187MB","Tag":"1.27"}
+{"CreatedAt":"2026-08-01 08:00:00 +0800 CST","ID":"ccc333ddd444","Repository":"nginx","Size":"180MB","Tag":"<none>"}
+@@networks
+"#;
+
+#[gpui_kit::test]
+async fn an_image_under_two_tags_is_two_cards_each_removed_by_its_tag(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::answering(&[
+        TAGGED_TWICE,
+        "Untagged: nginx:1.27\n@@status 0\n",
+        TAGGED_TWICE,
+    ]));
+    let handle = open_docker(cx, factory.clone());
+    wait_for_reading(cx, handle).await;
+    in_frame(cx, handle, |window, cx| {
+        window.within("docker-tabs").click(2usize, cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("docker-image:nginx:1.27").label(),
+            Some("nginx:1.27 · aaa111bbb222 · 187 MB · 2026-09-07")
+        );
+        assert_eq!(
+            window.find("docker-image:nginx:latest").label(),
+            Some("nginx:latest · aaa111bbb222 · 187 MB · 2026-09-07")
+        );
+        // Without a tag, by its ID.
+        assert_eq!(
+            window.find("docker-image:ccc333ddd444").label(),
+            Some("nginx:<none> · ccc333ddd444 · 180 MB · 2026-08-01")
+        );
+    });
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("docker-image:nginx:1.27-remove", cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("ok", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, _| {
+        factory.exec_count() >= 2
+    })
+    .await;
+    assert!(
+        factory.exec_commands()[1].contains("$d rmi \"nginx:1.27\""),
+        "{:?}",
+        factory.exec_commands()
+    );
+}
+
 #[gpui_kit::test]
 async fn a_click_on_a_volume_an_image_or_a_network_shows_its_details(cx: &mut TestAppContext) {
     let factory = Arc::new(FakeTerminalFactory::answering(&[
@@ -360,7 +417,7 @@ async fn a_click_on_a_volume_an_image_or_a_network_shows_its_details(cx: &mut Te
         window.within("docker-tabs").click(2usize, cx)
     });
     in_frame(cx, handle, |window, cx| {
-        window.click("docker-image:4a3b5c6d7e8f", cx)
+        window.click("docker-image:hello-world:latest", cx)
     });
     wait_for_label(cx, handle, "image-basics:平台", "linux/amd64").await;
     in_frame(cx, handle, |window, _| {
@@ -371,7 +428,7 @@ async fn a_click_on_a_volume_an_image_or_a_network_shows_its_details(cx: &mut Te
             Some("PATH=/usr/bin")
         );
     });
-    assert!(factory.exec_commands()[2].contains("$d image inspect \"4a3b5c6d7e8f\""));
+    assert!(factory.exec_commands()[2].contains("$d image inspect \"hello-world:latest\""));
     in_frame(cx, handle, |window, cx| window.press("escape", cx));
 
     in_frame(cx, handle, |window, cx| {

@@ -369,7 +369,7 @@ impl DockerPanel {
                                 DockerRow::Image(index) => {
                                     let image = &table.images()[*index];
                                     render_object(
-                                        format!("docker-image:{}", image.id).into(),
+                                        format!("docker-image:{}", image.key).into(),
                                         image.summary(),
                                         &dispatch,
                                         cx,

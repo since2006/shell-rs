@@ -41,14 +41,15 @@ pub fn command() -> String {
 }
 
 /// Whether `id` is an ID or a name Docker gave or allows, and nothing else,
-/// so that it can go into a command.
+/// so that it can go into a command. An image's `repository:tag` may name
+/// a registry, so `/` is allowed too (`registry.example.com/app:1.0`).
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 255
         && id.starts_with(|character: char| character.is_ascii_alphanumeric())
         && id
             .chars()
-            .all(|character| character.is_ascii_alphanumeric() || "_.:-".contains(character))
+            .all(|character| character.is_ascii_alphanumeric() || "_.:-/".contains(character))
 }
 
 /// `script` with `$d` for `docker`, saying how it went in an `@@status`
@@ -274,10 +275,20 @@ fn volume(object: &Value) -> Volume {
 
 fn image(object: &Value) -> Image {
     let (repository, tag) = (text(object, "Repository"), text(object, "Tag"));
+    let id = text(object, "ID").trim_start_matches("sha256:").to_owned();
+    let tagged = repository != "<none>" && !matches!(tag, "<none>" | "");
     Image {
-        id: text(object, "ID").trim_start_matches("sha256:").to_owned(),
+        // 「nginx」 alone would be read as nginx:latest, another image.
+        key: if tagged {
+            format!("{repository}:{tag}")
+        } else {
+            id.clone()
+        },
+        id,
+        // 「nginx:<none>」 as `docker images` puts it: plain 「nginx」 would
+        // say nginx:latest, and the containers of that would count as its.
         reference: (repository != "<none>").then(|| match tag {
-            "<none>" | "" => repository.to_owned(),
+            "<none>" | "" => format!("{repository}:<none>"),
             tag => format!("{repository}:{tag}"),
         }),
         size: format_size(text(object, "Size")),
@@ -715,6 +726,54 @@ v2.25.0
     }
 
     #[test]
+    fn an_image_with_several_tags_is_a_line_for_each_named_by_its_tag() {
+        let table = table(
+            "@@version\n26.0.0\n@@containers\n@@volumes\n@@images\n\
+             {\"ID\":\"aaa111\",\"Repository\":\"nginx\",\"Tag\":\"latest\",\"Size\":\"187MB\"}\n\
+             {\"ID\":\"aaa111\",\"Repository\":\"nginx\",\"Tag\":\"1.27\",\"Size\":\"187MB\"}\n\
+             {\"ID\":\"aaa111\",\"Repository\":\"registry.example.com/web/nginx\",\"Tag\":\"prod\",\"Size\":\"187MB\"}\n\
+             {\"ID\":\"bbb222\",\"Repository\":\"nginx\",\"Tag\":\"<none>\",\"Size\":\"180MB\"}\n\
+             {\"ID\":\"bbb222\",\"Repository\":\"mirror/nginx\",\"Tag\":\"<none>\",\"Size\":\"180MB\"}\n\
+             @@networks\n",
+        );
+        let keys: Vec<&str> = table
+            .images()
+            .iter()
+            .map(|image| image.key.as_str())
+            .collect();
+        // 「nginx」 with no tag is not nginx:latest: it goes by its ID, and
+        // once, though two repositories hold it.
+        assert_eq!(
+            keys,
+            [
+                "nginx:1.27",
+                "nginx:latest",
+                "registry.example.com/web/nginx:prod",
+                "bbb222"
+            ]
+        );
+        assert_eq!(
+            table.images()[3].reference.as_deref(),
+            Some("mirror/nginx:<none>")
+        );
+        let summary = table
+            .summary_of(DockerObject::Image, "nginx:1.27")
+            .expect("by its tag");
+        assert_eq!(summary.name, "nginx:1.27");
+        assert_eq!(summary.id, "nginx:1.27");
+        // Removing a line removes that tag, wherever the registry is.
+        assert_eq!(
+            remove_command(DockerObject::Image, "registry.example.com/web/nginx:prod").as_deref(),
+            Some(
+                "sh -c 'export LC_ALL=C PATH=$PATH:/usr/local/bin:/opt/homebrew/bin; \
+                 if test \"$(id -u)\" = 0 || docker version >/dev/null 2>&1; then d=docker; \
+                 else d=\"sudo -n docker\"; fi; $d rmi \"registry.example.com/web/nginx:prod\" 2>&1; \
+                 echo @@status $?'"
+            )
+        );
+    }
+
+    #[test]
     fn a_docker_that_will_not_answer_says_why() {
         assert_eq!(
             parse(
@@ -853,7 +912,10 @@ v2.25.0
         assert!(valid_id("f8664a4a9b8d"));
         assert!(valid_id("vw-data"));
         assert!(valid_id("sha256:4a3b5c"));
+        assert!(valid_id("registry.example.com:5000/team/app:1.0"));
         assert!(!valid_id("-rf"));
+        assert!(!valid_id("/etc"));
+        assert!(!valid_id("a\"b"));
         assert!(!valid_id("a b"));
         assert!(!valid_id("$(reboot)"));
         assert_eq!(remove_command(DockerObject::Volume, "a;b"), None);
