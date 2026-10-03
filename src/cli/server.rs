@@ -118,7 +118,7 @@ impl CliTarget {
             )
         });
         let temporary = store
-            .transient_hosts()
+            .temporary_hosts()
             .iter()
             .map(|host| Self::new(host, store.login_of(host), None).temporary());
         saved.chain(temporary).collect()

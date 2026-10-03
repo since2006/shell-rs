@@ -1,6 +1,6 @@
 //! `ssh://user[:password]@host[:port]`: how a bastion host opens Xshell, and
-//! so ShellRS, on a host the user has not saved. ShellRS connects to it as a
-//! 临时连接 that lives only as long as its tabs.
+//! so ShellRS, on a host the user has not saved. ShellRS connects to it as an
+//! 外部连接: not saved, gone with its tabs, the terminal alone.
 
 use std::fmt;
 

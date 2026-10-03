@@ -129,7 +129,7 @@ impl TerminalPanel {
             host_is_ip: store
                 .host(self.host_id)
                 .is_some_and(|host| host.address_is_ip()),
-            editable: !store.is_transient(self.host_id),
+            editable: !store.is_temporary(self.host_id),
             group: self.tab_group.clone(),
             panel: cx.entity_id(),
         }
@@ -317,7 +317,7 @@ struct TabMenu {
     id: RemoteTerminalId,
     host_id: HostId,
     host_is_ip: bool,
-    /// A saved host; one opened from a link has nothing to edit.
+    /// A saved host; a temporary one has nothing to edit.
     editable: bool,
     group: Option<WeakEntity<TabGroup>>,
     panel: EntityId,

@@ -2000,7 +2000,7 @@ fn new_terminal_panel(
                     this.store
                         .update(cx, |store, cx| store.set_active(None, cx));
                 }
-                this.forget_unused_link_host(*host_id, window, cx);
+                this.forget_unused_temporary_host(*host_id, window, cx);
             }
             TerminalPanelEvent::StatusChanged(_, host_id) => {
                 this.refresh_host_connection_state(*host_id, cx);
@@ -2110,7 +2110,7 @@ fn new_explorer_panel(
                     this.set_active_tab(None, window, cx);
                 }
                 this.refresh_host_connection_state(*host_id, cx);
-                this.forget_unused_link_host(*host_id, window, cx);
+                this.forget_unused_temporary_host(*host_id, window, cx);
             }
             ExplorerPanelEvent::StateChanged(id, host_id) => {
                 if let Some(panel) = this.explorers.get(id) {

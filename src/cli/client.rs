@@ -253,8 +253,10 @@ fn print_hosts(hosts: &[HostInfo], console: &mut Console) -> io::Result<()> {
             [
                 host.id.clone(),
                 host.name.clone(),
+                // Every temporary host is an external one so far; a 临时连接
+                // typed into ShellRS, when it comes, needs telling apart here.
                 if host.temporary {
-                    "（临时连接）".to_string()
+                    "（外部连接）".to_string()
                 } else {
                     host.group.clone().unwrap_or_default()
                 },

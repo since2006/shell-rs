@@ -383,14 +383,14 @@ fn a_host_opened_from_a_link_is_listed_as_temporary_and_logged_in_to_afresh() {
         AuthKind::Password,
         None,
     ));
-    let link = store.insert_transient_unnotified(
+    let link = store.insert_external_unnotified(
         SshLink::parse("ssh://token:secret@10.0.0.9:2222", Some("堡垒机")).unwrap(),
     );
     let targets = CliTarget::all(&store);
     let ids: Vec<HostId> = targets.iter().map(|target| target.host().id).collect();
     assert_eq!(ids, [saved, link]);
     // With the link's password, which only memory holds.
-    assert_eq!(targets[1].login().password, SecretRef::transient(link.0));
+    assert_eq!(targets[1].login().password, SecretRef::temporary(link.0));
 
     let fixture = fixture();
     fixture.server.set_targets(targets);
@@ -420,7 +420,7 @@ fn a_host_opened_from_a_link_is_listed_as_temporary_and_logged_in_to_afresh() {
     // A table says so where the group goes.
     let (_, table, _) = run(&fixture.socket, Request::List { query: None }, false);
     assert!(
-        table.lines().nth(2).unwrap().contains("（临时连接）"),
+        table.lines().nth(2).unwrap().contains("（外部连接）"),
         "{table}"
     );
 }

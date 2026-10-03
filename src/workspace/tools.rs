@@ -56,15 +56,15 @@ impl Workspace {
     }
 
     /// The tools the switch offers for the SSH terminal in front; none
-    /// without one. A terminal a bastion host opened with a link gets only
-    /// those that run nothing beside it.
+    /// without one. An external connection (a bastion host's link) gets only
+    /// those that run nothing beside the terminal.
     pub(super) fn offered_tools(&self, cx: &App) -> Vec<ToolKind> {
         let Some(terminal) = self.tool_terminal(cx) else {
             return Vec::new();
         };
         let store = self.store.read(cx);
         let os = store.host(terminal.host).and_then(|host| host.os);
-        let shell_only = store.is_transient(terminal.host);
+        let shell_only = store.is_external(terminal.host);
         ToolKind::ALL
             .into_iter()
             .filter(|tool| tool.works_on(os) && !(shell_only && tool.runs_commands()))

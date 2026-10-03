@@ -6,17 +6,17 @@ use zeroize::Zeroizing;
 
 use super::{SecretRef, SecretStore, SharedSecretStore};
 
-/// 钥匙串外面包的一层：临时连接的密码（[`SecretRef::Transient`]）只记在这层
-/// 内存里，其余的原样交给里面的钥匙串。
+/// 钥匙串外面包的一层：不保存的连接（外部连接）的密码（[`SecretRef::Temporary`]）
+/// 只记在这层内存里，其余的原样交给里面的钥匙串。
 ///
 /// `HostStore` 把注入的秘密存储包成这样，连接器读到的也是它，所以终端和 SFTP
 /// 用得上链接里的密码，而这个密码不会落进钥匙串；没有钥匙串的机器上照样能用。
-pub struct TransientSecretStore {
+pub struct TemporarySecretStore {
     keychain: SharedSecretStore,
     passwords: Mutex<HashMap<u64, Zeroizing<String>>>,
 }
 
-impl TransientSecretStore {
+impl TemporarySecretStore {
     pub fn new(keychain: SharedSecretStore) -> Self {
         Self {
             keychain,
@@ -41,17 +41,17 @@ impl TransientSecretStore {
     }
 }
 
-impl SecretStore for TransientSecretStore {
+impl SecretStore for TemporarySecretStore {
     fn get(&self, secret: &SecretRef) -> Result<Option<Zeroizing<String>>> {
         match secret {
-            SecretRef::Transient { host } => Ok(self.passwords().get(host).cloned()),
+            SecretRef::Temporary { host } => Ok(self.passwords().get(host).cloned()),
             _ => self.keychain.get(secret),
         }
     }
 
     fn set(&self, secret: &SecretRef, value: &str) -> Result<()> {
         match secret {
-            SecretRef::Transient { host } => {
+            SecretRef::Temporary { host } => {
                 self.remember(*host, Zeroizing::new(value.to_string()));
                 Ok(())
             }
@@ -61,7 +61,7 @@ impl SecretStore for TransientSecretStore {
 
     fn delete(&self, secret: &SecretRef) -> Result<()> {
         match secret {
-            SecretRef::Transient { host } => {
+            SecretRef::Temporary { host } => {
                 self.forget(*host);
                 Ok(())
             }
@@ -84,8 +84,8 @@ mod tests {
     #[test]
     fn link_passwords_stay_in_memory_and_the_rest_reaches_the_keychain() {
         let keychain = Arc::new(InMemorySecretStore::default());
-        let store = TransientSecretStore::new(keychain.clone());
-        let link = SecretRef::transient(7);
+        let store = TemporarySecretStore::new(keychain.clone());
+        let link = SecretRef::temporary(7);
         store.remember(7, Zeroizing::new("token".into()));
         assert_eq!(
             store.get(&link).unwrap().as_deref().map(String::as_str),
@@ -101,7 +101,7 @@ mod tests {
             Some("hunter2")
         );
         // Another host's password is not the link's.
-        assert!(store.get(&SecretRef::transient(8)).unwrap().is_none());
+        assert!(store.get(&SecretRef::temporary(8)).unwrap().is_none());
 
         store.forget(7);
         assert!(store.get(&link).unwrap().is_none());
@@ -110,10 +110,10 @@ mod tests {
 
     #[test]
     fn without_a_keychain_link_passwords_still_work() {
-        let store = TransientSecretStore::new(Arc::new(NoSecretStore));
+        let store = TemporarySecretStore::new(Arc::new(NoSecretStore));
         assert!(!store.is_available());
-        store.set(&SecretRef::transient(1), "token").unwrap();
-        assert!(store.get(&SecretRef::transient(1)).unwrap().is_some());
+        store.set(&SecretRef::temporary(1), "token").unwrap();
+        assert!(store.get(&SecretRef::temporary(1)).unwrap().is_some());
         assert!(
             store
                 .set(&SecretRef::password("root", "h", 22), "x")

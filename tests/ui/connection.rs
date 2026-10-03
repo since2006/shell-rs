@@ -616,15 +616,17 @@ async fn a_link_opens_a_terminal_to_a_host_that_goes_with_its_last_tab(cx: &mut 
     );
     assert_eq!(login.method, LoginMethod::Password);
     assert_eq!(login.route, LoginRoute::Direct);
-    assert_eq!(login.password, SecretRef::transient(LINK_HOST.0));
+    assert_eq!(login.password, SecretRef::temporary(LINK_HOST.0));
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(
             window.find(("terminal-tab", LINK_TERMINAL)).label(),
             Some("db-prod")
         );
-        // Not saved: no row in the tree.
+        // Not saved, and across the window: the hosts made way.
         assert!(window.try_find(("host-row", LINK_HOST.0)).is_none());
+        assert_eq!(window.find("show-hosts").checked(), Some(false));
+        assert!(window.try_find("host-search").is_none());
         // The bastion host gets the terminal alone: of the tools, only the
         // snippets, which type into it.
         assert!(window.try_find("tool-snippets").is_some());
@@ -636,14 +638,14 @@ async fn a_link_opens_a_terminal_to_a_host_that_goes_with_its_last_tab(cx: &mut 
     assert!(login.shell_only);
     let store = workspace.read_with(cx, |workspace, _| workspace.store().clone());
     store.read_with(cx, |store, _| {
-        assert!(store.is_transient(LINK_HOST));
+        assert!(store.is_temporary(LINK_HOST));
         assert!(store.hosts().is_empty());
         assert!(store.recent_hosts().next().is_none());
         // The link's password is in memory, not in the keychain.
         assert_eq!(
             store
                 .secrets()
-                .get(&SecretRef::transient(LINK_HOST.0))
+                .get(&SecretRef::temporary(LINK_HOST.0))
                 .unwrap()
                 .as_deref()
                 .map(String::as_str),
@@ -697,7 +699,7 @@ async fn a_link_opens_a_terminal_to_a_host_that_goes_with_its_last_tab(cx: &mut 
         assert!(
             store
                 .secrets()
-                .get(&SecretRef::transient(LINK_HOST.0))
+                .get(&SecretRef::temporary(LINK_HOST.0))
                 .unwrap()
                 .is_none()
         );
@@ -722,6 +724,8 @@ async fn a_link_that_cannot_be_read_says_why_and_opens_nothing(cx: &mut TestAppC
         window.render_frame(cx);
         assert_eq!(window.notifications(cx).len(), 1);
         assert!(window.try_find(("terminal", LINK_TERMINAL)).is_none());
+        // Nothing opened, so the hosts stay.
+        assert_eq!(window.find("show-hosts").checked(), Some(true));
     })
     .unwrap();
     workspace.read_with(cx, |workspace, cx| {
