@@ -45,6 +45,13 @@ impl ToolKind {
         })
     }
 
+    /// Whether the tool runs commands on a channel of its own beside the
+    /// terminal, which a terminal a bastion host opened cannot have. Command
+    /// snippets only type into the terminal.
+    pub fn runs_commands(self) -> bool {
+        !matches!(self, ToolKind::Snippets)
+    }
+
     /// Whether the tool works on a host running `os`. A host not identified
     /// yet gets every tool, and is told if one cannot work there.
     pub fn works_on(self, os: Option<HostOs>) -> bool {

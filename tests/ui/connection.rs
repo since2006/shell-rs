@@ -625,8 +625,15 @@ async fn a_link_opens_a_terminal_to_a_host_that_goes_with_its_last_tab(cx: &mut 
         );
         // Not saved: no row in the tree.
         assert!(window.try_find(("host-row", LINK_HOST.0)).is_none());
+        // The bastion host gets the terminal alone: of the tools, only the
+        // snippets, which type into it.
+        assert!(window.try_find("tool-snippets").is_some());
+        for tool in ["tool-history", "tool-docker", "tool-monitor"] {
+            assert!(window.try_find(tool).is_none(), "{tool}");
+        }
     })
     .unwrap();
+    assert!(login.shell_only);
     let store = workspace.read_with(cx, |workspace, _| workspace.store().clone());
     store.read_with(cx, |store, _| {
         assert!(store.is_transient(LINK_HOST));

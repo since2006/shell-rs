@@ -57,6 +57,13 @@ impl From<&HostLogin> for SshConnectionConfig {
     }
 }
 
+impl SshConnectionConfig {
+    /// See [`HostLogin::shell_only`].
+    pub(crate) fn shell_only(&self) -> bool {
+        self.login.shell_only
+    }
+}
+
 /// Where the SSH agent listens.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum AgentLocation {

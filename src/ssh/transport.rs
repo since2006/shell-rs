@@ -38,6 +38,9 @@ const EXEC_TIMEOUT: Duration = Duration::from_secs(10);
 /// dropped.
 const EXEC_OUTPUT_LIMIT: usize = 1 << 20;
 
+/// The answer to a command for a terminal that carries nothing beside it.
+const SHELL_ONLY: &str = "这个终端经由堡垒机打开，只能使用终端本身，不能另外执行命令";
+
 /// Production remote-terminal adapter for the shared SSH connector.
 pub struct SshTerminalTransportProvider {
     connector: SshConnector,
@@ -189,8 +192,15 @@ impl SshTerminalTransport {
         // it after `Started` keeps the terminal from waiting on a round trip,
         // and a host that refuses or ignores the probe simply keeps whatever
         // mark the host already had.
+        // Not through a bastion host that opened a link: another channel
+        // ends its session (see `HostLogin::shell_only`).
+        let shell_only = self.config.shell_only();
         let mut probe = HostOsProbe::new();
-        let mut probe_channel = open_probe(&handle, probe.command()).await;
+        let mut probe_channel = if shell_only {
+            None
+        } else {
+            open_probe(&handle, probe.command()).await
+        };
 
         // Round trips are measured with `keepalive@openssh.com`, which every
         // server answers (a refusal is an answer too), so this is the SSH-level
@@ -241,6 +251,9 @@ impl SshTerminalTransport {
                         }).await;
                         router.abort();
                         return Ok(());
+                    }
+                    Some(TerminalTransportCommand::Exec(request)) if shell_only => {
+                        let _ = request.reply.send(Err(SHELL_ONLY.into()));
                     }
                     Some(TerminalTransportCommand::Exec(request)) => exec_queue.push_back(request),
                     Some(TerminalTransportCommand::PromptReply { .. }) => {}
@@ -1689,6 +1702,42 @@ mod tests {
             .cloned()
             .collect();
         assert_eq!(execs, ["echo one", "echo two"]);
+    }
+
+    #[test]
+    fn a_terminal_a_bastion_host_opened_carries_nothing_beside_it() {
+        let Some(server) = start_server_replying(TestAuth::Password, tool_reply) else {
+            eprintln!(
+                "loopback sockets are unavailable in this sandbox; skipping integration body"
+            );
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        let mut login = HostLogin::of(&password_host(server.port), None);
+        login.shell_only = true;
+
+        let report = connect(
+            login,
+            &known_hosts,
+            Arc::new(NoSecretStore),
+            true,
+            &["echo one"],
+            trust_and_type_password,
+        );
+
+        // No probe, and a tool's command answered here without asking the
+        // server; the round trip is still measured.
+        assert_eq!(report.execs, vec![Err(SHELL_ONLY.to_string())]);
+        assert_eq!(report.host_os, None);
+        assert!(report.latency.is_some());
+        let execs = server
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .execs
+            .clone();
+        assert!(execs.is_empty(), "{execs:?}");
     }
 
     #[test]

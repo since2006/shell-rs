@@ -879,9 +879,11 @@ impl HostStore {
             .direct_login(host)
             .with_route(self.route_login(&host.route));
         // A link's password is the link's own, never a saved host's for
-        // the same `user@host:port`.
+        // the same `user@host:port`; and a bastion host that opened a link
+        // gets the terminal alone.
         if self.is_transient(host.id) {
             login.password = SecretRef::transient(host.id.0);
+            login.shell_only = true;
         }
         login
     }
@@ -2585,6 +2587,8 @@ mod tests {
         assert_eq!(login.method, LoginMethod::Password);
         assert_eq!(login.route, LoginRoute::Direct);
         assert_eq!(login.password, SecretRef::transient(id.0));
+        assert!(login.shell_only);
+        assert!(!store.login(saved).unwrap().shell_only);
         assert_eq!(
             store
                 .secrets()

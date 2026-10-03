@@ -44,6 +44,12 @@ pub struct HostLogin {
     pub password: SecretRef,
     /// How the connection reaches the host.
     pub route: LoginRoute,
+    /// The connection carries the terminal and nothing beside it: no
+    /// channel of its own for the system probe or the right sidebar's
+    /// commands. A bastion host that opened ShellRS with a link serves one
+    /// session per connection and ends it when another channel comes and
+    /// goes, as Xshell and OpenSSH never make it do.
+    pub shell_only: bool,
 }
 
 /// How a connection reaches a host, with every jump host's login looked up.
@@ -149,6 +155,7 @@ impl HostLogin {
             method,
             key_path: None,
             route: LoginRoute::Direct,
+            shell_only: false,
         }
     }
 
@@ -177,6 +184,7 @@ impl HostLogin {
             key_path,
             password,
             route: LoginRoute::Direct,
+            shell_only: false,
         }
     }
 
