@@ -195,7 +195,7 @@ impl HostStore {
         let gone = match draft.scope {
             SnippetScope::All => false,
             SnippetScope::Group(group) => self.group(group).is_none(),
-            SnippetScope::Host(host) => self.host(host).is_none(),
+            SnippetScope::Host(host) => self.saved_host(host).is_none(),
         };
         if gone {
             draft.scope = SnippetScope::All;

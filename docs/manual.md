@@ -124,6 +124,25 @@ shellrs download <ID> <远程路径> <本地路径>
 - 失败时在标准错误输出 `shellrs: [错误码] 说明`，退出码 255。错误码有 `not_running`（ShellRS 未运行）、`not_enabled`（未启用外部 CLI）、`host_not_found`、`host_key_unknown`（还没在 ShellRS 里连过这台主机）、`host_key_changed`、`missing_credential`（没有保存密码或口令）、`connect_failed`、`transfer_failed`、`bad_request`、`version_mismatch`。CLI 不弹任何询问：陌生主机、缺少密码都直接失败，请先在 ShellRS 里连接一次。传输完成但有项目失败时退出码为 1。
 - 支持 macOS、Linux 和 Windows。Windows 的 PowerShell 里，多行或带引号的命令用 here-string 经 `--stdin` 传入（`@'…'@ | shellrs exec <ID> --stdin`）；输出有中文时先执行 `$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()`。命令文本会去掉开头的 BOM、把 CRLF 换成 LF，远程 shell 不会看到多余的回车符。
 
+## 从堡垒机打开（临时连接）
+
+JumpServer 等堡垒机的本地客户端可以像调用 Xshell 一样调用 ShellRS：把 ShellRS 设成 SSH 客户端，参数照 Xshell 的写法填。ShellRS 收到后打开一个终端标签连过去：
+
+```sh
+ShellRS ssh://用户[:密码]@地址[:端口]
+ShellRS -url ssh://用户[:密码]@地址[:端口] -newtab 标签名
+```
+
+- 认得 Xshell 的 `-url`（链接）、`-newtab`（标签名，没给就用地址）和 `-newwin`（忽略：ShellRS 只有一个窗口），不分大小写；别的选项忽略。只支持 `ssh://`，端口默认 22。用户名和密码里的特殊字符可以按 URL 的规则转义（`@` 写成 `%40`）；用户名里本身带 `@` 也行，最后一个 `@` 后面才是地址。
+- **临时连接，不保存**：不进主机列表、开始页的最近连接和数据库，外部 CLI 也看不到；它的终端和从它打开的 SFTP 标签都关掉后就没了。标签的菜单里没有「编辑主机…」，其余（在新标签页中连接、打开 SFTP、重新连接、右侧栏的工具）和保存的主机一样。
+- 链接里的密码只留在内存里，不进钥匙串，重新连接时照样用它；没带密码时，服务器要密码就弹框问。第一次连到某台堡垒机要信任它的主机密钥，记在 ShellRS 自己的 `known_hosts` 里，下次不再问。
+- ShellRS 已经在运行时，链接交给正在运行的那个打开，窗口调到前面，不会再起一个 ShellRS。链接有问题（不是 `ssh://`、没有用户名或地址、端口不对）时，ShellRS 弹通知说明原因。
+- 堡垒机要调用的程序：
+  - Windows：安装目录里的 `shellrs.exe`（默认 `%LOCALAPPDATA%\Programs\ShellRS\shellrs.exe`）。不要用 PATH 里的 `shellrs.exe`：那是外部 CLI 的副本。
+  - macOS：`/Applications/ShellRS.app/Contents/MacOS/shellrs`。不要用 `open -a ShellRS --args …`：ShellRS 已在运行时，系统会把参数丢掉。
+  - Linux：AppImage 本身。
+- 命令行参数里的密码在本机的进程列表里看得到，这是堡垒机这样传参本身的问题。
+
 ## 标签页
 
 远程终端标签和 SFTP 标签都以主机系统徽章为图标（与主机列表相同）。右键标签可重命名（仅本次运行有效，留空恢复为主机的名称，用于区分同一台主机的多个连接）、在新标签页中连接、打开 SFTP、复制 IP 地址 / 主机名、重新连接、编辑主机，以及关闭当前、左侧、右侧、其他或全部标签。SFTP 标签的菜单是「重命名标签…」（留空恢复为「主机的名称 · SFTP」）、打开 SFTP、复制 IP 地址 / 主机名、重新连接加关闭命令，标签栏右侧和远程终端一样有「SFTP」和「重新连接」按钮；本地终端标签是「重新启动」加关闭命令。标签栏右侧「…」按钮的菜单与当前标签的右键菜单相同。双击任一标签的标题可隐藏或显示左侧的侧栏（同 ⌘B 和标题栏的按钮）。远程终端运行时和 SFTP 标签已连接时，标签栏右侧显示这条 SSH 连接的往返延迟，每 5 秒更新一次：低于 100 ms 为绿色，100–200 ms 为黄色，高于 200 ms 或超时为红色。SFTP 传输进行中也照常测量，读数会随传输占满带宽而升高。批量关闭时，正在上传的 SFTP 标签仍会先确认。

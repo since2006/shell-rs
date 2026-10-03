@@ -5,6 +5,7 @@
 
 mod keychain;
 mod memory;
+mod transient;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use zeroize::Zeroizing;
 
 pub use keychain::KeychainSecretStore;
 pub use memory::{InMemorySecretStore, NoSecretStore};
+pub use transient::TransientSecretStore;
 
 /// 钥匙串里的服务名，所有条目共用。改了会让已保存的秘密全部失联。
 pub const SERVICE: &str = "shellrs";
@@ -42,6 +44,10 @@ pub enum SecretRef {
         host: String,
         port: u16,
     },
+    /// 临时连接（堡垒机用 `ssh://` 链接打开的、不保存的主机）链接里带的密码，
+    /// 按这台临时主机的 id 归属。只在 [`TransientSecretStore`] 的内存里，
+    /// 从不进钥匙串。
+    Transient { host: u64 },
 }
 
 impl SecretRef {
@@ -73,6 +79,10 @@ impl SecretRef {
         }
     }
 
+    pub fn transient(host: u64) -> Self {
+        Self::Transient { host }
+    }
+
     /// 钥匙串条目的账户名。前缀区分种类，在 Keychain Access 里直接可读。
     pub fn account(&self) -> String {
         match self {
@@ -80,6 +90,7 @@ impl SecretRef {
             Self::Passphrase { key_path } => format!("passphrase:{key_path}"),
             Self::Credential { keychain_id } => format!("credential:{keychain_id}"),
             Self::Proxy { user, host, port } => format!("proxy:{user}@{host}:{port}"),
+            Self::Transient { host } => format!("transient:{host}"),
         }
     }
 }
@@ -146,6 +157,7 @@ mod tests {
             SecretRef::passphrase("root@10.0.1.12:22"),
             SecretRef::credential("root@10.0.1.12:22"),
             SecretRef::proxy("root", "10.0.1.12", 22),
+            SecretRef::transient(22),
         ]
         .map(|secret| secret.account());
         for (ix, account) in accounts.iter().enumerate() {

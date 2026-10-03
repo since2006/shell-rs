@@ -553,3 +553,171 @@ async fn the_tab_bar_shows_the_connection_latency_while_it_runs(cx: &mut TestApp
     })
     .unwrap();
 }
+
+/// The first terminal and the first host of an empty store, which a link
+/// opens.
+const LINK_TERMINAL: u64 = 1;
+const LINK_HOST: HostId = HostId(1);
+
+fn open_link(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Root>,
+    workspace: &Entity<Workspace>,
+    url: &str,
+    tab: Option<&str>,
+) {
+    let link = shellrs::cli::OpenLink {
+        url: url.into(),
+        tab: tab.map(str::to_string),
+    };
+    cx.update_window(handle.into(), |_, window, cx| {
+        workspace.update(cx, |workspace, cx| workspace.open_link(link, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+async fn a_link_opens_a_terminal_to_a_host_that_goes_with_its_last_tab(cx: &mut TestAppContext) {
+    use shellrs::app::{CloseExplorer, CloseTerminal};
+    use shellrs::host::BookmarkSide;
+
+    let data = tempfile::tempdir().unwrap();
+    let path = data.path().join("shellrs.db");
+    let keychain = Arc::new(InMemorySecretStore::default());
+    let store = HostStore::load(HostDatabase::open(&path).unwrap())
+        .unwrap()
+        .with_secrets(keychain.clone());
+    let remote = Arc::new(RecordingRemoteProvider::default());
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        store,
+        remote.clone(),
+        Arc::new(FakeConnectionTester::default()),
+    );
+
+    open_link(
+        cx,
+        handle,
+        &workspace,
+        "ssh://token:p%40ss@10.0.0.9:2222",
+        Some("db-prod"),
+    );
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("status-connection").label() == Some("已连接 db-prod")
+    })
+    .await;
+
+    let login = remote.logins().pop().expect("connected");
+    assert_eq!(
+        (login.host.as_str(), login.port, login.user.as_str()),
+        ("10.0.0.9", 2222, "token")
+    );
+    assert_eq!(login.method, LoginMethod::Password);
+    assert_eq!(login.route, LoginRoute::Direct);
+    assert_eq!(login.password, SecretRef::transient(LINK_HOST.0));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("terminal-tab", LINK_TERMINAL)).label(),
+            Some("db-prod")
+        );
+        // Not saved: no row in the tree.
+        assert!(window.try_find(("host-row", LINK_HOST.0)).is_none());
+    })
+    .unwrap();
+    let store = workspace.read_with(cx, |workspace, _| workspace.store().clone());
+    store.read_with(cx, |store, _| {
+        assert!(store.is_transient(LINK_HOST));
+        assert!(store.hosts().is_empty());
+        assert!(store.recent_hosts().next().is_none());
+        // The link's password is in memory, not in the keychain.
+        assert_eq!(
+            store
+                .secrets()
+                .get(&SecretRef::transient(LINK_HOST.0))
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
+            Some("p@ss")
+        );
+    });
+    assert!(keychain.is_empty());
+
+    // There is nothing to edit.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(EditHost(LINK_HOST)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("host-name").is_none());
+    })
+    .unwrap();
+
+    // Its SFTP tab works, bookmarks and all, without writing to disk.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(OpenExplorer(LINK_HOST)), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    store.update(cx, |store, cx| {
+        assert!(store.add_bookmark(LINK_HOST, BookmarkSide::Remote, "/var/log", cx));
+    });
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.notifications(cx).is_empty());
+    })
+    .unwrap();
+
+    // The host stays while a tab of it does.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(CloseTerminal(RemoteTerminalId(LINK_TERMINAL))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(store.read_with(cx, |store, _| store.host(LINK_HOST).is_some()));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(CloseExplorer(ExplorerId(SFTP_TAB))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    store.read_with(cx, |store, _| {
+        assert!(store.host(LINK_HOST).is_none());
+        assert!(
+            store
+                .secrets()
+                .get(&SecretRef::transient(LINK_HOST.0))
+                .unwrap()
+                .is_none()
+        );
+    });
+
+    let saved = HostStore::load(HostDatabase::open(&path).unwrap()).unwrap();
+    assert!(saved.hosts().is_empty());
+    assert!(saved.recent_hosts().next().is_none());
+    assert!(saved.bookmarks(LINK_HOST, BookmarkSide::Remote).is_empty());
+}
+
+#[gpui_kit::test]
+async fn a_link_that_cannot_be_read_says_why_and_opens_nothing(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        HostStore::empty(),
+        Arc::new(RecordingRemoteProvider::default()),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    open_link(cx, handle, &workspace, "ssh://10.0.0.9:2222", None);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.notifications(cx).len(), 1);
+        assert!(window.try_find(("terminal", LINK_TERMINAL)).is_none());
+    })
+    .unwrap();
+    workspace.read_with(cx, |workspace, cx| {
+        assert!(workspace.store().read(cx).host(LINK_HOST).is_none());
+    });
+}

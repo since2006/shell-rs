@@ -2,17 +2,20 @@
 //! with piped stdio, finding the app through `SHELLRS_DATA_DIR`. A fake
 //! backend stands in for SSH, so this runs on every platform, including the
 //! Windows CI where it is the one test of the named pipe between processes.
+//! Also ShellRS itself opened with a link, as a bastion host opens it.
 
 use std::{
     io::{self, Write as _},
     path::Path,
     process::{Command, Output, Stdio},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 
 use shellrs::app::cli_endpoint;
 use shellrs::cli::{
-    CliBackend, CliError, CliServer, CliTarget, HostInfo, TransferCounters, TransferSummary,
+    CliBackend, CliError, CliServer, CliTarget, HostInfo, OpenLink, TransferCounters,
+    TransferSummary,
 };
 use shellrs::host::{AuthKind, Host, HostDraft, HostId, HostLogin};
 use shellrs::ssh::ExecStream;
@@ -142,5 +145,66 @@ fn the_command_finds_the_app_through_its_data_directory() {
         String::from_utf8(output.stderr)
             .unwrap()
             .starts_with("shellrs: [not_enabled]")
+    );
+}
+
+/// Open ShellRS itself, as a bastion host does, beside the app whose data
+/// lives in `data_dir`; its exit code. Handing its link over, it exits at
+/// once. One that does not is killed rather than left running as a second
+/// app with a window of its own.
+fn open_shellrs(data_dir: &Path, args: &[&str]) -> Option<i32> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_shellrs"))
+        .args(args)
+        .env("SHELLRS_DATA_DIR", data_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status.code();
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("ShellRS opened with {args:?} did not hand its link over");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn shellrs_opened_with_a_link_hands_it_to_the_running_app() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let server = CliServer::start(
+        cli_endpoint(data_dir.path()),
+        Arc::new(FakeBackend::default()),
+    )
+    .unwrap();
+    // 启用外部 CLI is off: being opened again is not the external CLI.
+    let xshell = "ssh://deploy:p%40ss@10.0.0.9:2222";
+    let token = "ssh://b478e26f-811b-4a90-81c3-74929127898a@172.16.0.28:12024";
+    assert_eq!(
+        open_shellrs(
+            data_dir.path(),
+            &["-url", xshell, "-newtab", "跳板机", "-newwin"]
+        ),
+        Some(0)
+    );
+    assert_eq!(open_shellrs(data_dir.path(), &[token]), Some(0));
+    assert_eq!(
+        server.take_activation(),
+        Some(vec![
+            OpenLink {
+                url: xshell.into(),
+                tab: Some("跳板机".into()),
+            },
+            OpenLink {
+                url: token.into(),
+                tab: None,
+            },
+        ])
     );
 }

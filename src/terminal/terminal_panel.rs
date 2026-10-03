@@ -122,14 +122,14 @@ impl TerminalPanel {
     }
 
     fn tab_menu(&self, cx: &Context<Self>) -> TabMenu {
+        let store = self.store.read(cx);
         TabMenu {
             id: self.id,
             host_id: self.host_id,
-            host_is_ip: self
-                .store
-                .read(cx)
+            host_is_ip: store
                 .host(self.host_id)
                 .is_some_and(|host| host.address_is_ip()),
+            editable: !store.is_transient(self.host_id),
             group: self.tab_group.clone(),
             panel: cx.entity_id(),
         }
@@ -317,6 +317,8 @@ struct TabMenu {
     id: RemoteTerminalId,
     host_id: HostId,
     host_is_ip: bool,
+    /// A saved host; one opened from a link has nothing to edit.
+    editable: bool,
     group: Option<WeakEntity<TabGroup>>,
     panel: EntityId,
 }
@@ -350,7 +352,7 @@ impl TabMenu {
         } else {
             "复制主机名"
         };
-        let menu = menu
+        let mut menu = menu
             .menu_with_icon(
                 "重命名标签…",
                 Icon::new(CatalogIcon::Pencil),
@@ -375,13 +377,15 @@ impl TabMenu {
                 "重新连接",
                 Icon::new(CatalogIcon::RefreshCw),
                 Box::new(ReconnectTerminal(id)),
-            )
-            .menu_with_icon(
+            );
+        if self.editable {
+            menu = menu.menu_with_icon(
                 "编辑主机…",
                 Icon::new(CatalogIcon::Pencil),
                 Box::new(EditHost(host_id)),
-            )
-            .separator();
+            );
+        }
+        let menu = menu.separator();
         close_tab_items(
             menu,
             CenterTab::Terminal(id),

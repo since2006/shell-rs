@@ -259,12 +259,16 @@ impl Workspace {
             loop {
                 cx.background_executor().timer(ACTIVATION_POLL).await;
                 let open = this.update_in(cx, |this, window, cx| {
-                    let asked = this
+                    let Some(links) = this
                         .cli_server
                         .as_ref()
-                        .is_some_and(|server| server.take_activation());
-                    if asked {
-                        crate::app::bring_forward(window, cx);
+                        .and_then(|server| server.take_activation())
+                    else {
+                        return;
+                    };
+                    crate::app::bring_forward(window, cx);
+                    for link in links {
+                        this.open_link(link, window, cx);
                     }
                 });
                 if open.is_err() {
@@ -563,7 +567,7 @@ impl Workspace {
     }
 
     /// Whether a host has any tab open in the center.
-    fn has_tabs(&self, host: HostId, cx: &App) -> bool {
+    pub(super) fn has_tabs(&self, host: HostId, cx: &App) -> bool {
         self.terminals_of(host, cx).next().is_some() || !self.explorers_of(host, cx).is_empty()
     }
 
@@ -931,7 +935,7 @@ impl Workspace {
     ) {
         self.cancel_prompts_for_owner(PromptOwner::Terminal(terminal_id), window, cx);
     }
-    fn cancel_prompts_for_host(
+    pub(super) fn cancel_prompts_for_host(
         &mut self,
         host_id: HostId,
         window: &mut Window,
@@ -1002,7 +1006,12 @@ impl Workspace {
         }
     }
 
-    fn connect_host(&mut self, host_id: HostId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn connect_host(
+        &mut self,
+        host_id: HostId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.store.read(cx).host(host_id).is_none() {
             return;
         }
@@ -1504,10 +1513,13 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The CLI knows saved hosts only: a link's host has no ID to give.
         let Some(public_id) = self
             .store
             .read(cx)
-            .host(action.0)
+            .hosts()
+            .iter()
+            .find(|host| host.id == action.0)
             .map(|host| host.public_id.clone())
         else {
             return;
@@ -1666,7 +1678,15 @@ impl Workspace {
     }
 
     fn on_edit_host(&mut self, action: &EditHost, window: &mut Window, cx: &mut Context<Self>) {
-        if self.store.read(cx).host(action.0).is_some() {
+        // A host opened from a link is not saved, so there is nothing to
+        // edit.
+        if self
+            .store
+            .read(cx)
+            .hosts()
+            .iter()
+            .any(|host| host.id == action.0)
+        {
             open_host_dialog(
                 Some(action.0),
                 None,
@@ -1705,7 +1725,15 @@ impl Workspace {
 
     fn on_delete_host(&mut self, action: &DeleteHost, window: &mut Window, cx: &mut Context<Self>) {
         let id = action.0;
-        let Some(host) = self.store.read(cx).host(id).cloned() else {
+        // Saved hosts only: one opened from a link goes with its tabs.
+        let Some(host) = self
+            .store
+            .read(cx)
+            .hosts()
+            .iter()
+            .find(|host| host.id == id)
+            .cloned()
+        else {
             return;
         };
         let workspace = cx.entity().downgrade();
@@ -1975,6 +2003,7 @@ fn new_terminal_panel(
                     this.store
                         .update(cx, |store, cx| store.set_active(None, cx));
                 }
+                this.forget_unused_link_host(*host_id, window, cx);
             }
             TerminalPanelEvent::StatusChanged(_, host_id) => {
                 this.refresh_host_connection_state(*host_id, cx);
@@ -2084,6 +2113,7 @@ fn new_explorer_panel(
                     this.set_active_tab(None, window, cx);
                 }
                 this.refresh_host_connection_state(*host_id, cx);
+                this.forget_unused_link_host(*host_id, window, cx);
             }
             ExplorerPanelEvent::StateChanged(id, host_id) => {
                 if let Some(panel) = this.explorers.get(id) {

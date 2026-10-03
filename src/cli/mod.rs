@@ -9,6 +9,7 @@ mod install;
 #[cfg(any(windows, test))]
 mod install_windows;
 mod integration;
+mod link;
 #[cfg(windows)]
 mod pipe_windows;
 mod protocol;
@@ -32,6 +33,7 @@ pub use install::{
     update_outdated_binary, update_outdated_skills,
 };
 pub use integration::{CliIntegration, IntegrationStatus};
+pub use link::{OpenLink, link_arguments};
 pub use protocol::{CliError, ErrorCode, HostInfo, Request, TransferCounters, TransferSummary};
 pub use server::{CliBackend, CliServer, CliTarget};
 
@@ -287,8 +289,9 @@ impl<W: Write> Write for ConsoleText<W> {
     }
 }
 
-/// Whether the process was started as the command rather than the app:
-/// with arguments, apart from the one macOS adds when launching an app.
+/// The arguments the process was started with, apart from the one macOS
+/// adds when launching an app; `None` without any. The command's, unless
+/// [`link_arguments`] finds a link to open in them.
 pub fn command_line_arguments() -> Option<Vec<OsString>> {
     let args: Vec<OsString> = std::env::args_os()
         .skip(1)

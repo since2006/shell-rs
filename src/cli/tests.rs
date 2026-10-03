@@ -10,12 +10,13 @@ use std::{
 use clap::Parser as _;
 
 use super::client::{self, Console};
+use super::link::OpenLink;
 use super::protocol::{CliError, ErrorCode, HostInfo, Request, TransferCounters, TransferSummary};
 use super::server::{CliBackend, CliServer, CliTarget};
 use super::{Cli, Command};
 use super::{ConsoleText, normalize_command};
 use crate::app::cli_endpoint;
-use crate::host::{AuthKind, GroupId, Host, HostDraft, HostId, HostLogin};
+use crate::host::{AuthKind, GroupId, Host, HostDraft, HostId, HostLogin, HostStore, SshLink};
 use crate::ssh::ExecStream;
 
 /// Records what it was asked and answers from a script.
@@ -328,12 +329,12 @@ fn opening_shellrs_again_brings_the_running_one_forward() {
     let fixture = fixture();
     // Whatever 启用外部 CLI says: this is not the external CLI.
     fixture.server.set_enabled(false);
-    assert!(!fixture.server.take_activation());
+    assert_eq!(fixture.server.take_activation(), None);
 
-    assert!(client::activate_running_app(&fixture.socket));
-    assert!(fixture.server.take_activation());
+    assert!(client::activate_running_app(&fixture.socket, None));
+    assert_eq!(fixture.server.take_activation(), Some(Vec::new()));
     // Heard once, acted on once.
-    assert!(!fixture.server.take_activation());
+    assert_eq!(fixture.server.take_activation(), None);
     assert!(fixture.backend.calls.lock().unwrap().is_empty());
 
     // The switch still guards everything else.
@@ -344,13 +345,56 @@ fn opening_shellrs_again_brings_the_running_one_forward() {
             .unwrap()
             .starts_with("shellrs: [not_enabled]")
     );
-    assert!(!fixture.server.take_activation());
+    assert_eq!(fixture.server.take_activation(), None);
+}
+
+#[test]
+fn opening_shellrs_with_links_hands_them_to_the_running_one_in_order() {
+    let fixture = fixture();
+    fixture.server.set_enabled(false);
+    let link = |url: &str, tab: Option<&str>| OpenLink {
+        url: url.into(),
+        tab: tab.map(str::to_string),
+    };
+    let first = link("ssh://token:p%40ss@172.16.0.28:12024", Some("堡垒机"));
+    let second = link("ssh://root@10.0.0.9", None);
+    assert!(client::activate_running_app(
+        &fixture.socket,
+        Some(first.clone())
+    ));
+    assert!(client::activate_running_app(&fixture.socket, None));
+    assert!(client::activate_running_app(
+        &fixture.socket,
+        Some(second.clone())
+    ));
+    assert_eq!(fixture.server.take_activation(), Some(vec![first, second]));
+    assert_eq!(fixture.server.take_activation(), None);
+}
+
+#[test]
+fn a_host_opened_from_a_link_is_not_the_commands() {
+    let mut store = HostStore::empty();
+    let saved = store.insert_unnotified(HostDraft::new(
+        "web",
+        "10.0.1.12",
+        22,
+        "root",
+        AuthKind::Password,
+        None,
+    ));
+    store.insert_transient_unnotified(SshLink::parse("ssh://token@10.0.0.9", None).unwrap());
+    let targets = CliTarget::all(&store);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].host().id, saved);
 }
 
 #[test]
 fn with_nothing_running_shellrs_is_free_to_start() {
     let dir = tempfile::tempdir().unwrap();
-    assert!(!client::activate_running_app(&cli_endpoint(dir.path())));
+    assert!(!client::activate_running_app(
+        &cli_endpoint(dir.path()),
+        None
+    ));
 
     // Nor does a socket left behind by a crash count as a running app.
     #[cfg(unix)]
@@ -359,7 +403,7 @@ fn with_nothing_running_shellrs_is_free_to_start() {
         // No process may start meanwhile and keep the socket open.
         let _forks = crate::testing::no_forks();
         drop(std::os::unix::net::UnixListener::bind(&stale).unwrap());
-        assert!(!client::activate_running_app(&stale));
+        assert!(!client::activate_running_app(&stale, None));
     }
 }
 

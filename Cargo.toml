@@ -44,6 +44,9 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 unicode-width = "0.2"
+# `ssh://user:password@host:port` links, as bastion hosts open Xshell with.
+url = "2"
+percent-encoding = "2"
 zeroize = "1"
 keyring = "4"
 trash = "5"

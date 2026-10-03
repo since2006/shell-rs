@@ -10,6 +10,7 @@ use std::{
 
 use unicode_width::UnicodeWidthStr as _;
 
+use super::link::OpenLink;
 use super::protocol::{
     Envelope, ErrorCode, FrameKind, HostInfo, PROTOCOL_VERSION, Reply, Request, TransferCounters,
     TransferSummary, parse_json, read_frame, write_json,
@@ -61,14 +62,14 @@ pub fn run(endpoint: &Path, request: Request, console: &mut Console) -> i32 {
 /// forward. One too busy to answer is running all the same.
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Ask the ShellRS listening at `endpoint` to bring its window forward;
-/// whether there is one. `false` means nothing is running there and the
-/// caller is free to start.
+/// Ask the ShellRS listening at `endpoint` to bring its window forward,
+/// and to open `open` there; whether there is one. `false` means nothing is
+/// running there and the caller is free to start.
 ///
 /// Whatever takes the connection counts as running, whether or not it
 /// understands the request: an older ShellRS answers with an error, and a
 /// second copy on the same data would be worse than a window left behind.
-pub fn activate_running_app(endpoint: &Path) -> bool {
+pub fn activate_running_app(endpoint: &Path, open: Option<OpenLink>) -> bool {
     let Ok(stream) = connect(endpoint) else {
         return false;
     };
@@ -78,7 +79,7 @@ pub fn activate_running_app(endpoint: &Path) -> bool {
     let asked = std::thread::Builder::new()
         .name("shellrs-activate".into())
         .spawn(move || {
-            let _ = done.send(ask_to_come_forward(&stream));
+            let _ = done.send(ask_to_come_forward(&stream, open));
         });
     if asked.is_ok() {
         let _ = heard.recv_timeout(ACTIVATION_TIMEOUT);
@@ -88,7 +89,7 @@ pub fn activate_running_app(endpoint: &Path) -> bool {
 
 /// Send the request and wait for the answer, whatever it says: by then the
 /// app has the request.
-fn ask_to_come_forward<S>(stream: S) -> io::Result<()>
+fn ask_to_come_forward<S>(stream: S, open: Option<OpenLink>) -> io::Result<()>
 where
     S: Copy + io::Read + Write,
 {
@@ -97,7 +98,7 @@ where
         &mut writer,
         &Envelope {
             version: PROTOCOL_VERSION,
-            request: Request::Activate,
+            request: Request::Activate { open },
         },
     )?;
     read_frame(&mut BufReader::new(stream)).map(|_| ())

@@ -6,7 +6,7 @@ use std::{
     io::{self, BufReader},
     path::{Path, PathBuf},
     sync::{
-        Arc, RwLock,
+        Arc, Mutex, RwLock,
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
@@ -15,6 +15,7 @@ use std::{
 #[cfg(unix)]
 use tokio::sync::watch;
 
+use super::link::OpenLink;
 use super::protocol::{
     CliError, Envelope, ErrorCode, FrameKind, HostInfo, PROTOCOL_VERSION, Reply, Request,
     TransferCounters, TransferSummary, parse_json, read_frame, write_frame, write_json,
@@ -130,9 +131,10 @@ struct Shared {
     enabled: AtomicBool,
     targets: RwLock<Vec<CliTarget>>,
     backend: Arc<dyn CliBackend>,
-    /// Set when ShellRS was opened again while this one runs, until the
-    /// app has brought its window forward.
-    activation: AtomicBool,
+    /// Set when ShellRS was opened again while this one runs, with the
+    /// links it was opened with, until the app has come forward and opened
+    /// them.
+    activation: Mutex<Option<Vec<OpenLink>>>,
 }
 
 /// Listens on the CLI socket until dropped. Always listening, even with
@@ -152,7 +154,7 @@ impl CliServer {
             enabled: AtomicBool::new(false),
             targets: RwLock::new(Vec::new()),
             backend,
-            activation: AtomicBool::new(false),
+            activation: Mutex::new(None),
         });
         let listener = listen(endpoint, shared.clone())?;
         Ok(Self {
@@ -173,11 +175,16 @@ impl CliServer {
             .unwrap_or_else(|error| error.into_inner()) = targets;
     }
 
-    /// Whether ShellRS was opened again since this was last asked. The
-    /// request threads cannot reach the window, so the app asks here on a
-    /// timer and brings its window forward when the answer is yes.
-    pub fn take_activation(&self) -> bool {
-        self.shared.activation.swap(false, Ordering::AcqRel)
+    /// Whether ShellRS was opened again since this was last asked, and the
+    /// links it was opened with, oldest first: `Some` and empty for a plain
+    /// re-open. The request threads cannot reach the window, so the app asks
+    /// here on a timer, then comes forward and opens them.
+    pub fn take_activation(&self) -> Option<Vec<OpenLink>> {
+        self.shared
+            .activation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
     }
 }
 
@@ -422,8 +429,13 @@ fn respond(
         .map_err(|error| CliError::new(ErrorCode::BadRequest, error.to_string()))?;
     // Before the checks below: coming forward means the same in every
     // version, and it is ShellRS being opened again, not the external CLI.
-    if envelope.request == Request::Activate {
-        shared.activation.store(true, Ordering::Release);
+    if let Request::Activate { open } = &envelope.request {
+        shared
+            .activation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_or_insert_with(Vec::new)
+            .extend(open.clone());
         return Ok(Reply::Activated);
     }
     if envelope.version != PROTOCOL_VERSION {
@@ -498,7 +510,7 @@ fn respond(
                 .map(Reply::TransferDone)
         }
         // Answered above, before anything was checked.
-        Request::Activate => Ok(Reply::Activated),
+        Request::Activate { .. } => Ok(Reply::Activated),
     }
 }
 

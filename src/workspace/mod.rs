@@ -5,6 +5,7 @@
 mod credentials;
 mod dock_skin;
 mod forwards;
+mod links;
 mod recent_hosts;
 mod sidebar;
 mod snippets;
@@ -15,4 +16,5 @@ mod tools;
 mod updates;
 mod workspace_view;
 
+pub use links::open_link_once_open;
 pub use workspace_view::{Workspace, notify_once_open, window_options};

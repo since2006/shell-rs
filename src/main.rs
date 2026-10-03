@@ -9,17 +9,23 @@ use shellrs::host::{HostDatabase, HostStore};
 use shellrs::settings::SettingsStore;
 
 fn main() {
+    let args = shellrs::cli::command_line_arguments().unwrap_or_default();
+    // `ShellRS ssh://user@host:port` or `ShellRS -url … -newtab 名称`: a
+    // bastion host opening ShellRS the way it opens Xshell. On every build,
+    // a Windows release build above all, where bastion hosts run it.
+    let link = shellrs::cli::link_arguments(&args);
     // `shellrs list`, `shellrs exec …`: the command, not the app. Not in a
     // Windows release build, which has nowhere to print: there the command
     // is `shellrs-cli.exe`, which 设置 → 外部 CLI puts on the PATH.
     #[cfg(any(not(windows), debug_assertions))]
-    if let Some(args) = shellrs::cli::command_line_arguments() {
+    if link.is_none() && !args.is_empty() {
         std::process::exit(shellrs::cli::main(args));
     }
     // One ShellRS per data directory. Each keeps the hosts in memory and
     // writes its changes through, so a second one would write over the
-    // first one's; opened again, ShellRS brings the running one forward.
-    if shellrs::cli::activate_running_app(&shellrs::app::cli_socket_path()) {
+    // first one's; opened again, ShellRS brings the running one forward
+    // and hands it the link.
+    if shellrs::cli::activate_running_app(&shellrs::app::cli_socket_path(), link.clone()) {
         return;
     }
     let app = gpui_kit::application().with_assets(shellrs::app::AppAssets);
@@ -52,6 +58,9 @@ fn main() {
                 // Not pushed here: the window has no `Root` to show it yet.
                 for problem in [problem, settings_problem].into_iter().flatten() {
                     shellrs::workspace::notify_once_open(Notification::error(problem), window, cx);
+                }
+                if let Some(link) = link {
+                    shellrs::workspace::open_link_once_open(&workspace, link, window, cx);
                 }
                 cx.new(|cx| Root::new(workspace, window, cx))
             })

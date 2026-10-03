@@ -13,6 +13,8 @@ use std::{
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+use super::link::OpenLink;
+
 /// Bumped when a request or reply changes shape. The command and the app
 /// come from the same build, so they differ only while an older copy still
 /// runs, or on Windows while the copy on the PATH has not been updated.
@@ -124,10 +126,16 @@ pub enum Request {
         source: String,
         destination: PathBuf,
     },
-    /// Bring the app's window forward. Not the `shellrs` command's: ShellRS
-    /// sends it when it is opened while it is already running, so it is
-    /// answered whatever 启用外部 CLI says.
-    Activate,
+    /// Bring the app's window forward, and open `open` in it. Not the
+    /// `shellrs` command's: ShellRS sends it when it is opened while it is
+    /// already running, so it is answered whatever 启用外部 CLI says.
+    ///
+    /// Without a link it is `{"type":"activate"}`, as it always was. A
+    /// ShellRS from before links ignores `open` and only comes forward.
+    Activate {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        open: Option<OpenLink>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -299,5 +307,36 @@ mod tests {
                 format!("\"{}\"", code.as_str())
             );
         }
+    }
+
+    #[test]
+    fn activating_without_a_link_is_what_it_always_was() {
+        let plain = Envelope {
+            version: PROTOCOL_VERSION,
+            request: Request::Activate { open: None },
+        };
+        assert_eq!(
+            serde_json::to_string(&plain).unwrap(),
+            r#"{"version":2,"request":{"type":"activate"}}"#
+        );
+        let read: Envelope = parse_json(br#"{"version":2,"request":{"type":"activate"}}"#).unwrap();
+        assert_eq!(read, plain);
+
+        let with_link = Request::Activate {
+            open: Some(OpenLink {
+                url: "ssh://token@10.0.0.9:2222".into(),
+                tab: Some("堡垒机".into()),
+            }),
+        };
+        let wire = serde_json::to_vec(&with_link).unwrap();
+        assert_eq!(parse_json::<Request>(&wire).unwrap(), with_link);
+
+        // How a ShellRS from before links read it: still a plain Activate.
+        #[derive(Debug, PartialEq, Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum Before {
+            Activate,
+        }
+        assert_eq!(parse_json::<Before>(&wire).unwrap(), Before::Activate);
     }
 }
