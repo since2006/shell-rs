@@ -156,8 +156,9 @@ fn describe_test_failure(error: &anyhow::Error, host_trust: HostTrust) -> String
 }
 
 /// Why a login failed, from the error alone: where on the way to the host
-/// it failed, a credential that was missing, the network's own answer, or
-/// whatever the error says.
+/// it failed, a credential that was missing, the network's own answer, the
+/// algorithms the server would not agree on, or whatever the error says,
+/// down to its cause: 「无法建立 SSH 连接」 alone does not say what to fix.
 pub fn describe_login_error(error: &anyhow::Error) -> String {
     if let Some(failure) = error.downcast_ref::<RouteFailure>() {
         return failure.to_string();
@@ -173,10 +174,27 @@ pub fn describe_login_error(error: &anyhow::Error) -> String {
             // russh wraps the socket's own error rather than chaining it.
             Some(russh::Error::IO(io)) => return describe_connect_error(io),
             Some(russh::Error::ConnectionTimeout) => return "连接超时".into(),
+            Some(russh::Error::NoCommonAlgo { kind, theirs, .. }) => {
+                return format!(
+                    "无法建立 SSH 连接：和服务器没有共同的{}算法，服务器支持的是 {}",
+                    algorithm_kind(kind),
+                    theirs.join("、")
+                );
+            }
             _ => {}
         }
     }
-    error.to_string()
+    format!("{error:#}")
+}
+
+fn algorithm_kind(kind: &russh::AlgorithmKind) -> &'static str {
+    match kind {
+        russh::AlgorithmKind::Kex => "密钥交换",
+        russh::AlgorithmKind::Key => "主机密钥",
+        russh::AlgorithmKind::Cipher => "加密",
+        russh::AlgorithmKind::Mac => "消息校验（MAC）",
+        russh::AlgorithmKind::Compression => "压缩",
+    }
 }
 
 /// A connect error in plain words. The common kinds get an explanation;
@@ -320,6 +338,27 @@ mod tests {
         assert_eq!(
             reason(anyhow!("服务器未接受指定的私钥")),
             "服务器未接受指定的私钥"
+        );
+        // With what lies under it, which says what to fix.
+        let kex = anyhow::Error::from(russh::Error::Kex)
+            .context("无法建立 SSH 连接，请检查地址、端口和主机密钥");
+        assert_eq!(
+            reason(kex),
+            "无法建立 SSH 连接，请检查地址、端口和主机密钥: Key exchange failed"
+        );
+    }
+
+    #[test]
+    fn a_server_of_other_algorithms_says_which_it_has() {
+        let mac = anyhow::Error::from(russh::Error::NoCommonAlgo {
+            kind: russh::AlgorithmKind::Mac,
+            ours: vec!["hmac-sha2-256".into()],
+            theirs: vec!["hmac-sha1".into(), "hmac-md5".into()],
+        })
+        .context("无法建立 SSH 连接，请检查地址、端口和主机密钥");
+        assert_eq!(
+            reason(mac),
+            "无法建立 SSH 连接：和服务器没有共同的消息校验（MAC）算法，服务器支持的是 hmac-sha1、hmac-md5"
         );
     }
 }

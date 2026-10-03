@@ -2,6 +2,7 @@ use super::{
     connection::{SshConnectionConfig, SshConnector, SshHandle, SshPrompts},
     latency::{LATENCY_INTERVAL, round_trip},
     probe::{HostOsProbe, ProbeOutcome},
+    tester::describe_login_error,
 };
 use crate::{
     connection::Latency,
@@ -147,7 +148,12 @@ impl SshTerminalTransport {
             }
         });
 
-        let (handle, _) = self.connector.connect(&self.config, broker.clone()).await?;
+        // Said in the terminal: down to the cause, which says what to fix.
+        let (handle, _) = self
+            .connector
+            .connect(&self.config, broker.clone())
+            .await
+            .map_err(|error| anyhow!(describe_login_error(&error)))?;
         let mut shutdown = broker.shutdown_receiver();
         let mut channel = tokio::select! {
             result = handle.channel_open_session() => {

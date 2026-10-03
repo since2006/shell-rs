@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     host::HostLogin,
-    ssh::{LATENCY_INTERVAL, SshConnectionConfig, SshConnector, SshPrompts},
+    ssh::{LATENCY_INTERVAL, SshConnectionConfig, SshConnector, SshPrompts, describe_login_error},
 };
 use anyhow::{Result, anyhow};
 use async_channel::{Receiver, Sender};
@@ -261,7 +261,7 @@ impl SshSftpTransport {
             Ok(connected) => *client.write().await = Some(connected),
             Err(error) => {
                 let _ = events
-                    .send(SftpEvent::Disconnected(error.to_string()))
+                    .send(SftpEvent::Disconnected(describe_login_error(&error)))
                     .await;
             }
         }
@@ -302,7 +302,7 @@ impl SshSftpTransport {
                     Ok(connected) => *client.write().await = Some(connected),
                     Err(error) => {
                         events
-                            .send(SftpEvent::Disconnected(error.to_string()))
+                            .send(SftpEvent::Disconnected(describe_login_error(&error)))
                             .await?;
                         events.send(SftpEvent::Idle).await?;
                         busy.store(false, Ordering::Release);

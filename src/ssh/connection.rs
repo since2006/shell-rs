@@ -314,11 +314,50 @@ trait TunnelStream: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> TunnelStream for T {}
 
+/// The key exchanges ShellRS offers, in OpenSSH's order: russh's own list
+/// leaves out the NIST curves, which servers without curve25519 (Apache
+/// SSHD, as many bastion hosts run) settle on with OpenSSH.
+const KEX_ORDER: &[russh::kex::Name] = &[
+    russh::kex::MLKEM768X25519_SHA256,
+    russh::kex::CURVE25519,
+    russh::kex::CURVE25519_PRE_RFC_8731,
+    russh::kex::ECDH_SHA2_NISTP256,
+    russh::kex::ECDH_SHA2_NISTP384,
+    russh::kex::ECDH_SHA2_NISTP521,
+    russh::kex::DH_GEX_SHA256,
+    russh::kex::DH_G16_SHA512,
+    russh::kex::DH_G18_SHA512,
+    russh::kex::DH_G17_SHA512,
+    russh::kex::DH_G15_SHA512,
+    russh::kex::DH_G14_SHA256,
+    russh::kex::EXTENSION_SUPPORT_AS_CLIENT,
+    russh::kex::EXTENSION_SUPPORT_AS_SERVER,
+    russh::kex::EXTENSION_OPENSSH_STRICT_KEX_AS_CLIENT,
+    russh::kex::EXTENSION_OPENSSH_STRICT_KEX_AS_SERVER,
+];
+
+/// The smallest group a group exchange accepts, as OpenSSH's: russh asks
+/// for 3072 bits, which Apache SSHD on an older Java cannot give (its
+/// largest is 2048) and so ends the connection.
+const MIN_DH_GROUP_BITS: usize = 2048;
+
+/// Connects wherever OpenSSH with its default settings does.
 fn ssh_config() -> Arc<client::Config> {
+    let defaults = client::GexParams::default();
     Arc::new(client::Config {
         keepalive_interval: Some(KEEPALIVE_INTERVAL),
         keepalive_max: 3,
         nodelay: true,
+        preferred: russh::Preferred {
+            kex: KEX_ORDER.into(),
+            ..russh::Preferred::default()
+        },
+        gex: client::GexParams::new(
+            MIN_DH_GROUP_BITS,
+            defaults.preferred_group_size(),
+            defaults.max_group_size(),
+        )
+        .expect("2048 bits is the smallest group russh allows"),
         ..Default::default()
     })
 }

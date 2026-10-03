@@ -1,6 +1,7 @@
 //! Loopback-only tests of reaching a host through jump hosts and proxies,
 //! against in-process SSH servers and proxies. No user hosts, no keychain.
 use std::{
+    borrow::Cow,
     path::Path,
     sync::{Arc, Mutex, OnceLock, Weak},
     time::Duration,
@@ -49,6 +50,9 @@ struct Accepting {
     user: &'static str,
     password: &'static str,
     state: Arc<Mutex<RouteState>>,
+    /// Groups for group exchange no larger than 2048 bits, as Apache SSHD
+    /// has on an older Java: asked for larger, it has none to give.
+    small_groups: bool,
 }
 
 struct RouteHandler {
@@ -72,6 +76,25 @@ impl server::Server for Accepting {
 
 impl server::Handler for RouteHandler {
     type Error = anyhow::Error;
+
+    async fn lookup_dh_gex_group(
+        &mut self,
+        asked: &russh::client::GexParams,
+    ) -> Result<Option<russh::kex::dh::groups::DhGroup>> {
+        use russh::kex::dh::groups::{DH_GROUP14, DH_GROUP16};
+        let groups: &[_] = if self.accepting.small_groups {
+            &[DH_GROUP14]
+        } else {
+            &[DH_GROUP14, DH_GROUP16]
+        };
+        Ok(groups
+            .iter()
+            .rev()
+            .find(|group| {
+                (asked.min_group_size()..=asked.max_group_size()).contains(&group.bit_size())
+            })
+            .cloned())
+    }
 
     async fn auth_password(&mut self, user: &str, password: &str) -> Result<server::Auth> {
         Ok(
@@ -134,6 +157,15 @@ fn listen(runtime: &tokio::runtime::Runtime) -> Option<TcpListener> {
 }
 
 fn start_server(user: &'static str, password: &'static str) -> Option<RouteServer> {
+    start_server_offering(user, password, None)
+}
+
+/// A server that only knows the key exchanges `kex`, when given.
+fn start_server_offering(
+    user: &'static str,
+    password: &'static str,
+    kex: Option<&'static [russh::kex::Name]>,
+) -> Option<RouteServer> {
     let runtime = runtime();
     let listener = listen(&runtime)?;
     let port = listener.local_addr().unwrap().port();
@@ -142,6 +174,7 @@ fn start_server(user: &'static str, password: &'static str) -> Option<RouteServe
         user,
         password,
         state: state.clone(),
+        small_groups: kex.is_some(),
     };
     let mut rng = russh::keys::key::safe_rng();
     let key = russh::keys::PrivateKey::random(&mut rng, russh::keys::Algorithm::Ed25519).unwrap();
@@ -150,6 +183,10 @@ fn start_server(user: &'static str, password: &'static str) -> Option<RouteServe
         auth_rejection_time: Duration::ZERO,
         auth_rejection_time_initial: Some(Duration::ZERO),
         keys: vec![key],
+        preferred: russh::Preferred {
+            kex: kex.map_or(russh::Preferred::DEFAULT.kex, Cow::Borrowed),
+            ..russh::Preferred::default()
+        },
         ..server::Config::default()
     });
     runtime.spawn(async move {
@@ -602,6 +639,37 @@ fn a_host_behind_an_http_proxy_is_reached_through_it() {
         *relay.targets.lock().unwrap(),
         [format!("127.0.0.1:{}", target.port)]
     );
+}
+
+/// What Apache SSHD on an older Java offers, as the user's bastion host
+/// does: group exchange whose largest group is 2048 bits, or NIST curves.
+/// OpenSSH reaches both; ShellRS must too.
+#[test]
+fn a_server_with_only_2048_bit_groups_or_nist_curves_is_reached() {
+    const GROUP_EXCHANGE: &[russh::kex::Name] = &[russh::kex::DH_GEX_SHA256];
+    const NIST_CURVES: &[russh::kex::Name] = &[
+        russh::kex::ECDH_SHA2_NISTP521,
+        russh::kex::ECDH_SHA2_NISTP384,
+        russh::kex::ECDH_SHA2_NISTP256,
+    ];
+    for kex in [GROUP_EXCHANGE, NIST_CURVES] {
+        let Some(server) = start_server_offering(TARGET_USER, TARGET_PASSWORD, Some(kex)) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let request = LoginTest::typed(manual("127.0.0.1", server.port, TARGET_USER))
+            .with_password(TARGET_PASSWORD);
+        assert_eq!(
+            test_login(
+                &directory.path().join("known_hosts"),
+                Arc::new(InMemorySecretStore::default()),
+                request
+            ),
+            Ok(()),
+            "{kex:?}"
+        );
+    }
 }
 
 /// A loopback port nothing listens on.
