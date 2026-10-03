@@ -48,6 +48,14 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 - Find (smart case) and local clear; configurable font, size and line height.
 - Drag tabs into side-by-side or stacked splits to watch a terminal and SFTP together.
 
+**Right sidebar tools**
+
+- They follow the current remote terminal and read and run on that terminal's own connection, with no second login. ⌘⌥B (Ctrl+Alt+B elsewhere) shows or hides them.
+- System monitor: system details, CPU (per core too), memory, network rates and disk use, refreshed every 2 seconds.
+- Network connections, processes and services: search and filter, process details, ending processes, starting, stopping and restarting systemd services, switching them on at boot, and their logs. These three and the monitor are for Linux only.
+- Docker: containers grouped by compose project, with start, stop, restart, details and logs, plus volumes, images and networks. When not root, passwordless sudo is used (for services as well).
+- Command history reads `~/.bash_history` on the host, and snippets, shared by every host, can be sorted into categories; click one to type it into the terminal, or run it straight away.
+
 **SFTP**
 
 - A dual-pane browser modeled on WinSCP Commander: symmetric local and remote panes with WinSCP's columns, path labels, bookmarks and shortcuts (F5, F2, F7, F8…).
@@ -88,6 +96,11 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 <p align="center">
   <img src="docs/screenshots/split.png" alt="A split view: a remote terminal on top and SFTP for the same host below"><br>
   <em>Dock splits: a remote terminal and SFTP stacked in one window</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/tools.png" alt="Five right sidebar tools side by side: system monitor, processes, services, Docker and network connections"><br>
+  <em>Right sidebar tools: system monitor, processes, services, Docker and network connections</em>
 </p>
 
 <p align="center">

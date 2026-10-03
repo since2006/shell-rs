@@ -48,6 +48,14 @@ ShellRS 把 Xshell 式的主机管理和多标签终端、WinSCP 式的双栏 SF
 - 支持查找（智能大小写）和本地清屏，字体、字号、行高都可以设置。
 - 标签可以拖成左右或上下分栏，终端和 SFTP 并排看。
 
+**右侧栏工具**
+
+- 跟着当前的远程终端，在这条终端自己的连接上读取和执行，不另外登录；⌘⌥B（其他平台 Ctrl+Alt+B）显示或隐藏。
+- 系统监控：系统信息、CPU（含每个核）、内存、网卡速率和磁盘占用，每 2 秒刷新。
+- 网络连接、进程管理和系统服务：搜索和筛选，查看进程详情、结束进程，启动、停止、重启 systemd 服务，开关开机启动，查看日志。这三项和系统监控只支持 Linux。
+- Docker：按 compose 项目列出容器，启停、重启、看详情和日志，管理卷、镜像和网络。不是 root 时用免密码的 sudo（系统服务也是）。
+- 历史命令读主机上的 `~/.bash_history`，命令片段所有主机共用、可以分类；点一下输入到终端，或直接执行。
+
 **SFTP**
 
 - 对标 WinSCP Commander 的双栏文件浏览器：本地和远程两侧对称，WinSCP 的列、路径标签、书签和快捷键（F5、F2、F7、F8……）。
@@ -88,6 +96,11 @@ ShellRS 把 Xshell 式的主机管理和多标签终端、WinSCP 式的双栏 SF
 <p align="center">
   <img src="docs/screenshots/split.png" alt="Dock 分栏：上面是远程终端，下面是同一台主机的 SFTP"><br>
   <em>Dock 分栏：远程终端和 SFTP 上下并排</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/tools.png" alt="右侧栏的五个工具并排：系统监控、进程管理、系统服务、Docker 和网络连接"><br>
+  <em>右侧栏工具：系统监控、进程管理、系统服务、Docker 和网络连接</em>
 </p>
 
 <p align="center">
