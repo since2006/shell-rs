@@ -1,13 +1,20 @@
 use std::{cell::Cell, rc::Rc};
 
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, button::Button, h_flex, list::ListItem,
-    menu::ContextMenuExt as _, scroll::ScrollableElement as _, v_flex,
+    ActiveTheme as _, Icon, IconName, Sizable as _,
+    button::{Button, ButtonVariants as _},
+    h_flex,
+    list::ListItem,
+    menu::ContextMenuExt as _,
+    scroll::ScrollableElement as _,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::app::{CatalogIcon, ConnectHost, ConnectSelected, NewHost, RECENT_HOSTS_CONTEXT};
+use crate::app::{
+    CatalogIcon, ConnectHost, ConnectSelected, NewHost, QuickConnect, RECENT_HOSTS_CONTEXT,
+};
 use crate::host::{HostId, HostOs, HostStore, host_menu};
 use crate::shared::HostMark;
 
@@ -103,10 +110,30 @@ impl RecentHosts {
                     ),
             )
             .child(
-                Button::new("recent-new-host")
-                    .icon(IconName::Plus)
-                    .label("新建主机…")
-                    .on_click(move |_, window, cx| target.dispatch_action(&NewHost, window, cx)),
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("recent-quick-connect")
+                            .primary()
+                            .small()
+                            .icon(IconName::Search)
+                            .label("快速连接")
+                            .on_click({
+                                let target = target.clone();
+                                move |_, window, cx| {
+                                    target.dispatch_action(&QuickConnect, window, cx)
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::new("recent-new-host")
+                            .small()
+                            .icon(IconName::Plus)
+                            .label("新建主机…")
+                            .on_click(move |_, window, cx| {
+                                target.dispatch_action(&NewHost, window, cx)
+                            }),
+                    ),
             )
     }
 

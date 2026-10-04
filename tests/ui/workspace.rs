@@ -196,6 +196,69 @@ async fn enter_connects_the_selected_recent_host(cx: &mut TestAppContext) {
     .await;
 }
 
+/// 快速连接 on the start page: search the saved hosts and connect to one
+/// with Enter. (Choosing several is switched off for now.)
+#[gpui_kit::test]
+async fn quick_connect_finds_saved_hosts_and_connects_one(cx: &mut TestAppContext) {
+    use shellrs::host::GroupDraft;
+
+    let mut store = HostStore::empty();
+    let group = store.insert_group_unnotified(GroupDraft::new("数据库", None));
+    let [web, db, cache] = [
+        ("web-01", "10.0.0.1", None),
+        ("db-01", "10.0.0.2", Some(group)),
+        ("cache", "10.0.0.3", None),
+    ]
+    .map(|(name, address, group)| {
+        store.insert_unnotified(HostDraft::new(
+            name,
+            address,
+            22,
+            "root",
+            AuthKind::Password,
+            group,
+        ))
+    });
+    let (handle, _) = open_workspace_with_store(cx, store);
+    let row = |id: HostId| ("quick-connect-host", id.0);
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("recent-quick-connect", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        // Every saved host, by name while none has been connected to.
+        let tops: Vec<f32> = [cache, db, web]
+            .map(|id| window.find(row(id)).bounds().origin.y.into())
+            .to_vec();
+        assert!(tops.is_sorted(), "{tops:?}");
+        assert_eq!(
+            window.find(row(db)).label(),
+            Some("db-01 · 数据库 · root@10.0.0.2:22")
+        );
+        // The search box has the keys: a group's name finds its hosts.
+        window.input("数据", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find(row(web)).is_none()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find(row(db)).is_some());
+        window.press("enter", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(("terminal-tab", 1u64))
+            .is_some_and(|tab| tab.label() == Some("db-01"))
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("quick-connect").is_none());
+    });
+}
+
 /// The start page's row menu is the host tree's menu. Menus are not
 /// driven here, so this dispatches what its items dispatch, from the page:
 /// the page is drawn deferred over the dock, and its actions must still

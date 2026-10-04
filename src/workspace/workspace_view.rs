@@ -27,10 +27,10 @@ use crate::app::{
     ExplorerAction, ExplorerCommand, ExplorerShortcut, FindInTerminal, FindNextInTerminal,
     FindPreviousInTerminal, FocusSearch, InstallAgentSkill, InstallCliCommand, MoveHostNode,
     NewChildGroup, NewGroup, NewHost, NewHostInGroup, NewLocalTerminal, NewTemporaryConnection,
-    OpenExplorer, OpenSettings, PasteTerminal, ReconnectTerminal, RefreshCliIntegration,
-    RemoveAgentSkill, RemoveCliCommand, RenameExplorer, RenameGroup, RenameTerminal,
-    RestartLocalTerminal, SetFileSizeFormat, ToggleHostPanel, ToggleTheme, ZoomIn, ZoomOut,
-    ZoomReset,
+    OpenExplorer, OpenSettings, PasteTerminal, QuickConnect, ReconnectTerminal,
+    RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, RenameExplorer, RenameGroup,
+    RenameTerminal, RestartLocalTerminal, SetFileSizeFormat, ToggleHostPanel, ToggleTheme, ZoomIn,
+    ZoomOut, ZoomReset,
 };
 use crate::cli::{CliIntegration, CliServer, CliTarget, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -46,7 +46,7 @@ use crate::forward::{
 use crate::host::{
     ConnectionState, Dependents, ForwardId, GroupId, HostId, HostNode, HostPanel, HostStore,
     HostStoreEvent, confirm_delete_group, confirm_delete_host, open_group_dialog, open_host_dialog,
-    open_temporary_connection_dialog,
+    open_quick_connect_dialog, open_temporary_connection_dialog,
 };
 use crate::settings::{
     Appearance, SettingsPanel, SettingsPanelEvent, SettingsStore, SettingsStoreEvent,
@@ -1699,6 +1699,10 @@ impl Workspace {
         );
     }
 
+    fn on_quick_connect(&mut self, _: &QuickConnect, window: &mut Window, cx: &mut Context<Self>) {
+        open_quick_connect_dialog(self.store.clone(), self.focus_handle.clone(), window, cx);
+    }
+
     fn on_edit_host(&mut self, action: &EditHost, window: &mut Window, cx: &mut Context<Self>) {
         // A host opened from a link is not saved, so there is nothing to
         // edit.
@@ -2233,6 +2237,7 @@ impl Render for Workspace {
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::on_new_host))
             .on_action(cx.listener(Self::on_new_temporary_connection))
+            .on_action(cx.listener(Self::on_quick_connect))
             .on_action(cx.listener(Self::on_new_local_terminal))
             .on_action(cx.listener(Self::on_edit_host))
             .on_action(cx.listener(Self::on_duplicate_host))

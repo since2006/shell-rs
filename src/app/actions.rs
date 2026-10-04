@@ -23,6 +23,9 @@ gpui_kit::actions!(
         NewHost,
         /// Open the 临时连接 dialog: connect to a host without saving it.
         NewTemporaryConnection,
+        /// Open 快速连接: search the saved hosts and connect to one or
+        /// several.
+        QuickConnect,
         /// Open the new-group dialog for a top-level group.
         NewGroup,
         /// Open a new local login-shell terminal.
