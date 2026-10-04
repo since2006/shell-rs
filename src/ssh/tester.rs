@@ -9,15 +9,15 @@ use tokio::sync::watch;
 use zeroize::Zeroizing;
 
 use super::connection::{
-    MissingCredential, RouteFailure, SshConnectionConfig, SshConnector, SshPrompts, lock,
-    timeout_excluding_prompts,
+    MissingCredential, PasswordWanted, RouteFailure, SshConnectionConfig, SshConnector, SshPrompts,
+    lock, timeout_excluding_prompts,
 };
 use crate::{
     connection::{
         ConnectionPrompt, ConnectionPromptKind, ConnectionPromptReply, ConnectionTester, LoginTest,
         TrustCallback,
     },
-    host::{JumpLogin, LoginRoute},
+    host::{JumpLogin, LoginMethod, LoginRoute},
     secrets::{SecretRef, SecretStore, SharedSecretStore},
 };
 
@@ -75,7 +75,16 @@ impl SshConnectionTester {
             return Err(format!("无法解析主机 {host}"));
         }
 
-        let config = SshConnectionConfig::from(request.login());
+        // No password typed: go without one, as 「无密码」 does (the server's
+        // leave, the SSH agent, the default keys), and fail if that fails.
+        let without_password = request.password_left_empty();
+        let config = if without_password {
+            let mut login = request.login().clone();
+            login.method = LoginMethod::NoPassword;
+            SshConnectionConfig::from(&login)
+        } else {
+            SshConnectionConfig::from(request.login())
+        };
         let secrets: SharedSecretStore =
             Arc::new(FormSecrets::new(&request, self.connector.secrets().clone()));
         let host_trust = Arc::new(Mutex::new(HostTrust::default()));
@@ -138,6 +147,15 @@ impl SshConnectionTester {
                     .disconnect(russh::Disconnect::ByApplication, "connection test", "zh-CN")
                     .await;
                 Ok(())
+            }
+            // The server wanted the password that was left empty: that, not
+            // 「无密码」, is what to tell someone who chose 「密码」.
+            Err(error)
+                if without_password
+                    && error.downcast_ref::<RouteFailure>().is_none()
+                    && error.chain().any(|cause| cause.is::<PasswordWanted>()) =>
+            {
+                Err(MissingCredential::Password { rejected: false }.to_string())
             }
             Err(error) => Err(describe_test_failure(&error, *lock(&host_trust))),
         }

@@ -1348,6 +1348,46 @@ mod tests {
         );
     }
 
+    /// 测试连接 with the password left empty goes without one, as 「无密码」
+    /// does: the agent gets its turn, and a server that wants a password
+    /// hears that none was typed.
+    #[cfg(unix)]
+    #[test]
+    fn a_test_with_the_password_left_empty_goes_without_one() {
+        let key = random_key();
+        let Some(server) = start_server(TestAuth::PublicKey(key.public_key().clone())) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let Some(password_server) = start_server(TestAuth::Password) else {
+            panic!("loopback became unavailable during the test")
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let agent = start_agent(&[key]);
+        let connector = || {
+            SshConnector::new(
+                directory.path().join("known_hosts"),
+                Arc::new(NoSecretStore),
+            )
+            .with_agent(crate::ssh::AgentLocation::At(agent.path.clone()))
+        };
+        let by_password = |port| HostLogin::manual("127.0.0.1", port, "tester", AuthKind::Password);
+        assert_eq!(
+            test_through(
+                connector(),
+                crate::connection::LoginTest::typed(by_password(server.port))
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            test_through(
+                connector(),
+                crate::connection::LoginTest::typed(by_password(password_server.port))
+            ),
+            Err("未填写密码".to_string())
+        );
+    }
+
     #[test]
     fn a_login_without_a_password_refuses_a_server_that_wants_one() {
         let Some(server) = start_server(TestAuth::Password) else {

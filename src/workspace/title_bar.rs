@@ -7,8 +7,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, NewHost, NewLocalTerminal, ShowCredentials, ShowForwards, ShowHosts, ShowUpdate,
-    ToggleHostPanel, ToggleTheme,
+    CatalogIcon, NewLocalTerminal, NewTemporaryConnection, ShowCredentials, ShowForwards,
+    ShowHosts, ShowUpdate, ToggleHostPanel, ToggleTheme,
 };
 use crate::shared::tinted;
 use crate::update::UpdateBadge;
@@ -31,7 +31,7 @@ pub fn render_title_bar(
     cx: &App,
 ) -> TitleBar {
     let dark = cx.theme().is_dark();
-    let (mode, toggle, new_host, new_local, theme, show_update) = (
+    let (mode, toggle, temporary, new_local, theme, show_update) = (
         target.clone(),
         target.clone(),
         target.clone(),
@@ -121,13 +121,16 @@ pub fn render_title_bar(
                         }),
                 )
                 .child(
-                    Button::new("new-host")
+                    // Saved hosts are made in the host list; up here is the
+                    // quick way in, to a host that is not saved.
+                    Button::new("temporary-connection")
                         .ghost()
                         .small()
-                        .icon(IconName::Plus)
-                        .label("新建主机…")
+                        .icon(CatalogIcon::Plug)
+                        .label("临时连接…")
+                        .tooltip("连接一台主机，不保存")
                         .on_click(move |_, window, cx| {
-                            new_host.dispatch_action(&NewHost, window, cx)
+                            temporary.dispatch_action(&NewTemporaryConnection, window, cx)
                         }),
                 )
                 .child(

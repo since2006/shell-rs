@@ -21,6 +21,8 @@ gpui_kit::actions!(
     [
         /// Open the new-host dialog for a host at the root of the tree.
         NewHost,
+        /// Open the 临时连接 dialog: connect to a host without saving it.
+        NewTemporaryConnection,
         /// Open the new-group dialog for a top-level group.
         NewGroup,
         /// Open a new local login-shell terminal.

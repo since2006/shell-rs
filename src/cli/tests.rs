@@ -420,7 +420,7 @@ fn a_host_opened_from_a_link_is_listed_as_temporary_and_logged_in_to_afresh() {
     // A table says so where the group goes.
     let (_, table, _) = run(&fixture.socket, Request::List { query: None }, false);
     assert!(
-        table.lines().nth(2).unwrap().contains("（外部连接）"),
+        table.lines().nth(2).unwrap().contains("（未保存）"),
         "{table}"
     );
 }

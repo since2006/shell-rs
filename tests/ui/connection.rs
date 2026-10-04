@@ -768,6 +768,129 @@ async fn an_sftp_link_opens_an_sftp_tab_across_the_window(cx: &mut TestAppContex
     store.read_with(cx, |store, _| assert!(store.host(LINK_HOST).is_none()));
 }
 
+/// The title bar's 临时连接: a host's login without its group, route or
+/// notes, connected to with every feature and saved nowhere.
+#[gpui_kit::test]
+async fn a_temporary_connection_has_every_feature_and_saves_nothing(cx: &mut TestAppContext) {
+    use shellrs::app::CloseTerminal;
+
+    let data = tempfile::tempdir().unwrap();
+    let path = data.path().join("shellrs.db");
+    let keychain = Arc::new(InMemorySecretStore::default());
+    let store = HostStore::load(HostDatabase::open(&path).unwrap())
+        .unwrap()
+        .with_secrets(keychain.clone());
+    let remote = Arc::new(RecordingRemoteProvider::default());
+    let tester = Arc::new(FakeConnectionTester::default());
+    let (handle, workspace) =
+        open_workspace_with_credentials(cx, store, remote.clone(), tester.clone());
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("temporary-connection", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        // Only what a login needs.
+        assert!(window.try_find("host-route").is_none());
+        assert!(window.try_find("host-notes").is_none());
+        assert!(window.try_find("test-connection").is_some());
+        assert_eq!(
+            window.find("temporary-note").label(),
+            Some("仅当前使用的临时会话，不会保存到主机列表。")
+        );
+        // The name may be left out.
+        window.click("host-address", cx);
+        window.input("10.0.0.9", cx);
+        window.click("host-port", cx);
+        window.press("cmd-a", cx);
+        window.input("2222", cx);
+        window.click("host-user", cx);
+        window.press("cmd-a", cx);
+        window.input("deploy", cx);
+        window.click("host-password", cx);
+        window.input("p@ss", cx);
+        window.click("test-connection", cx);
+    });
+    // 测试连接 tries it as it would connect: directly.
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        window.notifications(cx).len() == 1
+    })
+    .await;
+    assert_eq!(tester.routes(), [(LoginRoute::Direct, None)]);
+    in_frame(cx, handle, |window, cx| window.click("commit", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("status-connection").label() == Some("已连接 10.0.0.9")
+    })
+    .await;
+
+    let login = remote.logins().pop().expect("connected");
+    assert_eq!(
+        (login.host.as_str(), login.port, login.user.as_str()),
+        ("10.0.0.9", 2222, "deploy")
+    );
+    assert_eq!(login.method, LoginMethod::Password);
+    assert_eq!(login.route, LoginRoute::Direct);
+    assert_eq!(login.password, SecretRef::temporary(LINK_HOST.0));
+    // Every channel it likes, unlike a bastion host's link.
+    assert!(!login.shell_only);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("terminal-tab", LINK_TERMINAL)).label(),
+            Some("10.0.0.9")
+        );
+        assert!(window.try_find(("host-row", LINK_HOST.0)).is_none());
+        // The hosts stay where they were.
+        assert_eq!(window.find("show-hosts").checked(), Some(true));
+        for tool in [
+            "tool-snippets",
+            "tool-history",
+            "tool-docker",
+            "tool-monitor",
+        ] {
+            assert!(window.try_find(tool).is_some(), "{tool}");
+        }
+    })
+    .unwrap();
+    let store = workspace.read_with(cx, |workspace, _| workspace.store().clone());
+    store.read_with(cx, |store, _| {
+        assert!(store.is_temporary(LINK_HOST));
+        assert!(!store.is_external(LINK_HOST));
+        assert!(store.hosts().is_empty());
+        assert!(store.recent_hosts().next().is_none());
+        assert_eq!(
+            store
+                .secrets()
+                .get(&SecretRef::temporary(LINK_HOST.0))
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
+            Some("p@ss")
+        );
+    });
+    assert!(keychain.is_empty());
+
+    // It goes with its tab, password and all.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(CloseTerminal(RemoteTerminalId(LINK_TERMINAL))), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    store.read_with(cx, |store, _| {
+        assert!(store.host(LINK_HOST).is_none());
+        assert!(
+            store
+                .secrets()
+                .get(&SecretRef::temporary(LINK_HOST.0))
+                .unwrap()
+                .is_none()
+        );
+    });
+    let saved = HostStore::load(HostDatabase::open(&path).unwrap()).unwrap();
+    assert!(saved.hosts().is_empty());
+}
+
 #[gpui_kit::test]
 async fn a_link_that_cannot_be_read_says_why_and_opens_nothing(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace_with_credentials(

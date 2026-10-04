@@ -319,6 +319,17 @@ impl LoginTest {
     pub fn login(&self) -> &crate::host::HostLogin {
         &self.login
     }
+
+    /// A login by password typed into the form with the password left
+    /// empty. 测试连接 then goes without one, as 「无密码」 would, rather than
+    /// stop at the missing password (the user's call).
+    pub fn password_left_empty(&self) -> bool {
+        self.login.method == crate::host::LoginMethod::Password
+            && self
+                .typed
+                .as_ref()
+                .is_some_and(|typed| typed.password.is_none())
+    }
     pub fn host(&self) -> &str {
         &self.login.host
     }

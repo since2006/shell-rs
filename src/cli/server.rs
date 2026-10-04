@@ -86,7 +86,7 @@ impl CliTarget {
         }
     }
 
-    /// Marked as opened from a link, not saved.
+    /// Marked as not saved.
     fn temporary(mut self) -> Self {
         self.info.temporary = true;
         self
@@ -101,10 +101,10 @@ impl CliTarget {
         &self.login
     }
 
-    /// Every host in `store`, with its group path, then the ones opened
-    /// from a link. A request logs in to those afresh too, with the link's
-    /// user and password; a bastion host may refuse a login it gave out for
-    /// one use.
+    /// Every host in `store`, with its group path, then the ones connected
+    /// to without saving them. A request logs in to those afresh too, with
+    /// the password kept in memory; a bastion host may refuse a login it
+    /// gave out for one use.
     pub fn all(store: &HostStore) -> Vec<Self> {
         let saved = store.hosts().iter().map(|host| {
             let names = host

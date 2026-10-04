@@ -172,10 +172,10 @@ pub struct HostInfo {
     pub port: u16,
     /// The detected operating system, as stored (`ubuntu`, `macos`, …).
     pub os: Option<String>,
-    /// Connected to without being saved (so far always an 外部连接, which a
-    /// bastion host's link opened): listed while its tab is open, under one
-    /// ID for as long; opened again, it is another host with another ID.
-    /// Missing from an older app's answer, which listed saved hosts only.
+    /// Connected to without being saved (a 临时连接, or an 外部连接 a bastion
+    /// host's link opened): listed while its tab is open, under one ID for
+    /// as long; opened again, it is another host with another ID. Missing
+    /// from an older app's answer, which listed saved hosts only.
     #[serde(default)]
     pub temporary: bool,
 }

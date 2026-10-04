@@ -8,7 +8,7 @@ async fn a_host_without_a_password_says_what_it_tries_and_is_saved_as_such(
     cx: &mut TestAppContext,
 ) {
     let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
-    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
     in_frame(cx, handle, |window, cx| {
         // A new host logs in with a password.
         let sources = window.within("host-auth-source");
@@ -84,7 +84,7 @@ fn chain(window: &mut gpui_kit::Window) -> Option<String> {
 async fn a_host_goes_through_the_jump_hosts_it_lists_in_order(cx: &mut TestAppContext) {
     let (store, [aliyun, zentao, _]) = store_with_jump_hosts();
     let (handle, workspace) = open_workspace_with_store(cx, store);
-    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
     in_frame(cx, handle, |window, cx| {
         // A new host connects directly, with nothing more to fill in.
         let routes = window.within("host-route");
@@ -203,7 +203,7 @@ async fn testing_a_connection_through_a_jump_host_sends_its_login(cx: &mut TestA
     let (store, _) = store_with_jump_hosts();
     let tester = Arc::new(FakeConnectionTester::default());
     let (handle, _) = open_workspace_with_tester(cx, store, tester.clone());
-    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
     in_frame(cx, handle, |window, cx| {
         window.click("host-name", cx);
         window.input("db", cx);
@@ -238,7 +238,7 @@ async fn testing_a_connection_through_a_jump_host_sends_its_login(cx: &mut TestA
 #[gpui_kit::test]
 async fn a_hosts_notes_take_several_lines_and_come_back_when_edited(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
-    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
     in_frame(cx, handle, |window, cx| {
         window.click("host-name", cx);
         window.input("db", cx);
@@ -334,7 +334,7 @@ async fn a_host_behind_a_proxy_keeps_the_proxys_password_in_the_keychain(cx: &mu
         HostStore::empty().with_secrets(secrets.clone()),
         tester.clone(),
     );
-    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
     in_frame(cx, handle, |window, cx| {
         window.click("host-name", cx);
         window.input("abroad", cx);
@@ -457,7 +457,7 @@ async fn connection_edits_reconnect_once_but_display_edits_do_not(cx: &mut TestA
 #[gpui_kit::test]
 async fn a_form_error_sits_above_the_dialog_and_a_click_puts_it_away(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
-    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
     in_frame(cx, handle, |window, cx| {
         window.click("host-name", cx);
         window.click("commit", cx);
@@ -485,7 +485,7 @@ async fn new_host_dialog_validates_then_inserts(cx: &mut TestAppContext) {
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("new-host", cx);
+        window.click("new-host-panel", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -640,7 +640,7 @@ async fn a_connection_test_needs_a_host_and_a_user_first(cx: &mut TestAppContext
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("new-host", cx);
+        window.click("new-host-panel", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -770,7 +770,7 @@ async fn a_new_host_saves_its_password_to_the_keychain(cx: &mut TestAppContext) 
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("new-host", cx);
+        window.click("new-host-panel", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -944,7 +944,7 @@ async fn a_dialogs_choices_are_equal_segments_of_one_track(cx: &mut TestAppConte
         Arc::new(RecordingRemoteProvider::default()),
         Arc::new(FakeConnectionTester::default()),
     );
-    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
     in_frame(cx, handle, |window, cx| {
         let name = window.find("host-name").bounds();
         let mut group = window.within("host-auth-source");

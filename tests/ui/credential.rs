@@ -232,7 +232,7 @@ async fn a_host_can_use_a_credential_instead_of_typing_a_login(cx: &mut TestAppC
         Arc::new(RecordingRemoteProvider::default()),
         Arc::new(FakeConnectionTester::default()),
     );
-    in_frame(cx, handle, |window, cx| window.click("new-host", cx));
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
     in_frame(cx, handle, |window, cx| {
         window.click("host-name", cx);
         window.input("web-01", cx);

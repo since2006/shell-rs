@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui_kit::{Context, EventEmitter, SharedString};
+use zeroize::Zeroizing;
 
 use crate::secrets::{NoSecretStore, SecretRef, SharedSecretStore, TemporarySecretStore};
 
@@ -46,12 +47,11 @@ mod snippets;
 /// A temporary host is one connected to without saving it, kept apart from
 /// the saved ones: found by id like any host, so its tabs work as a saved
 /// host's do, but never listed, never written to the database and gone with
-/// its last tab; its password stays in `secrets`' memory. The only kind so
-/// far is the external one, which a bastion host opened with an `ssh://` or
+/// its last tab; its password stays in `secrets`' memory. There are two
+/// kinds: a 临时连接 typed into ShellRS's own dialog, with every feature, and
+/// an external one, which a bastion host opened with an `ssh://` or
 /// `sftp://` link (外部连接, see [`SshLink`]) and whose terminals get one
-/// channel alone. A
-/// 临时连接 typed into ShellRS, to come, will be temporary with every
-/// feature.
+/// channel alone.
 pub struct HostStore {
     groups: Vec<HostGroup>,
     hosts: Vec<Host>,
@@ -301,8 +301,8 @@ impl HostStore {
             .find(|host| host.id == id)
     }
 
-    /// The temporary hosts, oldest first. Only the external CLI lists them;
-    /// nothing else that lists hosts does.
+    /// The temporary hosts (临时连接 and 外部连接), oldest first. Only the
+    /// external CLI lists them; nothing else that lists hosts does.
     pub fn temporary_hosts(&self) -> &[Host] {
         &self.temporary
     }
@@ -329,14 +329,41 @@ impl HostStore {
     }
 
     pub fn insert_external_unnotified(&mut self, link: SshLink) -> HostId {
+        let id = self.insert_temporary_unnotified(link.draft(), link.password);
+        self.external.insert(id);
+        id
+    }
+
+    /// Connect to `draft` without saving it (临时连接): a temporary host the
+    /// tabs find by id, kept in memory until [`Self::remove_temporary`], with
+    /// `password` in memory too. It may log in with a saved credential; its
+    /// group, route and notes are not looked at, it goes directly.
+    pub fn insert_temporary(
+        &mut self,
+        draft: HostDraft,
+        password: Option<Zeroizing<String>>,
+        cx: &mut Context<Self>,
+    ) -> HostId {
+        let id = self.insert_temporary_unnotified(draft, password);
+        cx.notify();
+        id
+    }
+
+    pub fn insert_temporary_unnotified(
+        &mut self,
+        draft: HostDraft,
+        password: Option<Zeroizing<String>>,
+    ) -> HostId {
+        let mut draft = normalized(&self.credentials, draft);
+        draft.group = None;
+        draft.route = Route::Direct;
         let id = HostId(self.next_host_id);
         self.next_host_id += 1;
-        let mut host = Host::new(id, link.draft());
+        let mut host = Host::new(id, draft);
         // What the external CLI knows it by while it lasts.
         host.public_id = self.unused_public_id();
         self.temporary.push(host);
-        self.external.insert(id);
-        if let Some(password) = link.password {
+        if let Some(password) = password.filter(|password| !password.is_empty()) {
             self.secrets.remember(id.0, password);
         }
         id
@@ -897,9 +924,10 @@ impl HostStore {
             .direct_login(host)
             .with_route(self.route_login(&host.route));
         // A temporary host's password is its own, never a saved host's for
-        // the same `user@host:port`; and a bastion host that opened a link
-        // gets the terminal alone.
-        if self.is_temporary(host.id) {
+        // the same `user@host:port` (a password credential's is still the
+        // credential's); and a bastion host that opened a link gets the
+        // terminal alone.
+        if self.is_temporary(host.id) && matches!(login.password, SecretRef::Password { .. }) {
             login.password = SecretRef::temporary(host.id.0);
         }
         login.shell_only = self.is_external(host.id);
@@ -942,10 +970,12 @@ impl HostStore {
             .count()
     }
 
-    /// Every host's login, to tell afterwards whose changed.
+    /// Every host's login, temporary ones included, to tell afterwards
+    /// whose changed.
     fn logins(&self) -> Vec<(HostId, HostLogin)> {
         self.hosts
             .iter()
+            .chain(&self.temporary)
             .map(|host| (host.id, self.login_of(host)))
             .collect()
     }
@@ -1055,7 +1085,7 @@ impl HostStore {
         credential.keychain_id = keychain_id;
         credential.sort_order = sort_order;
         let user = credential.user.clone();
-        for host in &mut self.hosts {
+        for host in self.hosts.iter_mut().chain(&mut self.temporary) {
             if host.credential == Some(id) {
                 host.user = user.clone();
             }
@@ -1093,7 +1123,9 @@ impl HostStore {
         };
         let auth = self.credentials.remove(index).kind.without_credential();
         let mut released = Vec::new();
-        for host in &mut self.hosts {
+        // A temporary host using it goes on as its saved ones do, though
+        // the database never hears of it.
+        for host in self.hosts.iter_mut().chain(&mut self.temporary) {
             if host.credential == Some(id) {
                 host.credential = None;
                 host.auth = auth;
@@ -2582,6 +2614,59 @@ mod tests {
 
     fn link(text: &str) -> SshLink {
         SshLink::parse(text, Some("堡垒机")).unwrap()
+    }
+
+    #[test]
+    fn a_temporary_connection_goes_directly_and_may_use_a_credential() {
+        let mut store = HostStore::empty();
+        let saved = store.insert_unnotified(draft("web", None));
+        let ops = store.insert_credential_unnotified(CredentialDraft::new(
+            "运维",
+            CredentialKind::Password,
+            "ops",
+        ));
+        let deploy = store.insert_credential_unnotified(
+            CredentialDraft::new("部署", CredentialKind::Key, "deploy").with_key_path("/tmp/id"),
+        );
+        // A group and a route are a saved host's, and are not looked at.
+        let typed = store.insert_temporary_unnotified(
+            draft("typed", Some(GroupId(9))).with_route(Route::Jump(vec![Some(saved)])),
+            Some(Zeroizing::new("p@ss".into())),
+        );
+        let with_ops =
+            store.insert_temporary_unnotified(draft("with-ops", None).with_credential(ops), None);
+        let with_key = store
+            .insert_temporary_unnotified(draft("with-key", None).with_credential(deploy), None);
+        assert_eq!(store.hosts().len(), 1);
+        let host = store.host(typed).unwrap();
+        assert_eq!((host.group, &host.route), (None, &Route::Direct));
+        assert!(!store.is_external(typed));
+
+        // Its own password is in memory; a password credential's is the
+        // credential's, as for a saved host.
+        let login = store.login(typed).unwrap();
+        assert_eq!(login.password, SecretRef::temporary(typed.0));
+        assert!(!login.shell_only);
+        let login = store.login(with_ops).unwrap();
+        assert_eq!(login.user, "ops");
+        assert_eq!(
+            login.password,
+            store.credential(ops).unwrap().password_secret()
+        );
+        assert_eq!(
+            store.login(with_key).unwrap().password,
+            SecretRef::temporary(with_key.0)
+        );
+
+        // It follows the credential, and logs in on its own once that goes.
+        store.update_credential_unnotified(
+            ops,
+            CredentialDraft::new("运维", CredentialKind::Password, "admin"),
+        );
+        assert_eq!(store.host(with_ops).unwrap().user.as_ref(), "admin");
+        assert_eq!(store.remove_credential_unnotified(deploy), [with_key]);
+        let host = store.host(with_key).unwrap();
+        assert_eq!((host.credential, host.user.as_ref()), (None, "deploy"));
     }
 
     #[test]

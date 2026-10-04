@@ -506,6 +506,20 @@ impl std::fmt::Display for MissingCredential {
 
 impl std::error::Error for MissingCredential {}
 
+/// A login without a password (「无密码」) that the server wanted a password
+/// from. Typed, so that a connection test with the password left empty can
+/// say that rather than point at 「无密码」.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PasswordWanted;
+
+impl std::fmt::Display for PasswordWanted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("服务器要求密码，「无密码」不会询问；请改用「密码」或「使用凭据」")
+    }
+}
+
+impl std::error::Error for PasswordWanted {}
+
 impl SshPrompts {
     pub fn new(
         events: Arc<dyn Fn(ConnectionPrompt) -> bool + Send + Sync>,
@@ -902,7 +916,7 @@ async fn authenticate(
         if methods.contains(&MethodKind::Password)
             || methods.contains(&MethodKind::KeyboardInteractive)
         {
-            bail!("服务器要求密码，「无密码」不会询问；请改用「密码」或「使用凭据」");
+            return Err(PasswordWanted.into());
         }
         bail!("服务器未接受 SSH Agent 和 ~/.ssh 中的任何私钥");
     }

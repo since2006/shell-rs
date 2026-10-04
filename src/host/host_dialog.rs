@@ -17,7 +17,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use zeroize::Zeroizing;
 
+use crate::app::ConnectHost;
 use crate::connection::{LoginTest, SharedConnectionTester, TrustCallback, UnknownHostPrompt};
 
 use super::secret_fields::SecretFields;
@@ -77,6 +79,9 @@ impl AuthSource {
         }
     }
 }
+
+/// What a 临时连接's dialog says under its fields.
+const TEMPORARY_NOTE: &str = "仅当前使用的临时会话，不会保存到主机列表。";
 
 /// What 「无密码」 tries, under the choice.
 const NO_PASSWORD_NOTE: &str = "依次尝试服务器免认证、SSH Agent 和 ~/.ssh 中的默认私钥。";
@@ -168,6 +173,9 @@ type JumpPicker = ComboboxState<SearchableVec<JumpHost>>;
 pub struct HostForm {
     store: Entity<HostStore>,
     editing: Option<HostId>,
+    /// A 临时连接's form: no group, route or notes, a name it may leave out,
+    /// and a commit that saves nothing.
+    temporary: bool,
     name: Entity<InputState>,
     address: Entity<InputState>,
     port: Entity<InputState>,
@@ -399,6 +407,7 @@ impl HostForm {
         Self {
             store,
             editing,
+            temporary: false,
             name,
             address,
             port,
@@ -429,6 +438,22 @@ impl HostForm {
             editing_connected,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// The form of a 临时连接: the login of a new host, without what only a
+    /// saved host has (its group, its route, its notes).
+    pub fn temporary(
+        store: Entity<HostStore>,
+        tester: SharedConnectionTester,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut form = Self::new(None, None, store, tester, window, cx);
+        form.temporary = true;
+        form.name.update(cx, |input, cx| {
+            input.set_placeholder("可选，默认用地址", window, cx)
+        });
+        form
     }
 
     fn set_source(&mut self, source: AuthSource, cx: &mut Context<Self>) {
@@ -739,6 +764,54 @@ impl HostForm {
             fields.update(cx, |fields, cx| fields.clear(window, cx));
         }
         true
+    }
+
+    /// Validate and connect without saving: the host goes into the store's
+    /// memory, its password into the store's memory too, never the
+    /// keychain. The host to connect to, or `None` when the form said what
+    /// is wrong.
+    pub fn commit_temporary(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<HostId> {
+        let checked = self
+            .endpoint(cx)
+            .and_then(|endpoint| Ok((endpoint, self.committed_login(cx)?)));
+        let ((host, port), login) = match checked {
+            Ok(checked) => checked,
+            Err(error) => {
+                window.push_notification(form_error_notification(error), cx);
+                return None;
+            }
+        };
+        let name = self.name.read(cx).value().trim().to_string();
+        let name = if name.is_empty() { host.clone() } else { name };
+        let mut password = None;
+        let draft = match login {
+            CommittedLogin::Saved { credential, user } => {
+                HostDraft::new(name, host, port, user, AuthKind::default(), None)
+                    .with_credential(credential)
+            }
+            CommittedLogin::Own(auth) => {
+                let user = self.user.read(cx).value().trim().to_string();
+                let user = if user.is_empty() {
+                    DEFAULT_USER.to_string()
+                } else {
+                    user
+                };
+                if auth == AuthKind::Password {
+                    password = Some(Zeroizing::new(self.fields.read(cx).password(cx)));
+                }
+                HostDraft::new(name, host, port, user, auth, None)
+            }
+        };
+        let id = self
+            .store
+            .update(cx, |store, cx| store.insert_temporary(draft, password, cx));
+        self.fields
+            .update(cx, |fields, cx| fields.clear(window, cx));
+        Some(id)
     }
 
     /// The fields of a host that logs in on its own: its user, and its
@@ -1093,7 +1166,7 @@ impl Render for HostForm {
             .child(
                 Field::new()
                     .label("名称")
-                    .required(true)
+                    .required(!self.temporary)
                     .col_span(4)
                     .child(Input::new(&self.name).id("host-name").small()),
             )
@@ -1137,28 +1210,43 @@ impl Render for HostForm {
             Some(auth) => self.own_fields(form, auth, cx),
             None => form.child(self.credential_field(cx)),
         };
+        // What only a saved host has.
+        let form = if self.temporary {
+            form
+        } else {
+            form.child(
+                Field::new()
+                    .label("分组")
+                    .col_span(4)
+                    .child(Select::new(&self.group).small()),
+            )
+            .child(self.route_field(cx))
+            .child(
+                Field::new().label("备注").col_span(4).child(
+                    div()
+                        .id("host-notes")
+                        .test_support()
+                        .w_full()
+                        .child(Textarea::new(&self.notes).text_sm()),
+                ),
+            )
+        };
         v_flex()
             .gap_3()
             .w_full()
-            .child(
+            .child(form)
+            .when(self.temporary, |form| {
                 form.child(
-                    Field::new()
-                        .label("分组")
-                        .col_span(4)
-                        .child(Select::new(&self.group).small()),
+                    div()
+                        .id("temporary-note")
+                        .test_support()
+                        .aria_label(TEMPORARY_NOTE)
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(TEMPORARY_NOTE),
                 )
-                .child(self.route_field(cx))
-                .child(
-                    Field::new().label("备注").col_span(4).child(
-                        div()
-                            .id("host-notes")
-                            .test_support()
-                            .w_full()
-                            .child(Textarea::new(&self.notes).text_sm()),
-                    ),
-                ),
-            )
-            .when(source == AuthSource::Password, |form| {
+            })
+            .when(!self.temporary && source == AuthSource::Password, |form| {
                 form.child(
                     div()
                         .text_sm()
@@ -1300,50 +1388,97 @@ pub fn open_host_dialog(
                 // Closed by its buttons or Escape, not by a click beside it.
                 .overlay_closable(false)
                 .child(form.clone())
-                .footer(
-                    DialogFooter::new()
-                        .w_full()
-                        .justify_between()
-                        .child(
-                            Button::new("test-connection")
-                                .label("测试连接")
-                                .icon(crate::app::CatalogIcon::Plug)
-                                .small()
-                                .loading(form.read(cx).testing_connection)
-                                .on_click({
-                                    let form = form.clone();
-                                    move |event, window, cx| {
-                                        form.update(cx, |form, cx| {
-                                            form.test_connection(event, window, cx)
-                                        });
-                                    }
-                                }),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .child(Button::new("cancel").label("取消").small().on_click(
-                                    |_, window, cx| {
-                                        window.dispatch_action(Box::new(Cancel), cx);
-                                    },
-                                ))
-                                .child(
-                                    Button::new("commit")
-                                        .primary()
-                                        .label(commit_label.clone())
-                                        .small()
-                                        .on_click(|_, window, cx| {
-                                            window.dispatch_action(
-                                                Box::new(Confirm { secondary: false }),
-                                                cx,
-                                            );
-                                        }),
-                                ),
-                        ),
-                )
+                .footer(form_footer(&form, commit_label.clone(), cx))
                 .on_ok({
                     let form = form.clone();
                     move |_, window, cx| form.update(cx, |form, cx| form.commit(window, cx))
+                })
+                .on_close(|_, window, cx| dismiss_form_error(window, cx))
+        }
+    });
+}
+
+/// The host form's footer: 「测试连接」 on the left, 「取消」 and the
+/// commit on the right. The new-host, edit-host and 临时连接 dialogs share it.
+fn form_footer(form: &Entity<HostForm>, commit_label: SharedString, cx: &App) -> DialogFooter {
+    DialogFooter::new()
+        .w_full()
+        .justify_between()
+        .child(
+            Button::new("test-connection")
+                .label("测试连接")
+                .icon(crate::app::CatalogIcon::Plug)
+                .small()
+                .loading(form.read(cx).testing_connection)
+                .on_click({
+                    let form = form.clone();
+                    move |event, window, cx| {
+                        form.update(cx, |form, cx| form.test_connection(event, window, cx));
+                    }
+                }),
+        )
+        .child(
+            h_flex()
+                .gap_2()
+                .child(
+                    Button::new("cancel")
+                        .label("取消")
+                        .small()
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(Cancel), cx);
+                        }),
+                )
+                .child(
+                    Button::new("commit")
+                        .primary()
+                        .label(commit_label)
+                        .small()
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(Confirm { secondary: false }), cx);
+                        }),
+                ),
+        )
+}
+
+/// Open the 临时连接 dialog: a host's login, connected to in a terminal tab
+/// without being saved. `dispatch` is the workspace's focus handle, which the
+/// connection is asked of once the dialog has closed and left the focus
+/// nowhere.
+pub fn open_temporary_connection_dialog(
+    store: Entity<HostStore>,
+    tester: SharedConnectionTester,
+    dispatch: FocusHandle,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let form = cx.new(|cx| HostForm::temporary(store, tester, window, cx));
+    window.open_dialog(cx, {
+        let form = form.clone();
+        move |dialog, window, cx| {
+            dialog
+                .title("临时连接")
+                .margin_top(window.viewport_size().height * DIALOG_TOP)
+                .max_h(window.viewport_size().height * DIALOG_MAX_HEIGHT)
+                .overlay_closable(false)
+                .child(form.clone())
+                .footer(form_footer(&form, "连接".into(), cx))
+                .on_ok({
+                    let form = form.clone();
+                    let dispatch = dispatch.clone();
+                    move |_, window, cx| {
+                        let Some(host) =
+                            form.update(cx, |form, cx| form.commit_temporary(window, cx))
+                        else {
+                            return false;
+                        };
+                        // After the dialog is gone, so the new tab keeps the
+                        // focus it takes.
+                        let dispatch = dispatch.clone();
+                        window.defer(cx, move |window, cx| {
+                            dispatch.dispatch_action(&ConnectHost(host), window, cx)
+                        });
+                        true
+                    }
                 })
                 .on_close(|_, window, cx| dismiss_form_error(window, cx))
         }
