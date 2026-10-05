@@ -2,7 +2,7 @@
 //! and the toolbar's bookmark and 新建 menus. Each item dispatches the same
 //! `ExplorerCommand` as the toolbar button with that verb.
 
-use super::{ExplorerId, FileSizeFormat, NewEntryKind};
+use super::{ExplorerId, FileSizeFormat, NewEntryKind, PreviewKind};
 use crate::app::{CatalogIcon, ExplorerAction, ExplorerCommand, SetFileSizeFormat};
 use gpui_kit::component::{Icon, IconName, menu::PopupMenu};
 use gpui_kit::*;
@@ -19,6 +19,8 @@ pub(super) struct PaneMenuState {
     /// The single selected row is a file the editor can try to open: its
     /// full path.
     pub edits_file: Option<String>,
+    /// How that file can be previewed, if it can.
+    pub preview_kind: Option<PreviewKind>,
     pub can_go_up: bool,
     pub can_go_home: bool,
     pub can_go_back: bool,
@@ -49,15 +51,34 @@ pub(super) fn item_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
         )
         .separator()
     } else if let Some(path) = state.edits_file.clone() {
-        menu.menu_with_icon(
-            "编辑",
-            Icon::new(CatalogIcon::FilePenLine),
-            state.action(ExplorerCommand::Edit {
-                remote,
-                path: Some(path),
-            }),
-        )
-        .separator()
+        // A picture is only previewed: as text it would be refused. An SVG
+        // is text, and is both edited and previewed.
+        let kind = state.preview_kind;
+        let menu = if kind.is_some_and(|kind| kind.preview_only()) {
+            menu
+        } else {
+            menu.menu_with_icon(
+                "编辑",
+                Icon::new(CatalogIcon::FilePenLine),
+                state.action(ExplorerCommand::Edit {
+                    remote,
+                    path: Some(path.clone()),
+                }),
+            )
+        };
+        let menu = if kind.is_some() {
+            menu.menu_with_icon(
+                "预览",
+                Icon::new(CatalogIcon::Eye),
+                state.action(ExplorerCommand::Preview {
+                    remote,
+                    path: Some(path),
+                }),
+            )
+        } else {
+            menu
+        };
+        menu.separator()
     } else {
         menu
     };

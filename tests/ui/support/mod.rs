@@ -37,7 +37,7 @@ pub use shellrs::host::{
 pub use shellrs::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
 pub use shellrs::settings::{Appearance, InterfaceLanguage, SettingsStore};
 pub use shellrs::sftp::{
-    DirectoryEntry, DirectoryListing, EDIT_LIMIT, EntryKind, FileMetadata, FileStamp,
+    DirectoryEntry, DirectoryListing, EDIT_LIMIT, EntryKind, FileBytes, FileMetadata, FileStamp,
     LocalDirectoryProvider, ReadFailure, RemotePath, SaveFailure, SftpCommand, SftpEvent,
     SftpTransport, SftpTransportProvider, TextFile, UploadRequest,
 };

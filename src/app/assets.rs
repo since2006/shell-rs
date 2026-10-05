@@ -67,6 +67,9 @@ icon_assets!(
         FileText,
         FilePenLine,
         Save,
+        Eye,
+        ZoomIn,
+        ZoomOut,
         Zap,
         ExternalLink
     ]

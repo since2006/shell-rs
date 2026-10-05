@@ -1,12 +1,13 @@
-//! The built-in editor: opening a file from an SFTP tab, saving it back in
-//! place, and what is asked before changes would be lost.
+//! The built-in editor and previews: opening a file from an SFTP tab,
+//! saving it back in place, what is asked before changes would be lost, and
+//! images and Markdown shown in a preview.
 
 use crate::support::*;
 use shellrs::app::{
     CloseActiveTab, CloseEditor, CloseExplorer, ExplorerAction, ExplorerCommand, Quit,
 };
 use shellrs::editor::EditorId;
-use shellrs::explorer::{NewEntryKind, PaneOperation};
+use shellrs::explorer::{IMAGE_LIMIT, NewEntryKind, PaneOperation};
 
 const REMOTE_FILE: &str = "/home/tester/文件 甲.txt";
 const OTHER_REMOTE_FILE: &str = "/home/tester/文件 乙.txt";
@@ -547,4 +548,318 @@ async fn closing_all_tabs_asks_once_for_every_unsaved_file(cx: &mut TestAppConte
     assert!(!is_open(&workspace, FIRST, cx));
     assert!(!is_open(&workspace, EditorId(2), cx));
     assert!(provider.writes.lock().unwrap().is_empty());
+}
+
+/// A 1×1 PNG.
+const PNG: &[u8] = b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0d\x49\x44\x41\x54\x78\x9c\x63\xf8\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xff\x89\x99\x3d\x1d\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
+
+/// An SFTP tab whose remote side lists `/pictures`, where these files are.
+async fn open_pictures(
+    cx: &mut TestAppContext,
+    files: &[(&str, &[u8])],
+) -> (WindowHandle<Root>, Entity<Workspace>, Arc<FakeSftpProvider>) {
+    let (handle, workspace, provider) = open_server(cx, files).await;
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::Navigate {
+                    remote: true,
+                    path: "/pictures".into(),
+                },
+            )),
+            cx,
+        )
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("remote-path").value() == Some("/pictures")
+    })
+    .await;
+    (handle, workspace, provider)
+}
+
+fn preview(cx: &mut TestAppContext, handle: WindowHandle<Root>, remote: bool, path: &str) {
+    let path = path.to_string();
+    in_frame(cx, handle, move |window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::Preview {
+                    remote,
+                    path: Some(path),
+                },
+            )),
+            cx,
+        )
+    });
+}
+
+#[gpui_kit::test]
+async fn double_clicking_an_image_previews_it(cx: &mut TestAppContext) {
+    let (handle, workspace, provider) = open_pictures(cx, &[("/pictures/图.png", PNG)]).await;
+    open_file(cx, handle, "remote-pane", "图.png");
+    wait_for(cx, handle, "file-preview").await;
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("file-preview").label(), Some("图.png"));
+        assert!(window.try_find("preview-image").is_some());
+        assert!(
+            window
+                .find("preview-info")
+                .label()
+                .is_some_and(|info| info.ends_with("70 B"))
+        );
+        // A remote image can be downloaded; it cannot be edited.
+        assert!(window.try_find("preview-download").is_some());
+        assert!(window.try_find("preview-edit").is_none());
+    });
+    assert!(!is_open(&workspace, FIRST, cx));
+    assert_eq!(*provider.reads.lock().unwrap(), vec!["/pictures/图.png"]);
+
+    in_frame(cx, handle, |window, cx| window.press("escape", cx));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("file-preview").is_none())
+    });
+}
+
+#[gpui_kit::test]
+async fn markdown_is_edited_on_a_double_click_and_previewed_from_the_menu(cx: &mut TestAppContext) {
+    let (handle, workspace, _) = open_pictures(
+        cx,
+        &[("/pictures/README.md", "# 标题\n\n正文\n".as_bytes())],
+    )
+    .await;
+    open_file(cx, handle, "remote-pane", "README.md");
+    wait_for_editor(cx, handle, FIRST).await;
+
+    preview(cx, handle, true, "/pictures/README.md");
+    wait_for(cx, handle, "preview-markdown").await;
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .find("preview-info")
+                .label()
+                .is_some_and(|info| info.starts_with("Markdown"))
+        );
+    });
+    // 编辑 goes to the editor already open, not a second one.
+    in_frame(cx, handle, |window, cx| window.click("preview-edit", cx));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("file-preview").is_none());
+        assert!(window.try_find(("editor", FIRST.0)).is_some());
+    });
+    assert!(!is_open(&workspace, EditorId(2), cx));
+
+    // 下载… asks where to, as a download does.
+    preview(cx, handle, true, "/pictures/README.md");
+    wait_for(cx, handle, "preview-download").await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("preview-download", cx)
+    });
+    wait_for(cx, handle, "download-confirm").await;
+}
+
+#[gpui_kit::test]
+async fn an_image_too_large_to_preview_offers_the_download(cx: &mut TestAppContext) {
+    let large = vec![0; IMAGE_LIMIT as usize + 1];
+    let (handle, _, _) = open_pictures(cx, &[("/pictures/图.png", &large)]).await;
+    open_file(cx, handle, "remote-pane", "图.png");
+    wait_for(cx, handle, "ok").await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("file-preview").is_none())
+    });
+    in_frame(cx, handle, |window, cx| window.click("ok", cx));
+    wait_for(cx, handle, "download-confirm").await;
+}
+
+#[gpui_kit::test]
+async fn a_local_image_is_previewed_without_a_download(cx: &mut TestAppContext) {
+    let local = FakeLocalDirectory::default();
+    local
+        .files
+        .lock()
+        .unwrap()
+        .insert("/local/tester/图.png".into(), PNG.to_vec());
+    let (handle, _) =
+        open_workspace_with_services(cx, Arc::new(FakeSftpProvider::default()), local);
+    open_test_explorer(cx, handle).await;
+    preview(cx, handle, false, "/local/tester/图.png");
+    wait_for(cx, handle, "file-preview").await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("preview-image").is_some());
+        assert!(window.try_find("preview-download").is_none());
+    });
+}
+
+/// A 4×2000 PNG: a long screenshot, in small, taller than any frame.
+const LONG_PNG: &[u8] = b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x04\x00\x00\x07\xd0\x08\x06\x00\x00\x00\xe5\xf9\xfe\xc9\x00\x00\x00\x6e\x49\x44\x41\x54\x78\xda\xed\xc8\xb1\x0d\x00\x00\x08\xc0\xa0\xfe\xff\xb4\xee\x7e\x60\xc2\xc0\x42\xd5\x1c\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x08\x21\x84\x10\x42\x88\x9f\xb1\xc4\x5f\x22\x92\xa1\xbb\x97\x39\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
+
+/// The preview's zoom, once the image is decoded and the frame measured.
+async fn wait_for_zoom(cx: &mut TestAppContext, handle: WindowHandle<Root>, zoom: &'static str) {
+    cx.wait_for(handle.into(), Duration::from_secs(2), move |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("preview-zoom")
+            .is_some_and(|label| label.label() == Some(zoom))
+    })
+    .await;
+}
+
+fn bounds_of(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Root>,
+    id: &'static str,
+) -> gpui_kit::Bounds<gpui_kit::Pixels> {
+    in_frame(cx, handle, |window, _| window.find(id).bounds())
+}
+
+fn scroll_preview(cx: &mut TestAppContext, handle: WindowHandle<Root>, by: f32, zoom: bool) {
+    in_frame(cx, handle, |window, cx| {
+        let position = window.find("preview-image").bounds().center();
+        window.dispatch_event(
+            gpui_kit::ScrollWheelEvent {
+                position,
+                delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(by))),
+                modifiers: if zoom {
+                    gpui_kit::Modifiers::secondary_key()
+                } else {
+                    gpui_kit::Modifiers::default()
+                },
+                touch_phase: gpui_kit::TouchPhase::Moved,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn a_previewed_image_fits_its_frame_in_the_middle(cx: &mut TestAppContext) {
+    let (handle, _, _) = open_pictures(
+        cx,
+        &[("/pictures/长图.png", LONG_PNG), ("/pictures/点.png", PNG)],
+    )
+    .await;
+    // A long image: scaled down to the frame's height, in its middle.
+    open_file(cx, handle, "remote-pane", "长图.png");
+    wait_for_zoom(cx, handle, "28%").await;
+    let frame = bounds_of(cx, handle, "preview-image");
+    let picture = bounds_of(cx, handle, "preview-picture");
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .find("preview-info")
+                .label()
+                .is_some_and(|info| info.starts_with("4 × 2000 像素"))
+        );
+    });
+    assert!(
+        (picture.size.height - frame.size.height).abs() < px(1.),
+        "{picture:?} in {frame:?}"
+    );
+    assert!(
+        (picture.center().x - frame.center().x).abs() < px(1.),
+        "{picture:?} in {frame:?}"
+    );
+    in_frame(cx, handle, |window, cx| window.press("escape", cx));
+
+    // A small one keeps its size, in the middle both ways.
+    open_file(cx, handle, "remote-pane", "点.png");
+    wait_for_zoom(cx, handle, "100%").await;
+    let frame = bounds_of(cx, handle, "preview-image");
+    let picture = bounds_of(cx, handle, "preview-picture");
+    assert_eq!(picture.size, size(px(1.), px(1.)));
+    assert!((picture.center().x - frame.center().x).abs() < px(1.));
+    assert!((picture.center().y - frame.center().y).abs() < px(1.));
+}
+
+#[gpui_kit::test]
+async fn a_previewed_image_zooms_and_scrolls(cx: &mut TestAppContext) {
+    let (handle, _, _) = open_pictures(cx, &[("/pictures/长图.png", LONG_PNG)]).await;
+    open_file(cx, handle, "remote-pane", "长图.png");
+    wait_for_zoom(cx, handle, "28%").await;
+
+    // 原图: its own size, larger than the frame, from its middle.
+    in_frame(cx, handle, |window, cx| {
+        window.click("preview-actual-size", cx)
+    });
+    wait_for_zoom(cx, handle, "100%").await;
+    let frame = bounds_of(cx, handle, "preview-image");
+    let picture = bounds_of(cx, handle, "preview-picture");
+    assert_eq!(picture.size.height, px(2000.));
+    assert!((picture.center().y - frame.center().y).abs() < px(1.));
+
+    // It scrolls.
+    scroll_preview(cx, handle, -300., false);
+    let scrolled = bounds_of(cx, handle, "preview-picture");
+    assert_eq!(scrolled.top(), picture.top() - px(300.));
+
+    // The buttons and the keys step the zoom.
+    in_frame(cx, handle, |window, cx| window.click("preview-zoom-in", cx));
+    wait_for_zoom(cx, handle, "125%").await;
+    in_frame(cx, handle, |window, cx| window.press("cmd--", cx));
+    wait_for_zoom(cx, handle, "100%").await;
+    in_frame(cx, handle, |window, cx| window.press("cmd-9", cx));
+    wait_for_zoom(cx, handle, "28%").await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("preview-zoom-out", cx)
+    });
+    wait_for_zoom(cx, handle, "25%").await;
+    in_frame(cx, handle, |window, cx| window.press("cmd-0", cx));
+    wait_for_zoom(cx, handle, "100%").await;
+    in_frame(cx, handle, |window, cx| window.click("preview-fit", cx));
+    wait_for_zoom(cx, handle, "28%").await;
+
+    // A double click goes to 100% and back.
+    in_frame(cx, handle, |window, cx| {
+        window.double_click("preview-picture", cx)
+    });
+    wait_for_zoom(cx, handle, "100%").await;
+    in_frame(cx, handle, |window, cx| {
+        window.double_click("preview-picture", cx)
+    });
+    wait_for_zoom(cx, handle, "28%").await;
+
+    // ⌘ with the wheel zooms instead of scrolling.
+    scroll_preview(cx, handle, 100., true);
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("preview-zoom").label(), Some("42%"));
+    });
+}
+
+#[gpui_kit::test]
+async fn an_svg_is_edited_on_a_double_click_and_previewed_from_the_menu(cx: &mut TestAppContext) {
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="20"><rect width="10" height="20" fill="red"/></svg>"#;
+    let (handle, workspace, _) = open_pictures(cx, &[("/pictures/logo.svg", svg.as_bytes())]).await;
+    // An SVG is text: a double click edits it.
+    open_file(cx, handle, "remote-pane", "logo.svg");
+    wait_for_editor(cx, handle, FIRST).await;
+    assert_eq!(text_of(&workspace, FIRST, cx), svg);
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("file-preview").is_none())
+    });
+
+    preview(cx, handle, true, "/pictures/logo.svg");
+    wait_for(cx, handle, "file-preview").await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("preview-image").is_some());
+        // The editor is open already; the preview offers no second way in.
+        assert!(window.try_find("preview-edit").is_none());
+    });
+}
+
+#[gpui_kit::test]
+async fn an_image_that_cannot_be_decoded_says_so(cx: &mut TestAppContext) {
+    let (handle, _, _) = open_pictures(cx, &[("/pictures/坏.png", b"not a png at all")]).await;
+    open_file(cx, handle, "remote-pane", "坏.png");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("preview-note")
+            .is_some_and(|note| note.label() == Some("无法显示这张图片"))
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("preview-picture").is_none())
+    });
 }

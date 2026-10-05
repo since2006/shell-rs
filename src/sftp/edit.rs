@@ -215,25 +215,73 @@ impl SaveFailure {
     }
 }
 
+/// A whole file read as it is, for a preview: an image, say.
+#[derive(Clone, PartialEq, Eq)]
+pub struct FileBytes(Vec<u8>);
+
+impl FileBytes {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub fn into_inner(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for FileBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FileBytes({} bytes)", self.0.len())
+    }
+}
+
 /// Read a remote text file, following links. Refusals come back as a
 /// `ReadFailure` inside the error, so that the worker can still tell a
 /// broken connection from the rest.
 pub(crate) async fn read_text<F: RemoteFs>(fs: &F, path: &RemotePath) -> Result<TextFile> {
+    let (bytes, stamp) = read_bytes(fs, path, EDIT_LIMIT, true).await?;
+    Ok(TextFile::decode(bytes, stamp)?)
+}
+
+/// Read a remote file whole, following links, binary or not; refused like
+/// `read_text` when it is not a file or larger than `limit`.
+pub(crate) async fn read_whole<F: RemoteFs>(
+    fs: &F,
+    path: &RemotePath,
+    limit: u64,
+) -> Result<FileBytes> {
+    let (bytes, _) = read_bytes(fs, path, limit, false).await?;
+    Ok(FileBytes(bytes))
+}
+
+/// `stat`, refuse what is not a file or too large, then read it all. For
+/// `text`, a binary file is given up on after its first chunk.
+async fn read_bytes<F: RemoteFs>(
+    fs: &F,
+    path: &RemotePath,
+    limit: u64,
+    text: bool,
+) -> Result<(Vec<u8>, FileStamp)> {
     let Some(metadata) = fs.stat(path).await? else {
         bail!("文件不存在");
     };
     if metadata.kind() != EntryKind::File {
         return Err(ReadFailure::NotFile.into());
     }
-    if metadata.size() > EDIT_LIMIT {
+    if metadata.size() > limit {
         return Err(ReadFailure::TooLarge(metadata.size()).into());
     }
     let handle = fs.open_read(path).await?;
-    let bytes = read_all(fs, &handle, metadata.size()).await;
+    let bytes = read_all(fs, &handle, metadata.size(), text).await;
     let close = fs.close(&handle).await;
     let bytes = bytes?;
     close?;
-    Ok(TextFile::decode(bytes, FileStamp::of(&metadata))?)
+    Ok((bytes, FileStamp::of(&metadata)))
 }
 
 /// Read a local text file through `provider`. Blocking, like the provider.
@@ -245,6 +293,18 @@ pub fn read_local_text(
         .read_file(path, EDIT_LIMIT)
         .map_err(ReadFailure::from_error)?;
     TextFile::decode(bytes, stamp)
+}
+
+/// Read a local file whole through `provider`, binary or not. Blocking.
+pub fn read_local_bytes(
+    provider: &dyn LocalDirectoryProvider,
+    path: &std::path::Path,
+    limit: u64,
+) -> Result<FileBytes, ReadFailure> {
+    let (bytes, _) = provider
+        .read_file(path, limit)
+        .map_err(ReadFailure::from_error)?;
+    Ok(FileBytes(bytes))
 }
 
 /// Write the editor's bytes over a local file through `provider`. Blocking.
@@ -261,7 +321,8 @@ pub fn write_local_text(
 
 /// `size` bytes from the start of an open file, reading ahead in parallel.
 /// Reads may come back out of order or short; each lands at its offset.
-async fn read_all<F: RemoteFs>(fs: &F, handle: &str, size: u64) -> Result<Vec<u8>> {
+/// For `text`, a NUL early on stops it: a binary file.
+async fn read_all<F: RemoteFs>(fs: &F, handle: &str, size: u64, text: bool) -> Result<Vec<u8>> {
     let mut buffer = vec![0; usize::try_from(size)?];
     let mut next = 0;
     let mut remainders: Vec<(u64, u32)> = Vec::new();
@@ -287,7 +348,7 @@ async fn read_all<F: RemoteFs>(fs: &F, handle: &str, size: u64) -> Result<Vec<u8
         let start = at as usize;
         buffer[start..start + got].copy_from_slice(&bytes[..got]);
         // Give up on a binary file before reading all of it.
-        if at == 0 && bytes[..got.min(BINARY_PROBE)].contains(&0) {
+        if text && at == 0 && bytes[..got.min(BINARY_PROBE)].contains(&0) {
             return Err(ReadFailure::NotText.into());
         }
         if got < len as usize {

@@ -31,6 +31,8 @@ pub const CREDENTIAL_PANEL_CONTEXT: &str = "CredentialPanel";
 /// Key contexts of the two SFTP file lists.
 /// Key context of an editor tab.
 pub const EDITOR_CONTEXT: &str = "FileEditor";
+/// Key context of the image in a preview.
+pub const IMAGE_PREVIEW_CONTEXT: &str = "ImagePreview";
 pub const LOCAL_FILE_LIST_CONTEXT: &str = "LocalFileList";
 pub const REMOTE_FILE_LIST_CONTEXT: &str = "RemoteFileList";
 
@@ -89,6 +91,16 @@ fn key_bindings() -> Vec<KeyBinding> {
             EditorShortcut(EditorCommand::Save),
             Some(EDITOR_CONTEXT),
         ),
+        // Over a previewed image, the interface zoom keys zoom the image;
+        // 0 and 9 as in macOS Preview.
+        KeyBinding::new(&primary("="), ZoomPreviewIn, Some(IMAGE_PREVIEW_CONTEXT)),
+        KeyBinding::new(&primary("-"), ZoomPreviewOut, Some(IMAGE_PREVIEW_CONTEXT)),
+        KeyBinding::new(
+            &primary("0"),
+            ActualSizePreview,
+            Some(IMAGE_PREVIEW_CONTEXT),
+        ),
+        KeyBinding::new(&primary("9"), FitPreview, Some(IMAGE_PREVIEW_CONTEXT)),
         KeyBinding::new("shift-escape", ToggleZoom, None),
         KeyBinding::new("enter", ConnectSelected, Some(HOST_PANEL_CONTEXT)),
         KeyBinding::new("enter", ConnectSelected, Some(RECENT_HOSTS_CONTEXT)),

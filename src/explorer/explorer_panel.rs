@@ -1,6 +1,9 @@
 use super::{
     ExplorerId, FileLocation, FilePane, FilePaneEvent, LoadIntent, PaneSide, QueueId, QueueState,
-    Removal, TransferJob, TransferQueue, file_edit::PendingFile, pane_operations::PendingOperation,
+    Removal, TransferJob, TransferQueue,
+    file_edit::{Opening, PendingFile},
+    pane_operations::PendingOperation,
+    preview::PreviewKind,
 };
 use crate::app::ExplorerDispatch as _;
 use crate::{
@@ -492,6 +495,9 @@ impl ExplorerPanel {
             SftpEvent::FileWritten { request_id, result } => {
                 self.finish_file_write(request_id, result)
             }
+            SftpEvent::BytesRead { request_id, result } => {
+                self.finish_bytes_read(request_id, result)
+            }
             SftpEvent::Progress(progress) => {
                 let complete = progress.phase() == TransferPhase::Completed;
                 let direction = progress.direction();
@@ -660,17 +666,19 @@ impl ExplorerPanel {
                     };
                     self.navigate(*remote, path, LoadIntent::Visit, window, cx);
                 } else {
-                    // A file opens in the editor, through the workspace, which
-                    // shows the tab when the file is open already.
-                    let path = pane.read(cx).child_path_of(&entry.name);
+                    // A picture is previewed; any other file (an SVG too,
+                    // being text) opens in the editor, through the workspace,
+                    // which shows the tab when the file is open already.
+                    let path = Some(pane.read(cx).child_path_of(&entry.name));
+                    let remote = *remote;
+                    let command =
+                        if PreviewKind::of(&entry.name).is_some_and(|kind| kind.preview_only()) {
+                            ExplorerCommand::Preview { remote, path }
+                        } else {
+                            ExplorerCommand::Edit { remote, path }
+                        };
                     self.dispatch.dispatch_explorer_action(
-                        &ExplorerAction::new(
-                            self.id,
-                            ExplorerCommand::Edit {
-                                remote: *remote,
-                                path: Some(path),
-                            },
-                        ),
+                        &ExplorerAction::new(self.id, command),
                         window,
                         cx,
                     );
@@ -678,7 +686,12 @@ impl ExplorerPanel {
             }
             ExplorerCommand::Edit { remote, path } => {
                 if let Some(location) = self.edit_target(*remote, path.as_deref(), cx) {
-                    self.open_for_edit(location, window, cx);
+                    self.open_file(location, Opening::Edit, window, cx);
+                }
+            }
+            ExplorerCommand::Preview { remote, path } => {
+                if let Some((location, kind)) = self.preview_target(*remote, path.as_deref(), cx) {
+                    self.open_file(location, Opening::Preview(kind), window, cx);
                 }
             }
             ExplorerCommand::OpenDirectory { remote } => {
@@ -960,6 +973,7 @@ fn needs_connection(command: &ExplorerCommand) -> bool {
         | C::Forward { remote }
         | C::Open { remote }
         | C::Edit { remote, .. }
+        | C::Preview { remote, .. }
         | C::OpenDirectory { remote }
         | C::Delete { remote }
         | C::Rename { remote }

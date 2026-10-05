@@ -1,6 +1,7 @@
 use super::{
-    DirectoryListing, DownloadRequest, FileStamp, PermissionEdit, ReadFailure, RemotePath,
-    SaveFailure, TextFile, TransferAnswer, TransferProgress, TransferQuestion, UploadRequest,
+    DirectoryListing, DownloadRequest, FileBytes, FileStamp, PermissionEdit, ReadFailure,
+    RemotePath, SaveFailure, TextFile, TransferAnswer, TransferProgress, TransferQuestion,
+    UploadRequest,
 };
 use crate::{
     connection::{ConnectionPrompt, ConnectionPromptReply, Latency},
@@ -55,6 +56,13 @@ pub enum SftpCommand {
         request_id: u64,
         path: RemotePath,
     },
+    /// Read a whole file as it is, up to `limit` bytes, for a preview;
+    /// answered by `BytesRead`.
+    ReadBytes {
+        request_id: u64,
+        path: RemotePath,
+        limit: u64,
+    },
     /// Write the editor's text over a file in place; answered by
     /// `FileWritten`. With `expected`, only if the file still matches it.
     WriteFile {
@@ -103,6 +111,10 @@ pub enum SftpEvent {
     FileWritten {
         request_id: u64,
         result: Result<FileStamp, SaveFailure>,
+    },
+    BytesRead {
+        request_id: u64,
+        result: Result<FileBytes, ReadFailure>,
     },
     Progress(TransferProgress),
     Question(TransferQuestion),

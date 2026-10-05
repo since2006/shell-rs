@@ -115,6 +115,14 @@ gpui_kit::actions!(
         ZoomReset,
         /// Quit the application.
         Quit,
+        /// Show the previewed image larger, by one step.
+        ZoomPreviewIn,
+        /// Show the previewed image smaller, by one step.
+        ZoomPreviewOut,
+        /// Fit the previewed image into its frame.
+        FitPreview,
+        /// Show the previewed image at its own size (100%).
+        ActualSizePreview,
         /// Put the `shellrs` command on the PATH.
         InstallCliCommand,
         /// Take the `shellrs` command off the PATH.
@@ -436,6 +444,12 @@ pub enum ExplorerCommand {
     /// F4 and 编辑: open a file in the editor, `path` or else the one under
     /// the cursor (WinSCP's Edit).
     Edit {
+        remote: bool,
+        path: Option<String>,
+    },
+    /// 预览: show an image or a Markdown file, `path` or else the one under
+    /// the cursor.
+    Preview {
         remote: bool,
         path: Option<String>,
     },

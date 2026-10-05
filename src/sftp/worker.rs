@@ -255,6 +255,35 @@ impl SshSftpTransport {
                                     .await;
                             });
                         }
+                        SftpCommand::ReadBytes {
+                            request_id,
+                            path,
+                            limit,
+                        } => {
+                            let shared = client.clone();
+                            let connected = client.read().await.clone();
+                            let events = events.clone();
+                            tokio::spawn(async move {
+                                let result = match connected {
+                                    Some(connected) => {
+                                        match edit::read_whole(connected.as_ref(), &path, limit)
+                                            .await
+                                        {
+                                            Ok(bytes) => Ok(bytes),
+                                            Err(error) => {
+                                                drop_broken(&shared, &connected, &events, &error)
+                                                    .await;
+                                                Err(ReadFailure::from_error(error))
+                                            }
+                                        }
+                                    }
+                                    None => Err(ReadFailure::Failed(NOT_CONNECTED.into())),
+                                };
+                                let _ = events
+                                    .send(SftpEvent::BytesRead { request_id, result })
+                                    .await;
+                            });
+                        }
                         SftpCommand::WriteFile {
                             request_id,
                             path,

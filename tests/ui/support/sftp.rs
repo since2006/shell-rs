@@ -119,6 +119,8 @@ impl SftpTransport for FakeSftpTransport {
                     let result = match path.as_str() {
                         "/denied" => Err("权限不足".into()),
                         "/empty" => Ok(DirectoryListing::new("/empty", vec![])),
+                        // The files put there, as `with_files` gave them.
+                        "/pictures" => Ok(files_listing(&self.files, "/pictures")),
                         _ => Ok(fake_listing(path.as_str())),
                     };
                     events.send_blocking(SftpEvent::Listed { request_id, result })?;
@@ -159,6 +161,24 @@ impl SftpTransport for FakeSftpTransport {
                         None => Err(ReadFailure::Failed("文件不存在".into())),
                     };
                     events.send_blocking(SftpEvent::FileRead { request_id, result })?;
+                }
+                SftpCommand::ReadBytes {
+                    request_id,
+                    path,
+                    limit,
+                } => {
+                    self.reads.lock().unwrap().push(path.to_string());
+                    if path.as_str().starts_with("/slow") {
+                        continue;
+                    }
+                    let result = match self.files.lock().unwrap().get(path.as_str()) {
+                        Some((bytes, _)) if bytes.len() as u64 > limit => {
+                            Err(ReadFailure::TooLarge(bytes.len() as u64))
+                        }
+                        Some((bytes, _)) => Ok(FileBytes::new(bytes.clone())),
+                        None => Err(ReadFailure::Failed("文件不存在".into())),
+                    };
+                    events.send_blocking(SftpEvent::BytesRead { request_id, result })?;
                 }
                 SftpCommand::WriteFile {
                     request_id,
@@ -328,6 +348,29 @@ impl LocalDirectoryProvider for FakeLocalDirectory {
             edit.clear()
         ))
     }
+}
+
+/// A directory of the fake server's files, as they are now.
+pub fn files_listing(files: &FakeFiles, path: &str) -> DirectoryListing {
+    let prefix = format!("{path}/");
+    let entries = files
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(file, (bytes, modified))| {
+            let name = file.strip_prefix(&prefix)?;
+            Some(DirectoryEntry::new(
+                name,
+                FileMetadata::new(
+                    EntryKind::File,
+                    bytes.len() as u64,
+                    Some(*modified),
+                    Some(0o644),
+                ),
+            ))
+        })
+        .collect();
+    DirectoryListing::new(path, entries)
 }
 
 pub fn fake_listing(path: &str) -> DirectoryListing {

@@ -6,11 +6,13 @@ mod file_edit;
 mod file_listing;
 mod file_pane;
 mod history;
+mod image_preview;
 mod model;
 mod open_directory_dialog;
 mod pane_menu;
 mod pane_operations;
 mod path_label;
+mod preview;
 mod properties_dialog;
 mod queue_panel;
 mod selection;
@@ -23,6 +25,7 @@ pub use file_pane::{FilePane, FilePaneEvent, PaneSide};
 pub use history::{LoadIntent, NavigationHistory};
 pub use model::*;
 pub use pane_operations::PaneOperation;
+pub use preview::{IMAGE_LIMIT, PreviewKind};
 pub use selection::{ClickMode, CursorMotion, Selection};
 pub use transfer_queue::{
     QueueEntry, QueueId, QueueState, Removal, TransferJob, TransferQueue, percent,

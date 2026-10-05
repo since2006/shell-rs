@@ -1,6 +1,6 @@
 use super::{
     ClickMode, CursorMotion, ExplorerId, FileEntry, FileListing, FileSizeFormat, LoadIntent,
-    NavigationHistory, Selection, child_path,
+    NavigationHistory, PreviewKind, Selection, child_path,
     file_listing::{ListGeometry, ListingContext, MenuHit, Pressed, accept_drops, offer_drop},
     pane_menu::{
         PaneMenuState, bookmark_menu, directory_menu, item_menu, new_menu, size_format_menu,
@@ -935,6 +935,10 @@ impl FilePane {
                 [entry] if !entry.is_dir() && !entry.is_parent() => {
                     Some(self.child_path_of(&entry.name))
                 }
+                _ => None,
+            },
+            preview_kind: match entries.as_slice() {
+                [entry] if !entry.is_dir() && !entry.is_parent() => PreviewKind::of(&entry.name),
                 _ => None,
             },
             targets,

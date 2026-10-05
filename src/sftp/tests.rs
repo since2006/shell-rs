@@ -2,7 +2,7 @@ use super::{
     client::RemoteFs,
     control::TransferControl,
     download::DownloadBatch,
-    edit::{read_text, write_in_place},
+    edit::{read_text, read_whole, write_in_place},
     journal::{DownloadJournal, Journal, SourceMetadata, partial_path},
     upload::UploadBatch,
     *,
@@ -2118,4 +2118,22 @@ fn local_files_are_edited_in_place_through_links() {
         read_local_text(&provider, &temp.path().join("big.log")),
         Err(ReadFailure::TooLarge(EDIT_LIMIT + 1))
     );
+}
+
+#[test]
+fn a_binary_file_is_read_whole_for_a_preview_within_its_limit() {
+    runtime().block_on(async {
+        let remote = Remote::new(true);
+        let image: Vec<u8> = (0..300_000u32).map(|i| (i % 256) as u8).collect();
+        remote.file("/srv/photo.png", &image);
+        remote.short_reads.set(true);
+        let path = remote_path("/srv/photo.png");
+        let bytes = read_whole(&remote, &path, 1_000_000).await.unwrap();
+        assert_eq!(bytes.into_inner(), image);
+        let error = read_whole(&remote, &path, 1000).await.unwrap_err();
+        assert_eq!(
+            ReadFailure::from_error(error),
+            ReadFailure::TooLarge(300_000)
+        );
+    });
 }

@@ -1,15 +1,18 @@
-//! Files for the editor: an SFTP tab reads them for it and writes the remote
-//! ones back over its own connection, so editing never logs in again.
+//! Files for the editor and for previews: an SFTP tab reads them and writes
+//! the remote ones back over its own connection, so neither ever logs in
+//! again.
 //!
-//! A file is read before any editor tab exists: one that cannot be edited
-//! (too large, binary, not UTF-8) is explained here and never flashes a tab.
+//! A file is read before any editor tab or preview exists: one that cannot
+//! be shown (too large, binary, not UTF-8) is explained here and never
+//! flashes a tab.
 
+use super::preview::{IMAGE_LIMIT, Preview, PreviewContent, PreviewKind, open_preview_dialog};
 use super::{ExplorerPanel, ExplorerPanelEvent, format_size};
 use crate::app::{ExplorerAction, ExplorerCommand, ExplorerDispatch as _};
 use crate::host::ConnectionState;
 use crate::sftp::{
-    EDIT_LIMIT, FileStamp, ReadFailure, RemotePath, SaveFailure, SftpCommand, TextFile,
-    read_local_text,
+    EDIT_LIMIT, FileBytes, FileStamp, ReadFailure, RemotePath, SaveFailure, SftpCommand, TextFile,
+    read_local_bytes, read_local_text,
 };
 use futures::channel::oneshot;
 use gpui_kit::component::{WindowExt as _, dialog::DialogButtonProps, notification::Notification};
@@ -60,7 +63,21 @@ impl FileLocation {
 /// A read or a write waiting for the worker, answered from `on_event`.
 pub(super) enum PendingFile {
     Read(oneshot::Sender<Result<TextFile, ReadFailure>>),
+    Bytes(oneshot::Sender<Result<FileBytes, ReadFailure>>),
     Write(oneshot::Sender<Result<FileStamp, SaveFailure>>),
+}
+
+/// Why a file is read: for the editor, or for a preview of its kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Opening {
+    Edit,
+    Preview(PreviewKind),
+}
+
+/// A file as read for an `Opening`: text, or an image's bytes.
+enum Opened {
+    Text(TextFile),
+    Bytes(FileBytes),
 }
 
 impl ExplorerPanel {
@@ -85,18 +102,41 @@ impl ExplorerPanel {
         })
     }
 
-    /// Read a file for a new editor tab; `EditFile` brings it to the
-    /// workspace, a refusal is explained here.
-    pub(super) fn open_for_edit(
+    /// The file `path` names on one side, or the one under the cursor,
+    /// when it can be previewed.
+    pub fn preview_target(
+        &self,
+        remote: bool,
+        path: Option<&str>,
+        cx: &App,
+    ) -> Option<(FileLocation, PreviewKind)> {
+        let location = self.edit_target(remote, path, cx)?;
+        let kind = PreviewKind::of(&location.name())?;
+        Some((location, kind))
+    }
+
+    /// Read a file for a new editor tab or a preview. `EditFile` brings one
+    /// for the editor to the workspace; a preview opens here; a refusal is
+    /// explained here.
+    pub(super) fn open_file(
         &mut self,
         location: FileLocation,
+        opening: Opening,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if !self.opening.insert(location.clone()) {
             return;
         }
-        let Some(read) = self.read_file(&location, window, cx) else {
+        let read = match opening {
+            Opening::Preview(PreviewKind::Image(_)) => self
+                .read_bytes(&location, IMAGE_LIMIT, window, cx)
+                .map(|read| cx.spawn(async move |_, _| read.await.map(Opened::Bytes))),
+            Opening::Edit | Opening::Preview(PreviewKind::Markdown) => self
+                .read_file(&location, window, cx)
+                .map(|read| cx.spawn(async move |_, _| read.await.map(Opened::Text))),
+        };
+        let Some(read) = read else {
             self.opening.remove(&location);
             return;
         };
@@ -112,13 +152,15 @@ impl ExplorerPanel {
                 this.pane(remote)
                     .clone()
                     .update(cx, |pane, cx| pane.finish_opening(cx));
-                match result {
-                    Ok(file) => cx.emit(ExplorerPanelEvent::EditFile(
-                        this.id(),
-                        location,
-                        Rc::new(file),
-                    )),
-                    Err(failure) => this.refuse_edit(&location, failure, window, cx),
+                match (opening, result) {
+                    (Opening::Edit, Ok(Opened::Text(file))) => cx.emit(
+                        ExplorerPanelEvent::EditFile(this.id(), location, Rc::new(file)),
+                    ),
+                    (Opening::Preview(kind), Ok(opened)) => {
+                        this.show_preview(&location, kind, opened, window, cx)
+                    }
+                    (Opening::Edit, Ok(Opened::Bytes(_))) => {}
+                    (_, Err(failure)) => this.refuse_open(&location, opening, failure, window, cx),
                 }
             });
         })
@@ -147,6 +189,42 @@ impl ExplorerPanel {
                 self.send(SftpCommand::ReadFile {
                     request_id,
                     path: path.clone(),
+                });
+                Some(cx.spawn(async move |_, _| {
+                    receiver
+                        .await
+                        .unwrap_or_else(|_| Err(ReadFailure::Failed("SFTP 连接已断开".into())))
+                }))
+            }
+        }
+    }
+
+    /// Read a whole file as it is, up to `limit` bytes. `None` when the
+    /// remote side is not connected, which this tab has already said.
+    pub(super) fn read_bytes(
+        &mut self,
+        location: &FileLocation,
+        limit: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<Result<FileBytes, ReadFailure>>> {
+        match location {
+            FileLocation::Local(path) => {
+                let (provider, path) = (self.local_provider.clone(), path.clone());
+                Some(cx.background_spawn(async move {
+                    read_local_bytes(provider.as_ref(), &path, limit)
+                }))
+            }
+            FileLocation::Remote(path) => {
+                if !self.reachable(window, cx) {
+                    return None;
+                }
+                let (sender, receiver) = oneshot::channel();
+                let request_id = self.next_file_request(PendingFile::Bytes(sender));
+                self.send(SftpCommand::ReadBytes {
+                    request_id,
+                    path: path.clone(),
+                    limit,
                 });
                 Some(cx.spawn(async move |_, _| {
                     receiver
@@ -210,6 +288,12 @@ impl ExplorerPanel {
         }
     }
 
+    pub(super) fn finish_bytes_read(&mut self, id: u64, result: Result<FileBytes, ReadFailure>) {
+        if let Some(PendingFile::Bytes(sender)) = self.files.remove(&id) {
+            let _ = sender.send(result);
+        }
+    }
+
     pub(super) fn finish_file_write(&mut self, id: u64, result: Result<FileStamp, SaveFailure>) {
         if let Some(PendingFile::Write(sender)) = self.files.remove(&id) {
             let _ = sender.send(result);
@@ -238,22 +322,91 @@ impl ExplorerPanel {
         self.next_operation
     }
 
+    /// The preview dialog for a file just read.
+    fn show_preview(
+        &mut self,
+        location: &FileLocation,
+        kind: PreviewKind,
+        opened: Opened,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let remote = location.is_remote();
+        let (content, size) = match (kind, opened) {
+            (PreviewKind::Image(format), Opened::Bytes(bytes)) => {
+                let size = bytes.len() as u64;
+                let image = Image::from_bytes(format, bytes.into_inner());
+                (PreviewContent::Image(image), size)
+            }
+            (PreviewKind::Markdown, Opened::Text(file)) => {
+                let size = file.stamp().size();
+                let (text, _, _) = file.into_parts();
+                (PreviewContent::Markdown(text.into()), size)
+            }
+            _ => return,
+        };
+        let id = self.id();
+        let download = self.download_action(location, cx);
+        let edit = (kind == PreviewKind::Markdown).then(|| {
+            ExplorerAction::new(
+                id,
+                ExplorerCommand::Edit {
+                    remote,
+                    path: Some(location.path()),
+                },
+            )
+        });
+        open_preview_dialog(
+            Preview {
+                name: location.name(),
+                size,
+                content,
+                download: download.map(|command| ExplorerAction::new(id, command)),
+                edit,
+                dispatch: self.dispatch.clone(),
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// 下载… for a remote file, into the local pane's directory.
+    fn download_action(&self, location: &FileLocation, cx: &App) -> Option<ExplorerCommand> {
+        match location {
+            FileLocation::Remote(path) => Some(ExplorerCommand::DownloadPaths {
+                paths: vec![path.to_string()],
+                target: self.local().read(cx).path(),
+            }),
+            FileLocation::Local(_) => None,
+        }
+    }
+
     /// Why a file was not opened. Too large, binary or not UTF-8 is a
     /// decision to make (a remote file can still be downloaded); anything
     /// else is an error.
-    fn refuse_edit(
+    fn refuse_open(
         &mut self,
         location: &FileLocation,
+        opening: Opening,
         failure: ReadFailure,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let name = location.name();
+        let (title, what, limit) = match opening {
+            Opening::Edit => (format!("无法在编辑器中打开“{name}”"), "编辑器", EDIT_LIMIT),
+            Opening::Preview(PreviewKind::Image(_)) => {
+                (format!("无法预览“{name}”"), "预览", IMAGE_LIMIT)
+            }
+            Opening::Preview(PreviewKind::Markdown) => {
+                (format!("无法预览“{name}”"), "预览", EDIT_LIMIT)
+            }
+        };
         let reason = match &failure {
             ReadFailure::TooLarge(size) => format!(
-                "文件有 {}，编辑器只打开 {} 以内的文件。",
+                "文件有 {}，{what}只打开 {} 以内的文件。",
                 format_size(*size),
-                format_size(EDIT_LIMIT)
+                format_size(limit)
             ),
             ReadFailure::NotText => {
                 "它不是 UTF-8 编码的文本文件：可能是二进制文件，或用了 GBK 等其他编码。".into()
@@ -267,13 +420,7 @@ impl ExplorerPanel {
                 return;
             }
         };
-        let download = match location {
-            FileLocation::Remote(path) => Some(ExplorerCommand::DownloadPaths {
-                paths: vec![path.to_string()],
-                target: self.local().read(cx).path(),
-            }),
-            FileLocation::Local(_) => None,
-        };
+        let download = self.download_action(location, cx);
         let description = if download.is_some() {
             format!("{reason}可以下载到本机，用别的程序打开。")
         } else {
@@ -281,9 +428,7 @@ impl ExplorerPanel {
         };
         let (dispatch, id) = (self.dispatch.clone(), self.id());
         window.open_alert_dialog(cx, move |alert, _, _| {
-            let alert = alert
-                .title(format!("无法在编辑器中打开“{name}”"))
-                .description(description.clone());
+            let alert = alert.title(title.clone()).description(description.clone());
             match download.clone() {
                 Some(download) => alert
                     .button_props(
