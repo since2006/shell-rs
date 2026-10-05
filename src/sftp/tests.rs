@@ -2,6 +2,7 @@ use super::{
     client::RemoteFs,
     control::TransferControl,
     download::DownloadBatch,
+    edit::{read_text, write_in_place},
     journal::{DownloadJournal, Journal, SourceMetadata, partial_path},
     upload::UploadBatch,
     *,
@@ -150,9 +151,31 @@ impl RemoteFs for Remote {
         }
         Ok(path.to_string())
     }
+    async fn open_replace(&self, path: &RemotePath) -> Result<String> {
+        let target = self.resolve(path.as_str())?;
+        let mut nodes = self.nodes.borrow_mut();
+        match nodes.get_mut(&target) {
+            Some(node) if node.metadata.kind() == EntryKind::File => {
+                node.data.clear();
+                node.metadata = FileMetadata::new(
+                    EntryKind::File,
+                    0,
+                    node.metadata.modified(),
+                    node.metadata.permissions(),
+                );
+            }
+            Some(_) => bail!("not a file"),
+            None => {
+                drop(nodes);
+                self.file(&target, &[]);
+            }
+        }
+        Ok(target)
+    }
     async fn open_read(&self, path: &RemotePath) -> Result<String> {
-        match self.nodes.borrow().get(path.as_str()) {
-            Some(node) if node.metadata.kind() == EntryKind::File => Ok(path.to_string()),
+        let target = self.resolve(path.as_str())?;
+        match self.nodes.borrow().get(&target) {
+            Some(node) if node.metadata.kind() == EntryKind::File => Ok(target.clone()),
             _ => bail!("no such file"),
         }
     }
@@ -313,6 +336,27 @@ impl RemoteFs for Remote {
     }
 }
 impl Remote {
+    /// The path a link chain ends at, as a server's `open` follows it.
+    fn resolve(&self, path: &str) -> Result<String> {
+        let nodes = self.nodes.borrow();
+        let mut current = path.to_string();
+        for _ in 0..8 {
+            match nodes.get(&current) {
+                Some(node) if node.metadata.kind() == EntryKind::Symlink => {
+                    current = if node.link.starts_with('/') {
+                        node.link.clone()
+                    } else {
+                        RemotePath::new(current.as_str())?
+                            .parent()
+                            .join(&node.link)?
+                            .to_string()
+                    };
+                }
+                _ => return Ok(current),
+            }
+        }
+        bail!("too many levels of symbolic links")
+    }
     fn dir(&self, path: &str, mode: u32) {
         self.nodes.borrow_mut().insert(
             path.into(),
@@ -1807,4 +1851,271 @@ fn an_scp_download_takes_the_destination_name_and_keeps_the_execute_bits() {
             .mode();
         assert_eq!(mode & 0o111, 0);
     });
+}
+
+#[test]
+fn a_text_file_is_read_whole_through_short_and_reordered_reads() {
+    runtime().block_on(async {
+        let remote = Remote::new(true);
+        let text: String = (0..40_000).map(|i| format!("line {i}\n")).collect();
+        remote.file("/etc/app.conf", text.as_bytes());
+        remote.short_reads.set(true);
+        let file = read_text(&remote, &remote_path("/etc/app.conf"))
+            .await
+            .unwrap();
+        assert_eq!(file.text(), text);
+        assert_eq!(
+            file.stamp(),
+            FileStamp::of(&remote.nodes.borrow()["/etc/app.conf"].metadata)
+        );
+        assert!(remote.reads.get() > text.len() / 1000);
+    });
+}
+
+#[test]
+fn a_link_is_followed_to_the_file_it_points_at() {
+    runtime().block_on(async {
+        let remote = Remote::new(true);
+        remote.file("/srv/real.conf", b"old\n");
+        remote.link("/etc/app.conf", "/srv/real.conf");
+        let path = remote_path("/etc/app.conf");
+        let file = read_text(&remote, &path).await.unwrap();
+        assert_eq!(file.text(), "old\n");
+        write_in_place(&remote, &path, b"new\n".to_vec(), Some(file.stamp()))
+            .await
+            .unwrap();
+        // The link is still a link; the file behind it changed.
+        assert_eq!(
+            remote.nodes.borrow()["/etc/app.conf"].metadata.kind(),
+            EntryKind::Symlink
+        );
+        assert_eq!(remote.bytes("/srv/real.conf"), b"new\n");
+    });
+}
+
+#[test]
+fn directories_large_files_and_binary_files_are_refused() {
+    runtime().block_on(async {
+        let remote = Remote::new(true);
+        remote.dir("/etc", 0o755);
+        remote.file("/var/big.log", &vec![b'x'; EDIT_LIMIT as usize + 1]);
+        let mut binary = vec![b'a'; 1_000_000];
+        binary[10] = 0;
+        remote.file("/bin/tool", &binary);
+        let refusal = |path: &'static str| {
+            let remote = &remote;
+            async move {
+                ReadFailure::from_error(read_text(remote, &remote_path(path)).await.unwrap_err())
+            }
+        };
+        assert_eq!(refusal("/etc").await, ReadFailure::NotFile);
+        assert_eq!(
+            refusal("/var/big.log").await,
+            ReadFailure::TooLarge(EDIT_LIMIT + 1)
+        );
+        let reads = remote.reads.get();
+        assert_eq!(refusal("/bin/tool").await, ReadFailure::NotText);
+        // Given up after the first chunk, not after reading it all.
+        assert!(remote.reads.get() - reads < 31);
+        assert!(matches!(refusal("/missing").await, ReadFailure::Failed(_)));
+    });
+}
+
+#[test]
+fn a_save_writes_in_place_and_keeps_the_permissions() {
+    runtime().block_on(async {
+        let remote = Remote::new(true);
+        let long: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8 + 1).collect();
+        remote.file("/etc/app.conf", &long);
+        let path = remote_path("/etc/app.conf");
+        let file_stamp = FileStamp::of(&remote.nodes.borrow()["/etc/app.conf"].metadata);
+        let shorter = b"short".to_vec();
+        let stamp = write_in_place(&remote, &path, shorter.clone(), Some(file_stamp))
+            .await
+            .unwrap();
+        // Truncated, not overwritten at the start.
+        assert_eq!(remote.bytes("/etc/app.conf"), shorter);
+        assert_eq!(stamp.size(), 5);
+        let metadata = remote.nodes.borrow()["/etc/app.conf"].metadata.clone();
+        assert_eq!(metadata.permissions(), Some(0o640));
+        assert_eq!(remote.renames.get(), 0);
+
+        // A long write goes in parallel chunks.
+        write_in_place(&remote, &path, long.clone(), None)
+            .await
+            .unwrap();
+        assert_eq!(remote.bytes("/etc/app.conf"), long);
+        assert!(remote.max_in_flight.get() > 1);
+    });
+}
+
+#[test]
+fn a_save_over_a_file_changed_or_removed_since_is_refused() {
+    runtime().block_on(async {
+        let remote = Remote::new(true);
+        remote.file("/etc/app.conf", b"mine\n");
+        let path = remote_path("/etc/app.conf");
+        let file = read_text(&remote, &path).await.unwrap();
+        remote.file("/etc/app.conf", b"someone else's\n");
+        let error = write_in_place(&remote, &path, b"mine 2\n".to_vec(), Some(file.stamp()))
+            .await
+            .unwrap_err();
+        assert_eq!(SaveFailure::from_error(error), SaveFailure::Changed);
+        assert_eq!(remote.bytes("/etc/app.conf"), b"someone else's\n");
+
+        remote.nodes.borrow_mut().remove("/etc/app.conf");
+        let error = write_in_place(&remote, &path, b"mine 2\n".to_vec(), Some(file.stamp()))
+            .await
+            .unwrap_err();
+        assert_eq!(SaveFailure::from_error(error), SaveFailure::Changed);
+
+        // Saving anyway creates it again.
+        write_in_place(&remote, &path, b"mine 2\n".to_vec(), None)
+            .await
+            .unwrap();
+        assert_eq!(remote.bytes("/etc/app.conf"), b"mine 2\n");
+    });
+}
+
+#[test]
+fn a_save_that_fails_after_truncating_is_interrupted() {
+    runtime().block_on(async {
+        let remote = Remote::new(true);
+        remote.file("/etc/app.conf", &vec![b'a'; 200_000]);
+        remote.fault.set(Some(Fault::Write(2)));
+        let error = write_in_place(
+            &remote,
+            &remote_path("/etc/app.conf"),
+            vec![b'b'; 200_000],
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(super::client::is_network_error(&error));
+        assert!(matches!(
+            SaveFailure::from_error(error),
+            SaveFailure::Interrupted(_)
+        ));
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn openssh_protocol_edits_in_place_through_links_keeping_mode_and_hard_links() {
+    runtime().block_on(async {
+        use std::os::unix::fs::PermissionsExt as _;
+        let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let served = temp.path().join("remote");
+        std::fs::create_dir(&served).unwrap();
+        let real = served.join("真的.conf");
+        std::fs::write(&real, "line one\r\nline two\r\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::os::unix::fs::symlink("真的.conf", served.join("链接.conf")).unwrap();
+        std::fs::hard_link(&real, served.join("硬链接.conf")).unwrap();
+        let (client, mut process) = super::client::SftpClient::local_test_server(&served)
+            .await
+            .unwrap();
+        let base = client
+            .canonicalize(&RemotePath::new(".").unwrap())
+            .await
+            .unwrap();
+        let link = base.join("链接.conf").unwrap();
+
+        let file = read_text(&client, &link).await.unwrap();
+        assert_eq!(file.text(), "line one\nline two\n");
+        assert!(file.format().crlf());
+        let bytes = file.format().encode("short\n");
+        let stamp = write_in_place(&client, &link, bytes, Some(file.stamp()))
+            .await
+            .unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(served.join("链接.conf"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(&real).unwrap(), b"short\r\n");
+        assert_eq!(
+            std::fs::read(served.join("硬链接.conf")).unwrap(),
+            b"short\r\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&real).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(stamp.size(), 7);
+
+        // Someone else writes: the next save with the old stamp is refused.
+        std::fs::write(&real, "theirs, longer\n").unwrap();
+        let error = write_in_place(&client, &link, b"mine\n".to_vec(), Some(stamp))
+            .await
+            .unwrap_err();
+        assert_eq!(SaveFailure::from_error(error), SaveFailure::Changed);
+        assert_eq!(std::fs::read(&real).unwrap(), b"theirs, longer\n");
+
+        // Too large, without reading it.
+        let big = std::fs::File::create(served.join("big.log")).unwrap();
+        big.set_len(EDIT_LIMIT + 1).unwrap();
+        let error = read_text(&client, &base.join("big.log").unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            ReadFailure::from_error(error),
+            ReadFailure::TooLarge(EDIT_LIMIT + 1)
+        );
+        drop(client);
+        let _ = process.kill().await;
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn local_files_are_edited_in_place_through_links() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let temp = tempfile::tempdir().unwrap();
+    let provider = SystemLocalDirectoryProvider;
+    let real = temp.path().join("real.conf");
+    std::fs::write(&real, b"\xEF\xBB\xBFold\n").unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let link = temp.path().join("link.conf");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let file = read_local_text(&provider, &link).unwrap();
+    assert_eq!(file.text(), "old\n");
+    assert!(file.format().bom());
+    let stamp = write_local_text(
+        &provider,
+        &link,
+        &file.format().encode("new\n"),
+        Some(file.stamp()),
+    )
+    .unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(std::fs::read(&real).unwrap(), b"\xEF\xBB\xBFnew\n");
+    assert_eq!(
+        std::fs::metadata(&real).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    std::fs::write(&real, b"theirs, longer\n").unwrap();
+    assert_eq!(
+        write_local_text(&provider, &link, b"mine\n", Some(stamp)),
+        Err(SaveFailure::Changed)
+    );
+    assert_eq!(
+        read_local_text(&provider, temp.path()),
+        Err(ReadFailure::NotFile)
+    );
+    let big = std::fs::File::create(temp.path().join("big.log")).unwrap();
+    big.set_len(EDIT_LIMIT + 1).unwrap();
+    assert_eq!(
+        read_local_text(&provider, &temp.path().join("big.log")),
+        Err(ReadFailure::TooLarge(EDIT_LIMIT + 1))
+    );
 }

@@ -62,6 +62,7 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 - Upload and download by dragging or by shortcut, recursively. Start new transfers while one runs; they wait in a per-tab transfer queue.
 - Resumable transfers: data goes to a `.filepart` first, dropped connections are retried after 1, 3 and 10 seconds, and after a restart ShellRS offers to resume the same transfer.
 - Delete (local items go to the Trash), rename, create, and change permissions (a 3×3 grid plus octal, optionally recursive).
+- Built-in editor: double-click a text file to edit it, ⌘S writes it back in place, after checking nobody else changed it; syntax highlighting for common formats.
 - Each SFTP tab has its own connection and asks only for the SFTP subsystem, so no shell is needed on the server.
 
 **Opening from a bastion host**

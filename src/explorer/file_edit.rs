@@ -1,0 +1,330 @@
+//! Files for the editor: an SFTP tab reads them for it and writes the remote
+//! ones back over its own connection, so editing never logs in again.
+//!
+//! A file is read before any editor tab exists: one that cannot be edited
+//! (too large, binary, not UTF-8) is explained here and never flashes a tab.
+
+use super::{ExplorerPanel, ExplorerPanelEvent, format_size};
+use crate::app::{ExplorerAction, ExplorerCommand, ExplorerDispatch as _};
+use crate::host::ConnectionState;
+use crate::sftp::{
+    EDIT_LIMIT, FileStamp, ReadFailure, RemotePath, SaveFailure, SftpCommand, TextFile,
+    read_local_text,
+};
+use futures::channel::oneshot;
+use gpui_kit::component::{WindowExt as _, dialog::DialogButtonProps, notification::Notification};
+use gpui_kit::*;
+use std::path::PathBuf;
+use std::rc::Rc;
+
+/// Where a file to edit lives: on the server of an SFTP tab, or here.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum FileLocation {
+    Remote(RemotePath),
+    Local(PathBuf),
+}
+
+impl FileLocation {
+    pub fn is_remote(&self) -> bool {
+        matches!(self, FileLocation::Remote(_))
+    }
+    /// The file's own name.
+    pub fn name(&self) -> String {
+        match self {
+            FileLocation::Remote(path) => path.file_name().to_string(),
+            FileLocation::Local(path) => path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string()),
+        }
+    }
+    /// The full path, as a pane shows paths.
+    pub fn path(&self) -> String {
+        match self {
+            FileLocation::Remote(path) => path.to_string(),
+            FileLocation::Local(path) => path.to_string_lossy().into_owned(),
+        }
+    }
+    /// The directory the file is in, as a pane shows paths.
+    pub fn directory(&self) -> String {
+        match self {
+            FileLocation::Remote(path) => path.parent().to_string(),
+            FileLocation::Local(path) => path
+                .parent()
+                .map(|parent| parent.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// A read or a write waiting for the worker, answered from `on_event`.
+pub(super) enum PendingFile {
+    Read(oneshot::Sender<Result<TextFile, ReadFailure>>),
+    Write(oneshot::Sender<Result<FileStamp, SaveFailure>>),
+}
+
+impl ExplorerPanel {
+    /// The file `path` names on one side, or the one under that side's
+    /// cursor; `None` for a directory or nothing.
+    pub fn edit_target(&self, remote: bool, path: Option<&str>, cx: &App) -> Option<FileLocation> {
+        let pane = self.pane(remote).read(cx);
+        let path = match path {
+            Some(path) => path.to_string(),
+            None => {
+                let entry = pane.cursor_entry(cx)?;
+                if entry.is_dir() || entry.is_parent() {
+                    return None;
+                }
+                pane.child_path_of(&entry.name)
+            }
+        };
+        Some(if remote {
+            FileLocation::Remote(RemotePath::new(path).ok()?)
+        } else {
+            FileLocation::Local(PathBuf::from(path))
+        })
+    }
+
+    /// Read a file for a new editor tab; `EditFile` brings it to the
+    /// workspace, a refusal is explained here.
+    pub(super) fn open_for_edit(
+        &mut self,
+        location: FileLocation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.opening.insert(location.clone()) {
+            return;
+        }
+        let Some(read) = self.read_file(&location, window, cx) else {
+            self.opening.remove(&location);
+            return;
+        };
+        let remote = location.is_remote();
+        let name = location.name();
+        self.pane(remote)
+            .clone()
+            .update(cx, |pane, cx| pane.begin_opening(name, cx));
+        cx.spawn_in(window, async move |this, cx| {
+            let result = read.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.opening.remove(&location);
+                this.pane(remote)
+                    .clone()
+                    .update(cx, |pane, cx| pane.finish_opening(cx));
+                match result {
+                    Ok(file) => cx.emit(ExplorerPanelEvent::EditFile(
+                        this.id(),
+                        location,
+                        Rc::new(file),
+                    )),
+                    Err(failure) => this.refuse_edit(&location, failure, window, cx),
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Read a whole text file. `None` when the remote side is not connected,
+    /// which this tab has already told the user about.
+    pub fn read_file(
+        &mut self,
+        location: &FileLocation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<Result<TextFile, ReadFailure>>> {
+        match location {
+            FileLocation::Local(path) => {
+                let (provider, path) = (self.local_provider.clone(), path.clone());
+                Some(cx.background_spawn(async move { read_local_text(provider.as_ref(), &path) }))
+            }
+            FileLocation::Remote(path) => {
+                if !self.reachable(window, cx) {
+                    return None;
+                }
+                let (sender, receiver) = oneshot::channel();
+                let request_id = self.next_file_request(PendingFile::Read(sender));
+                self.send(SftpCommand::ReadFile {
+                    request_id,
+                    path: path.clone(),
+                });
+                Some(cx.spawn(async move |_, _| {
+                    receiver
+                        .await
+                        .unwrap_or_else(|_| Err(ReadFailure::Failed("SFTP 连接已断开".into())))
+                }))
+            }
+        }
+    }
+
+    /// Write bytes over a remote file in place. `None` when not connected,
+    /// which this tab has already told the user about.
+    pub fn write_remote_file(
+        &mut self,
+        path: RemotePath,
+        bytes: Vec<u8>,
+        expected: Option<FileStamp>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Task<Result<FileStamp, SaveFailure>>> {
+        if !self.reachable(window, cx) {
+            return None;
+        }
+        let (sender, receiver) = oneshot::channel();
+        let request_id = self.next_file_request(PendingFile::Write(sender));
+        self.send(SftpCommand::WriteFile {
+            request_id,
+            path,
+            bytes,
+            expected,
+        });
+        Some(cx.spawn(async move |_, _| {
+            // The connection dropped before the answer: the write may have
+            // stopped halfway.
+            receiver
+                .await
+                .unwrap_or_else(|_| Err(SaveFailure::Interrupted("SFTP 连接已断开".into())))
+        }))
+    }
+
+    /// Re-read a pane that shows the directory `location` is in, so its
+    /// size and time follow a save.
+    pub fn reload_if_showing(
+        &mut self,
+        location: &FileLocation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let remote = location.is_remote();
+        if remote && self.connection_state() != ConnectionState::Connected {
+            return;
+        }
+        if self.pane(remote).read(cx).path() == location.directory() {
+            self.reload(remote, window, cx);
+        }
+    }
+
+    pub(super) fn finish_file_read(&mut self, id: u64, result: Result<TextFile, ReadFailure>) {
+        if let Some(PendingFile::Read(sender)) = self.files.remove(&id) {
+            let _ = sender.send(result);
+        }
+    }
+
+    pub(super) fn finish_file_write(&mut self, id: u64, result: Result<FileStamp, SaveFailure>) {
+        if let Some(PendingFile::Write(sender)) = self.files.remove(&id) {
+            let _ = sender.send(result);
+        }
+    }
+
+    /// The remote side is connected; otherwise say why and offer to
+    /// reconnect.
+    fn reachable(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        match self.connection_state() {
+            ConnectionState::Connected => true,
+            ConnectionState::Disconnected => {
+                self.offer_reconnect(window, cx);
+                false
+            }
+            ConnectionState::Connecting => {
+                window.push_notification(Notification::warning("正在连接 SFTP，请稍候再试。"), cx);
+                false
+            }
+        }
+    }
+
+    fn next_file_request(&mut self, pending: PendingFile) -> u64 {
+        self.next_operation += 1;
+        self.files.insert(self.next_operation, pending);
+        self.next_operation
+    }
+
+    /// Why a file was not opened. Too large, binary or not UTF-8 is a
+    /// decision to make (a remote file can still be downloaded); anything
+    /// else is an error.
+    fn refuse_edit(
+        &mut self,
+        location: &FileLocation,
+        failure: ReadFailure,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = location.name();
+        let reason = match &failure {
+            ReadFailure::TooLarge(size) => format!(
+                "文件有 {}，编辑器只打开 {} 以内的文件。",
+                format_size(*size),
+                format_size(EDIT_LIMIT)
+            ),
+            ReadFailure::NotText => {
+                "它不是 UTF-8 编码的文本文件：可能是二进制文件，或用了 GBK 等其他编码。".into()
+            }
+            ReadFailure::NotFile => "它不是普通文件。".into(),
+            ReadFailure::Failed(message) => {
+                window.push_notification(
+                    Notification::error(message.clone()).title(format!("无法打开“{name}”")),
+                    cx,
+                );
+                return;
+            }
+        };
+        let download = match location {
+            FileLocation::Remote(path) => Some(ExplorerCommand::DownloadPaths {
+                paths: vec![path.to_string()],
+                target: self.local().read(cx).path(),
+            }),
+            FileLocation::Local(_) => None,
+        };
+        let description = if download.is_some() {
+            format!("{reason}可以下载到本机，用别的程序打开。")
+        } else {
+            reason
+        };
+        let (dispatch, id) = (self.dispatch.clone(), self.id());
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let alert = alert
+                .title(format!("无法在编辑器中打开“{name}”"))
+                .description(description.clone());
+            match download.clone() {
+                Some(download) => alert
+                    .button_props(
+                        DialogButtonProps::default()
+                            .ok_text("下载…")
+                            .cancel_text("取消"),
+                    )
+                    .show_cancel(true)
+                    .on_ok({
+                        let dispatch = dispatch.clone();
+                        move |_, window, cx| {
+                            dispatch.dispatch_explorer_action(
+                                &ExplorerAction::new(id, download.clone()),
+                                window,
+                                cx,
+                            );
+                            true
+                        }
+                    }),
+                None => alert.button_props(DialogButtonProps::default().ok_text("知道了")),
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileLocation;
+    use crate::sftp::RemotePath;
+    use std::path::PathBuf;
+
+    #[test]
+    fn a_location_names_its_file_and_directory_as_a_pane_does() {
+        let remote = FileLocation::Remote(RemotePath::new("/etc/nginx/nginx.conf").unwrap());
+        assert_eq!(remote.name(), "nginx.conf");
+        assert_eq!(remote.directory(), "/etc/nginx");
+        let top = FileLocation::Remote(RemotePath::new("/hosts").unwrap());
+        assert_eq!(top.directory(), "/");
+        let local = FileLocation::Local(PathBuf::from("/Users/me/notes.md"));
+        assert_eq!(local.name(), "notes.md");
+        assert_eq!(local.directory(), "/Users/me");
+        assert_eq!(local.path(), "/Users/me/notes.md");
+    }
+}

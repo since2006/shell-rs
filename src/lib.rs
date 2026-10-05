@@ -4,7 +4,7 @@
 //! `host` (主机管理), `terminal` (终端), `ssh` (SSH 连接), `sftp` (SFTP
 //! 传输), `explorer` (SFTP 文件浏览), `forward` (端口转发), `credential`
 //! (凭据), `docker` (Docker), `monitor` (系统监控), `services` (系统服务), `processes` (进程管理),
-//! `netstat` (网络连接), `history` (历史命令), `snippets` (命令片段),
+//! `netstat` (网络连接), `history` (历史命令), `snippets` (命令片段), `editor` (内置编辑器),
 //! `secrets` (系统钥匙串), `settings` (设置), `cli` (外部 CLI), `update` (在线升级), `connection` 与
 //! `shared` (跨模块共用), `workspace` (窗口壳), `app` (动作、快捷键、资源).
 
@@ -13,6 +13,7 @@ pub mod cli;
 pub mod connection;
 pub mod credential;
 pub mod docker;
+pub mod editor;
 pub mod explorer;
 pub mod forward;
 pub mod history;

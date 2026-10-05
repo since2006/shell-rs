@@ -16,6 +16,9 @@ pub(super) struct PaneMenuState {
     pub targets: Vec<String>,
     /// The single selected row is a directory (or a link to one).
     pub opens_directory: bool,
+    /// The single selected row is a file the editor can try to open: its
+    /// full path.
+    pub edits_file: Option<String>,
     pub can_go_up: bool,
     pub can_go_home: bool,
     pub can_go_back: bool,
@@ -43,6 +46,16 @@ pub(super) fn item_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
             "打开",
             Icon::new(IconName::FolderOpen),
             state.action(ExplorerCommand::Open { remote }),
+        )
+        .separator()
+    } else if let Some(path) = state.edits_file.clone() {
+        menu.menu_with_icon(
+            "编辑",
+            Icon::new(CatalogIcon::FilePenLine),
+            state.action(ExplorerCommand::Edit {
+                remote,
+                path: Some(path),
+            }),
         )
         .separator()
     } else {

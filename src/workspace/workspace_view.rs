@@ -19,18 +19,20 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::editors::describe_files;
+use crate::app::ExplorerDispatch as _;
 use crate::app::{
-    CenterTab, ClearTerminal, CloseActiveTab, CloseExplorer, CloseLocalTerminal, CloseSettings,
-    CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectHost, CopyAgentSkill,
-    CopyHostAddress, CopyHostId, CopyTerminal, DeleteGroup, DeleteHost, DisconnectHost,
-    DisconnectTerminal, DismissTerminalFind, DuplicateHost, EditHost, ExpandAllGroups,
-    ExplorerAction, ExplorerCommand, ExplorerShortcut, FindInTerminal, FindNextInTerminal,
-    FindPreviousInTerminal, FocusSearch, InstallAgentSkill, InstallCliCommand, MoveHostNode,
-    NewChildGroup, NewGroup, NewHost, NewHostInGroup, NewLocalTerminal, NewTemporaryConnection,
-    OpenExplorer, OpenSettings, PasteTerminal, QuickConnect, ReconnectTerminal,
-    RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, RenameExplorer, RenameGroup,
-    RenameTerminal, RestartLocalTerminal, SetFileSizeFormat, ToggleHostPanel, ToggleTheme, ZoomIn,
-    ZoomOut, ZoomReset,
+    CenterTab, ClearTerminal, CloseActiveTab, CloseEditor, CloseExplorer, CloseLocalTerminal,
+    CloseSettings, CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectHost,
+    CopyAgentSkill, CopyHostAddress, CopyHostId, CopyTerminal, DeleteGroup, DeleteHost,
+    DisconnectHost, DisconnectTerminal, DismissTerminalFind, DuplicateHost, EditHost,
+    ExpandAllGroups, ExplorerAction, ExplorerCommand, ExplorerShortcut, FindInTerminal,
+    FindNextInTerminal, FindPreviousInTerminal, FocusSearch, InstallAgentSkill, InstallCliCommand,
+    MoveHostNode, NewChildGroup, NewGroup, NewHost, NewHostInGroup, NewLocalTerminal,
+    NewTemporaryConnection, OpenExplorer, OpenSettings, PasteTerminal, QuickConnect,
+    ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, RenameExplorer,
+    RenameGroup, RenameTerminal, RestartLocalTerminal, SetFileSizeFormat, ToggleHostPanel,
+    ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::cli::{CliIntegration, CliServer, CliTarget, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -38,6 +40,7 @@ use crate::connection::{
     ConnectionSecret, SharedConnectionTester,
 };
 use crate::credential::CredentialPanel;
+use crate::editor::{EditorId, EditorPanel};
 use crate::explorer::{ExplorerId, ExplorerPanel, ExplorerPanelEvent, confirm_close_transfer};
 use crate::forward::{
     ForwardManager, ForwardManagerEvent, ForwardPanel, SharedForwardTransportProvider,
@@ -55,7 +58,7 @@ use crate::sftp::{
     SharedLocalDirectoryProvider, SharedSftpTransportProvider, SshSftpTransportProvider,
     SystemLocalDirectoryProvider,
 };
-use crate::shared::{commit_footer, open_rename_tab_dialog};
+use crate::shared::{commit_footer, confirm_danger, open_rename_tab_dialog};
 use crate::terminal::{
     LocalPtyTransportFactory, LocalTerminalId, LocalTerminalPanel, LocalTerminalPanelEvent,
     RemoteTerminalId, SearchDirection, SharedRemoteTerminalTransportProvider,
@@ -165,7 +168,7 @@ pub struct Workspace {
     local_terminal_factory: SharedTerminalTransportFactory,
     remote_terminal_provider: SharedRemoteTerminalTransportProvider,
     sftp_provider: SharedSftpTransportProvider,
-    local_directory_provider: SharedLocalDirectoryProvider,
+    pub(super) local_directory_provider: SharedLocalDirectoryProvider,
     /// Backs the host dialog's 「测试连接」.
     connection_tester: SharedConnectionTester,
     next_remote_terminal_id: u64,
@@ -183,7 +186,10 @@ pub struct Workspace {
     /// Dispatch target for the title bar and start page: actions sent to it
     /// reach the workspace handlers whatever is focused.
     pub(super) focus_handle: FocusHandle,
-    _subscriptions: Vec<Subscription>,
+    /// Editor tabs, one per file.
+    pub(super) editors: HashMap<EditorId, Entity<EditorPanel>>,
+    pub(super) next_editor_id: u64,
+    pub(super) _subscriptions: Vec<Subscription>,
 }
 
 impl Workspace {
@@ -433,6 +439,17 @@ impl Workspace {
             .filter(|host| host.state.is_connected())
             .map(|host| host.id)
             .collect();
+        // ⌘Q (and on Windows and Linux the window's close button) asks first
+        // when an editor has changes not saved yet.
+        let this = cx.weak_entity();
+        crate::app::set_quit_guard(
+            window.window_handle(),
+            move |window, cx| {
+                this.update(cx, |this, cx| this.ask_before_quit(window, cx))
+                    .unwrap_or(false)
+            },
+            cx,
+        );
         let mut terminals = HashMap::new();
         let mut center = DockLayout::tabs();
         let mut next_remote_terminal_id = 1;
@@ -515,6 +532,8 @@ impl Workspace {
             prompt_queue: VecDeque::new(),
             active_prompt: None,
             focus_handle,
+            editors: HashMap::new(),
+            next_editor_id: 1,
             _subscriptions: subscriptions,
         }
     }
@@ -626,6 +645,10 @@ impl Workspace {
             Some(CenterTab::Settings) => self
                 .settings_tab
                 .as_ref()
+                .map(|panel| panel.read(cx).focus_handle(cx)),
+            Some(CenterTab::Editor(id)) => self
+                .editors
+                .get(&id)
                 .map(|panel| panel.read(cx).focus_handle(cx)),
             None => None,
         };
@@ -1249,7 +1272,7 @@ impl Workspace {
     }
 
     /// Display one tab of a tab group, found by its panel's entity.
-    fn activate_tab(
+    pub(super) fn activate_tab(
         &self,
         group: Option<WeakEntity<TabGroup>>,
         panel: EntityId,
@@ -1292,20 +1315,63 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(panel) = self.explorers.get(&action.0).cloned() {
+        self.close_explorer(action.0, true, window, cx);
+    }
+
+    /// Close an SFTP tab, asking first while it transfers, and while files
+    /// it opened have changes not saved yet unless that was asked already.
+    pub(super) fn close_explorer(
+        &mut self,
+        id: ExplorerId,
+        ask_about_unsaved: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.explorers.get(&id).cloned() {
             let generation = panel.read(cx).generation();
+            // Its remote files close with it: changes not saved yet would be
+            // lost, so the question names them.
+            let unsaved = if ask_about_unsaved {
+                self.unsaved_files(&self.editors_of(id, cx), cx)
+            } else {
+                Vec::new()
+            };
+            let unsaved = (!unsaved.is_empty()).then(|| {
+                format!(
+                    "{}有未保存的修改，关闭 SFTP 标签会一起关掉它们，修改会丢失。",
+                    describe_files(&unsaved)
+                )
+            });
             if panel.read(cx).is_transferring() {
                 let direction = panel.read(cx).transfer_direction();
                 confirm_close_transfer(
-                    action.0,
+                    id,
                     generation,
                     direction,
+                    unsaved,
                     self.focus_handle.clone(),
                     window,
                     cx,
                 );
+            } else if let Some(unsaved) = unsaved {
+                let dispatch = self.focus_handle.clone();
+                confirm_danger(
+                    "关闭 SFTP 标签？".into(),
+                    Some(unsaved.into()),
+                    "放弃修改并关闭",
+                    Rc::new(move |window, cx| {
+                        dispatch.dispatch_explorer_action(
+                            &ExplorerAction::new(id, ExplorerCommand::CloseConfirmed)
+                                .with_generation(generation),
+                            window,
+                            cx,
+                        )
+                    }),
+                    window,
+                    cx,
+                );
             } else {
-                self.remove_explorer(action.0, window, cx);
+                self.remove_explorer(id, window, cx);
             }
         }
     }
@@ -1342,6 +1408,15 @@ impl Workspace {
                 window,
                 cx,
             );
+        }
+        // A file open in an editor already shows that editor: no second read,
+        // no second tab.
+        if let ExplorerCommand::Edit { remote, path } = action.command()
+            && let Some(location) = panel.read(cx).edit_target(*remote, path.as_deref(), cx)
+            && let Some(editor) = self.editor_for_location(action.explorer(), &location, cx)
+        {
+            self.show_editor(&editor, window, cx);
+            return;
         }
         if matches!(action.command(), ExplorerCommand::CloseConfirmed) {
             self.remove_explorer(action.explorer(), window, cx);
@@ -1392,7 +1467,12 @@ impl Workspace {
 
     /// Close one center tab through its own close path, so an explorer that
     /// is uploading still asks first.
-    fn close_center_tab(&mut self, tab: CenterTab, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close_center_tab(
+        &mut self,
+        tab: CenterTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match tab {
             CenterTab::Terminal(id) => self.on_close_terminal(&CloseTerminal(id), window, cx),
             CenterTab::Explorer(id) => self.on_close_explorer(&CloseExplorer(id), window, cx),
@@ -1400,6 +1480,7 @@ impl Workspace {
                 self.on_close_local_terminal(&CloseLocalTerminal(id), window, cx)
             }
             CenterTab::Settings => self.on_close_settings(&CloseSettings, window, cx),
+            CenterTab::Editor(id) => self.on_close_editor(&CloseEditor(id), window, cx),
         }
     }
 
@@ -1420,6 +1501,10 @@ impl Workspace {
             }
             CenterTab::Settings => {
                 let panel = self.settings_tab.as_ref()?;
+                (panel.read(cx).tab_group(), panel.entity_id())
+            }
+            CenterTab::Editor(id) => {
+                let panel = self.editors.get(&id)?;
                 (panel.read(cx).tab_group(), panel.entity_id())
             }
         };
@@ -1451,6 +1536,12 @@ impl Workspace {
                     .filter(|panel| is(panel.entity_id()))
                     .map(|_| CenterTab::Settings)
             })
+            .or_else(|| {
+                self.editors
+                    .iter()
+                    .find(|(_, entity)| is(entity.entity_id()))
+                    .map(|(id, _)| CenterTab::Editor(*id))
+            })
     }
 
     fn on_close_tabs(&mut self, action: &CloseTabs, window: &mut Window, cx: &mut Context<Self>) {
@@ -1472,9 +1563,7 @@ impl Workspace {
             .into_iter()
             .filter_map(|target| self.center_tab_for_panel(panels[target]))
             .collect();
-        for tab in tabs {
-            self.close_center_tab(tab, window, cx);
-        }
+        self.close_center_tabs(tabs, window, cx);
     }
 
     fn on_rename_terminal(
@@ -1553,7 +1642,7 @@ impl Workspace {
             CenterTab::LocalTerminal(id) => {
                 Some(self.local_terminals.get(&id)?.read(cx).terminal().clone())
             }
-            CenterTab::Explorer(_) | CenterTab::Settings => None,
+            CenterTab::Explorer(_) | CenterTab::Settings | CenterTab::Editor(_) => None,
         }
     }
 
@@ -2134,6 +2223,11 @@ fn new_explorer_panel(
                 this.set_active_tab(Some(CenterTab::Explorer(*id)), window, cx)
             }
             ExplorerPanelEvent::Closed(id, host_id) => {
+                // Its remote files can no longer be written: their editors
+                // go with it (anything unsaved was asked about first).
+                for editor in this.editors_of(*id, cx) {
+                    this.remove_editor(editor, window, cx);
+                }
                 this.explorers.remove(id);
                 if this.active_tab == Some(CenterTab::Explorer(*id)) {
                     this.set_active_tab(None, window, cx);
@@ -2163,6 +2257,9 @@ fn new_explorer_panel(
                 window,
                 cx,
             ),
+            ExplorerPanelEvent::EditFile(id, location, file) => {
+                this.open_editor(*id, location.clone(), file.clone(), window, cx)
+            }
         },
     );
     (panel, subscription)
@@ -2224,6 +2321,31 @@ impl Render for Workspace {
                 }
                 None => WorkspaceStatus::Host(active, None),
             },
+            // An editor of a remote file tells the connection of the SFTP
+            // tab its saves go through.
+            Some(CenterTab::Editor(id)) => match self.editors.get(&id) {
+                Some(editor) => {
+                    let editor = editor.read(cx);
+                    let remote = editor.explorer_id().map(|explorer| {
+                        let host = editor
+                            .host_id()
+                            .and_then(|host| self.store.read(cx).host(host).cloned());
+                        let state = self
+                            .explorers
+                            .get(&explorer)
+                            .map_or(ConnectionState::Disconnected, |panel| {
+                                panel.read(cx).connection_state()
+                            });
+                        (host, state)
+                    });
+                    WorkspaceStatus::Editor {
+                        remote,
+                        cursor: editor.cursor_label(),
+                        format: editor.format_label(),
+                    }
+                }
+                None => WorkspaceStatus::Host(active, None),
+            },
             _ => WorkspaceStatus::Host(active, None),
         };
         let sidebar = self.sidebar_showing(cx);
@@ -2260,6 +2382,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_explorer_shortcut))
             .on_action(cx.listener(Self::on_close_terminal))
             .on_action(cx.listener(Self::on_close_explorer))
+            .on_action(cx.listener(Self::on_close_editor))
+            .on_action(cx.listener(Self::on_editor_action))
+            .on_action(cx.listener(Self::on_editor_shortcut))
             .on_action(cx.listener(Self::on_close_local_terminal))
             .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_install_cli_command))

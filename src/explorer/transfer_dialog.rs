@@ -549,22 +549,27 @@ impl Render for ConflictForm {
 }
 /// Ask before closing an SFTP tab with transfers under way. Confirming goes
 /// through the workspace like the tab's other commands.
+/// `unsaved` says which files of the tab have changes that closing it
+/// would lose, so there is one question, not two.
 pub fn confirm_close_transfer(
     explorer: ExplorerId,
     generation: u64,
     direction: TransferDirection,
+    unsaved: Option<String>,
     dispatch: FocusHandle,
     window: &mut Window,
     cx: &mut App,
 ) {
     let focus = window.focused(cx);
     let verb = direction.verb();
+    let description = format!(
+        "{verb}进度会保留，下次选择相同来源和目标目录时可以继续{verb}。{}",
+        unsaved.unwrap_or_default()
+    );
     window.open_alert_dialog(cx, move |dialog, _, _| {
         dialog
             .title(format!("停止{verb}并关闭？"))
-            .description(format!(
-                "{verb}进度会保留，下次选择相同来源和目标目录时可以继续{verb}。"
-            ))
+            .description(description.clone())
             .button_props(
                 gpui_kit::component::dialog::DialogButtonProps::default()
                     .ok_text(format!("停止{verb}并关闭"))

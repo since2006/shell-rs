@@ -6,11 +6,13 @@
 //! and the Dock icon could not bring one back. So, like Mac terminals,
 //! closing hides the app: the Dock icon, ⌘Tab or opening ShellRS again
 //! shows the window as it was, and ⌘Q quits. Windows and Linux quit when
-//! the window closes, as GPUI does there by default.
+//! the window closes, as GPUI does there by default, but like ⌘Q only once
+//! the quit guard lets them (unsaved changes in an editor are asked about).
 
 use gpui_kit::{App, Window};
 
-/// Make the window's close button hide ShellRS. Nothing outside macOS.
+/// Make the window's close button hide ShellRS on macOS. Elsewhere closing
+/// quits, after asking the quit guard.
 #[cfg(target_os = "macos")]
 pub fn hide_when_closed(window: &Window, cx: &App) {
     window.on_window_should_close(cx, |_, cx| {
@@ -20,7 +22,9 @@ pub fn hide_when_closed(window: &Window, cx: &App) {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn hide_when_closed(_: &Window, _: &App) {}
+pub fn hide_when_closed(window: &Window, cx: &App) {
+    window.on_window_should_close(cx, |window, cx| !super::quit::quit_held_back(window, cx));
+}
 
 /// Show the window again, in front of other apps: when the Dock icon is
 /// clicked, or ShellRS is opened again while it runs.

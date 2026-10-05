@@ -1,3 +1,4 @@
+use super::{FileStamp, ReadFailure, SaveFailure};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -674,6 +675,19 @@ pub trait LocalDirectoryProvider: Send + Sync + 'static {
         recursive: bool,
         add_x_to_dirs: bool,
     ) -> Result<()>;
+    /// The bytes of a file to edit, following links, and its stamp. A
+    /// directory or a file larger than `limit` fails with a `ReadFailure`
+    /// before anything is read.
+    fn read_file(&self, path: &Path, limit: u64) -> Result<(Vec<u8>, FileStamp)>;
+    /// Write `bytes` over a file in place, following links and keeping its
+    /// permissions; created when missing. With `expected`, the file must
+    /// still match it, or this fails with `SaveFailure::Changed`.
+    fn write_file(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        expected: Option<FileStamp>,
+    ) -> Result<FileStamp>;
 }
 pub type SharedLocalDirectoryProvider = std::sync::Arc<dyn LocalDirectoryProvider>;
 #[derive(Default)]
@@ -791,6 +805,43 @@ impl LocalDirectoryProvider for SystemLocalDirectoryProvider {
     #[cfg(not(unix))]
     fn set_permissions(&self, _: &[PathBuf], _: PermissionEdit, _: bool, _: bool) -> Result<()> {
         bail!("此系统不支持修改权限")
+    }
+    fn read_file(&self, path: &Path, limit: u64) -> Result<(Vec<u8>, FileStamp)> {
+        let metadata = std::fs::metadata(path).map_err(|error| describe_io(error, path))?;
+        if !metadata.is_file() {
+            return Err(ReadFailure::NotFile.into());
+        }
+        if metadata.len() > limit {
+            return Err(ReadFailure::TooLarge(metadata.len()).into());
+        }
+        let bytes = std::fs::read(path).map_err(|error| describe_io(error, path))?;
+        Ok((bytes, FileStamp::local(&metadata)))
+    }
+    fn write_file(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        expected: Option<FileStamp>,
+    ) -> Result<FileStamp> {
+        use std::io::Write as _;
+        if let Some(expected) = expected {
+            let now = std::fs::metadata(path).ok().map(|m| FileStamp::local(&m));
+            if now != Some(expected) {
+                return Err(SaveFailure::Changed.into());
+            }
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .map_err(|error| describe_io(error, path))?;
+        file.write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|error| describe_io(error, path))?;
+        drop(file);
+        let metadata = std::fs::metadata(path).map_err(|error| describe_io(error, path))?;
+        Ok(FileStamp::local(&metadata))
     }
 }
 

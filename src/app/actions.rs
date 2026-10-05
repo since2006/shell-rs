@@ -6,6 +6,7 @@ use gpui_kit::*;
 use crate::{
     cli::AgentKind,
     docker::{ContainerCommand, DockerObject},
+    editor::EditorId,
     explorer::{ExplorerId, FileSizeFormat},
     host::{
         CredentialId, ForwardId, GroupId, HostId, HostNode, NodeDrop, SnippetCategoryId, SnippetId,
@@ -197,6 +198,9 @@ id_actions! {
 
     /// Close one SFTP tab.
     CloseExplorer(ExplorerId);
+
+    /// Close one editor tab, asking first when it has unsaved changes.
+    CloseEditor(EditorId);
     /// Open the dialog that gives one SFTP tab its own title.
     RenameExplorer(ExplorerId);
 
@@ -338,6 +342,7 @@ pub enum CenterTab {
     LocalTerminal(LocalTerminalId),
     /// There is at most one settings tab.
     Settings,
+    Editor(EditorId),
 }
 
 /// A tool of the right sidebar, in the order of the switch beside it.
@@ -423,9 +428,16 @@ pub enum ExplorerCommand {
     Forward {
         remote: bool,
     },
-    /// Enter or double-click: open the directory under the cursor.
+    /// Enter or double-click: open the directory under the cursor, or edit
+    /// the file there.
     Open {
         remote: bool,
+    },
+    /// F4 and 编辑: open a file in the editor, `path` or else the one under
+    /// the cursor (WinSCP's Edit).
+    Edit {
+        remote: bool,
+        path: Option<String>,
     },
     /// WinSCP's 打开目录/书签 dialog: type a directory or pick a bookmark.
     OpenDirectory {
@@ -555,6 +567,50 @@ impl ExplorerAction {
         &self.command
     }
 }
+/// Commands of an editor tab, shared by its toolbar, tab menu, dialogs and
+/// key bindings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorCommand {
+    /// ⌘S: write the file back, unless it changed since it was read.
+    Save,
+    /// 覆盖: write it back although it changed; `close` once that worked.
+    Overwrite {
+        close: bool,
+    },
+    /// Read the file again, asking first when there are changes.
+    Reload,
+    /// Read it again, throwing the changes away.
+    ReloadConfirmed,
+    /// 保存 in the close question: save, then close if that worked.
+    SaveAndClose,
+    /// 放弃修改 in the close question: close without saving.
+    CloseConfirmed,
+    CopyPath,
+}
+
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct EditorAction {
+    editor: EditorId,
+    command: EditorCommand,
+}
+impl EditorAction {
+    pub fn new(editor: EditorId, command: EditorCommand) -> Self {
+        Self { editor, command }
+    }
+    pub fn editor(&self) -> EditorId {
+        self.editor
+    }
+    pub fn command(&self) -> EditorCommand {
+        self.command
+    }
+}
+/// An editor key binding; the workspace sends it to the editor that holds
+/// focus.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct EditorShortcut(pub EditorCommand);
+
 /// A file-list key binding. The binding carries the pane side, and the
 /// workspace sends it to the explorer that holds focus.
 #[derive(Action, Clone, PartialEq, Eq)]

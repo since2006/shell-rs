@@ -5,8 +5,8 @@ use gpui_kit::component::{
 use gpui_kit::*;
 
 use crate::app::{
-    CenterTab, CloseExplorer, CloseLocalTerminal, CloseScope, CloseSettings, CloseTabs,
-    CloseTerminal,
+    CenterTab, CloseEditor, CloseExplorer, CloseLocalTerminal, CloseScope, CloseSettings,
+    CloseTabs, CloseTerminal,
 };
 
 /// The close commands every center tab's context menu ends with: this tab,
@@ -58,5 +58,6 @@ fn close_action(tab: CenterTab) -> Box<dyn Action> {
         CenterTab::Explorer(id) => Box::new(CloseExplorer(id)),
         CenterTab::LocalTerminal(id) => Box::new(CloseLocalTerminal(id)),
         CenterTab::Settings => Box::new(CloseSettings),
+        CenterTab::Editor(id) => Box::new(CloseEditor(id)),
     }
 }

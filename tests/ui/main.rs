@@ -10,6 +10,7 @@ mod support;
 mod connection;
 mod credential;
 mod docker;
+mod editor;
 mod forward;
 mod history;
 mod host_dialog;

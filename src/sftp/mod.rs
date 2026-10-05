@@ -1,6 +1,8 @@
 //! Real file browsing and resumable SFTP uploads. No GPUI or workspace dependencies.
+mod edit;
 mod model;
 mod transport;
+pub use edit::*;
 pub use model::*;
 pub use transport::*;
 mod client;

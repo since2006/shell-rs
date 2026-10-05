@@ -1,6 +1,6 @@
 use super::{
-    DirectoryListing, DownloadRequest, PermissionEdit, RemotePath, TransferAnswer,
-    TransferProgress, TransferQuestion, UploadRequest,
+    DirectoryListing, DownloadRequest, FileStamp, PermissionEdit, ReadFailure, RemotePath,
+    SaveFailure, TextFile, TransferAnswer, TransferProgress, TransferQuestion, UploadRequest,
 };
 use crate::{
     connection::{ConnectionPrompt, ConnectionPromptReply, Latency},
@@ -49,6 +49,20 @@ pub enum SftpCommand {
         request_id: u64,
         operation: RemoteOperation,
     },
+    /// Read a whole text file for the editor; answered by `FileRead`. Runs
+    /// alongside listings and transfers, like an operation.
+    ReadFile {
+        request_id: u64,
+        path: RemotePath,
+    },
+    /// Write the editor's text over a file in place; answered by
+    /// `FileWritten`. With `expected`, only if the file still matches it.
+    WriteFile {
+        request_id: u64,
+        path: RemotePath,
+        bytes: Vec<u8>,
+        expected: Option<FileStamp>,
+    },
     Upload(UploadRequest),
     /// A download batch; like an upload, one batch runs at a time.
     Download(DownloadRequest),
@@ -81,6 +95,14 @@ pub enum SftpEvent {
     Operated {
         request_id: u64,
         result: Result<(), String>,
+    },
+    FileRead {
+        request_id: u64,
+        result: Result<TextFile, ReadFailure>,
+    },
+    FileWritten {
+        request_id: u64,
+        result: Result<FileStamp, SaveFailure>,
     },
     Progress(TransferProgress),
     Question(TransferQuestion),

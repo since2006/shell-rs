@@ -4,6 +4,7 @@ mod actions;
 mod app_icon;
 mod assets;
 mod paths;
+mod quit;
 mod window_hiding;
 
 pub use actions::*;
@@ -12,6 +13,7 @@ pub use assets::{AppAssets, CatalogIcon, DOCKER_ICON};
 pub use paths::{
     cli_endpoint, cli_socket_path, data_dir, database_path, keys_dir, settings_path, updates_dir,
 };
+pub use quit::{quit_held_back, set_quit_guard};
 pub use window_hiding::{bring_forward, hide_when_closed};
 
 use gpui_kit::component::{Theme, dock::ToggleZoom};
@@ -27,6 +29,8 @@ pub const FORWARD_PANEL_CONTEXT: &str = "ForwardPanel";
 /// Key context of the credential list.
 pub const CREDENTIAL_PANEL_CONTEXT: &str = "CredentialPanel";
 /// Key contexts of the two SFTP file lists.
+/// Key context of an editor tab.
+pub const EDITOR_CONTEXT: &str = "FileEditor";
 pub const LOCAL_FILE_LIST_CONTEXT: &str = "LocalFileList";
 pub const REMOTE_FILE_LIST_CONTEXT: &str = "RemoteFileList";
 
@@ -36,7 +40,7 @@ pub fn init(cx: &mut App) {
     deepen_list_hover(cx);
     gpui_kit::component::set_locale("zh-CN");
     cx.bind_keys(key_bindings());
-    cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
+    cx.on_action(|_: &Quit, cx: &mut App| quit::quit(cx));
 }
 
 /// Use a stronger version of the theme's neutral list hover color throughout
@@ -80,6 +84,11 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(&primary("-"), ZoomOut, None),
         KeyBinding::new(&primary("0"), ZoomReset, None),
         KeyBinding::new(&primary("q"), Quit, None),
+        KeyBinding::new(
+            &primary("s"),
+            EditorShortcut(EditorCommand::Save),
+            Some(EDITOR_CONTEXT),
+        ),
         KeyBinding::new("shift-escape", ToggleZoom, None),
         KeyBinding::new("enter", ConnectSelected, Some(HOST_PANEL_CONTEXT)),
         KeyBinding::new("enter", ConnectSelected, Some(RECENT_HOSTS_CONTEXT)),
@@ -207,6 +216,8 @@ fn file_list_key_bindings() -> Vec<KeyBinding> {
             bind("delete", ExplorerCommand::Delete { remote }, context),
             bind("f8", ExplorerCommand::Delete { remote }, context),
             bind("f9", ExplorerCommand::Properties { remote }, context),
+            // WinSCP's 编辑.
+            bind("f4", ExplorerCommand::Edit { remote, path: None }, context),
             bind("f5", ExplorerCommand::Transfer { remote }, context),
             bind(
                 "space",

@@ -65,6 +65,8 @@ icon_assets!(
         Ban,
         CircleDot,
         FileText,
+        FilePenLine,
+        Save,
         Zap,
         ExternalLink
     ]

@@ -1,6 +1,6 @@
 use super::{
-    ExplorerId, FilePane, FilePaneEvent, LoadIntent, PaneSide, QueueId, QueueState, Removal,
-    TransferJob, TransferQueue, pane_operations::PendingOperation,
+    ExplorerId, FileLocation, FilePane, FilePaneEvent, LoadIntent, PaneSide, QueueId, QueueState,
+    Removal, TransferJob, TransferQueue, file_edit::PendingFile, pane_operations::PendingOperation,
 };
 use crate::app::ExplorerDispatch as _;
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
     host::{BookmarkSide, ConnectionState, HostId, HostStore},
     sftp::{
         DownloadRequest, RemotePath, SftpCommand, SftpEvent, SharedLocalDirectoryProvider,
-        SharedSftpTransportProvider, TransferDirection, TransferPhase, TransferQuestion,
+        SharedSftpTransportProvider, TextFile, TransferDirection, TransferPhase, TransferQuestion,
         UploadRequest,
     },
     shared::{ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items},
@@ -29,7 +29,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -43,6 +44,8 @@ pub enum ExplorerPanelEvent {
     /// connection changing: a directory could not be read, or can again.
     StatusChanged(ExplorerId),
     PromptRequested(ExplorerId, HostId, u64, ConnectionPrompt),
+    /// A file was read for the editor and can be edited.
+    EditFile(ExplorerId, FileLocation, Rc<TextFile>),
 }
 pub struct ExplorerPanel {
     id: ExplorerId,
@@ -56,6 +59,10 @@ pub struct ExplorerPanel {
     /// File operations waiting for their result, by request id.
     pub(super) operations: HashMap<u64, PendingOperation>,
     pub(super) next_operation: u64,
+    /// Reads and writes for the editor waiting for the worker, by request
+    /// id; the files being read for a new editor tab.
+    pub(super) files: HashMap<u64, PendingFile>,
+    pub(super) opening: HashSet<FileLocation>,
     commands: async_channel::Sender<SftpCommand>,
     state: ConnectionState,
     /// The connection's latest round trip; none until the first one after
@@ -212,6 +219,8 @@ impl ExplorerPanel {
             local_provider,
             operations: HashMap::new(),
             next_operation: 0,
+            files: HashMap::new(),
+            opening: HashSet::new(),
             commands,
             state: ConnectionState::Connecting,
             latency: None,
@@ -280,7 +289,7 @@ impl ExplorerPanel {
     /// Tell the user the remote side is disconnected, and why, with 重新连接
     /// right there. When the queue owns reconnecting (a stopped batch waits
     /// for 继续, or a transfer is reconnecting by itself), say so instead.
-    fn offer_reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn offer_reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if window.has_active_dialog(cx) {
             return;
         }
@@ -479,6 +488,10 @@ impl ExplorerPanel {
             SftpEvent::Operated { request_id, result } => {
                 self.finish_operation(request_id, result, window, cx)
             }
+            SftpEvent::FileRead { request_id, result } => self.finish_file_read(request_id, result),
+            SftpEvent::FileWritten { request_id, result } => {
+                self.finish_file_write(request_id, result)
+            }
             SftpEvent::Progress(progress) => {
                 let complete = progress.phase() == TransferPhase::Completed;
                 let direction = progress.direction();
@@ -636,15 +649,36 @@ impl ExplorerPanel {
             }
             ExplorerCommand::Open { remote } => {
                 let pane = self.pane(*remote).clone();
-                if let Some(entry) = pane.read(cx).cursor_entry(cx)
-                    && entry.is_dir()
-                {
+                let Some(entry) = pane.read(cx).cursor_entry(cx) else {
+                    return;
+                };
+                if entry.is_dir() {
                     let path = if entry.is_parent() {
                         pane.read(cx).parent_path()
                     } else {
                         pane.read(cx).child_path_of(&entry.name)
                     };
                     self.navigate(*remote, path, LoadIntent::Visit, window, cx);
+                } else {
+                    // A file opens in the editor, through the workspace, which
+                    // shows the tab when the file is open already.
+                    let path = pane.read(cx).child_path_of(&entry.name);
+                    self.dispatch.dispatch_explorer_action(
+                        &ExplorerAction::new(
+                            self.id,
+                            ExplorerCommand::Edit {
+                                remote: *remote,
+                                path: Some(path),
+                            },
+                        ),
+                        window,
+                        cx,
+                    );
+                }
+            }
+            ExplorerCommand::Edit { remote, path } => {
+                if let Some(location) = self.edit_target(*remote, path.as_deref(), cx) {
+                    self.open_for_edit(location, window, cx);
                 }
             }
             ExplorerCommand::OpenDirectory { remote } => {
@@ -925,6 +959,7 @@ fn needs_connection(command: &ExplorerCommand) -> bool {
         | C::Back { remote }
         | C::Forward { remote }
         | C::Open { remote }
+        | C::Edit { remote, .. }
         | C::OpenDirectory { remote }
         | C::Delete { remote }
         | C::Rename { remote }

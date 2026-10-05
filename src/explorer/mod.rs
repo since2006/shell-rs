@@ -2,6 +2,7 @@
 
 mod explorer_panel;
 mod file_dialogs;
+mod file_edit;
 mod file_listing;
 mod file_pane;
 mod history;
@@ -16,6 +17,7 @@ mod selection;
 mod transfer_queue;
 
 pub use explorer_panel::{ExplorerPanel, ExplorerPanelEvent, ExplorerStatus};
+pub use file_edit::FileLocation;
 pub use file_listing::FileListing;
 pub use file_pane::{FilePane, FilePaneEvent, PaneSide};
 pub use history::{LoadIntent, NavigationHistory};

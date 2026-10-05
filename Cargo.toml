@@ -21,7 +21,26 @@ name = "shellrs-cli"
 path = "src/bin/shellrs-cli.rs"
 
 [dependencies]
-gpui-kit = "0.6.1"
+gpui-kit = { version = "0.6.1", features = [
+    # The built-in editor's syntax highlighting, for what servers hold most:
+    # `tree-sitter` itself brings JSON. Each grammar is compiled C, so the
+    # list stays short.
+    "tree-sitter",
+    "tree-sitter-bash",
+    "tree-sitter-css",
+    "tree-sitter-diff",
+    "tree-sitter-go",
+    "tree-sitter-html",
+    "tree-sitter-javascript",
+    "tree-sitter-lua",
+    "tree-sitter-make",
+    "tree-sitter-markdown",
+    "tree-sitter-php",
+    "tree-sitter-python",
+    "tree-sitter-sql",
+    "tree-sitter-toml",
+    "tree-sitter-yaml",
+] }
 alacritty_terminal = "0.26"
 anyhow = "1"
 async-channel = "2"
@@ -127,3 +146,20 @@ crypto-bigint = { opt-level = 3 }
 crypto-primes = { opt-level = 3 }
 bcrypt-pbkdf = { opt-level = 3 }
 blowfish = { opt-level = 3 }
+# The editor parses whole files of up to 5 MB to highlight them.
+tree-sitter = { opt-level = 3 }
+tree-sitter-bash = { opt-level = 3 }
+tree-sitter-css = { opt-level = 3 }
+tree-sitter-diff = { opt-level = 3 }
+tree-sitter-go = { opt-level = 3 }
+tree-sitter-html = { opt-level = 3 }
+tree-sitter-javascript = { opt-level = 3 }
+tree-sitter-json = { opt-level = 3 }
+tree-sitter-lua = { opt-level = 3 }
+tree-sitter-make = { opt-level = 3 }
+tree-sitter-md = { opt-level = 3 }
+tree-sitter-php = { opt-level = 3 }
+tree-sitter-python = { opt-level = 3 }
+tree-sitter-sequel = { opt-level = 3 }
+tree-sitter-toml-ng = { opt-level = 3 }
+tree-sitter-yaml = { opt-level = 3 }

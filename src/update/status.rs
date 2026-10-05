@@ -178,6 +178,8 @@ pub struct RestartImpact {
     pub local_terminals: usize,
     pub transfers: usize,
     pub forwards: usize,
+    /// Editor tabs with changes not saved yet; a restart loses them.
+    pub unsaved_files: usize,
 }
 
 /// 「重启会关闭 2 个远程终端和 1 个 SFTP 标签，停止 1 个传输（保留续传进度）。」,
@@ -193,12 +195,21 @@ pub fn restart_note(impact: RestartImpact) -> Option<String> {
         (impact.forwards, "条端口转发"),
     ]);
     let note = match (closes, stops) {
-        (None, None) => return None,
-        (Some(closes), None) => format!("重启会关闭 {closes}。"),
-        (None, Some(stops)) => format!("重启会停止 {stops}。"),
-        (Some(closes), Some(stops)) => format!("重启会关闭 {closes}，停止 {stops}。"),
+        (None, None) => None,
+        (Some(closes), None) => Some(format!("重启会关闭 {closes}。")),
+        (None, Some(stops)) => Some(format!("重启会停止 {stops}。")),
+        (Some(closes), Some(stops)) => Some(format!("重启会关闭 {closes}，停止 {stops}。")),
     };
-    Some(note)
+    let unsaved = (impact.unsaved_files > 0).then(|| {
+        format!(
+            "{} 个文件有未保存的修改，重启后会丢失。",
+            impact.unsaved_files
+        )
+    });
+    match (note, unsaved) {
+        (Some(note), Some(unsaved)) => Some(format!("{note}{unsaved}")),
+        (note, unsaved) => note.or(unsaved),
+    }
 }
 
 /// `2 个远程终端、1 个 SFTP 标签和 1 个本地终端`, leaving out what is none.
@@ -258,6 +269,7 @@ mod tests {
                 local_terminals: 1,
                 transfers: 1,
                 forwards: 3,
+                unsaved_files: 0,
             })
             .as_deref(),
             Some(
@@ -272,6 +284,15 @@ mod tests {
             })
             .as_deref(),
             Some("重启会停止 1 条端口转发。")
+        );
+        assert_eq!(
+            restart_note(RestartImpact {
+                sftp_tabs: 1,
+                unsaved_files: 2,
+                ..RestartImpact::default()
+            })
+            .as_deref(),
+            Some("重启会关闭 1 个 SFTP 标签。2 个文件有未保存的修改，重启后会丢失。")
         );
     }
 

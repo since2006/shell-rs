@@ -4,6 +4,7 @@
 
 mod credentials;
 mod dock_skin;
+mod editors;
 mod forwards;
 mod links;
 mod recent_hosts;

@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    IconName, Sizable as _,
+    ActiveTheme as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{ContextMenuExt as _, PopupMenu},
@@ -35,6 +35,7 @@ pub struct ClosableTabTitle {
     label: SharedString,
     close: Option<(ElementId, Box<dyn Action>)>,
     menu: Option<MenuBuilder>,
+    modified: bool,
 }
 
 impl ClosableTabTitle {
@@ -51,7 +52,15 @@ impl ClosableTabTitle {
             label: label.into(),
             close: None,
             menu: None,
+            modified: false,
         }
+    }
+
+    /// Mark the tab as holding changes not saved yet: a dot after the label,
+    /// as editors do.
+    pub fn modified(mut self, modified: bool) -> Self {
+        self.modified = modified;
+        self
     }
 
     /// Show a close button that dispatches `action` on the focused path.
@@ -72,12 +81,23 @@ impl ClosableTabTitle {
 }
 
 impl RenderOnce for ClosableTabTitle {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let row = h_flex()
             .id("title")
             .gap_1()
             .child(self.leading)
             .child(self.label.clone())
+            .when(self.modified, |row| {
+                row.child(
+                    div()
+                        .id("modified")
+                        .test_support()
+                        .aria_label("未保存")
+                        .size_1p5()
+                        .rounded_full()
+                        .bg(cx.theme().muted_foreground),
+                )
+            })
             .when_some(self.close, |row, (id, action)| {
                 row.child(
                     Button::new(id)

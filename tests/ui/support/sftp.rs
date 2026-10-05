@@ -2,6 +2,11 @@
 
 use super::*;
 
+/// A fake server's files for the editor: bytes and modification time.
+pub type FakeFiles = Arc<Mutex<std::collections::BTreeMap<String, (Vec<u8>, u32)>>>;
+/// The editor's writes: path, bytes and the stamp the file had to have.
+pub type FakeWrites = Arc<Mutex<Vec<(String, Vec<u8>, Option<FileStamp>)>>>;
+
 #[derive(Default)]
 pub struct FakeSftpProvider {
     pub requests: Arc<Mutex<Vec<UploadRequest>>>,
@@ -15,6 +20,43 @@ pub struct FakeSftpProvider {
     /// The remote home is `/slow`, which never answers: a network too slow
     /// for the first directory to arrive.
     pub slow_home: bool,
+    /// The remote files the editor reads and writes: bytes and modification
+    /// time. Reads of a path under `/slow` never answer.
+    pub files: FakeFiles,
+    /// The editor's reads, by path.
+    pub reads: Arc<Mutex<Vec<String>>>,
+    /// The editor's writes: path, bytes and the stamp the file had to have.
+    pub writes: FakeWrites,
+}
+
+impl FakeSftpProvider {
+    /// A server with these files on it.
+    pub fn with_files(files: &[(&str, &[u8])]) -> Self {
+        let provider = Self::default();
+        provider.files.lock().unwrap().extend(
+            files
+                .iter()
+                .map(|(path, bytes)| (path.to_string(), (bytes.to_vec(), 100))),
+        );
+        provider
+    }
+    /// Someone else writes a file on the server.
+    pub fn change_file(&self, path: &str, bytes: &[u8]) {
+        let mut files = self.files.lock().unwrap();
+        let modified = files.get(path).map_or(100, |(_, modified)| modified + 7);
+        files.insert(path.into(), (bytes.to_vec(), modified));
+    }
+    pub fn file(&self, path: &str) -> Vec<u8> {
+        self.files.lock().unwrap()[path].0.clone()
+    }
+}
+
+/// What a fake remote file's stamp is.
+pub fn fake_stamp(bytes: &[u8], modified: u32) -> FileStamp {
+    FileStamp::new(
+        bytes.len() as u64,
+        Some(std::time::UNIX_EPOCH + Duration::from_secs(u64::from(modified))),
+    )
 }
 
 impl SftpTransportProvider for FakeSftpProvider {
@@ -26,6 +68,9 @@ impl SftpTransportProvider for FakeSftpProvider {
             events: self.events.clone(),
             hold: self.hold_connection.lock().unwrap().take(),
             reconnects: self.reconnects.clone(),
+            files: self.files.clone(),
+            reads: self.reads.clone(),
+            writes: self.writes.clone(),
             home: if self.slow_home {
                 "/slow"
             } else {
@@ -42,6 +87,9 @@ pub struct FakeSftpTransport {
     pub events: Arc<Mutex<Vec<async_channel::Sender<SftpEvent>>>>,
     pub hold: Option<mpsc::Receiver<()>>,
     pub reconnects: Arc<Mutex<usize>>,
+    pub files: FakeFiles,
+    pub reads: Arc<Mutex<Vec<String>>>,
+    pub writes: FakeWrites,
     pub home: &'static str,
 }
 
@@ -80,6 +128,12 @@ impl SftpTransport for FakeSftpTransport {
                     operation,
                 } => {
                     let refused = format!("{operation:?}").contains("denied");
+                    if let shellrs::sftp::RemoteOperation::CreateFile { path } = &operation {
+                        self.files
+                            .lock()
+                            .unwrap()
+                            .insert(path.to_string(), (Vec::new(), 100));
+                    }
                     self.operations.lock().unwrap().push(operation);
                     events.send_blocking(SftpEvent::Operated {
                         request_id,
@@ -89,6 +143,46 @@ impl SftpTransport for FakeSftpTransport {
                             Ok(())
                         },
                     })?;
+                }
+                SftpCommand::ReadFile { request_id, path } => {
+                    self.reads.lock().unwrap().push(path.to_string());
+                    if path.as_str().starts_with("/slow") {
+                        continue;
+                    }
+                    let result = match self.files.lock().unwrap().get(path.as_str()) {
+                        Some((bytes, _)) if bytes.len() as u64 > EDIT_LIMIT => {
+                            Err(ReadFailure::TooLarge(bytes.len() as u64))
+                        }
+                        Some((bytes, modified)) => {
+                            TextFile::decode(bytes.clone(), fake_stamp(bytes, *modified))
+                        }
+                        None => Err(ReadFailure::Failed("文件不存在".into())),
+                    };
+                    events.send_blocking(SftpEvent::FileRead { request_id, result })?;
+                }
+                SftpCommand::WriteFile {
+                    request_id,
+                    path,
+                    bytes,
+                    expected,
+                } => {
+                    self.writes
+                        .lock()
+                        .unwrap()
+                        .push((path.to_string(), bytes.clone(), expected));
+                    let mut files = self.files.lock().unwrap();
+                    let now = files.get(path.as_str()).map(|(b, m)| fake_stamp(b, *m));
+                    let result = if expected.is_some() && expected != now {
+                        Err(SaveFailure::Changed)
+                    } else {
+                        // Every save is a second later.
+                        let modified = files.get(path.as_str()).map_or(100, |(_, m)| m + 1);
+                        let stamp = fake_stamp(&bytes, modified);
+                        files.insert(path.to_string(), (bytes, modified));
+                        Ok(stamp)
+                    };
+                    drop(files);
+                    events.send_blocking(SftpEvent::FileWritten { request_id, result })?;
                 }
                 SftpCommand::Download(request) => {
                     self.downloads.lock().unwrap().push(request);
@@ -154,6 +248,8 @@ impl SftpTransport for FakeSftpTransport {
 #[derive(Clone, Default)]
 pub struct FakeLocalDirectory {
     pub calls: Arc<Mutex<Vec<String>>>,
+    /// The files the editor reads and writes, in memory.
+    pub files: Arc<Mutex<std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>>>,
 }
 
 impl FakeLocalDirectory {
@@ -180,7 +276,44 @@ impl LocalDirectoryProvider for FakeLocalDirectory {
         self.record(format!("mkdir {}", path.display()))
     }
     fn create_file(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        self.files.lock().unwrap().insert(path.into(), Vec::new());
         self.record(format!("touch {}", path.display()))
+    }
+    fn read_file(
+        &self,
+        path: &std::path::Path,
+        limit: u64,
+    ) -> anyhow::Result<(Vec<u8>, FileStamp)> {
+        let bytes = self
+            .files
+            .lock()
+            .unwrap()
+            .get(path)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("「{}」不存在", path.display()))?;
+        if bytes.len() as u64 > limit {
+            return Err(ReadFailure::TooLarge(bytes.len() as u64).into());
+        }
+        let stamp = FileStamp::new(bytes.len() as u64, None);
+        Ok((bytes, stamp))
+    }
+    fn write_file(
+        &self,
+        path: &std::path::Path,
+        bytes: &[u8],
+        expected: Option<FileStamp>,
+    ) -> anyhow::Result<FileStamp> {
+        let mut files = self.files.lock().unwrap();
+        let now = files
+            .get(path)
+            .map(|bytes| FileStamp::new(bytes.len() as u64, None));
+        if expected.is_some() && expected != now {
+            return Err(SaveFailure::Changed.into());
+        }
+        files.insert(path.into(), bytes.to_vec());
+        drop(files);
+        self.record(format!("write {}", path.display()))?;
+        Ok(FileStamp::new(bytes.len() as u64, None))
     }
     fn set_permissions(
         &self,

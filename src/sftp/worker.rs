@@ -1,10 +1,11 @@
 use super::{
-    EntryKind, RemotePath, SftpCommand, SftpEvent, SftpTransport, SftpTransportProvider,
-    TransferDetail, TransferDirection, TransferPhase, TransferProgress,
+    EntryKind, ReadFailure, RemotePath, SaveFailure, SftpCommand, SftpEvent, SftpTransport,
+    SftpTransportProvider, TransferDetail, TransferDirection, TransferPhase, TransferProgress,
     client::RemoteFs as _,
     client::{SftpClient, is_network_error},
     control::{Cancelled, TransferControl},
     download::DownloadBatch,
+    edit,
     journal::{DownloadJournal, Journal},
     meter::TransferMeter,
     model::{scp_local_target, scp_remote_target},
@@ -26,6 +27,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{RwLock, watch};
+
+/// The answer to a request that needs the connection while there is none.
+const NOT_CONNECTED: &str = "SFTP 未连接，请重新连接";
 
 /// How often the latency task looks for a connection to measure, and for
 /// the one it is measuring to be dropped.
@@ -196,7 +200,7 @@ impl SshSftpTransport {
                                             Err(format!("无法读取目录：{error:#}"))
                                         }
                                     },
-                                    None => Err("SFTP 未连接，请重新连接".into()),
+                                    None => Err(NOT_CONNECTED.into()),
                                 };
                                 let _ = events.send(SftpEvent::Listed { request_id, result }).await;
                             });
@@ -221,10 +225,65 @@ impl SshSftpTransport {
                                             }
                                         }
                                     }
-                                    None => Err("SFTP 未连接，请重新连接".into()),
+                                    None => Err(NOT_CONNECTED.into()),
                                 };
                                 let _ = events
                                     .send(SftpEvent::Operated { request_id, result })
+                                    .await;
+                            });
+                        }
+                        SftpCommand::ReadFile { request_id, path } => {
+                            let shared = client.clone();
+                            let connected = client.read().await.clone();
+                            let events = events.clone();
+                            tokio::spawn(async move {
+                                let result = match connected {
+                                    Some(connected) => {
+                                        match edit::read_text(connected.as_ref(), &path).await {
+                                            Ok(file) => Ok(file),
+                                            Err(error) => {
+                                                drop_broken(&shared, &connected, &events, &error)
+                                                    .await;
+                                                Err(ReadFailure::from_error(error))
+                                            }
+                                        }
+                                    }
+                                    None => Err(ReadFailure::Failed(NOT_CONNECTED.into())),
+                                };
+                                let _ = events
+                                    .send(SftpEvent::FileRead { request_id, result })
+                                    .await;
+                            });
+                        }
+                        SftpCommand::WriteFile {
+                            request_id,
+                            path,
+                            bytes,
+                            expected,
+                        } => {
+                            let shared = client.clone();
+                            let connected = client.read().await.clone();
+                            let events = events.clone();
+                            tokio::spawn(async move {
+                                let result = match connected {
+                                    Some(connected) => match edit::write_in_place(
+                                        connected.as_ref(),
+                                        &path,
+                                        bytes,
+                                        expected,
+                                    )
+                                    .await
+                                    {
+                                        Ok(stamp) => Ok(stamp),
+                                        Err(error) => {
+                                            drop_broken(&shared, &connected, &events, &error).await;
+                                            Err(SaveFailure::from_error(error))
+                                        }
+                                    },
+                                    None => Err(SaveFailure::Failed(NOT_CONNECTED.into())),
+                                };
+                                let _ = events
+                                    .send(SftpEvent::FileWritten { request_id, result })
                                     .await;
                             });
                         }

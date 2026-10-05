@@ -195,6 +195,10 @@ pub struct FilePane {
     /// The load in flight has taken long enough to say so.
     slow_load: bool,
     slow_load_timer: Option<Task<()>>,
+    /// A file being read for the editor, once that has taken long enough to
+    /// say so; the timer that decides.
+    opening: Option<String>,
+    opening_timer: Option<Task<()>>,
     /// What went wrong reading this pane's directory, or why the remote
     /// side dropped: the window's status line shows it, see `problem`.
     error: Option<String>,
@@ -278,6 +282,8 @@ impl FilePane {
             loading: false,
             slow_load: false,
             slow_load_timer: None,
+            opening: None,
+            opening_timer: None,
             error: None,
             listed: false,
             connection: if side == PaneSide::Local {
@@ -652,6 +658,8 @@ impl FilePane {
     fn render_status(&self, file_count: usize, selected: usize, cx: &App) -> impl IntoElement {
         let status = if self.connection == ConnectionState::Connecting {
             "正在连接 SFTP…".to_string()
+        } else if let Some(name) = &self.opening {
+            format!("正在打开 {name}…")
         } else if self.slow_load {
             "正在读取目录…".to_string()
         } else if selected == 0 {
@@ -781,6 +789,24 @@ impl FilePane {
         cx.notify();
         self.request_id
     }
+    /// A file of this pane is being read for the editor: the status line
+    /// says so if it takes a while, like a slow directory.
+    pub fn begin_opening(&mut self, name: String, cx: &mut Context<Self>) {
+        self.opening = None;
+        self.opening_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SLOW_LOAD).await;
+            let _ = this.update(cx, |this, cx| {
+                this.opening = Some(name);
+                cx.notify();
+            });
+        }));
+    }
+    pub fn finish_opening(&mut self, cx: &mut Context<Self>) {
+        self.opening_timer = None;
+        if self.opening.take().is_some() {
+            cx.notify();
+        }
+    }
     fn finish_loading(&mut self) {
         self.loading = false;
         self.slow_load = false;
@@ -905,6 +931,12 @@ impl FilePane {
             remote: self.is_remote(),
             explorer: self.explorer,
             opens_directory: entries.len() == 1 && entries[0].is_dir(),
+            edits_file: match entries.as_slice() {
+                [entry] if !entry.is_dir() && !entry.is_parent() => {
+                    Some(self.child_path_of(&entry.name))
+                }
+                _ => None,
+            },
             targets,
             can_go_up: self.parent_path() != self.path,
             can_go_home: !self.home.is_empty() && self.home != self.path,

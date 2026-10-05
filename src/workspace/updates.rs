@@ -157,6 +157,7 @@ impl Workspace {
                 .filter(|panel| panel.read(cx).is_transferring())
                 .count(),
             forwards: self.forwards.read(cx).active_count(),
+            unsaved_files: self.all_unsaved_files(cx).len(),
         }
     }
 }

@@ -26,6 +26,9 @@ pub(crate) trait RemoteFs {
     /// The entries of a directory without `.` and `..`, kinds as `lstat` reports them.
     async fn read_dir(&self, path: &RemotePath) -> Result<Vec<DirectoryEntry>>;
     async fn open(&self, path: &RemotePath, create: bool) -> Result<String>;
+    /// Open a file to write it over in place: truncated, or created when it
+    /// is missing. Follows links, so the file a link points at is written.
+    async fn open_replace(&self, path: &RemotePath) -> Result<String>;
     /// Open an existing file for reading.
     async fn open_read(&self, path: &RemotePath) -> Result<String>;
     /// Up to `len` bytes at `offset`; may return fewer. `None` at end of file.
@@ -249,6 +252,17 @@ impl RemoteFs for SftpClient {
         Ok(self
             .raw
             .open(path.as_str(), flags, FileAttributes::empty())
+            .await?
+            .handle)
+    }
+    async fn open_replace(&self, path: &RemotePath) -> Result<String> {
+        Ok(self
+            .raw
+            .open(
+                path.as_str(),
+                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+                FileAttributes::empty(),
+            )
             .await?
             .handle)
     }

@@ -3,6 +3,7 @@
 //! stays busy until the result arrives, then re-reads its directory.
 
 use super::{ExplorerPanel, NewEntryKind};
+use crate::app::{ExplorerAction, ExplorerCommand, ExplorerDispatch as _};
 use crate::host::ConnectionState;
 use crate::sftp::{
     LocalDirectoryProvider, PermissionEdit, RemoteOperation, RemotePath, SftpCommand,
@@ -38,6 +39,8 @@ pub(super) struct PendingOperation {
     remote: bool,
     failure: &'static str,
     select: Option<String>,
+    /// A new file, to open in the editor once it exists (WinSCP does).
+    edit: Option<String>,
 }
 
 impl PaneOperation {
@@ -148,12 +151,20 @@ impl ExplorerPanel {
         let directory = pane.read(cx).path();
         self.next_operation += 1;
         let id = self.next_operation;
+        let edit = match &operation {
+            PaneOperation::Create {
+                kind: NewEntryKind::File,
+                name,
+            } => Some(pane.read(cx).child_path_of(name)),
+            _ => None,
+        };
         self.operations.insert(
             id,
             PendingOperation {
                 remote,
                 failure: operation.failure_title(),
                 select: operation.result_name(),
+                edit,
             },
         );
         pane.update(cx, |pane, cx| pane.set_busy(true, cx));
@@ -200,16 +211,35 @@ impl ExplorerPanel {
                 pane.select_after_load(name);
             }
         });
-        if let Err(message) = result {
-            window.push_notification(Notification::error(message).title(pending.failure), cx);
+        match result {
+            Err(message) => {
+                window.push_notification(Notification::error(message).title(pending.failure), cx)
+            }
+            Ok(()) => {
+                if let Some(path) = pending.edit {
+                    self.dispatch.dispatch_explorer_action(
+                        &ExplorerAction::new(
+                            self.id(),
+                            ExplorerCommand::Edit {
+                                remote: pending.remote,
+                                path: Some(path),
+                            },
+                        ),
+                        window,
+                        cx,
+                    );
+                }
+            }
         }
         // Re-read even after a failure: a delete may have removed part of a tree.
         self.reload(pending.remote, window, cx);
     }
 
-    /// The connection dropped: remote operations will not answer.
+    /// The connection dropped: remote operations will not answer, nor will
+    /// the editor's reads and writes (all of them are remote).
     pub(super) fn abandon_remote_operations(&mut self, cx: &mut Context<Self>) {
         self.operations.retain(|_, pending| !pending.remote);
+        self.files.clear();
         self.remote.update(cx, |pane, cx| pane.set_busy(false, cx));
     }
 }
