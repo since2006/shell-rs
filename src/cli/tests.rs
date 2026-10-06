@@ -9,12 +9,13 @@ use std::{
 
 use clap::Parser as _;
 
+use super::client::ascii_json;
 use super::client::{self, Console};
 use super::link::OpenLink;
 use super::protocol::{CliError, ErrorCode, HostInfo, Request, TransferCounters, TransferSummary};
 use super::server::{CliBackend, CliServer, CliTarget};
 use super::{Cli, Command};
-use super::{ConsoleText, normalize_command};
+use super::{ConsoleText, exec_request, normalize_command};
 use crate::app::cli_endpoint;
 use crate::host::{AuthKind, GroupId, Host, HostDraft, HostId, HostLogin, HostStore, SshLink};
 use crate::secrets::SecretRef;
@@ -140,6 +141,7 @@ fn run_on(
             stdout: &mut stdout,
             stderr: &mut stderr,
             json,
+            exec_json: false,
             stderr_is_terminal,
         },
     );
@@ -555,6 +557,19 @@ fn exec_takes_its_command_as_one_argument_or_from_stdin() {
     // Neither, or both.
     assert!(parse(&["shellrs", "exec", "ID"]).is_err());
     assert!(parse(&["shellrs", "exec", "ID", "ls", "--stdin"]).is_err());
+    // JSON brings the host and the command with it, and nothing else does.
+    assert!(matches!(
+        parse(&["shellrs", "exec", "--json"]),
+        Ok(Command::Exec {
+            id: None,
+            command: None,
+            json: true,
+            ..
+        })
+    ));
+    assert!(parse(&["shellrs", "exec"]).is_err());
+    assert!(parse(&["shellrs", "exec", "ID", "--json"]).is_err());
+    assert!(parse(&["shellrs", "exec", "--json", "--stdin"]).is_err());
     // Split words are a mistake, not a longer command.
     assert!(parse(&["shellrs", "exec", "ID", "ls", "-la"]).is_err());
 }
@@ -601,4 +616,81 @@ fn a_windows_console_gets_text_even_from_bytes_that_are_not_utf8() {
     io::Write::write_all(&mut raw, b"\xff\xd6").unwrap();
     raw.finish().unwrap();
     assert_eq!(raw.inner, b"\xff\xd6");
+}
+
+#[test]
+fn exec_json_reads_the_host_and_the_command() {
+    assert_eq!(
+        exec_request("\u{feff}{\"host\": \"ID\", \"command\": \"echo \\\"hi\\\" | wc -c\"}"),
+        Ok(("ID".to_string(), "echo \"hi\" | wc -c".to_string()))
+    );
+    // Escaped as an agent may write it in PowerShell 5.1, which pipes ASCII.
+    assert_eq!(
+        exec_request(r#"{"host":"ID","command":"grep \u751f\u4ea7 a.log"}"#),
+        Ok(("ID".to_string(), "grep 生产 a.log".to_string()))
+    );
+    assert!(exec_request(r#"{"command":"ls"}"#).is_err());
+    assert!(exec_request("ls -la").is_err());
+}
+
+#[test]
+fn exec_json_output_is_ascii_whatever_it_holds() {
+    assert_eq!(
+        ascii_json(&serde_json::json!({ "s": "生产 😀\n" })),
+        r#"{"s":"\u751f\u4ea7 \ud83d\ude00\n"}"#
+    );
+}
+
+/// `exec --json` against the fixture: the exit code, and stdout parsed.
+fn run_exec_json(socket: &Path, request: Request) -> (i32, serde_json::Value, Vec<u8>) {
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let code = client::run(
+        socket,
+        request,
+        &mut Console {
+            stdout: &mut stdout,
+            stderr: &mut stderr,
+            json: true,
+            exec_json: true,
+            stderr_is_terminal: false,
+        },
+    );
+    assert!(stdout.is_ascii(), "{}", String::from_utf8_lossy(&stdout));
+    (code, serde_json::from_slice(&stdout).unwrap(), stderr)
+}
+
+#[test]
+fn exec_json_gathers_the_output_and_says_errors_in_json() {
+    let fixture = fixture();
+    let (code, result, stderr) = run_exec_json(
+        &fixture.socket,
+        Request::Exec {
+            host: id(&fixture.web),
+            command: "uname -a".into(),
+        },
+    );
+    assert_eq!(code, 3);
+    assert_eq!(
+        result,
+        serde_json::json!({ "exit_code": 3, "stdout": "out\n", "stderr": "\u{fffd}\n" })
+    );
+    assert!(stderr.is_empty());
+
+    fixture.server.set_enabled(false);
+    let (code, result, stderr) = run_exec_json(
+        &fixture.socket,
+        Request::Exec {
+            host: id(&fixture.web),
+            command: "true".into(),
+        },
+    );
+    assert_eq!(code, 255);
+    assert_eq!(result["error"]["code"], "not_enabled");
+    assert!(
+        result["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("设置 → 外部 CLI")
+    );
+    assert!(stderr.is_empty());
 }

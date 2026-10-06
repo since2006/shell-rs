@@ -127,6 +127,7 @@ ShellRS 同一时间只运行一个：已经开着时再打开一次，会把已
 ```sh
 shellrs list [--query <关键词>] [--json]       # 列出主机；输出不是终端时自动用 JSON
 shellrs exec <ID> "<命令>"                     # 或 --stdin 从标准输入读命令
+shellrs exec --json                            # 从标准输入读 {"host", "command"}，输出 JSON
 shellrs upload <ID> <本地路径> <远程路径>
 shellrs download <ID> <远程路径> <本地路径>
 ```
@@ -135,7 +136,8 @@ shellrs download <ID> <远程路径> <本地路径>
 - `exec` 每次临时建立连接，执行完即断开。远程命令没有标准输入，退出码就是远程命令的退出码；被信号终止时是 128 加信号编号。
 - 上传和下载沿用 SFTP 标签的传输引擎（递归、`.filepart`、断线重连），目标路径按 scp 的规则：目标是已存在的目录就放进去并保留原名，否则目标就是副本自己的路径，其父目录必须存在。已存在的文件直接覆盖；新建的文件保留源文件的可执行权限。`~` 表示登录目录。
 - 失败时在标准错误输出 `shellrs: [错误码] 说明`，退出码 255。错误码有 `not_running`（ShellRS 未运行）、`not_enabled`（未启用外部 CLI）、`host_not_found`、`host_key_unknown`（还没在 ShellRS 里连过这台主机）、`host_key_changed`、`missing_credential`（没有保存密码或口令）、`connect_failed`、`transfer_failed`、`bad_request`、`version_mismatch`。CLI 不弹任何询问：陌生主机、缺少密码都直接失败，请先在 ShellRS 里连接一次。传输完成但有项目失败时退出码为 1。
-- 支持 macOS、Linux 和 Windows。Windows 的 PowerShell 里，多行或带引号的命令用 here-string 经 `--stdin` 传入（`@'…'@ | shellrs exec <ID> --stdin`）；输出有中文时先执行 `$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()`。命令文本会去掉开头的 BOM、把 CRLF 换成 LF，远程 shell 不会看到多余的回车符。
+- `exec --json` 从标准输入读 `{"host": "<ID>", "command": "<命令>"}`，命令结束后输出 `{"exit_code", "stdout", "stderr"}`，出错时输出 `{"error": {"code", "message"}}`，退出码和不加 `--json` 时一样。输出只含 ASCII，中文等字符都转成 `\uXXXX`；不是 UTF-8 的输出换成 U+FFFD。命令不经过本机 shell 的引号处理，控制台的代码页也不会把输出弄乱，适合 Windows PowerShell 和需要分开读标准输出、标准错误的 Agent。
+- 支持 macOS、Linux 和 Windows。Windows 的 PowerShell 里执行命令优先用 `exec --json`（`@{ host = '<ID>'; command = '…' } | ConvertTo-Json -Compress | shellrs exec --json`）；要边执行边看输出时（长时间构建、大量日志），改用 here-string 经 `--stdin` 传入（`@'…'@ | shellrs exec <ID> --stdin`），并和 `list`、`upload`、`download` 一样，先执行 `$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()`，否则中文会变成问号或乱码。命令文本会去掉开头的 BOM、把 CRLF 换成 LF，远程 shell 不会看到多余的回车符。
 
 ## 从堡垒机打开（外部连接）
 

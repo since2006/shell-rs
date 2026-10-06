@@ -73,14 +73,22 @@ enum Command {
     /// remote command's.
     Exec {
         /// Host ID, from `shellrs list`.
-        id: String,
+        #[arg(required_unless_present = "json")]
+        id: Option<String>,
         /// One complete remote shell command, quoted as one argument.
-        #[arg(required_unless_present = "stdin")]
+        #[arg(required_unless_present_any = ["stdin", "json"])]
         command: Option<String>,
         /// Read the command from stdin instead, for commands with quotes,
         /// pipes, `$` or several lines.
         #[arg(long, conflicts_with = "command")]
         stdin: bool,
+        /// Read {"host": ID, "command": COMMAND} from stdin and print
+        /// {"exit_code", "stdout", "stderr"} once the command ends, errors as
+        /// {"error": {"code", "message"}}. The output is ASCII, everything
+        /// else escaped: no shell quoting, and no console code page can
+        /// garble it.
+        #[arg(long, conflicts_with_all = ["id", "command", "stdin"])]
+        json: bool,
     },
     /// Copy a local file or folder to a saved host.
     ///
@@ -134,6 +142,7 @@ pub fn main(args: Vec<OsString>) -> i32 {
         stdout: &mut stdout,
         stderr: &mut stderr,
         json,
+        exec_json: false,
         stderr_is_terminal,
     };
     let code = match request(cli.command, &mut console) {
@@ -153,23 +162,27 @@ fn request(command: Command, console: &mut Console) -> Result<Request, i32> {
             console.json |= json;
             Request::List { query }
         }
-        Command::Exec { id, command, stdin } => {
-            let command = if stdin {
-                let mut text = String::new();
-                if let Err(error) = std::io::stdin().read_to_string(&mut text) {
-                    return Err(
-                        console.error(ErrorCode::BadRequest, &format!("无法读取标准输入：{error}"))
-                    );
-                }
-                text
+        Command::Exec {
+            id,
+            command,
+            stdin,
+            json,
+        } => {
+            // From here on, errors are JSON too.
+            console.exec_json = json;
+            let (host, command) = if json {
+                exec_request(&read_stdin(console)?)
+                    .map_err(|message| console.error(ErrorCode::BadRequest, &message))?
+            } else if stdin {
+                (id.unwrap_or_default(), read_stdin(console)?)
             } else {
-                command.unwrap_or_default()
+                (id.unwrap_or_default(), command.unwrap_or_default())
             };
             let command = normalize_command(&command);
             if command.trim().is_empty() {
                 return Err(console.error(ErrorCode::BadRequest, "命令不能为空"));
             }
-            Request::Exec { host: id, command }
+            Request::Exec { host, command }
         }
         Command::Upload {
             id,
@@ -198,6 +211,32 @@ fn request(command: Command, console: &mut Console) -> Result<Request, i32> {
             }
         }
     })
+}
+
+fn read_stdin(console: &mut Console) -> Result<String, i32> {
+    let mut text = String::new();
+    std::io::stdin()
+        .read_to_string(&mut text)
+        .map_err(|error| {
+            console.error(ErrorCode::BadRequest, &format!("无法读取标准输入：{error}"))
+        })?;
+    Ok(text)
+}
+
+/// What `exec --json` reads.
+#[derive(serde::Deserialize)]
+struct ExecJson {
+    host: String,
+    command: String,
+}
+
+/// The host and command of an `exec --json` request.
+fn exec_request(text: &str) -> Result<(String, String), String> {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let request: ExecJson = serde_json::from_str(text).map_err(|error| {
+        format!("标准输入不是 {{\"host\": ..., \"command\": ...}} 形式的 JSON：{error}")
+    })?;
+    Ok((request.host, request.command))
 }
 
 /// A command as the remote shell should see it. PowerShell ends every line

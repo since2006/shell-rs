@@ -29,15 +29,52 @@ pub struct Console<'a> {
     pub stderr: &'a mut dyn Write,
     /// JSON instead of text, asked for or implied by a pipe.
     pub json: bool,
+    /// `exec --json`: the output gathered into one ASCII JSON object, and
+    /// errors in JSON as well.
+    pub exec_json: bool,
     /// Progress lines only make sense on a terminal.
     pub stderr_is_terminal: bool,
 }
 
 impl Console<'_> {
     pub fn error(&mut self, code: ErrorCode, message: &str) -> i32 {
-        let _ = writeln!(self.stderr, "shellrs: [{}] {message}", code.as_str());
+        if self.exec_json {
+            let error = serde_json::json!({
+                "error": { "code": code.as_str(), "message": message }
+            });
+            let _ = writeln!(self.stdout, "{}", ascii_json(&error));
+        } else {
+            let _ = writeln!(self.stderr, "shellrs: [{}] {message}", code.as_str());
+        }
         FAILURE_EXIT
     }
+}
+
+/// What `exec --json` prints once the command ends. Output that is not
+/// UTF-8 has U+FFFD in place of what is not.
+#[derive(serde::Serialize)]
+struct ExecResult<'a> {
+    exit_code: i32,
+    stdout: std::borrow::Cow<'a, str>,
+    stderr: std::borrow::Cow<'a, str>,
+}
+
+/// `value` as JSON in ASCII alone: every other character escaped, which
+/// only ever happens inside strings. PowerShell and the Windows console
+/// read it right whatever code page they assume.
+pub(super) fn ascii_json(value: &impl serde::Serialize) -> String {
+    let json = serde_json::to_string(value).unwrap_or_default();
+    let mut ascii = String::with_capacity(json.len());
+    for character in json.chars() {
+        if character.is_ascii() {
+            ascii.push(character);
+        } else {
+            for unit in character.encode_utf16(&mut [0; 2]) {
+                ascii.push_str(&format!("\\u{unit:04x}"));
+            }
+        }
+    }
+    ascii
 }
 
 /// Send `request` to the app listening at `endpoint` and print the answer;
@@ -170,11 +207,15 @@ where
     let mut reader = BufReader::new(stream);
     // The progress line on screen, to be blanked before anything else.
     let mut progress = ProgressLine::default();
+    // What `exec --json` holds until the command ends.
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
     loop {
         let Some((kind, payload)) = read_frame(&mut reader)? else {
             return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
         };
         match kind {
+            FrameKind::Stdout if console.exec_json => stdout.extend_from_slice(&payload),
+            FrameKind::Stderr if console.exec_json => stderr.extend_from_slice(&payload),
             FrameKind::Stdout => {
                 console.stdout.write_all(&payload)?;
                 console.stdout.flush()?;
@@ -199,6 +240,15 @@ where
                         return Ok(0);
                     }
                     Reply::TransferDone(summary) => return Ok(print_summary(&summary, console)?),
+                    Reply::Exit { code } if console.exec_json => {
+                        let result = ExecResult {
+                            exit_code: code,
+                            stdout: String::from_utf8_lossy(&stdout),
+                            stderr: String::from_utf8_lossy(&stderr),
+                        };
+                        writeln!(console.stdout, "{}", ascii_json(&result))?;
+                        return Ok(code);
+                    }
                     Reply::Exit { code } => return Ok(code),
                     Reply::Activated => return Ok(0),
                     Reply::Error { code, message } => return Ok(console.error(code, &message)),

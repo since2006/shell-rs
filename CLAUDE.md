@@ -231,6 +231,7 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
   - Unix 套接字 0600，并用 `peer_cred` 核对 uid。
   - Windows 用命名管道：带 DACL 和 `FIRST_PIPE_INSTANCE`；客户端以 `SECURITY_IDENTIFICATION` 打开，并核对属主；用同步的 Win32 管道；关句柄时不 `DisconnectNamedPipe`。
   - exec 和传输都不许挂住：非交互，陌生主机直接答否，问题按固定策略回答。
+  - `exec --json` 的输入输出都是 JSON，输出只用 ASCII（`ascii_json` 转义其余字符），出错也是 JSON：给 Windows PowerShell 用，绕开引号和代码页。不做 MCP：主流 Agent 都能执行命令，CLI 加 skill 已经够用。
   - UI 测试不监听真实套接字，`CliIntegration` 默认没有路径。
 - **Windows**：
   - 发布版是 GUI 子系统，命令改由 `shellrs-cli.exe` 承担；PATH 里放的是副本，加进用户 PATH。

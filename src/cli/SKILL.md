@@ -41,23 +41,26 @@ shellrs download <host-id> /tmp/app.tar.gz ./latest.tar.gz
 
 ## Windows
 
-The same commands work in PowerShell, cmd, and Git Bash. Local paths may be Windows paths (`.\dist`, `C:\Users\me\app.tar.gz`); remote paths are still POSIX paths.
+The same commands work in PowerShell, cmd, and Git Bash. Local paths may be Windows paths (`.\dist`, `C:\Users\me\app.tar.gz`); remote paths are still POSIX paths. In Git Bash, use the heredoc form above.
 
-In PowerShell, pass multi-line commands and commands containing quotes through stdin with a here-string instead of a heredoc. Windows PowerShell 5.1 breaks double quotes inside arguments, so do not rely on them there:
+In PowerShell, prefer `exec --json`: build the request as an object, pipe it in, and read the result as JSON. Nothing in the command needs quoting (Windows PowerShell 5.1 breaks double quotes inside arguments), and the result is plain ASCII, so the console's code page cannot garble remote output:
 
 ```powershell
+@{ host = '<host-id>'; command = 'grep -c "error" /var/log/app.log' } | ConvertTo-Json -Compress | shellrs exec --json | ConvertFrom-Json
+```
+
+`exec --json` reads `{"host": "<host-id>", "command": "<command>"}` from stdin and, once the command ends, prints `{"exit_code": N, "stdout": "...", "stderr": "..."}`, or `{"error": {"code": "...", "message": "..."}}` when it could not run it. The exit code is the same as without `--json`, in `$LASTEXITCODE`. Windows PowerShell 5.1 pipes text to programs as ASCII: write non-ASCII characters in the command as `\uXXXX` escapes.
+
+`--json` prints nothing until the command ends. To see the output as it comes (a long build, a large log), pass the command through stdin with a here-string instead, after making PowerShell read and write UTF-8:
+
+```powershell
+$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
 @'
 <command>
 '@ | shellrs exec <host-id> --stdin
 ```
 
-Before running `shellrs` in PowerShell, make it read and write UTF-8, or non-ASCII text (such as the Chinese names of saved hosts and remote output) turns into `?` or mojibake:
-
-```powershell
-$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
-```
-
-The exit code is in `$LASTEXITCODE`.
+The `@'` must end its line and the `'@` must start one. Set the same encodings before `list`, `upload` and `download`, or non-ASCII text (such as the Chinese names of saved hosts) turns into `?` or mojibake.
 
 ## Rules
 

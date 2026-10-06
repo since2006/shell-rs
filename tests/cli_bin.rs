@@ -133,6 +133,21 @@ fn the_command_finds_the_app_through_its_data_directory() {
         "cd /srv\nls\n"
     );
 
+    // JSON in, JSON out, in ASCII alone.
+    let request = serde_json::json!({ "host": id, "command": "ls" }).to_string();
+    let output = shellrs(data_dir.path(), &["exec", "--json"], request.as_bytes());
+    assert_eq!(output.status.code(), Some(7));
+    assert!(output.stdout.is_ascii());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({ "exit_code": 7, "stdout": "输出\n", "stderr": "warning\n" })
+    );
+    assert!(output.stderr.is_empty());
+    let output = shellrs(data_dir.path(), &["exec", "--json"], b"ls");
+    assert_eq!(output.status.code(), Some(255));
+    let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(error["error"]["code"], "bad_request");
+
     // Everything arrives, though the app is done long before.
     let output = shellrs(data_dir.path(), &["exec", &id, "large"], b"");
     assert_eq!(output.status.code(), Some(0));
