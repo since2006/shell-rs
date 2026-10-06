@@ -889,3 +889,114 @@ async fn a_program_copies_to_the_local_clipboard(cx: &mut TestAppContext) {
     })
     .await;
 }
+
+/// Have local terminal `id` print `text`: the fake shell prints back what it
+/// is sent, and a paste outside bracketed paste mode sends it as it is.
+fn print_into(cx: &mut TestAppContext, workspace: &Entity<Workspace>, id: u64, text: &str) {
+    cx.update(|cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(text.to_string()));
+        let terminal = workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(id))
+            .expect("the terminal is open")
+            .read(cx)
+            .terminal()
+            .clone();
+        terminal.update(cx, |terminal, cx| terminal.paste_clipboard(cx));
+    });
+}
+
+/// The system notifications shown once there are `count` of them.
+async fn system_notifications(
+    cx: &mut TestAppContext,
+    count: usize,
+) -> Vec<gpui_kit::SystemNotification> {
+    for _ in 0..200 {
+        let shown = cx.shown_system_notifications();
+        if shown.len() >= count {
+            return shown;
+        }
+        cx.executor().timer(Duration::from_millis(10)).await;
+    }
+    panic!(
+        "expected {count} system notifications, got {:?}",
+        cx.shown_system_notifications()
+    );
+}
+
+fn in_window(cx: &mut TestAppContext, handle: WindowHandle<Root>) -> usize {
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.notifications(cx).len()
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+async fn terminals_notify_where_the_user_will_see_it(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory).await;
+    // Test windows start out not active.
+    in_frame(cx, handle, |window, _| window.activate_window());
+    assert!(cx.shown_system_notifications().is_empty());
+
+    // In sight, a program's notice shows in the window; the bell says nothing.
+    print_into(cx, &workspace, 1, "\x1b]777;notify;构建;完成\x07\x07");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.notifications(cx).len() == 1
+    })
+    .await;
+    cx.background_executor
+        .advance_clock(Duration::from_millis(200));
+    cx.run_until_parked();
+    assert_eq!(in_window(cx, handle), 1);
+    assert!(cx.shown_system_notifications().is_empty());
+
+    // Its notice gone, the first terminal rings behind a second one.
+    cx.background_executor
+        .advance_clock(Duration::from_secs(10));
+    cx.run_until_parked();
+    assert_eq!(in_window(cx, handle), 0);
+    in_frame(cx, handle, |window, cx| {
+        window.click("new-local-terminal", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(2))
+            .is_some_and(|terminal| {
+                terminal.read(cx).status(cx).lifecycle() == &TerminalLifecycle::Running
+            })
+    })
+    .await;
+    print_into(cx, &workspace, 1, "y/N\x07");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.notifications(cx).len() == 1
+    })
+    .await;
+
+    // With the window away, a notice goes to the system, under the tab's
+    // name, and clicking it shows that terminal.
+    cx.update(|cx| {
+        assert_eq!(
+            workspace.read(cx).active_tab(),
+            Some(shellrs::app::CenterTab::LocalTerminal(LocalTerminalId(2)))
+        );
+    });
+    gpui_kit::VisualTestContext::from_window(handle.into(), cx).deactivate_window();
+    print_into(cx, &workspace, 1, "\x1b]9;部署完成\x07");
+    let shown = system_notifications(cx, 1).await;
+    assert_eq!(shown[0].tag.as_ref(), "terminal:local:1");
+    assert_eq!(shown[0].title.as_ref(), "本地终端 1");
+    assert_eq!(shown[0].body.as_ref(), "部署完成");
+    cx.simulate_system_notification_response(gpui_kit::SystemNotificationResponse {
+        tag: shown[0].tag.clone(),
+        action_id: None,
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            workspace.read(cx).active_tab(),
+            Some(shellrs::app::CenterTab::LocalTerminal(LocalTerminalId(1)))
+        );
+    });
+}

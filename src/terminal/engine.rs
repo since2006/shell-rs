@@ -20,6 +20,7 @@ use crate::connection::{ConnectionPrompt, ConnectionPromptReply, Latency};
 use crate::host::HostOs;
 
 use super::links::{LinkMarker, url_search, visible_links};
+use super::notices::{NoticeScanner, ProgramNotice, TerminalNotice};
 use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
 use super::{
     ExecRequest, ExecResult, SharedTerminalTransportFactory, TerminalLifecycle, TerminalSize,
@@ -185,6 +186,13 @@ impl TerminalEngine {
             }
             TerminalUiEventKind::ClipboardStore(text) => {
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+            }
+            TerminalUiEventKind::Notice(notice) => {
+                return Some(TerminalEvent::Notice(notice.cleaned()));
+            }
+            TerminalUiEventKind::Bell => {
+                let line = cursor_line_text(&self.runtime.term.lock());
+                return Some(TerminalEvent::Notice(TerminalNotice::bell(&line)));
             }
         }
         None
@@ -508,6 +516,25 @@ impl TerminalEngine {
     }
 }
 
+/// The text of the line the cursor is on, or of the nearest line above it
+/// on screen that has any: where a program that rings for an answer has
+/// its question.
+fn cursor_line_text(term: &AlacrittyTerm) -> String {
+    let mut line = term.grid().cursor.point.line;
+    loop {
+        let text: String = term.grid()[line]
+            .into_iter()
+            .filter(|cell| !cell.flags.contains(Flags::WIDE_CHAR_SPACER))
+            .map(|cell| cell.c)
+            .collect();
+        let text = text.trim();
+        if !text.is_empty() || line.0 <= 0 {
+            return text.to_string();
+        }
+        line = Line(line.0 - 1);
+    }
+}
+
 /// Keep the leading cell and spacer of a full-width glyph visually atomic,
 /// for the selection and for find highlights alike.
 /// Alacritty stores CJK glyphs in one `WIDE_CHAR` cell followed by a
@@ -546,6 +573,8 @@ impl Drop for TerminalEngine {
 pub enum TerminalEvent {
     PromptRequested(ConnectionPrompt),
     HostOsDetected(HostOs),
+    /// Something to show the user while they look elsewhere.
+    Notice(TerminalNotice),
 }
 
 struct TerminalRuntime {
@@ -582,6 +611,8 @@ impl TerminalRuntime {
             .name("shellrs-terminal-parser".into())
             .spawn(move || {
                 let mut processor = Processor::new();
+                // Alacritty drops the notifications programs ask for.
+                let mut notices = NoticeScanner::default();
                 while let Ok(event) = transport_receiver.recv_blocking() {
                     match event {
                         TerminalTransportEvent::Started => {
@@ -589,6 +620,9 @@ impl TerminalRuntime {
                         }
                         TerminalTransportEvent::Output(bytes) => {
                             processor.advance(&mut *parser_term.lock(), &bytes);
+                            for notice in notices.scan(&bytes) {
+                                parser_proxy.send(TerminalUiEventKind::Notice(notice));
+                            }
                             parser_proxy.wakeup();
                         }
                         TerminalTransportEvent::HostOsDetected(os) => {
@@ -731,10 +765,13 @@ impl EventListener for TerminalEventProxy {
                     .commands
                     .send(TerminalTransportCommand::Write(response.into_bytes()));
             }
+            Event::Bell => {
+                self.send(TerminalUiEventKind::Bell);
+                self.wakeup();
+            }
             Event::Wakeup
             | Event::MouseCursorDirty
             | Event::CursorBlinkingChange
-            | Event::Bell
             | Event::Exit
             | Event::ChildExit(_) => self.wakeup(),
             // Only the clipboard: a program setting the primary selection
@@ -784,6 +821,9 @@ enum TerminalUiEventKind {
     ColorRequest(usize, Arc<dyn Fn(Rgb) -> String + Send + Sync>),
     /// A program's copy, by OSC 52.
     ClipboardStore(String),
+    /// A notification a program asked for, by OSC 9 or 777.
+    Notice(ProgramNotice),
+    Bell,
 }
 
 fn append_message(term: &Arc<FairMutex<AlacrittyTerm>>, message: &str) {
@@ -1016,6 +1056,32 @@ mod tests {
                 link("https://elsewhere.z", "https://x.y/"),
             ]
         );
+    }
+
+    #[test]
+    fn notifications_and_the_bell_reach_the_ui() {
+        let (mut term, _, ui_events) = test_term_with_channels(40, 4);
+        // The parser thread scans what it feeds the terminal.
+        let output = "构建中\r\n\x1b]777;notify;构建;完成\x07ok?\x07".as_bytes();
+        let mut scanner = NoticeScanner::default();
+        let found = scanner.scan(output);
+        feed(&mut term, output);
+        assert_eq!(
+            found,
+            [ProgramNotice {
+                title: Some("构建".into()),
+                body: "完成".into()
+            }]
+        );
+        let bells = ui_events
+            .try_iter()
+            .filter(|event| matches!(event.kind, TerminalUiEventKind::Bell))
+            .count();
+        assert_eq!(bells, 1, "the BEL ending the OSC does not ring");
+        assert_eq!(cursor_line_text(&term), "ok?");
+        // An empty cursor line gives the nearest line above with text.
+        feed(&mut term, b"\r\n\r\n");
+        assert_eq!(cursor_line_text(&term), "ok?");
     }
 
     #[test]

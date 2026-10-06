@@ -189,6 +189,9 @@ pub struct Workspace {
     /// Editor tabs, one per file.
     pub(super) editors: HashMap<EditorId, Entity<EditorPanel>>,
     pub(super) next_editor_id: u64,
+    /// When each terminal last notified, of each kind, keyed by
+    /// `notices::notice_tag` and the kind.
+    pub(super) notice_times: HashMap<String, std::time::Instant>,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -439,6 +442,16 @@ impl Workspace {
             .filter(|host| host.state.is_connected())
             .map(|host| host.id)
             .collect();
+        // A click on a terminal's system notification shows that terminal.
+        let this = cx.weak_entity();
+        let handle = window.window_handle();
+        cx.on_system_notification_response(move |response, cx| {
+            _ = handle.update(cx, |_, window, cx| {
+                _ = this.update(cx, |this, cx| {
+                    this.on_notice_clicked(&response.tag, window, cx)
+                });
+            });
+        });
         // ⌘Q (and on Windows and Linux the window's close button) asks first
         // when an editor has changes not saved yet.
         let this = cx.weak_entity();
@@ -534,8 +547,14 @@ impl Workspace {
             focus_handle,
             editors: HashMap::new(),
             next_editor_id: 1,
+            notice_times: HashMap::new(),
             _subscriptions: subscriptions,
         }
+    }
+
+    /// The center tab in front.
+    pub fn active_tab(&self) -> Option<CenterTab> {
+        self.active_tab
     }
 
     /// The host store, for tests and for panels created later.
@@ -2151,6 +2170,9 @@ fn new_terminal_panel(
                 this.store
                     .update(cx, |store, cx| store.set_host_os(host_id, Some(os), cx));
             }
+            TerminalPanelEvent::Notice(terminal_id, notice) => {
+                this.on_terminal_notice(CenterTab::Terminal(*terminal_id), notice, window, cx)
+            }
         },
     );
     (panel, subscription)
@@ -2304,6 +2326,9 @@ fn new_local_terminal_panel(
                 cx.notify();
             }
             LocalTerminalPanelEvent::StatusChanged(_) => cx.notify(),
+            LocalTerminalPanelEvent::Notice(id, notice) => {
+                this.on_terminal_notice(CenterTab::LocalTerminal(*id), notice, window, cx)
+            }
         },
     );
     (panel, subscription)

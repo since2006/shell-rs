@@ -23,6 +23,28 @@ pub struct AppSettings {
     /// 显示隐藏文件 in the SFTP lists, each side on its own, switched from
     /// their toolbars and menus.
     pub show_hidden: ShowHiddenFiles,
+    /// 终端 → 通知.
+    pub notifications: NotificationSettings,
+}
+
+/// 终端 → 通知: what a terminal may tell the user about while they look
+/// elsewhere. Both on until the user turns them off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationSettings {
+    /// 程序发送的通知: OSC 9 and 777.
+    pub programs: bool,
+    /// 响铃时通知.
+    pub bell: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            programs: true,
+            bell: true,
+        }
+    }
 }
 
 /// 外部 CLI.
@@ -278,6 +300,15 @@ mod tests {
             serde_json::from_str(r#"{"show_hidden":{"remote":true}}"#).unwrap();
         assert!(settings.show_hidden.remote);
         assert!(!settings.show_hidden.local);
+    }
+
+    #[test]
+    fn notifications_are_on_unless_the_file_says_otherwise() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(settings.notifications.programs && settings.notifications.bell);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"notifications":{"bell":false}}"#).unwrap();
+        assert!(settings.notifications.programs && !settings.notifications.bell);
     }
 
     #[test]

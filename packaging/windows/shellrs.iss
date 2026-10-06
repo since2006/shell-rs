@@ -60,8 +60,11 @@ Source: "{#BuildDir}\shellrs.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\shellrs-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\ShellRS"; Filename: "{app}\shellrs.exe"
-Name: "{autodesktop}\ShellRS"; Filename: "{app}\shellrs.exe"; Tasks: desktopicon
+; The AppUserModelID ShellRS gives itself (`set_app_identity`, for its
+; notifications): the same here keeps a pinned shortcut and the running
+; window one taskbar button.
+Name: "{autoprograms}\ShellRS"; Filename: "{app}\shellrs.exe"; AppUserModelID: "com.shellrs.ShellRS"
+Name: "{autodesktop}\ShellRS"; Filename: "{app}\shellrs.exe"; AppUserModelID: "com.shellrs.ShellRS"; Tasks: desktopicon
 
 [Run]
 ; Interactive installs only: an update is restarted by ShellRS's own helper,

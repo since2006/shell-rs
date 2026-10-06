@@ -7,8 +7,8 @@ mod store;
 
 pub use apply::apply;
 pub use model::{
-    AppSettings, Appearance, Choice, ExternalCliSettings, InterfaceLanguage, TerminalFontSettings,
-    UpdateSettings,
+    AppSettings, Appearance, Choice, ExternalCliSettings, InterfaceLanguage, NotificationSettings,
+    TerminalFontSettings, UpdateSettings,
 };
 pub use settings_panel::{SettingsPanel, SettingsPanelEvent};
 pub use store::{SettingsStore, SettingsStoreEvent};

@@ -18,7 +18,7 @@ use crate::shared::{ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, clos
 
 use super::{
     RemoteTerminalId, SharedRemoteTerminalTransportProvider, TerminalEvent, TerminalLifecycle,
-    TerminalMenuItems, TerminalStatus, TerminalView,
+    TerminalMenuItems, TerminalNotice, TerminalStatus, TerminalView,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +28,7 @@ pub enum TerminalPanelEvent {
     StatusChanged(RemoteTerminalId, HostId),
     PromptRequested(RemoteTerminalId, HostId, ConnectionPrompt),
     HostOsDetected(HostId, HostOs),
+    Notice(RemoteTerminalId, TerminalNotice),
 }
 
 /// A remote-host Dock panel backed by the shared terminal engine. The
@@ -92,6 +93,9 @@ impl TerminalPanel {
                     }
                     TerminalEvent::HostOsDetected(os) => {
                         cx.emit(TerminalPanelEvent::HostOsDetected(this.host_id, *os));
+                    }
+                    TerminalEvent::Notice(notice) => {
+                        cx.emit(TerminalPanelEvent::Notice(this.id, notice.clone()));
                     }
                 },
             ),

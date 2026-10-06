@@ -13,8 +13,8 @@ use crate::app::{CatalogIcon, CenterTab, CloseLocalTerminal, RestartLocalTermina
 use crate::shared::{ClosableTabTitle, close_tab_items};
 
 use super::{
-    LocalTerminalId, SharedTerminalTransportFactory, TerminalLifecycle, TerminalStatus,
-    TerminalView,
+    LocalTerminalId, SharedTerminalTransportFactory, TerminalEvent, TerminalLifecycle,
+    TerminalNotice, TerminalStatus, TerminalView,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -22,6 +22,7 @@ pub enum LocalTerminalPanelEvent {
     Activated(LocalTerminalId),
     Closed(LocalTerminalId),
     StatusChanged(LocalTerminalId),
+    Notice(LocalTerminalId, TerminalNotice),
 }
 
 /// A local login-shell Dock tab backed by the shared terminal view.
@@ -50,10 +51,17 @@ impl LocalTerminalPanel {
                 cx,
             )
         });
-        let subscriptions = vec![cx.observe(&terminal, move |_, _, cx| {
-            cx.emit(LocalTerminalPanelEvent::StatusChanged(id));
-            cx.notify();
-        })];
+        let subscriptions = vec![
+            cx.observe(&terminal, move |_, _, cx| {
+                cx.emit(LocalTerminalPanelEvent::StatusChanged(id));
+                cx.notify();
+            }),
+            cx.subscribe(&terminal, move |_, _, event: &TerminalEvent, cx| {
+                if let TerminalEvent::Notice(notice) = event {
+                    cx.emit(LocalTerminalPanelEvent::Notice(id, notice.clone()));
+                }
+            }),
+        ];
 
         Self {
             id,
@@ -62,6 +70,12 @@ impl LocalTerminalPanel {
             tab_group: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// 「本地终端 1」: what a notification calls it, whatever title the
+    /// shell gives the tab.
+    pub fn default_title(&self) -> &str {
+        &self.default_title
     }
 
     pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {

@@ -27,7 +27,7 @@ use crate::terminal::{
 };
 use crate::update::{Phase, Tone, UpdateSnapshot, UpdateStep, Updater, build_info, platform};
 
-use super::{AppSettings, Choice, SettingsStore};
+use super::{AppSettings, Choice, NotificationSettings, SettingsStore};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsPanelEvent {
@@ -315,7 +315,46 @@ fn terminal_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
             })
             .keywords(["预览", "字体", "字号", "行高"]),
         ]),
+        notification_group(store),
     ]
+}
+
+/// 终端 → 通知: when the window is not in front, the system's notification;
+/// when another tab is, one in the window.
+fn notification_group(store: &Entity<SettingsStore>) -> SettingGroup {
+    let switch = |read: fn(&NotificationSettings) -> bool,
+                  write: fn(&mut NotificationSettings, bool)| {
+        let (reader, writer) = (store.clone(), store.clone());
+        SettingField::switch(
+            move |cx| read(&reader.read(cx).settings().notifications),
+            move |on, cx| {
+                writer.update(cx, |store, cx| {
+                    store.update(|settings| write(&mut settings.notifications, on), cx)
+                });
+            },
+        )
+        .default_value(true)
+    };
+    SettingGroup::new()
+        .title("通知")
+        .description(
+            "ShellRS 不在前台时发系统通知；在前台但终端在别的标签时，在窗口右上角提示，点一下切过去。",
+        )
+        .items([
+            SettingItem::new(
+                "程序发送的通知",
+                switch(
+                    |settings| settings.programs,
+                    |settings, on| settings.programs = on,
+                ),
+            )
+            .description("远程或本地程序用 OSC 9 / 777 请求的通知，例如 printf '\\e]9;完成\\a'。"),
+            SettingItem::new(
+                "响铃时通知",
+                switch(|settings| settings.bell, |settings, on| settings.bell = on),
+            )
+            .description("终端就在当前标签时不提示。"),
+        ])
 }
 
 /// 外部 CLI: whether the `shellrs` command may use the saved hosts, the

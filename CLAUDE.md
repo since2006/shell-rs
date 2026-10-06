@@ -56,6 +56,7 @@ ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH �
   - 双击、回车、F4、右键「编辑」都打开它，本地文件也行；新建文件后直接打开。
   - 只认 UTF-8（不做 GBK），上限 5 MB，约 15 种语言语法高亮。
   - 远程文件原地改写：截断后写原文件，不走 `.filepart` 加改名。保存前核对，被改过就问「覆盖」。
+- **终端通知**：只做程序请求的（OSC 9 / 777）和响铃，不做 OSC 133 长命令通知：那要每台服务器装 shell 集成，收益不抵成本。不在前台发系统通知，在前台而终端在别的标签发应用内通知；响铃在终端就在眼前时不提醒。
 - **预览**：图片和 Markdown（不做 HTML），显示在快速查看式的大对话框里，不是标签。
   - 双击图片预览；Markdown 和 SVG 是文本，双击编辑，右键另有「预览」。
   - 图片默认适合窗口居中，可放大、缩小、看原图、滚动；比例只写百分比。
@@ -249,6 +250,7 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 - **链接**：正则找出的地址和 OSC 8 标出的都算，只认 http / https（`links.rs`）；OSC 8 的格子优先于正则。一直画成蓝色（`theme.blue`，主题的 `link` 和正文同色）加下划线，⌘ / Ctrl 单击才打开，普通单击照旧选文字。
 - **鼠标上报**（`mouse.rs` 是纯编码）：按住 Shift 不上报，右键始终是自己的菜单。写入走 `engine.write`，不算用户输入。
 - **OSC 52 只写不读**（`Osc52::OnlyCopy`），只认剪贴板 `c`，主选择区忽略。
+- **通知**：OSC 9 / 777 由 `terminal/notices.rs` 的扫描器在解析线程上认（alacritty 会丢掉），OSC 9 里「数字;」开头的是 ConEmu 的命令，不算通知。投递在 `workspace/notices.rs`：窗口不在前台走 GPUI 的 `show_system_notification`（tag 是 `terminal:local:<id>` / `terminal:remote:<id>`，点击回调按 tag 切标签），在前台走应用内通知。`shellrs::init` 里的 `set_app_identity` 用 bundle id，测试平台没有它就不发系统通知；macOS 上 `cargo run` 没有 bundle，看不到系统通知。
 
 ## 测试约定
 

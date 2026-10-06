@@ -8,6 +8,7 @@ mod local_pty;
 mod local_terminal_panel;
 mod model;
 mod mouse;
+mod notices;
 mod search;
 mod terminal_panel;
 mod terminal_view;
@@ -24,6 +25,7 @@ pub use local_terminal_panel::{LocalTerminalPanel, LocalTerminalPanelEvent};
 pub use model::{
     LocalTerminalId, RemoteTerminalId, TerminalLifecycle, TerminalSize, TerminalStatus,
 };
+pub use notices::TerminalNotice;
 pub use search::{SearchDirection, SearchMark, SearchPosition};
 pub use terminal_panel::{TerminalPanel, TerminalPanelEvent};
 pub(crate) use terminal_view::terminal_key_bindings;
