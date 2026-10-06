@@ -72,7 +72,8 @@ icon_assets!(
         ZoomIn,
         ZoomOut,
         Zap,
-        ExternalLink
+        ExternalLink,
+        Highlighter
     ]
 );
 

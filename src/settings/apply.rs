@@ -2,12 +2,13 @@ use gpui_kit::component::{ActiveTheme as _, Theme};
 use gpui_kit::*;
 
 use crate::explorer::{FileSizeFormat, ShowHiddenFiles};
-use crate::terminal::{TerminalFont, is_font_installed};
+use crate::terminal::{TerminalFont, TerminalHighlights, is_font_installed};
 
 use super::AppSettings;
 
 /// Bring the window in line with the settings: the theme, the locale, the
-/// terminal font, the SFTP size format and whether SFTP shows hidden files.
+/// terminal font and highlight rules, the SFTP size format and whether SFTP
+/// shows hidden files.
 /// Does nothing where they already agree, so it can run on every settings
 /// change and every change of the system appearance.
 pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
@@ -39,6 +40,14 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     if cx.try_global::<TerminalFont>() != Some(&font) {
         cx.set_global(font);
         window.refresh();
+    }
+
+    // Compiled once here for every terminal, which observe it; only when
+    // the rules change, not on every change of the system appearance.
+    let rules = settings.terminal_highlight.rules;
+    let current = cx.try_global::<TerminalHighlights>();
+    if current.map(|highlights| highlights.set().rules()) != Some(rules.as_slice()) {
+        cx.set_global(TerminalHighlights::new(rules));
     }
 
     if cx.try_global::<FileSizeFormat>() != Some(&settings.file_size_format) {

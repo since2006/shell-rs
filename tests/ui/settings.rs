@@ -126,7 +126,7 @@ fn open_external_cli_settings(cx: &mut TestAppContext, handle: WindowHandle<Root
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.within("settings").click("0-2", cx);
+        window.within("settings").click("0-3", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -316,4 +316,123 @@ fn the_appearance_setting_drives_the_theme_and_the_title_bar_switch(cx: &mut Tes
         assert_eq!(appearance_dropdown(window, 1).as_deref(), Some("浅色"));
     })
     .unwrap();
+}
+
+/// The patterns of the 关键字高亮 rules, in order.
+fn highlight_patterns(workspace: &Entity<Workspace>, cx: &App) -> Vec<String> {
+    workspace
+        .read(cx)
+        .settings()
+        .read(cx)
+        .settings()
+        .terminal_highlight
+        .rules
+        .iter()
+        .map(|rule| rule.pattern.clone())
+        .collect()
+}
+
+#[gpui_kit::test]
+async fn highlight_rules_are_added_edited_and_deleted_on_their_page(cx: &mut TestAppContext) {
+    use shellrs::terminal::{HighlightColor, HighlightRule, PatternKind, TerminalHighlights};
+
+    let (handle, workspace) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    // 关键字高亮 comes right after 终端, with the examples a new
+    // installation starts with.
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-2", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find(("highlight-rule", 2usize)).visible());
+        assert!(window.try_find(("highlight-rule", 3usize)).is_none());
+    });
+    let examples = [
+        "ERROR".to_string(),
+        "WARN".into(),
+        r"\b\d{1,3}(\.\d{1,3}){3}\b".into(),
+    ];
+    assert_eq!(cx.update(|cx| highlight_patterns(&workspace, cx)), examples);
+
+    // A new rule takes the keyboard at once; a regex that does not compile
+    // is refused, the dialog staying open.
+    in_frame(cx, handle, |window, cx| {
+        window.click("add-highlight-rule", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("highlight-pattern").focused(), Some(true));
+        window.input("OutOf(Memory", cx);
+        window.within("highlight-kind").click(1usize, cx);
+        window.click("commit", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window
+            .try_find("form-error")
+            .is_some_and(|error| error.label() == Some("正则表达式写法有误"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("highlight-pattern", cx);
+        window.press("cmd-a", cx);
+        window.input(r"OutOfMemory\w*", cx);
+        window.within("highlight-color").click(5usize, cx);
+        window.click("highlight-bold", cx);
+        window.click("highlight-notify", cx);
+        window.click("commit", cx);
+    });
+    cx.run_until_parked();
+    let rules = cx.update(|cx| {
+        workspace
+            .read(cx)
+            .settings()
+            .read(cx)
+            .settings()
+            .terminal_highlight
+            .rules
+    });
+    assert_eq!(
+        rules.last(),
+        Some(&HighlightRule {
+            pattern: r"OutOfMemory\w*".into(),
+            kind: PatternKind::Regex,
+            color: HighlightColor::Magenta,
+            bold: true,
+            notify: true,
+        })
+    );
+
+    // With the dialog closed nothing has focus, and the row's button still
+    // reaches the workspace.
+    in_frame(cx, handle, |window, cx| {
+        window.click(("edit-highlight-rule", 3usize), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("highlight-pattern").focused(), Some(true));
+        window.press("cmd-a", cx);
+        window.input("OOM", cx);
+        window.within("highlight-kind").click(0usize, cx);
+        window.click("commit", cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| highlight_patterns(&workspace, cx))[3], "OOM");
+
+    // Deleted once confirmed; the terminals follow.
+    in_frame(cx, handle, |window, cx| {
+        window.click(("delete-highlight-rule", 0usize), cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("ok", cx));
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let patterns = highlight_patterns(&workspace, cx);
+        assert_eq!(
+            patterns,
+            [examples[1].clone(), examples[2].clone(), "OOM".into()]
+        );
+        let in_effect: Vec<_> = TerminalHighlights::current(cx)
+            .rules()
+            .iter()
+            .map(|rule| rule.pattern.clone())
+            .collect();
+        assert_eq!(in_effect, patterns);
+    });
 }

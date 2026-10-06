@@ -57,6 +57,10 @@ ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH �
   - 只认 UTF-8（不做 GBK），上限 5 MB，约 15 种语言语法高亮。
   - 远程文件原地改写：截断后写原文件，不走 `.filepart` 加改名。保存前核对，被改过就问「覆盖」。
 - **终端通知**：只做程序请求的（OSC 9 / 777）和响铃，不做 OSC 133 长命令通知：那要每台服务器装 shell 集成，收益不抵成本。不在前台发系统通知，在前台而终端在别的标签发应用内通知；响铃在终端就在眼前时不提醒。
+- **关键字高亮**：设置左栏单独一个分类，排在「终端」下面。规则存在 `settings.json`，所有终端共用。
+  - 一条规则是「关键字 / 正则 + 颜色（主题的六种色）+ 加粗 + 是否通知」。关键字按 smart case（同查找），正则按写法。重叠时靠前的优先，暂不做排序、按主机区分和背景色。
+  - 首次（文件里没有这一项）预置三条示例：ERROR 红粗、WARN 黄、IPv4 蓝，都不通知；用户删光后保持为空。
+  - 通知同响铃：看不到那个终端才提醒，同一终端 10 秒一次。全屏程序（备用屏）里不高亮也不通知。
 - **预览**：图片和 Markdown（不做 HTML），显示在快速查看式的大对话框里，不是标签。
   - 双击图片预览；Markdown 和 SVG 是文本，双击编辑，右键另有「预览」。
   - 图片默认适合窗口居中，可放大、缩小、看原图、滚动；比例只写百分比。
@@ -101,7 +105,7 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
   - `SshConnector`：所有登录都走它（终端、SFTP、exec、测试连接、端口转发、外部 CLI）。
   - 远程终端的传输：pty、系统探测、延迟、旁路 exec。
   - 代理握手；外部 CLI 用的 `run_command`。
-- `terminal/`：本地 PTY、驱动 `alacritty_terminal` 的引擎、`TerminalView`（网格、选区、查找、清屏）、终端字体全局量、右侧栏工具共用的 `ExecTarget`。
+- `terminal/`：本地 PTY、驱动 `alacritty_terminal` 的引擎、`TerminalView`（网格、选区、查找、清屏）、关键字高亮（`highlight.rs`）、终端字体全局量、右侧栏工具共用的 `ExecTarget`。
 - `sftp/`：可注入的传输和本地目录接口、`RemotePath`、`RemoteFs` 协议适配、worker（批次、三次重连、空闲断网检测），以及：
   - `upload.rs` / `download.rs`：断点续传，续传记录由 `journal.rs` 管；
   - `operations.rs`：删除、重命名、新建、改权限；
@@ -250,6 +254,11 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 - **终端字体走全局量 `TerminalFont`**（终端模块不依赖 settings），格子在下一帧 prepaint 时按新尺寸重排。
 - **链接**：正则找出的地址和 OSC 8 标出的都算，只认 http / https（`links.rs`）；OSC 8 的格子优先于正则。一直画成蓝色（`theme.blue`，主题的 `link` 和正文同色）加下划线，⌘ / Ctrl 单击才打开，普通单击照旧选文字。
 - **鼠标上报**（`mouse.rs` 是纯编码）：按住 Shift 不上报，右键始终是自己的菜单。写入走 `engine.write`，不算用户输入。
+- **关键字高亮只叠加在显示上**（`highlight.rs`）。`snapshot()` 每帧对可见行把折行接成逻辑行，用 `regex` crate 匹配，结果写进 `TerminalCell.highlight`，prepaint 改文字色和粗细；不存坐标，所以缩放重排、回滚都不用失效处理。
+  - 不用 alacritty 的 `RegexSearch`（查找、链接用的那套）：它的 DFA 编不了 `\b`，`^` 只在第一行生效，`$` 会碰到行尾补的空格。
+  - 通知在解析线程上：按 `\n` 切开输出，在 LF **之前**读光标所在的逻辑行（这时 `\r` 和颜色都已生效），锁外匹配。备用屏和同步更新进行中不读。
+  - 规则由 `settings::apply` 编译成全局量 `TerminalHighlights`，引擎 `observe_global` 后换进与解析线程共用的槽；重启运行时也要把槽传过去。
+  - `settings.json` 里读不了的规则单条丢掉（`readable_rules`），否则整个设置文件会回退成默认值。
 - **OSC 52 只写不读**（`Osc52::OnlyCopy`），只认剪贴板 `c`，主选择区忽略。
 - **通知**：OSC 9 / 777 由 `terminal/notices.rs` 的扫描器在解析线程上认（alacritty 会丢掉），OSC 9 里「数字;」开头的是 ConEmu 的命令，不算通知。投递在 `workspace/notices.rs`：窗口不在前台走 GPUI 的 `show_system_notification`（tag 是 `terminal:local:<id>` / `terminal:remote:<id>`，点击回调按 tag 切标签），在前台走应用内通知。`shellrs::init` 里的 `set_app_identity` 用 bundle id，测试平台没有它就不发系统通知；macOS 上 `cargo run` 没有 bundle，看不到系统通知。
 

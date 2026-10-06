@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::Term;
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
@@ -19,6 +19,10 @@ use alacritty_terminal::vte::ansi::{Color, CursorShape, CursorStyle, Processor, 
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply, Latency};
 use crate::host::HostOs;
 
+use super::highlight::{
+    HighlightStyle, KeywordHit, LineWatcher, SharedHighlights, TerminalHighlights,
+    advance_watching, current,
+};
 use super::links::{LinkMarker, url_search, visible_links};
 use super::notices::{NoticeScanner, ProgramNotice, TerminalNotice};
 use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
@@ -39,6 +43,8 @@ pub struct TerminalCell {
     pub search: SearchMark,
     /// The link the cell belongs to, an index into the snapshot's `links`.
     pub link: Option<usize>,
+    /// How a 关键字高亮 rule shows the cell, when one matches it.
+    pub highlight: Option<HighlightStyle>,
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +91,10 @@ pub struct TerminalEngine {
     search: RefCell<Option<TerminalSearch>>,
     /// Finds the web addresses on screen, built once.
     url_search: RefCell<RegexSearch>,
+    /// The 关键字高亮 rules, shared with the parser thread, which checks new
+    /// lines against them; swapped when the settings change them.
+    highlights: SharedHighlights,
+    _highlights_observer: gpui_kit::Subscription,
     generation: u64,
     size: TerminalSize,
     event_sender: mpsc::Sender<TerminalUiEvent>,
@@ -99,8 +109,21 @@ impl TerminalEngine {
         // threads therefore never wake GPUI's local executor directly, and a
         // burst of terminal bytes results in a single render notification.
         let (event_sender, event_receiver) = mpsc::channel();
-        let runtime =
-            TerminalRuntime::start(generation, size, factory.create(), event_sender.clone());
+        let highlights = Arc::new(Mutex::new(TerminalHighlights::current(cx)));
+        let runtime = TerminalRuntime::start(
+            generation,
+            size,
+            factory.create(),
+            event_sender.clone(),
+            highlights.clone(),
+        );
+        let highlights_observer = cx.observe_global::<TerminalHighlights>(|this, cx| {
+            *this
+                .highlights
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = TerminalHighlights::current(cx);
+            cx.notify();
+        });
         let mut this = Self {
             factory,
             runtime,
@@ -109,6 +132,8 @@ impl TerminalEngine {
             latency: None,
             search: RefCell::new(None),
             url_search: RefCell::new(url_search()),
+            highlights,
+            _highlights_observer: highlights_observer,
             generation,
             size,
             event_sender,
@@ -194,6 +219,12 @@ impl TerminalEngine {
                 let line = cursor_line_text(&self.runtime.term.lock());
                 return Some(TerminalEvent::Notice(TerminalNotice::bell(&line)));
             }
+            TerminalUiEventKind::Keyword(hit) => {
+                return Some(TerminalEvent::Notice(TerminalNotice::keyword(
+                    &hit.pattern,
+                    &hit.line,
+                )));
+            }
         }
         None
     }
@@ -211,6 +242,7 @@ impl TerminalEngine {
             self.size,
             self.factory.create(),
             self.event_sender.clone(),
+            self.highlights.clone(),
         );
         cx.notify();
     }
@@ -461,6 +493,12 @@ impl TerminalEngine {
         )
     }
 
+    /// Whether the cursor blinks: the program may say. Cheaper than a
+    /// snapshot, which the blink timer would otherwise take twice a second.
+    pub fn cursor_blinking(&self) -> bool {
+        self.runtime.term.lock().cursor_style().blinking
+    }
+
     pub fn snapshot(&self) -> TerminalSnapshot {
         let term = self.runtime.term.lock();
         let content = term.renderable_content();
@@ -478,6 +516,7 @@ impl TerminalEngine {
             .unwrap_or_default();
         let mut marker = MatchMarker::new(&matches, focused.as_ref());
         let mut links = LinkMarker::new(visible_links(&term, &mut self.url_search.borrow_mut()));
+        let highlights = current(&self.highlights).screen(&term);
         let mut cells: Vec<_> = content
             .display_iter
             .map(|indexed| {
@@ -495,6 +534,10 @@ impl TerminalEngine {
                     }),
                     search: marker.mark(indexed.point),
                     link: links.mark(indexed.point, indexed.cell.hyperlink()),
+                    highlight: highlights.style(
+                        (indexed.point.line.0 + display_offset) as usize,
+                        indexed.point.column.0,
+                    ),
                 }
             })
             .collect();
@@ -590,6 +633,7 @@ impl TerminalRuntime {
         size: TerminalSize,
         transport: Box<dyn super::TerminalTransport>,
         ui_events: mpsc::Sender<TerminalUiEvent>,
+        highlights: SharedHighlights,
     ) -> Self {
         let (commands, command_receiver) = mpsc::channel();
         let (transport_events, transport_receiver) = async_channel::unbounded();
@@ -613,13 +657,25 @@ impl TerminalRuntime {
                 let mut processor = Processor::new();
                 // Alacritty drops the notifications programs ask for.
                 let mut notices = NoticeScanner::default();
+                let mut watcher = LineWatcher::new(current(&highlights));
                 while let Ok(event) = transport_receiver.recv_blocking() {
                     match event {
                         TerminalTransportEvent::Started => {
                             parser_proxy.send(TerminalUiEventKind::Started);
                         }
                         TerminalTransportEvent::Output(bytes) => {
-                            processor.advance(&mut *parser_term.lock(), &bytes);
+                            watcher.sync(current(&highlights));
+                            // The lines are only read under the lock; the
+                            // rules match them once it is let go.
+                            let lines = advance_watching(
+                                &mut processor,
+                                &mut parser_term.lock(),
+                                &bytes,
+                                watcher.is_watching(),
+                            );
+                            if let Some(hit) = watcher.check(lines, Instant::now()) {
+                                parser_proxy.send(TerminalUiEventKind::Keyword(hit));
+                            }
                             for notice in notices.scan(&bytes) {
                                 parser_proxy.send(TerminalUiEventKind::Notice(notice));
                             }
@@ -824,6 +880,8 @@ enum TerminalUiEventKind {
     /// A notification a program asked for, by OSC 9 or 777.
     Notice(ProgramNotice),
     Bell,
+    /// A finished line that a 关键字高亮 rule tells of.
+    Keyword(KeywordHit),
 }
 
 fn append_message(term: &Arc<FairMutex<AlacrittyTerm>>, message: &str) {
@@ -1388,6 +1446,7 @@ mod tests {
                 SearchMark::None
             },
             link: None,
+            highlight: None,
         };
         let mut cells = vec![
             cell(Flags::WIDE_CHAR, true),

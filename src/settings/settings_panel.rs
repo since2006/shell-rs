@@ -11,19 +11,21 @@ use gpui_kit::component::{
     tooltip::Tooltip,
     v_flex,
 };
+use std::sync::Arc;
+
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CenterTab, CheckForUpdates, CloseSettings, CopyAgentSkill, DownloadUpdate,
-    InstallAgentSkill, InstallCliCommand, OpenDownloadPage, RefreshCliIntegration,
-    RemoveAgentSkill, RemoveCliCommand, ShowUpdate,
+    CatalogIcon, CenterTab, CheckForUpdates, CloseSettings, CopyAgentSkill, DeleteHighlightRule,
+    DownloadUpdate, EditHighlightRule, InstallAgentSkill, InstallCliCommand, NewHighlightRule,
+    OpenDownloadPage, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, ShowUpdate,
 };
 use crate::cli::{AgentKind, BinaryStatus, CliIntegration, IntegrationStatus, SkillStatus};
 use crate::shared::{ClosableTabTitle, close_tab_items};
 use crate::terminal::{
-    FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalFontPreview, is_font_installed,
-    monospace_font_families,
+    FONT_SIZE_RANGE, HighlightSet, LINE_HEIGHT_RANGE, PatternKind, TerminalFontPreview,
+    TerminalHighlights, is_font_installed, monospace_font_families,
 };
 use crate::update::{Phase, Tone, UpdateSnapshot, UpdateStep, Updater, build_info, platform};
 
@@ -200,7 +202,7 @@ struct Category {
 type CategoryGroups = fn(&SettingsPanel, &App) -> Vec<SettingGroup>;
 
 /// The categories, in the order the left column lists them.
-const CATEGORIES: [Category; 4] = [
+const CATEGORIES: [Category; 5] = [
     Category {
         title: "外观",
         icon: CatalogIcon::Palette,
@@ -210,6 +212,11 @@ const CATEGORIES: [Category; 4] = [
         title: "终端",
         icon: CatalogIcon::Terminal,
         groups: terminal_groups,
+    },
+    Category {
+        title: "关键字高亮",
+        icon: CatalogIcon::Highlighter,
+        groups: highlight_groups,
     },
     Category {
         title: "外部 CLI",
@@ -355,6 +362,175 @@ fn notification_group(store: &Entity<SettingsStore>) -> SettingGroup {
             )
             .description("终端就在当前标签时不提示。"),
         ])
+}
+
+/// 关键字高亮: the rules every terminal colors its text by. Taken from the
+/// rules in effect, which also know which of them do not compile.
+fn highlight_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
+    vec![
+        SettingGroup::new()
+            .title("规则")
+            .description(
+                "匹配的文字在所有终端里按所选样式显示：只改显示，不改服务器的输出，\
+                 复制出的文字也不变。几条规则匹配到同一处时，靠前的优先。\
+                 全屏程序（vim、less、tmux 等）里不高亮。",
+            )
+            .items([highlight_rules_item(
+                TerminalHighlights::current(cx),
+                panel.focus_handle.clone(),
+            )]),
+    ]
+}
+
+/// The rules, one row each with the pattern in its own style, and the
+/// button that adds one. The buttons dispatch through the panel's focus
+/// handle: after a dialog closes nothing has focus, and an action
+/// dispatched from the window would never reach the workspace.
+fn highlight_rules_item(rules: Arc<HighlightSet>, dispatch: FocusHandle) -> SettingItem {
+    SettingItem::render(move |options, _, cx| {
+        let size = options.size();
+        let muted = cx.theme().muted_foreground;
+        let header = h_flex()
+            .w_full()
+            .gap_3()
+            .pb_1()
+            .text_xs()
+            .text_color(muted)
+            .child(div().flex_1().min_w_0().child("内容"))
+            .child(div().w_16().flex_shrink_0().child("匹配方式"))
+            .child(div().w_8().flex_shrink_0().child("通知"))
+            // Over the row buttons' lane.
+            .child(div().w_16().flex_shrink_0());
+        let rows = rules.rules().iter().enumerate().map(|(ix, rule)| {
+            let error = rules.error(ix);
+            let dispatch_edit = dispatch.clone();
+            let dispatch_buttons = (dispatch.clone(), dispatch.clone());
+            h_flex()
+                .id(("highlight-rule", ix))
+                .test_support()
+                .w_full()
+                .gap_3()
+                .py_1()
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .on_click(move |event, window, cx| {
+                    if event.click_count() == 2 {
+                        dispatch_edit.dispatch_action(&EditHighlightRule(ix), window, cx);
+                    }
+                })
+                .child(
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_2()
+                        .child(
+                            // The pattern as the terminal shows its matches.
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_sm()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .text_color(rule.color.hsla(cx))
+                                .when(rule.bold, |text| text.font_weight(FontWeight::BOLD))
+                                .child(rule.pattern.clone()),
+                        )
+                        .when_some(error, |row, error| {
+                            row.child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_xs()
+                                    .text_color(cx.theme().danger)
+                                    .child(format!("表达式无效：{error}")),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .w_16()
+                        .flex_shrink_0()
+                        .text_sm()
+                        .text_color(muted)
+                        .child(match rule.kind {
+                            PatternKind::Keyword => "关键字",
+                            PatternKind::Regex => "正则",
+                        }),
+                )
+                .child(
+                    div()
+                        .w_8()
+                        .flex_shrink_0()
+                        .text_sm()
+                        .text_color(muted)
+                        .child(if rule.notify { "是" } else { "—" }),
+                )
+                .child(
+                    h_flex()
+                        .w_16()
+                        .flex_shrink_0()
+                        .justify_end()
+                        .gap_1()
+                        .child(
+                            Button::new(("edit-highlight-rule", ix))
+                                .ghost()
+                                .xsmall()
+                                .icon(Icon::new(CatalogIcon::Pencil))
+                                .tooltip("编辑…")
+                                .on_click(move |_, window, cx| {
+                                    dispatch_buttons.0.dispatch_action(
+                                        &EditHighlightRule(ix),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                        )
+                        .child(
+                            Button::new(("delete-highlight-rule", ix))
+                                .ghost()
+                                .xsmall()
+                                .icon(Icon::new(CatalogIcon::Trash))
+                                .tooltip("删除…")
+                                .on_click(move |_, window, cx| {
+                                    dispatch_buttons.1.dispatch_action(
+                                        &DeleteHighlightRule(ix),
+                                        window,
+                                        cx,
+                                    )
+                                }),
+                        ),
+                )
+        });
+        let add = dispatch.clone();
+        v_flex()
+            .id("highlight-rules")
+            .test_support()
+            .w_full()
+            .gap_3()
+            .child(if rules.rules().is_empty() {
+                div()
+                    .text_sm()
+                    .text_color(muted)
+                    .child("还没有规则。")
+                    .into_any_element()
+            } else {
+                v_flex()
+                    .w_full()
+                    .child(header)
+                    .children(rows)
+                    .into_any_element()
+            })
+            .child(
+                h_flex().child(
+                    Button::new("add-highlight-rule")
+                        .with_size(size)
+                        .icon(Icon::new(IconName::Plus))
+                        .label("添加规则…")
+                        .on_click(move |_, window, cx| {
+                            add.dispatch_action(&NewHighlightRule, window, cx)
+                        }),
+                ),
+            )
+    })
+    .keywords(["高亮", "关键字", "正则", "规则", "颜色", "通知"])
 }
 
 /// 外部 CLI: whether the `shellrs` command may use the saved hosts, the

@@ -107,6 +107,8 @@ gpui_kit::actions!(
         OpenSettings,
         /// Close the settings tab.
         CloseSettings,
+        /// Open the dialog for a new 关键字高亮 rule.
+        NewHighlightRule,
         /// Increase the application base font (interface zoom).
         ZoomIn,
         /// Decrease the application base font (interface zoom).
@@ -273,6 +275,12 @@ id_actions! {
     /// Ask for confirmation, then delete a credential. The hosts using it
     /// go back to logging in on their own.
     DeleteCredential(CredentialId);
+
+    /// Open the dialog of the 关键字高亮 rule at this position.
+    EditHighlightRule(usize);
+    /// Ask for confirmation, then delete the 关键字高亮 rule at this
+    /// position.
+    DeleteHighlightRule(usize);
 }
 
 /// Move a host-tree row by dropping it beside a peer or into a group.

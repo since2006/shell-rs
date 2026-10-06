@@ -1,9 +1,12 @@
 use gpui_kit::WindowAppearance;
 use gpui_kit::component::ThemeMode;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::explorer::{FileSizeFormat, ShowHiddenFiles};
-use crate::terminal::{DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, LINE_HEIGHT_RANGE};
+use crate::terminal::{
+    DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, HighlightRule, LINE_HEIGHT_RANGE,
+    default_rules,
+};
 use crate::update::Channel;
 
 /// Everything the settings page changes. Each field falls back to its
@@ -25,6 +28,39 @@ pub struct AppSettings {
     pub show_hidden: ShowHiddenFiles,
     /// 终端 → 通知.
     pub notifications: NotificationSettings,
+    /// 关键字高亮.
+    pub terminal_highlight: TerminalHighlightSettings,
+}
+
+/// 关键字高亮: the rules every terminal colors its text by, in the order
+/// they win where they overlap. A file without them gets the examples a new
+/// installation starts with; one the user emptied stays empty.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalHighlightSettings {
+    #[serde(deserialize_with = "readable_rules")]
+    pub rules: Vec<HighlightRule>,
+}
+
+impl Default for TerminalHighlightSettings {
+    fn default() -> Self {
+        Self {
+            rules: default_rules(),
+        }
+    }
+}
+
+/// The rules the file holds that this version can read. One it cannot (a
+/// color from a newer version, a hand-made typo) is dropped on its own:
+/// failing the whole file would put every setting back to its default.
+fn readable_rules<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<HighlightRule>, D::Error> {
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .filter_map(|value| serde_json::from_value(value).ok())
+        .collect())
 }
 
 /// 终端 → 通知: what a terminal may tell the user about while they look
@@ -97,6 +133,10 @@ impl AppSettings {
     /// file nor a typed value can give the terminal a size of zero.
     pub fn normalized(mut self) -> Self {
         self.terminal_font = self.terminal_font.normalized();
+        // A rule with nothing to match matches nothing.
+        self.terminal_highlight
+            .rules
+            .retain(|rule| !rule.pattern.trim().is_empty());
         self
     }
 }
@@ -309,6 +349,61 @@ mod tests {
         let settings: AppSettings =
             serde_json::from_str(r#"{"notifications":{"bell":false}}"#).unwrap();
         assert!(settings.notifications.programs && !settings.notifications.bell);
+    }
+
+    #[test]
+    fn highlight_rules_start_as_examples_and_stay_as_the_user_leaves_them() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.terminal_highlight.rules, default_rules());
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"terminal_highlight":{"rules":[]}}"#).unwrap();
+        assert!(settings.terminal_highlight.rules.is_empty());
+        let json = serde_json::to_value(AppSettings::default()).unwrap();
+        assert_eq!(
+            json["terminal_highlight"]["rules"][0],
+            serde_json::json!({
+                "pattern": "ERROR",
+                "kind": "keyword",
+                "color": "red",
+                "bold": true,
+                "notify": false
+            })
+        );
+        assert_eq!(json["terminal_highlight"]["rules"][2]["kind"], "regex");
+    }
+
+    #[test]
+    fn a_rule_this_version_cannot_read_costs_only_itself() {
+        let settings: AppSettings = serde_json::from_str(
+            r#"{
+                "appearance": "dark",
+                "terminal_highlight": {"rules": [
+                    {"pattern": "FATAL", "color": "orange"},
+                    {"pattern": "OOM", "color": "magenta", "notify": true},
+                    7
+                ]}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(settings.appearance, Appearance::Dark);
+        let rules = &settings.terminal_highlight.rules;
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].pattern, "OOM");
+        assert!(rules[0].notify && !rules[0].bold);
+    }
+
+    #[test]
+    fn a_rule_with_nothing_to_match_is_dropped() {
+        let mut settings = AppSettings::default();
+        settings.terminal_highlight.rules[1].pattern = "  ".into();
+        let rules = settings.normalized().terminal_highlight.rules;
+        assert_eq!(
+            rules
+                .iter()
+                .map(|rule| rule.pattern.as_str())
+                .collect::<Vec<_>>(),
+            ["ERROR", r"\b\d{1,3}(\.\d{1,3}){3}\b"]
+        );
     }
 
     #[test]

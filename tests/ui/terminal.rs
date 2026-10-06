@@ -1000,3 +1000,105 @@ async fn terminals_notify_where_the_user_will_see_it(cx: &mut TestAppContext) {
         );
     });
 }
+
+/// Have the settings hold `rules`, as the 关键字高亮 page writes them.
+fn set_highlight_rules(
+    cx: &mut TestAppContext,
+    workspace: &Entity<Workspace>,
+    rules: Vec<shellrs::terminal::HighlightRule>,
+) {
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    settings.update(cx, |settings, cx| {
+        settings.update(|settings| settings.terminal_highlight.rules = rules, cx)
+    });
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+async fn a_matching_line_notifies_from_a_terminal_out_of_sight(cx: &mut TestAppContext) {
+    use shellrs::terminal::HighlightRule;
+
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory).await;
+    // WARN only colors; ERROR tells.
+    set_highlight_rules(
+        cx,
+        &workspace,
+        vec![
+            HighlightRule {
+                pattern: "WARN".into(),
+                ..HighlightRule::default()
+            },
+            HighlightRule {
+                pattern: "ERROR".into(),
+                notify: true,
+                ..HighlightRule::default()
+            },
+        ],
+    );
+    in_frame(cx, handle, |window, _| window.activate_window());
+
+    // Behind a second terminal, a finished line that matches shows in the
+    // window; neither the WARN line nor the line still being written does.
+    in_frame(cx, handle, |window, cx| {
+        window.click("new-local-terminal", cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(2))
+            .is_some_and(|terminal| {
+                terminal.read(cx).status(cx).lifecycle() == &TerminalLifecycle::Running
+            })
+    })
+    .await;
+    print_into(cx, &workspace, 1, "12:01 WARN low disk\n12:02 ERR");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        local_screen(&workspace, cx).contains("12:02 ERR")
+    })
+    .await;
+    print_into(cx, &workspace, 1, "OR boom\n");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.notifications(cx).len() == 1
+    })
+    .await;
+
+    // With the window away, the system's notification names the tab and
+    // the rule, and has the line.
+    cx.background_executor
+        .advance_clock(Duration::from_secs(10));
+    cx.run_until_parked();
+    gpui_kit::VisualTestContext::from_window(handle.into(), cx).deactivate_window();
+    print_into(cx, &workspace, 1, "12:03 ERROR again\n");
+    let shown = system_notifications(cx, 1).await;
+    assert_eq!(shown[0].tag.as_ref(), "terminal:local:1");
+    assert_eq!(shown[0].title.as_ref(), "本地终端 1：ERROR");
+    assert_eq!(shown[0].body.as_ref(), "12:03 ERROR again");
+
+    // In sight, a matching line says nothing: had it, the next one would
+    // be held back as too soon after it.
+    cx.background_executor
+        .advance_clock(Duration::from_secs(10));
+    cx.simulate_system_notification_response(gpui_kit::SystemNotificationResponse {
+        tag: shown[0].tag.clone(),
+        action_id: None,
+    });
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| window.activate_window());
+    cx.update(|cx| {
+        assert_eq!(
+            workspace.read(cx).active_tab(),
+            Some(shellrs::app::CenterTab::LocalTerminal(LocalTerminalId(1)))
+        );
+    });
+    // The program's notice after it comes once the line has been weighed.
+    print_into(cx, &workspace, 1, "12:04 ERROR seen\n\x1b]9;done\x07");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.notifications(cx).len() == 1
+    })
+    .await;
+    gpui_kit::VisualTestContext::from_window(handle.into(), cx).deactivate_window();
+    print_into(cx, &workspace, 1, "12:05 ERROR later\n");
+    let shown = system_notifications(cx, 2).await;
+    assert_eq!(shown[1].body.as_ref(), "12:05 ERROR later");
+}

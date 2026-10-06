@@ -259,7 +259,7 @@ impl TerminalView {
                     .await;
                 if this
                     .update(cx, |this, cx| {
-                        if this.focused && this.snapshot(cx).cursor_blinking {
+                        if this.focused && this.engine.read(cx).cursor_blinking() {
                             this.cursor_visible = !this.cursor_visible;
                             cx.notify();
                         } else if this.focused && !this.cursor_visible {
@@ -539,10 +539,6 @@ impl TerminalView {
         let query = find.input.read(cx).value();
         self.engine
             .update(cx, |engine, cx| engine.set_search_query(&query, cx));
-    }
-
-    fn snapshot(&self, cx: &App) -> TerminalSnapshot {
-        self.engine.read(cx).snapshot()
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -1232,9 +1228,23 @@ impl Element for TerminalElement {
                 }
 
                 let character = painted_cell_text(&cell.character, cell.flags);
-                let font = terminal_font(text_style.font(), cell.flags);
+                // A 关键字高亮 rule's bold adds to the program's.
+                let flags = match cell.highlight {
+                    Some(highlight) if highlight.bold => cell.flags | Flags::BOLD,
+                    _ => cell.flags,
+                };
+                let font = terminal_font(text_style.font(), flags);
                 let len = character.len();
                 text.push_str(character);
+                // A rule's color, dimmed as the program dimmed the text.
+                let highlight = cell.highlight.map(|highlight| {
+                    let color = highlight.color.hsla(cx);
+                    if cell.flags.contains(Flags::DIM) {
+                        color.opacity(0.66)
+                    } else {
+                        color
+                    }
+                });
                 // Links always show as links, blue whatever color the
                 // program gave them. Not the theme's `link`: that is the
                 // color of text.
@@ -1245,6 +1255,9 @@ impl Element for TerminalElement {
                         cx.theme().blue
                     }
                 });
+                // A rule colors a link's text too; the underline still says
+                // it is one.
+                let text_color = highlight.or(link).unwrap_or(foreground);
                 runs.push(TextRun {
                     len,
                     font,
@@ -1253,7 +1266,7 @@ impl Element for TerminalElement {
                     } else if cell.search == SearchMark::Focused {
                         cx.theme().warning_foreground
                     } else {
-                        link.unwrap_or(foreground)
+                        text_color
                     },
                     background_color: None,
                     underline: match link {
@@ -1267,7 +1280,7 @@ impl Element for TerminalElement {
                                 .intersects(Flags::ALL_UNDERLINES)
                                 .then_some(UnderlineStyle {
                                     thickness: px(1.),
-                                    color: Some(foreground),
+                                    color: Some(text_color),
                                     wavy: cell.flags.contains(Flags::UNDERCURL),
                                 })
                         }
@@ -1275,7 +1288,7 @@ impl Element for TerminalElement {
                     strikethrough: cell.flags.contains(Flags::STRIKEOUT).then_some(
                         StrikethroughStyle {
                             thickness: px(1.),
-                            color: Some(foreground),
+                            color: Some(text_color),
                         },
                     ),
                 });

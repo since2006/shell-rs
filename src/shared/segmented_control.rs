@@ -32,6 +32,9 @@ pub struct Segment {
     label: SharedString,
     /// How many there are of what it shows, quieter beside the label.
     count: Option<usize>,
+    /// A color it stands for, as a dot before the label: 关键字高亮's
+    /// colors, named as well as shown.
+    swatch: Option<Hsla>,
     disabled: bool,
     /// Why a disabled segment cannot be chosen.
     tooltip: Option<SharedString>,
@@ -42,6 +45,7 @@ impl Segment {
         Self {
             label: label.into(),
             count: None,
+            swatch: None,
             disabled: false,
             tooltip: None,
         }
@@ -50,6 +54,12 @@ impl Segment {
     /// How many there are of what it shows: 「容器 9」.
     pub fn count(mut self, count: usize) -> Self {
         self.count = Some(count);
+        self
+    }
+
+    /// The color it stands for: 「● 红」.
+    pub fn swatch(mut self, color: Hsla) -> Self {
+        self.swatch = Some(color);
         self
     }
 
@@ -192,6 +202,16 @@ impl RenderOnce for SegmentedControl {
                         radio.tooltip(move |window, cx| {
                             Tooltip::new(tooltip.clone()).build(window, cx)
                         })
+                    })
+                    .when_some(segment.swatch, |radio, color| {
+                        radio.child(
+                            div()
+                                .flex_shrink_0()
+                                .size_2()
+                                .mr_1p5()
+                                .rounded_full()
+                                .bg(color),
+                        )
                     })
                     .child(div().truncate().child(segment.label))
                     .when_some(segment.count, |radio, count| {

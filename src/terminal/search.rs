@@ -14,7 +14,7 @@ use gpui_kit::SharedString;
 
 /// How far a highlighted match may reach above the first visible row along a
 /// wrapped line. Longer wrapped lines are cut there, as in Alacritty.
-const MAX_WRAPPED_LINES: i32 = 100;
+pub(super) const MAX_WRAPPED_LINES: i32 = 100;
 
 /// Which way to step from the focused match: `Up` towards older output,
 /// `Down` towards newer output.

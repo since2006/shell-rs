@@ -1,6 +1,7 @@
 //! What terminals tell the user while they look elsewhere: notifications
-//! programs ask for and the bell. The system's notification when the window
-//! is not in front, one in the window when another tab is.
+//! programs ask for, the bell, and lines a 关键字高亮 rule tells of. The
+//! system's notification when the window is not in front, one in the window
+//! when another tab is.
 
 use std::time::{Duration, Instant};
 
@@ -14,9 +15,11 @@ use crate::shared::RenamableTab as _;
 use crate::terminal::{LocalTerminalId, RemoteTerminalId, TerminalNotice};
 
 /// How often one terminal may notify: a program at most every 2 seconds,
-/// the bell every 10. More in between are dropped.
+/// the bell and 关键字高亮 rules (all of them together) every 10. More in
+/// between are dropped.
 const PROGRAM_INTERVAL: Duration = Duration::from_secs(2);
 const BELL_INTERVAL: Duration = Duration::from_secs(10);
+const KEYWORD_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Where a notice goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,7 +33,9 @@ pub(super) enum Delivery {
 
 /// Where `notice` goes. A program asked to notify, so it does so even over
 /// its own terminal; the bell rings for typing too (a Tab with nothing to
-/// complete), so it only tells of a terminal out of sight.
+/// complete), and a keyword the user sees colored on screen, or typed
+/// (`grep ERROR`), is no news, so these only tell of a terminal out of
+/// sight. A rule that notifies is its own switch.
 pub(super) fn delivery(
     notice: &TerminalNotice,
     settings: NotificationSettings,
@@ -40,6 +45,7 @@ pub(super) fn delivery(
     let (allowed, quiet_in_front) = match notice {
         TerminalNotice::Program { .. } => (settings.programs, false),
         TerminalNotice::Bell { .. } => (settings.bell, true),
+        TerminalNotice::Keyword { .. } => (true, true),
     };
     if !allowed {
         Delivery::None
@@ -62,6 +68,7 @@ pub(super) fn notice_text(tab: &str, notice: &TerminalNotice) -> (String, String
         } => (format!("{tab}：{title}"), body.clone()),
         TerminalNotice::Program { title: None, body } => (tab.to_string(), body.clone()),
         TerminalNotice::Bell { line } => (format!("{tab}：响铃"), line.clone()),
+        TerminalNotice::Keyword { pattern, line } => (format!("{tab}：{pattern}"), line.clone()),
     }
 }
 
@@ -113,6 +120,7 @@ impl Workspace {
         let (kind, interval) = match notice {
             TerminalNotice::Program { .. } => ("program", PROGRAM_INTERVAL),
             TerminalNotice::Bell { .. } => ("bell", BELL_INTERVAL),
+            TerminalNotice::Keyword { .. } => ("keyword", KEYWORD_INTERVAL),
         };
         let key = format!("{tag}:{kind}");
         // The executor's clock, which tests can move on.
@@ -216,22 +224,29 @@ mod tests {
         }
     }
 
+    fn keyword() -> TerminalNotice {
+        TerminalNotice::keyword("ERROR", "12:00 ERROR boom")
+    }
+
     #[test]
     fn the_system_tells_of_a_window_away_and_the_window_of_another_tab() {
         let on = NotificationSettings::default();
-        for notice in [program(None), bell()] {
+        for notice in [program(None), bell(), keyword()] {
             assert_eq!(delivery(&notice, on, false, true), Delivery::System);
             assert_eq!(delivery(&notice, on, true, false), Delivery::InApp);
         }
-        // In sight, a program still notifies; the bell does not.
+        // In sight, a program still notifies; the bell and a keyword do not.
         assert_eq!(delivery(&program(None), on, true, true), Delivery::InApp);
         assert_eq!(delivery(&bell(), on, true, true), Delivery::None);
+        assert_eq!(delivery(&keyword(), on, true, true), Delivery::None);
         let off = NotificationSettings {
             programs: false,
             bell: false,
         };
         assert_eq!(delivery(&program(None), off, false, false), Delivery::None);
         assert_eq!(delivery(&bell(), off, false, false), Delivery::None);
+        // A rule's own switch says whether it notifies.
+        assert_eq!(delivery(&keyword(), off, false, false), Delivery::System);
     }
 
     #[test]
@@ -247,6 +262,10 @@ mod tests {
         assert_eq!(
             notice_text("本地终端 1", &bell()),
             ("本地终端 1：响铃".to_string(), "y/N?".to_string())
+        );
+        assert_eq!(
+            notice_text("web-01", &keyword()),
+            ("web-01：ERROR".to_string(), "12:00 ERROR boom".to_string())
         );
     }
 
