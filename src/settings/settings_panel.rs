@@ -1,3 +1,6 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
@@ -7,7 +10,10 @@ use gpui_kit::component::{
     label::Label,
     menu::PopupMenu,
     separator::Separator,
-    setting::{NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
+    setting::{
+        NumberFieldOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage,
+        Settings,
+    },
     tooltip::Tooltip,
     v_flex,
 };
@@ -56,6 +62,10 @@ pub struct SettingsPanel {
     /// The monospace families to choose the terminal font from; empty until
     /// the scan in the background comes back.
     font_families: &'static [SharedString],
+    /// The category last shown, for coming back to it. `Settings` keeps its
+    /// choice in element state, which goes while the tab is hidden; its
+    /// page header records the category it draws.
+    shown_category: Rc<Cell<usize>>,
     focus_handle: FocusHandle,
     tab_group: Option<WeakEntity<TabGroup>>,
     _subscriptions: [Subscription; 3],
@@ -94,6 +104,7 @@ impl SettingsPanel {
             updater,
             highlight_rules,
             font_families: &[],
+            shown_category: Rc::default(),
             focus_handle: cx.focus_handle(),
             tab_group: None,
             _subscriptions: subscriptions,
@@ -190,7 +201,18 @@ impl Render for SettingsPanel {
                     // Split geometry is an API boundary that takes `Pixels`.
                     .sidebar_width(px(200.))
                     .with_group_variant(GroupBoxVariant::Outline)
-                    .pages(CATEGORIES.iter().map(|category| category.page(self, cx))),
+                    // Used only when the tab comes back and `Settings`
+                    // starts over.
+                    .default_selected_index(SelectIndex {
+                        page_ix: self.shown_category.get(),
+                        group_ix: None,
+                    })
+                    .pages(
+                        CATEGORIES
+                            .iter()
+                            .enumerate()
+                            .map(|(ix, category)| category.page(ix, self, cx)),
+                    ),
             )
     }
 }
@@ -237,9 +259,17 @@ const CATEGORIES: [Category; 5] = [
 ];
 
 impl Category {
-    fn page(&self, panel: &SettingsPanel, cx: &App) -> SettingPage {
+    /// The page of the category at `ix` in `CATEGORIES`.
+    fn page(&self, ix: usize, panel: &SettingsPanel, cx: &App) -> SettingPage {
+        let shown = panel.shown_category.clone();
         SettingPage::new(self.title)
             .icon(Icon::new(self.icon))
+            // Drawn only for the page on display: nothing to see, it notes
+            // which one that is.
+            .title_suffix(move |_, _| {
+                shown.set(ix);
+                Empty
+            })
             .groups((self.groups)(panel, cx))
     }
 }

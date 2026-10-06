@@ -79,6 +79,8 @@ fn settings_open_from_the_host_list_as_one_tab(cx: &mut TestAppContext) {
         window.render_frame(cx);
         assert!(window.find("settings").visible());
         assert_eq!(window.find("settings").focused(), Some(true));
+        // Back on the category it showed, 终端, not the first one.
+        assert!(window.find("terminal-font-preview").visible());
     })
     .unwrap();
     cx.update(|cx| {
