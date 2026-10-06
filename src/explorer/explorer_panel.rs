@@ -704,6 +704,23 @@ impl ExplorerPanel {
                     cx.write_to_clipboard(ClipboardItem::new_string(path));
                 }
             }
+            ExplorerCommand::CopySelectedPaths { remote } => {
+                let pane = self.pane(*remote).read(cx);
+                let paths: Vec<String> = pane
+                    .selected_entries(cx)
+                    .iter()
+                    .map(|entry| {
+                        if entry.is_parent() {
+                            pane.parent_path()
+                        } else {
+                            pane.child_path_of(&entry.name)
+                        }
+                    })
+                    .collect();
+                if !paths.is_empty() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(paths.join("\n")));
+                }
+            }
             ExplorerCommand::FocusPane { remote } => {
                 let focus = self.pane(*remote).read(cx).focus_handle(cx);
                 window.focus(&focus, cx);
@@ -1175,6 +1192,9 @@ mod tests {
             remote: true
         }));
         assert!(!needs_connection(&ExplorerCommand::CopyPath {
+            remote: true
+        }));
+        assert!(!needs_connection(&ExplorerCommand::CopySelectedPaths {
             remote: true
         }));
         assert!(!needs_connection(&ExplorerCommand::AddBookmark {

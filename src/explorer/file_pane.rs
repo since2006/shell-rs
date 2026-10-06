@@ -930,7 +930,6 @@ impl FilePane {
         PaneMenuState {
             remote: self.is_remote(),
             explorer: self.explorer,
-            opens_directory: entries.len() == 1 && entries[0].is_dir(),
             edits_file: match entries.as_slice() {
                 [entry] if !entry.is_dir() && !entry.is_parent() => {
                     Some(self.child_path_of(&entry.name))

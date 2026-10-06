@@ -457,7 +457,12 @@ pub enum ExplorerCommand {
     OpenDirectory {
         remote: bool,
     },
+    /// 复制路径 on the path label: the directory shown.
     CopyPath {
+        remote: bool,
+    },
+    /// 复制路径 on a row: the selected rows' full paths, one per line.
+    CopySelectedPaths {
         remote: bool,
     },
     /// Move keyboard focus to a pane's file list.

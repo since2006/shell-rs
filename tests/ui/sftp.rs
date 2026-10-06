@@ -573,6 +573,34 @@ async fn sftp_path_label_opens_ancestors_and_the_open_directory_dialog(cx: &mut 
         let explorer = workspace.read(cx).explorer(ExplorerId(SFTP_TAB)).unwrap();
         assert!(explorer.read(cx).local().read(cx).is_current());
     });
+
+    // 复制路径 from a row's menu: the selected rows' full paths, a line each.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("local-pane", SFTP_TAB))
+            .click("name:文件 甲.txt", cx);
+        modified_click(
+            window,
+            ("local-pane", SFTP_TAB),
+            "name:目录",
+            gpui_kit::Modifiers::secondary_key(),
+            cx,
+        );
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::CopySelectedPaths { remote: false },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some("/local/tester/目录\n/local/tester/文件 甲.txt".into())
+    );
 }
 
 #[gpui_kit::test]

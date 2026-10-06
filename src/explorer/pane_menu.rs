@@ -14,8 +14,6 @@ pub(super) struct PaneMenuState {
     pub explorer: ExplorerId,
     /// The rows the item commands act on (the selection).
     pub targets: Vec<String>,
-    /// The single selected row is a directory (or a link to one).
-    pub opens_directory: bool,
     /// The single selected row is a file the editor can try to open: its
     /// full path.
     pub edits_file: Option<String>,
@@ -43,14 +41,8 @@ impl PaneMenuState {
 pub(super) fn item_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
     let remote = state.remote;
     let none = state.targets.is_empty() || !state.can_modify;
-    let menu = if state.opens_directory && state.targets.len() == 1 {
-        menu.menu_with_icon(
-            "打开",
-            Icon::new(IconName::FolderOpen),
-            state.action(ExplorerCommand::Open { remote }),
-        )
-        .separator()
-    } else if let Some(path) = state.edits_file.clone() {
+    // A directory has no 打开: a double-click goes in.
+    let menu = if let Some(path) = state.edits_file.clone() {
         // A picture is only previewed: as text it would be refused. An SVG
         // is text, and is both edited and previewed.
         let kind = state.preview_kind;
@@ -92,6 +84,12 @@ pub(super) fn item_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
         Icon::new(icon),
         state.action(ExplorerCommand::Transfer { remote }),
         state.targets.is_empty() || !state.can_transfer,
+    )
+    .menu_with_icon_and_disabled(
+        "复制路径",
+        Icon::new(IconName::Copy),
+        state.action(ExplorerCommand::CopySelectedPaths { remote }),
+        state.targets.is_empty(),
     )
     .separator()
     .menu_with_icon_and_disabled(
