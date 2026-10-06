@@ -43,7 +43,11 @@ fn main() {
         shellrs::app::show_logo_when_unbundled(cx);
         cx.activate(true);
 
-        let options = shellrs::workspace::window_options(cx);
+        // Read before the window opens: 应用 › 窗口 decides where.
+        let (settings, settings_problem) = open_settings();
+        let saved = shellrs::workspace::WindowState::load(&shellrs::app::window_state_path());
+        let options =
+            shellrs::workspace::window_options(saved.as_ref(), settings.settings().window, cx);
         cx.spawn(async move |cx| {
             cx.open_window(options, |window, cx| {
                 window.activate_window();
@@ -51,7 +55,6 @@ fn main() {
                 shellrs::app::hide_when_closed(window, cx);
                 let (store, problem) = open_store();
                 let store = cx.new(|_| store);
-                let (settings, settings_problem) = open_settings();
                 let settings = cx.new(|_| settings);
                 let workspace =
                     cx.new(|cx| shellrs::workspace::Workspace::new(store, settings, window, cx));

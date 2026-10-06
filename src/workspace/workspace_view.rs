@@ -53,6 +53,7 @@ use crate::host::{
 };
 use crate::settings::{
     Appearance, SettingsPanel, SettingsPanelEvent, SettingsStore, SettingsStoreEvent,
+    WindowSettings,
 };
 use crate::sftp::{
     SharedLocalDirectoryProvider, SharedSftpTransportProvider, SshSftpTransportProvider,
@@ -75,6 +76,7 @@ use super::{
     title_bar::render_title_bar,
     tool_sidebar::{ToolSidebar, render_tool_switch},
     tools::{TOOL_SIDEBAR_WIDTH, set_right_dock_open},
+    window_state::{WindowState, window_placement},
 };
 
 const DOCK_ID: &str = "shellrs-dock";
@@ -106,11 +108,18 @@ pub fn notify_once_open(notification: Notification, window: &mut Window, cx: &mu
     });
 }
 
-/// Window options for the main workspace window.
-pub fn window_options(cx: &mut App) -> WindowOptions {
+/// Window options for the main workspace window: where it was last, as much
+/// of it as 设置 › 应用 › 窗口 remembers.
+pub fn window_options(
+    saved: Option<&WindowState>,
+    settings: WindowSettings,
+    cx: &mut App,
+) -> WindowOptions {
+    let (window_bounds, display_id) = window_placement(saved, settings, cx);
     WindowOptions {
+        window_bounds: Some(window_bounds),
+        display_id,
         // Window geometry is a platform boundary; `px` is the API's unit.
-        window_bounds: Some(WindowBounds::centered(size(px(1280.), px(800.)), cx)),
         window_min_size: Some(gpui_kit::Size {
             width: px(960.),
             height: px(600.),
@@ -192,6 +201,9 @@ pub struct Workspace {
     /// When each terminal last notified, of each kind, keyed by
     /// `notices::notice_tag` and the kind.
     pub(super) notice_times: HashMap<String, std::time::Instant>,
+    /// The pending write of the window's size and place, see
+    /// `window_state.rs`.
+    pub(super) window_state_save: Option<Task<()>>,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -250,6 +262,7 @@ impl Workspace {
             ),
         }
         this.sync_cli_server(cx);
+        this.remember_window(crate::app::window_state_path(), window, cx);
         let bundle = cx.app_path().ok();
         this.updater.update(cx, |updater, cx| {
             updater.set_services(UpdateServices::system(bundle), cx);
@@ -548,6 +561,7 @@ impl Workspace {
             editors: HashMap::new(),
             next_editor_id: 1,
             notice_times: HashMap::new(),
+            window_state_save: None,
             _subscriptions: subscriptions,
         }
     }

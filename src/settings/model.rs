@@ -32,6 +32,28 @@ pub struct AppSettings {
     pub notifications: NotificationSettings,
     /// 关键字高亮.
     pub terminal_highlight: TerminalHighlightSettings,
+    /// 应用 → 窗口.
+    pub window: WindowSettings,
+}
+
+/// 应用 → 窗口: what the next launch restores of the main window. Both on
+/// until the user turns them off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WindowSettings {
+    /// 记住窗口大小: its size, and whether it was maximized.
+    pub remember_size: bool,
+    /// 记住窗口位置: where it was, on which screen.
+    pub remember_position: bool,
+}
+
+impl Default for WindowSettings {
+    fn default() -> Self {
+        Self {
+            remember_size: true,
+            remember_position: true,
+        }
+    }
 }
 
 /// 外观 → 主题: by key, the theme used while the app is light and the one
@@ -529,6 +551,15 @@ mod tests {
         assert_eq!(themes.theme(ThemeMode::Dark).key(), "nord");
         assert_eq!(themes.app_theme(ThemeMode::Dark).key(), "nord");
         assert!(!themes.is_default_choice());
+    }
+
+    #[test]
+    fn the_window_is_remembered_unless_the_file_says_otherwise() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(settings.window.remember_size && settings.window.remember_position);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"window":{"remember_position":false}}"#).unwrap();
+        assert!(settings.window.remember_size && !settings.window.remember_position);
     }
 
     #[test]

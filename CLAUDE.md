@@ -56,6 +56,7 @@ ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH �
   - 双击、回车、F4、右键「编辑」都打开它，本地文件也行；新建文件后直接打开。
   - 只认 UTF-8（不做 GBK），上限 5 MB，约 15 种语言语法高亮。
   - 远程文件原地改写：截断后写原文件，不走 `.filepart` 加改名。保存前核对，被改过就问「覆盖」。
+- **设置 › 应用 › 窗口**：「记住窗口大小」（含最大化）和「记住窗口位置」两个开关，默认都开，下次启动生效。屏幕不在了或窗口不在屏幕上就居中，比屏幕大就缩小；全屏不记。
 - **终端通知**：只做程序请求的（OSC 9 / 777）和响铃，不做 OSC 133 长命令通知：那要每台服务器装 shell 集成，收益不抵成本。不在前台发系统通知，在前台而终端在别的标签发应用内通知；响铃在终端就在眼前时不提醒。
 - **主题**：「应用外观」（浅色 / 深色 / 跟随系统）决定深浅；「外观 › 主题」左右两栏里浅色、深色各选一套，按当前外观生效。组里第一项「界面跟随主题」默认关闭：界面是中性的黑白灰（gpui-kit 默认主题），只有终端按主题配色；打开后界面也按主题配色。用户试过默认跟随，觉得中性界面更合适，别改回去。页面「重置」对卡片和开关各管各的。
   - 左栏只列浅色主题，右栏只列深色主题；卡片是名称加示例输出，选中的整张加底色，右上角是蓝底（主题的 `blue`）对勾。
@@ -143,6 +144,10 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
   - 改表要升版本、在 `STEPS` 里加一步，并加一个「用冻结的旧 schema 升级、再和新库比对」的测试。
   - 加列直接 `ALTER TABLE ADD COLUMN`，在 `SCHEMA` 里也写在最后一列之后。
   - 库只往前升：旧版本遇到新库直接报错、不动文件。迁移前先 `VACUUM INTO` 备份。
+- **窗口的大小和位置存在 `window.json`，不进 `settings.json`**（`workspace/window_state.rs`）：移动、缩放时 `observe_window_bounds` 记下，停 0.5 秒再写；退出时再写一次，用 App 级的 `on_app_quit`，因为 Windows / Linux 关窗口时工作区已经先没了。只有 `Workspace::new` 记，UI 测试不碰这个文件。
+  - 启动时 `main` 先读设置和 `window.json` 再开窗口，`window_options` 按两个开关算 `window_bounds` 和 `display_id`。
+  - 屏幕按 `PlatformDisplay::uuid` 认（`DisplayId` 重启会变）。GPUI 的窗口坐标在 macOS 上从所在屏幕左上角算，别处是整个桌面，原样存、原样交回，配上同一个 `display_id` 就能落回原处。
+  - macOS 的 `window_bounds()` 从不报最大化，靠 `is_maximized()`（大小等于屏幕可见区）判断，恢复时给可见区大小的普通窗口；别的平台用 `WindowBounds::Maximized`。
 - **一个数据目录只跑一个 ShellRS。** 起图形界面之前先连外部 CLI 的套接字：连得上就发 `Request::Activate`（带启动链接）然后退出。为兼容已装的 CLI，不升 `PROTOCOL_VERSION`。
 - **临时主机在 `HostStore` 的 `temporary` 里**：`host()` / `login()` 找得到，`hosts()` 看不到，也不写库。会写外键的检查用 `saved_host`。最后一个标签关掉就 `remove_temporary`。
 

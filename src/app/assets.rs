@@ -52,6 +52,7 @@ icon_assets!(
         RotateCcwClock,
         Activity,
         Monitor,
+        AppWindow,
         Network,
         RadioTower,
         ArrowDownLeft,

@@ -12,6 +12,7 @@ pub use app_icon::show_logo_when_unbundled;
 pub use assets::{AppAssets, CatalogIcon, DOCKER_ICON};
 pub use paths::{
     cli_endpoint, cli_socket_path, data_dir, database_path, keys_dir, settings_path, updates_dir,
+    window_state_path,
 };
 pub use quit::{quit_held_back, set_quit_guard};
 pub use window_hiding::{bring_forward, hide_when_closed};

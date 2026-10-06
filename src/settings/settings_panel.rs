@@ -35,7 +35,7 @@ use crate::update::{Phase, Tone, UpdateSnapshot, UpdateStep, Updater, build_info
 
 use super::highlight_rules::HighlightRulesEditor;
 use super::terminal_themes::{app_follows_item, terminal_theme_item};
-use super::{AppSettings, Choice, NotificationSettings, SettingsStore};
+use super::{AppSettings, Choice, NotificationSettings, SettingsStore, WindowSettings};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsPanelEvent {
@@ -230,7 +230,7 @@ struct Category {
 type CategoryGroups = fn(&SettingsPanel, &App) -> Vec<SettingGroup>;
 
 /// The categories, in the order the left column lists them.
-const CATEGORIES: [Category; 5] = [
+const CATEGORIES: [Category; 6] = [
     Category {
         title: "外观",
         icon: CatalogIcon::Palette,
@@ -250,6 +250,11 @@ const CATEGORIES: [Category; 5] = [
         title: "外部 CLI",
         icon: CatalogIcon::SquareTerminal,
         groups: external_cli_groups,
+    },
+    Category {
+        title: "应用",
+        icon: CatalogIcon::AppWindow,
+        groups: application_groups,
     },
     Category {
         title: "关于",
@@ -499,6 +504,45 @@ fn highlight_preview_item() -> SettingItem {
             }))
     })
     .keywords(["预览", "高亮"])
+}
+
+/// 应用 → 窗口: what the next launch restores of the main window.
+fn application_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
+    let store = &panel.store;
+    let switch = |read: fn(&WindowSettings) -> bool, write: fn(&mut WindowSettings, bool)| {
+        let (reader, writer) = (store.clone(), store.clone());
+        SettingField::switch(
+            move |cx| read(&reader.read(cx).settings().window),
+            move |on, cx| {
+                writer.update(cx, |store, cx| {
+                    store.update(|settings| write(&mut settings.window, on), cx)
+                });
+            },
+        )
+        .default_value(true)
+    };
+    vec![
+        SettingGroup::new().title("窗口").items([
+            SettingItem::new(
+                "记住窗口大小",
+                switch(
+                    |window| window.remember_size,
+                    |window, on| window.remember_size = on,
+                ),
+            )
+            .description("下次启动时恢复上次关闭时的窗口大小和最大化状态。"),
+            SettingItem::new(
+                "记住窗口位置",
+                switch(
+                    |window| window.remember_position,
+                    |window, on| window.remember_position = on,
+                ),
+            )
+            .description(
+                "下次启动时把窗口放回上次所在的屏幕和位置；那块屏幕不在时放在主屏幕中间。",
+            ),
+        ]),
+    ]
 }
 
 /// 外部 CLI: whether the `shellrs` command may use the saved hosts, the

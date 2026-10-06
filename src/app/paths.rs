@@ -50,6 +50,13 @@ pub fn settings_path() -> std::io::Result<PathBuf> {
     Ok(dir.join("settings.json"))
 }
 
+/// The main window's last size, maximized state and place, for the next
+/// launch (设置 › 应用 › 窗口). Kept apart from the settings: it changes
+/// whenever the window moves.
+pub fn window_state_path() -> PathBuf {
+    data_dir().join("window.json")
+}
+
 /// Where the running app listens for the `shellrs` command. The command
 /// and the app both ask here, so both follow `SHELLRS_DATA_DIR`.
 pub fn cli_socket_path() -> PathBuf {

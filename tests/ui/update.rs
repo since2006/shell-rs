@@ -230,7 +230,7 @@ fn serve_updates(
 fn open_about_settings(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-4", cx)
+        window.within("settings").click("0-5", cx)
     });
 }
 

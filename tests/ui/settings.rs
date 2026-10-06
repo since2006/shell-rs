@@ -436,6 +436,40 @@ fn terminal_themes_follow_the_appearance_and_a_card_chooses_one(cx: &mut TestApp
     cx.update(|cx| assert_eq!(cx.theme().theme_name().as_ref(), "Default Light"));
 }
 
+#[gpui_kit::test]
+fn the_window_settings_are_on_until_turned_off(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let window = |cx: &mut TestAppContext| {
+        cx.update(|cx| workspace.read(cx).settings().read(cx).settings().window)
+    };
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    // 应用 comes right before 关于.
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-4", cx)
+    });
+    let switch = |item: usize| {
+        move |window: &mut gpui_kit::Window| {
+            window
+                .within("settings")
+                .within("group-0")
+                .within(format!("item-{item}"))
+                .find("check")
+                .checked()
+        }
+    };
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(switch(0)(window), Some(true));
+        assert_eq!(switch(1)(window), Some(true));
+        window
+            .within("settings")
+            .within("group-0")
+            .within("item-1")
+            .click("check", cx);
+    });
+    let settings = window(cx);
+    assert!(settings.remember_size && !settings.remember_position);
+}
+
 /// The 关键字高亮 rules, as the settings hold them.
 fn highlight_rules(
     workspace: &Entity<Workspace>,

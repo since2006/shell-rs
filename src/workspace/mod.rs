@@ -16,7 +16,9 @@ mod title_bar;
 mod tool_sidebar;
 mod tools;
 mod updates;
+mod window_state;
 mod workspace_view;
 
 pub use links::open_link_once_open;
+pub use window_state::WindowState;
 pub use workspace_view::{Workspace, notify_once_open, window_options};
