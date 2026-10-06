@@ -30,8 +30,8 @@ use super::links::{LinkMarker, url_search, visible_links};
 use super::notices::{NoticeScanner, ProgramNotice, TerminalNotice};
 use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
 use super::{
-    ExecRequest, ExecResult, SharedTerminalTransportFactory, TerminalLifecycle, TerminalSize,
-    TerminalStatus, TerminalTransportCommand, TerminalTransportEvent,
+    ExecRequest, ExecResult, SharedTerminalTransportFactory, TerminalColors, TerminalLifecycle,
+    TerminalSize, TerminalStatus, TerminalTransportCommand, TerminalTransportEvent,
 };
 
 pub type AlacrittyTerm = Term<TerminalEventProxy>;
@@ -208,8 +208,9 @@ impl TerminalEngine {
                 return Some(TerminalEvent::HostOsDetected(os));
             }
             TerminalUiEventKind::ColorRequest(index, formatter) => {
+                // A color the program set itself, or else the theme's.
                 let color = self.runtime.term.lock().colors()[index]
-                    .unwrap_or_else(|| default_query_color(index));
+                    .unwrap_or_else(|| TerminalColors::current(cx).query_color(index));
                 self.runtime.write(formatter(color).into_bytes());
             }
             TerminalUiEventKind::ClipboardStore(text) => {
@@ -976,22 +977,6 @@ fn sanitize_title(title: &str) -> Option<String> {
         .take(80)
         .collect();
     (!title.trim().is_empty()).then_some(title)
-}
-
-fn default_query_color(index: usize) -> Rgb {
-    if index == alacritty_terminal::vte::ansi::NamedColor::Background as usize {
-        Rgb {
-            r: 30,
-            g: 30,
-            b: 30,
-        }
-    } else {
-        Rgb {
-            r: 224,
-            g: 224,
-            b: 224,
-        }
-    }
 }
 
 fn encode_paste(text: &str, mode: TermMode) -> Vec<u8> {

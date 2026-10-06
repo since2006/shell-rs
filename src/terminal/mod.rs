@@ -13,6 +13,7 @@ mod notices;
 mod search;
 mod terminal_panel;
 mod terminal_view;
+mod theme;
 mod transport;
 
 pub use engine::{TerminalCell, TerminalEngine, TerminalEvent, TerminalSnapshot};
@@ -36,6 +37,7 @@ pub(crate) use terminal_view::terminal_key_bindings;
 pub use terminal_view::{
     TERMINAL_FIND_KEY_CONTEXT, TERMINAL_KEY_CONTEXT, TerminalMenuItems, TerminalView,
 };
+pub use theme::{TerminalColors, TerminalTheme};
 pub(crate) use transport::send_event;
 pub use transport::{
     ExecRequest, ExecResult, FixedRemoteTerminalTransportProvider, RemoteTerminalTransportProvider,

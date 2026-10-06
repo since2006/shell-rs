@@ -318,6 +318,72 @@ fn the_appearance_setting_drives_the_theme_and_the_title_bar_switch(cx: &mut Tes
     .unwrap();
 }
 
+#[gpui_kit::test]
+fn terminal_themes_follow_the_appearance_and_a_card_chooses_one(cx: &mut TestAppContext) {
+    use gpui_kit::component::ThemeMode;
+    use shellrs::terminal::{TerminalColors, TerminalTheme};
+
+    let (handle, workspace) = open_workspace(cx);
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    let in_effect = |cx: &mut TestAppContext| cx.update(|cx| TerminalColors::current(cx).key());
+    let set_appearance = |appearance, cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            settings.update(cx, |settings, cx| {
+                settings.update(|settings| settings.appearance = appearance, cx)
+            })
+        });
+        cx.run_until_parked();
+    };
+    let card = |theme: &TerminalTheme| {
+        gpui_kit::SharedString::from(format!("terminal-theme-{}", theme.key()))
+    };
+    let light = TerminalTheme::for_mode(ThemeMode::Light).nth(1).unwrap();
+    let dark = TerminalTheme::for_mode(ThemeMode::Dark).nth(1).unwrap();
+
+    set_appearance(Appearance::Light, cx);
+    assert_eq!(in_effect(cx), "shellrs-light");
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    // 外观 is the first category; its second group holds both columns.
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-0", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("terminal-theme-shellrs-light").checked(),
+            Some(true)
+        );
+        assert_eq!(
+            window.find("terminal-theme-shellrs-dark").checked(),
+            Some(true)
+        );
+        assert_eq!(window.find(card(light)).checked(), Some(false));
+        window.click(card(light), cx);
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            settings.read(cx).settings().terminal_theme.light,
+            light.key()
+        )
+    });
+    // The light column is the one in effect, so the terminals change now.
+    assert_eq!(in_effect(cx), light.key());
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find(card(light)).checked(), Some(true));
+        assert_eq!(
+            window.find("terminal-theme-shellrs-light").checked(),
+            Some(false)
+        );
+        window.click(card(dark), cx);
+    });
+    // The dark one waits for the dark appearance.
+    cx.update(|cx| assert_eq!(settings.read(cx).settings().terminal_theme.dark, dark.key()));
+    assert_eq!(in_effect(cx), light.key());
+    set_appearance(Appearance::Dark, cx);
+    assert_eq!(in_effect(cx), dark.key());
+    set_appearance(Appearance::Light, cx);
+    assert_eq!(in_effect(cx), light.key());
+}
+
 /// The 关键字高亮 rules, as the settings hold them.
 fn highlight_rules(
     workspace: &Entity<Workspace>,

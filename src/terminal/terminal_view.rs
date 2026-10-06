@@ -30,8 +30,8 @@ use crate::connection::{ConnectionPromptReply, Latency};
 use super::mouse::{self, MouseReport, ReportButton, ReportKind};
 use super::search::SearchMark;
 use super::{
-    SearchDirection, SharedTerminalTransportFactory, TerminalEngine, TerminalEvent, TerminalFont,
-    TerminalLifecycle, TerminalSize, TerminalSnapshot, TerminalStatus,
+    SearchDirection, SharedTerminalTransportFactory, TerminalColors, TerminalEngine, TerminalEvent,
+    TerminalFont, TerminalLifecycle, TerminalSize, TerminalSnapshot, TerminalStatus, TerminalTheme,
 };
 
 pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";
@@ -960,6 +960,9 @@ impl Render for TerminalView {
             .relative()
             .size_full()
             .p_2()
+            // The margin and the part of a cell the grid does not fill are
+            // the terminal's too.
+            .bg(TerminalColors::current(cx).background())
             .child(terminal)
             .when_some(self.find.as_ref(), |container, find| {
                 container.child(self.render_find_bar(find, cx))
@@ -1205,7 +1208,7 @@ impl Element for TerminalElement {
                     &self.snapshot.colors,
                 );
                 let cell_background = if cell.selected {
-                    cx.theme().selection
+                    palette.selection
                 } else {
                     match cell.search {
                         SearchMark::Focused => cx.theme().warning,
@@ -1241,15 +1244,10 @@ impl Element for TerminalElement {
                     }
                 });
                 // Links always show as links, blue whatever color the
-                // program gave them. Not the theme's `link`: that is the
-                // color of text.
-                let link = cell.link.map(|link| {
-                    if hovered_link == Some(link) {
-                        cx.theme().blue_light
-                    } else {
-                        cx.theme().blue
-                    }
-                });
+                // program gave them.
+                let link = cell
+                    .link
+                    .map(|link| palette.link(hovered_link == Some(link)));
                 // A rule colors a link's text too; the underline still says
                 // it is one.
                 let text_color = highlight.or(link).unwrap_or(foreground);
@@ -1333,7 +1331,7 @@ impl Element for TerminalElement {
             text_style.font(),
             font_size,
             &palette,
-            cx.theme().selection,
+            palette.selection,
             window,
         );
         let cursor = self
@@ -1865,19 +1863,31 @@ fn grid_point(
     )
 }
 
+/// The colors of the terminal theme in effect, for one frame.
 struct TerminalPalette {
+    theme: &'static TerminalTheme,
     foreground: Hsla,
     background: Hsla,
     cursor: Hsla,
+    selection: Hsla,
 }
 
 impl TerminalPalette {
     fn new(cx: &App) -> Self {
+        let theme = TerminalColors::current(cx);
         Self {
-            foreground: cx.theme().foreground,
-            background: cx.theme().background,
-            cursor: cx.theme().primary,
+            theme,
+            foreground: theme.foreground(),
+            background: theme.background(),
+            cursor: theme.cursor(),
+            selection: theme.selection(),
         }
+    }
+
+    /// A link's color, and a hovered link's: the theme's blue and bright
+    /// blue, so they read on its background.
+    fn link(&self, hovered: bool) -> Hsla {
+        self.theme.indexed(if hovered { 12 } else { 4 })
     }
 
     fn cell_colors(
@@ -1907,21 +1917,22 @@ impl TerminalPalette {
         if let Some(color) = overrides.get(index).copied().flatten() {
             return rgb_to_hsla(color);
         }
+        let dim = |index: u8| self.theme.indexed(index).opacity(0.66);
         match color {
             Color::Named(NamedColor::Foreground | NamedColor::BrightForeground) => self.foreground,
             Color::Named(NamedColor::DimForeground) => self.foreground.opacity(0.66),
             Color::Named(NamedColor::Background) => self.background,
             Color::Named(NamedColor::Cursor) => self.cursor,
-            Color::Named(NamedColor::DimBlack) => indexed_color(0).opacity(0.66),
-            Color::Named(NamedColor::DimRed) => indexed_color(1).opacity(0.66),
-            Color::Named(NamedColor::DimGreen) => indexed_color(2).opacity(0.66),
-            Color::Named(NamedColor::DimYellow) => indexed_color(3).opacity(0.66),
-            Color::Named(NamedColor::DimBlue) => indexed_color(4).opacity(0.66),
-            Color::Named(NamedColor::DimMagenta) => indexed_color(5).opacity(0.66),
-            Color::Named(NamedColor::DimCyan) => indexed_color(6).opacity(0.66),
-            Color::Named(NamedColor::DimWhite) => indexed_color(7).opacity(0.66),
-            Color::Named(named) => indexed_color(named as u8),
-            Color::Indexed(index) => indexed_color(index),
+            Color::Named(NamedColor::DimBlack) => dim(0),
+            Color::Named(NamedColor::DimRed) => dim(1),
+            Color::Named(NamedColor::DimGreen) => dim(2),
+            Color::Named(NamedColor::DimYellow) => dim(3),
+            Color::Named(NamedColor::DimBlue) => dim(4),
+            Color::Named(NamedColor::DimMagenta) => dim(5),
+            Color::Named(NamedColor::DimCyan) => dim(6),
+            Color::Named(NamedColor::DimWhite) => dim(7),
+            Color::Named(named) => self.theme.indexed(named as u8),
+            Color::Indexed(index) => self.theme.indexed(index),
             Color::Spec(_) => unreachable!(),
         }
     }
@@ -1929,34 +1940,6 @@ impl TerminalPalette {
 
 fn rgb_to_hsla(color: Rgb) -> Hsla {
     rgb(((color.r as u32) << 16) | ((color.g as u32) << 8) | color.b as u32).into()
-}
-
-fn indexed_color(index: u8) -> Hsla {
-    const ANSI: [u32; 16] = [
-        0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5, 0x7f7f7f,
-        0xff0000, 0x00ff00, 0xffff00, 0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff,
-    ];
-    let value = match index {
-        0..=15 => ANSI[index as usize],
-        16..=231 => {
-            let index = index - 16;
-            let component = |value: u8| {
-                if value == 0 {
-                    0
-                } else {
-                    55 + value as u32 * 40
-                }
-            };
-            (component(index / 36) << 16)
-                | (component((index % 36) / 6) << 8)
-                | component(index % 6)
-        }
-        232..=255 => {
-            let value = 8 + (index as u32 - 232) * 10;
-            (value << 16) | (value << 8) | value
-        }
-    };
-    rgb(value).into()
 }
 
 pub(crate) fn encode_key(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8>> {

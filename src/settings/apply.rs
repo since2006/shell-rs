@@ -2,13 +2,13 @@ use gpui_kit::component::{ActiveTheme as _, Theme};
 use gpui_kit::*;
 
 use crate::explorer::{FileSizeFormat, ShowHiddenFiles};
-use crate::terminal::{TerminalFont, TerminalHighlights, is_font_installed};
+use crate::terminal::{TerminalColors, TerminalFont, TerminalHighlights, is_font_installed};
 
 use super::AppSettings;
 
-/// Bring the window in line with the settings: the theme, the locale, the
-/// terminal font and highlight rules, the SFTP size format and whether SFTP
-/// shows hidden files.
+/// Bring the window in line with the settings: the theme and the terminal
+/// theme for it, the locale, the terminal font and highlight rules, the SFTP
+/// size format and whether SFTP shows hidden files.
 /// Does nothing where they already agree, so it can run on every settings
 /// change and every change of the system appearance.
 pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
@@ -17,6 +17,14 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
         Theme::change(mode, Some(window), cx);
         // The theme change resets the list hover to the theme's own.
         crate::app::deepen_list_hover(cx);
+    }
+
+    // Here too, not only on a settings change: following the system, the
+    // terminals change theme when the appearance does.
+    let colors = TerminalColors::new(settings.terminal_theme.theme(mode));
+    if cx.try_global::<TerminalColors>() != Some(&colors) {
+        cx.set_global(colors);
+        window.refresh();
     }
 
     let locale = settings

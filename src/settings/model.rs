@@ -5,7 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::explorer::{FileSizeFormat, ShowHiddenFiles};
 use crate::terminal::{
     DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, HighlightRule, LINE_HEIGHT_RANGE,
-    default_rules,
+    TerminalTheme, default_rules,
 };
 use crate::update::Channel;
 
@@ -17,6 +17,8 @@ use crate::update::Channel;
 pub struct AppSettings {
     pub language: InterfaceLanguage,
     pub appearance: Appearance,
+    /// 外观 → 终端主题.
+    pub terminal_theme: TerminalThemeSettings,
     pub terminal_font: TerminalFontSettings,
     pub external_cli: ExternalCliSettings,
     pub update: UpdateSettings,
@@ -30,6 +32,48 @@ pub struct AppSettings {
     pub notifications: NotificationSettings,
     /// 关键字高亮.
     pub terminal_highlight: TerminalHighlightSettings,
+}
+
+/// 外观 → 终端主题: by key, the theme terminals use while the app is light
+/// and the one while it is dark.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalThemeSettings {
+    pub light: String,
+    pub dark: String,
+}
+
+impl Default for TerminalThemeSettings {
+    fn default() -> Self {
+        Self {
+            light: TerminalTheme::default_for(ThemeMode::Light).key().into(),
+            dark: TerminalTheme::default_for(ThemeMode::Dark).key().into(),
+        }
+    }
+}
+
+impl TerminalThemeSettings {
+    /// The theme for `mode`. A key this version does not know (from a newer
+    /// one, or a typo), or one of a theme for the other appearance, gives
+    /// way to the default rather than failing the file.
+    pub fn theme(&self, mode: ThemeMode) -> &'static TerminalTheme {
+        let key = match mode {
+            ThemeMode::Light => &self.light,
+            ThemeMode::Dark => &self.dark,
+        };
+        TerminalTheme::find(key)
+            .filter(|theme| theme.mode() == mode)
+            .unwrap_or_else(|| TerminalTheme::default_for(mode))
+    }
+
+    /// Use `theme` for the appearance it is made for.
+    pub fn choose(&mut self, theme: &TerminalTheme) {
+        let key = theme.key().to_string();
+        match theme.mode() {
+            ThemeMode::Light => self.light = key,
+            ThemeMode::Dark => self.dark = key,
+        }
+    }
 }
 
 /// 关键字高亮: whether terminals color their text by the rules, and the
@@ -401,6 +445,48 @@ mod tests {
         assert!(rules[0].enabled && rules[0].notify);
         // A row added and not filled in yet stays, to be filled in.
         assert_eq!(rules[1], HighlightRule::default());
+    }
+
+    #[test]
+    fn terminal_themes_fall_back_to_the_default_for_their_appearance() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        let themes = &settings.terminal_theme;
+        assert_eq!(themes.light, "shellrs-light");
+        assert_eq!(themes.dark, "shellrs-dark");
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            assert_eq!(themes.theme(mode), TerminalTheme::default_for(mode));
+        }
+
+        // A key from a newer version, and a dark theme where a light one
+        // belongs, each give way on their own side only.
+        let settings: AppSettings = serde_json::from_str(
+            r#"{"appearance":"dark","terminal_theme":{"light":"shellrs-dark","dark":"sepia"}}"#,
+        )
+        .unwrap();
+        assert_eq!(settings.appearance, Appearance::Dark);
+        let themes = &settings.terminal_theme;
+        assert_eq!(
+            themes.theme(ThemeMode::Light),
+            TerminalTheme::default_for(ThemeMode::Light)
+        );
+        assert_eq!(
+            themes.theme(ThemeMode::Dark),
+            TerminalTheme::default_for(ThemeMode::Dark)
+        );
+
+        // Choosing a theme sets the side it is made for, by key.
+        let mut themes = TerminalThemeSettings::default();
+        let dark = TerminalTheme::for_mode(ThemeMode::Dark).last().unwrap();
+        themes.choose(dark);
+        assert_eq!(themes.theme(ThemeMode::Dark), dark);
+        assert_eq!(
+            themes.theme(ThemeMode::Light),
+            TerminalTheme::default_for(ThemeMode::Light)
+        );
+        assert_eq!(
+            serde_json::to_value(&themes).unwrap(),
+            serde_json::json!({"light": "shellrs-light", "dark": dark.key()})
+        );
     }
 
     #[test]

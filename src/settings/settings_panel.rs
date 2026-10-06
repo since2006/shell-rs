@@ -22,12 +22,13 @@ use crate::app::{
 use crate::cli::{AgentKind, BinaryStatus, CliIntegration, IntegrationStatus, SkillStatus};
 use crate::shared::{ClosableTabTitle, close_tab_items};
 use crate::terminal::{
-    FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalFont, TerminalFontPreview, TerminalHighlights,
-    is_font_installed, monospace_font_families,
+    FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalColors, TerminalFont, TerminalFontPreview,
+    TerminalHighlights, is_font_installed, monospace_font_families,
 };
 use crate::update::{Phase, Tone, UpdateSnapshot, UpdateStep, Updater, build_info, platform};
 
 use super::highlight_rules::HighlightRulesEditor;
+use super::terminal_themes::terminal_theme_item;
 use super::{AppSettings, Choice, NotificationSettings, SettingsStore};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,6 +267,10 @@ fn appearance_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
                 ),
             ),
         ]),
+        SettingGroup::new()
+            .title("终端主题")
+            .description("浅色外观时终端用左栏选中的主题，深色外观时用右栏的。")
+            .items([terminal_theme_item(store)]),
     ]
 }
 
@@ -317,7 +322,7 @@ fn terminal_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
                             .rounded(cx.theme().radius)
                             .border_1()
                             .border_color(cx.theme().border)
-                            .bg(cx.theme().background)
+                            .bg(TerminalColors::current(cx).background())
                             .overflow_hidden()
                             .child(TerminalFontPreview::new(
                                 "terminal-font-preview",
@@ -428,19 +433,22 @@ fn highlight_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     ]
 }
 
-/// The preview: sample output in the terminal's font and colors, colored by
+/// The preview: sample output in the terminal's font and theme, colored by
 /// the rules in effect, as a terminal would show it. The group's outline is
-/// its frame.
+/// its frame; the theme's background is set in from it.
 fn highlight_preview_item() -> SettingItem {
     SettingItem::render(|_, window, cx| {
         let rules = TerminalHighlights::current(cx);
         let font = TerminalFont::current(cx);
+        let colors = TerminalColors::current(cx);
         div()
             .id("highlight-preview")
             .test_support()
             .w_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .p_3()
+            .rounded(cx.theme().radius)
+            .bg(colors.background())
+            .text_color(colors.foreground())
             .font_family(font.family(cx))
             .text_size(font.size)
             .line_height(font.row_height(window))

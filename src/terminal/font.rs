@@ -8,6 +8,8 @@ use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::*;
 use unicode_width::UnicodeWidthChar as _;
 
+use super::TerminalColors;
+
 /// The size terminals had before it could be set: the theme's `mono_md`.
 pub const DEFAULT_FONT_SIZE: f32 = 13.;
 /// The rows of 20 px that terminals had at the default size.
@@ -122,7 +124,7 @@ impl RenderOnce for TerminalFontPreview {
         let family = font.family(cx);
         let row_height = font.row_height(window);
         let lines = self.lines;
-        let color = cx.theme().foreground;
+        let color = TerminalColors::current(cx).foreground();
 
         div()
             .id(self.id)
