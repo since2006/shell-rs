@@ -10,6 +10,8 @@ pub enum FakeBehavior {
     FailFirst,
     ReportsOs(HostOs),
     ReportsLatency(Latency),
+    /// Prints this after its prompt line, as a program would.
+    Prints(&'static str),
 }
 
 #[derive(Default)]
@@ -64,6 +66,13 @@ impl FakeTerminalFactory {
     pub fn reports_os(os: HostOs) -> Self {
         Self {
             behavior: FakeBehavior::ReportsOs(os),
+            ..Self::default()
+        }
+    }
+
+    pub fn printing(text: &'static str) -> Self {
+        Self {
+            behavior: FakeBehavior::Prints(text),
             ..Self::default()
         }
     }
@@ -139,6 +148,9 @@ impl TerminalTransport for FakeTerminalTransport {
             )
             .into_bytes(),
         ))?;
+        if let FakeBehavior::Prints(text) = self.behavior {
+            events.send_blocking(TerminalTransportEvent::Output(text.as_bytes().to_vec()))?;
+        }
         if matches!(self.behavior, FakeBehavior::ExitFirst) && self.run == 1 {
             events.send_blocking(TerminalTransportEvent::Exited {
                 code: 9,

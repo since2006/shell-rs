@@ -3,9 +3,11 @@
 mod engine;
 mod exec;
 mod font;
+mod links;
 mod local_pty;
 mod local_terminal_panel;
 mod model;
+mod mouse;
 mod search;
 mod terminal_panel;
 mod terminal_view;

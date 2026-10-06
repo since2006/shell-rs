@@ -1,5 +1,5 @@
 //! Terminals: local terminals, keys and input, selection, find, clearing,
-//! the font and the size.
+//! the font and the size, links, the mouse for programs and their copies.
 
 use crate::support::*;
 
@@ -756,6 +756,136 @@ async fn the_status_bar_shows_the_size_of_the_terminal_in_front(cx: &mut TestApp
             && window
                 .try_find("status-terminal-size")
                 .is_some_and(|element| element.label() == Some(size.as_str()))
+    })
+    .await;
+}
+
+/// Where the cell `(column, row)` of the first local terminal is, by the cell
+/// size the fake shell was told of.
+fn cell_center(
+    window: &mut gpui_kit::Window,
+    factory: &FakeTerminalFactory,
+    column: usize,
+    row: usize,
+) -> gpui_kit::Point<gpui_kit::Pixels> {
+    let size = *factory
+        .resizes
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .last()
+        .expect("the terminal has been laid out");
+    let bounds = window.find(("local-terminal", 1_u64)).bounds();
+    point(
+        bounds.left() + px(size.cell_width() as f32 * (column as f32 + 0.5)),
+        bounds.top() + px(size.cell_height() as f32 * (row as f32 + 0.5)),
+    )
+}
+
+/// A local terminal whose shell has printed `text`, which ends in `marker`,
+/// laid out.
+async fn terminal_printing(
+    cx: &mut TestAppContext,
+    text: &'static str,
+    marker: &'static str,
+) -> (
+    WindowHandle<Root>,
+    Entity<Workspace>,
+    Arc<FakeTerminalFactory>,
+) {
+    let factory = Arc::new(FakeTerminalFactory::printing(text));
+    let (handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        local_screen(&workspace, cx).contains(marker) && last_cell_height(&factory).is_some()
+    })
+    .await;
+    (handle, workspace, factory)
+}
+
+#[gpui_kit::test]
+async fn links_open_with_the_command_key_and_show_where_they_lead(cx: &mut TestAppContext) {
+    // The prompt line is row 0; the link starts row 1.
+    let (handle, _, factory) =
+        terminal_printing(cx, "https://example.com/docs. 文档\r\n", "文档").await;
+
+    // A plain click selects, as it always has, and opens nothing.
+    in_frame(cx, handle, |window, cx| {
+        let link = cell_center(window, &factory, 2, 1);
+        click_at(window, link, gpui_kit::Modifiers::none(), cx);
+    });
+    assert_eq!(cx.opened_url(), None);
+
+    // Resting on it shows where it leads, without the full stop.
+    cx.background_executor
+        .advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("terminal-link-tooltip").label(),
+            Some("https://example.com/docs")
+        );
+        let link = cell_center(window, &factory, 2, 1);
+        click_at(window, link, gpui_kit::Modifiers::secondary_key(), cx);
+    });
+    assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/docs"));
+}
+
+/// Wait until the fake shell has been sent `expected`, which it records on
+/// its own thread, and forget it.
+async fn take_written(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Root>,
+    factory: &FakeTerminalFactory,
+    expected: &str,
+) {
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        factory.written_text() == expected
+    })
+    .await;
+    factory
+        .writes
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clear();
+}
+
+#[gpui_kit::test]
+async fn programs_that_ask_for_the_mouse_hear_clicks_and_the_wheel(cx: &mut TestAppContext) {
+    // 1000: clicks, 1006: SGR encoding.
+    let (handle, _, factory) =
+        terminal_printing(cx, "\x1b[?1000h\x1b[?1006hmouse on", "mouse on").await;
+    in_frame(cx, handle, |window, cx| {
+        let cell = cell_center(window, &factory, 2, 0);
+        click_at(window, cell, gpui_kit::Modifiers::none(), cx);
+    });
+    take_written(cx, handle, &factory, "\x1b[<0;3;1M\x1b[<0;3;1m").await;
+
+    // Shift keeps the mouse for selecting text: the program hears only the
+    // wheel after it.
+    in_frame(cx, handle, |window, cx| {
+        let cell = cell_center(window, &factory, 2, 0);
+        click_at(window, cell, gpui_kit::Modifiers::shift(), cx);
+        let position = cell_center(window, &factory, 4, 1);
+        window.dispatch_event(
+            gpui_kit::ScrollWheelEvent {
+                position,
+                delta: gpui_kit::ScrollDelta::Lines(point(0., 1.)),
+                modifiers: gpui_kit::Modifiers::default(),
+                touch_phase: gpui_kit::TouchPhase::Moved,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    take_written(cx, handle, &factory, "\x1b[<64;5;2M").await;
+}
+
+#[gpui_kit::test]
+async fn a_program_copies_to_the_local_clipboard(cx: &mut TestAppContext) {
+    // 「你好」 in base64.
+    let (handle, _, _) = terminal_printing(cx, "\x1b]52;c;5L2g5aW9\x07copied", "copied").await;
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        cx.read_from_clipboard().and_then(|item| item.text()) == Some("你好".into())
     })
     .await;
 }

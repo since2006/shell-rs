@@ -12,12 +12,14 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::COUNT;
-use alacritty_terminal::term::{Config, TermMode};
+use alacritty_terminal::term::search::RegexSearch;
+use alacritty_terminal::term::{ClipboardType, Config, Osc52, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, CursorStyle, Processor, Rgb};
 
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply, Latency};
 use crate::host::HostOs;
 
+use super::links::{LinkMarker, url_search, visible_links};
 use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
 use super::{
     ExecRequest, ExecResult, SharedTerminalTransportFactory, TerminalLifecycle, TerminalSize,
@@ -34,6 +36,8 @@ pub struct TerminalCell {
     pub flags: Flags,
     pub selected: bool,
     pub search: SearchMark,
+    /// The link the cell belongs to, an index into the snapshot's `links`.
+    pub link: Option<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +51,8 @@ pub struct TerminalSnapshot {
     pub cursor_blinking: bool,
     pub display_offset: usize,
     pub colors: [Option<Rgb>; COUNT],
+    /// The addresses of the links on screen, by the cells' `link`.
+    pub links: Vec<gpui_kit::SharedString>,
 }
 
 impl TerminalSnapshot {
@@ -76,6 +82,8 @@ pub struct TerminalEngine {
     /// The open find, if any. Rendering reads it through `&self` and still
     /// has to advance the search engine's cache, hence the `RefCell`.
     search: RefCell<Option<TerminalSearch>>,
+    /// Finds the web addresses on screen, built once.
+    url_search: RefCell<RegexSearch>,
     generation: u64,
     size: TerminalSize,
     event_sender: mpsc::Sender<TerminalUiEvent>,
@@ -99,6 +107,7 @@ impl TerminalEngine {
             title: None,
             latency: None,
             search: RefCell::new(None),
+            url_search: RefCell::new(url_search()),
             generation,
             size,
             event_sender,
@@ -122,7 +131,7 @@ impl TerminalEngine {
                     && this
                         .update(cx, |this, cx| {
                             for event in batch {
-                                if let Some(event) = this.handle_event(event) {
+                                if let Some(event) = this.handle_event(event, cx) {
                                     cx.emit(event);
                                 }
                             }
@@ -138,7 +147,11 @@ impl TerminalEngine {
 
     /// Fold one transport event into the engine's state. Anything the view
     /// must hear about comes back as an event to emit.
-    fn handle_event(&mut self, event: TerminalUiEvent) -> Option<TerminalEvent> {
+    fn handle_event(
+        &mut self,
+        event: TerminalUiEvent,
+        cx: &mut gpui_kit::App,
+    ) -> Option<TerminalEvent> {
         if event.generation != self.generation {
             return None;
         }
@@ -169,6 +182,9 @@ impl TerminalEngine {
                 let color = self.runtime.term.lock().colors()[index]
                     .unwrap_or_else(|| default_query_color(index));
                 self.runtime.write(formatter(color).into_bytes());
+            }
+            TerminalUiEventKind::ClipboardStore(text) => {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
             }
         }
         None
@@ -453,6 +469,7 @@ impl TerminalEngine {
             .map(|search| search.visible(&term))
             .unwrap_or_default();
         let mut marker = MatchMarker::new(&matches, focused.as_ref());
+        let mut links = LinkMarker::new(visible_links(&term, &mut self.url_search.borrow_mut()));
         let mut cells: Vec<_> = content
             .display_iter
             .map(|indexed| {
@@ -469,6 +486,7 @@ impl TerminalEngine {
                         range.contains_cell(&indexed, cursor_point, cursor_shape)
                     }),
                     search: marker.mark(indexed.point),
+                    link: links.mark(indexed.point, indexed.cell.hyperlink()),
                 }
             })
             .collect();
@@ -485,6 +503,7 @@ impl TerminalEngine {
             cursor_blinking: term.cursor_style().blinking,
             display_offset: content.display_offset,
             colors: std::array::from_fn(|index| content.colors[index]),
+            links: links.into_links(),
         }
     }
 }
@@ -665,7 +684,8 @@ fn terminal_config() -> Config {
             shape: CursorShape::Block,
             blinking: true,
         },
-        osc52: alacritty_terminal::term::Osc52::Disabled,
+        // Programs may copy to the clipboard (vim, tmux), never read it.
+        osc52: Osc52::OnlyCopy,
         kitty_keyboard: false,
         ..Config::default()
     }
@@ -717,6 +737,11 @@ impl EventListener for TerminalEventProxy {
             | Event::Bell
             | Event::Exit
             | Event::ChildExit(_) => self.wakeup(),
+            // Only the clipboard: a program setting the primary selection
+            // on every selection must not overwrite it.
+            Event::ClipboardStore(ClipboardType::Clipboard, text) => {
+                self.send(TerminalUiEventKind::ClipboardStore(text));
+            }
             Event::ClipboardStore(_, _) | Event::ClipboardLoad(_, _) => {}
         }
     }
@@ -748,12 +773,17 @@ enum TerminalUiEventKind {
     Wakeup,
     Title(String),
     ResetTitle,
-    Exited { code: u32, signal: Option<String> },
+    Exited {
+        code: u32,
+        signal: Option<String>,
+    },
     Failed(String),
     Prompt(ConnectionPrompt),
     HostOs(HostOs),
     Latency(Latency),
     ColorRequest(usize, Arc<dyn Fn(Rgb) -> String + Send + Sync>),
+    /// A program's copy, by OSC 52.
+    ClipboardStore(String),
 }
 
 fn append_message(term: &Arc<FairMutex<AlacrittyTerm>>, message: &str) {
@@ -871,11 +901,24 @@ mod tests {
     use alacritty_terminal::vte::ansi::NamedColor;
 
     fn test_term(columns: usize, rows: usize) -> AlacrittyTerm {
+        test_term_with_channels(columns, rows).0
+    }
+
+    /// A terminal, with what it writes back to the program and what it
+    /// tells the UI.
+    fn test_term_with_channels(
+        columns: usize,
+        rows: usize,
+    ) -> (
+        AlacrittyTerm,
+        mpsc::Receiver<TerminalTransportCommand>,
+        mpsc::Receiver<TerminalUiEvent>,
+    ) {
         let size = TerminalSize::new(columns, rows, 8, 16);
-        let (commands, _command_receiver) = mpsc::channel();
-        let (ui_events, _ui_receiver) = mpsc::channel();
+        let (commands, command_receiver) = mpsc::channel();
+        let (ui_events, ui_receiver) = mpsc::channel();
         let config = terminal_config();
-        AlacrittyTerm::new(
+        let term = AlacrittyTerm::new(
             config,
             &size,
             TerminalEventProxy {
@@ -885,7 +928,117 @@ mod tests {
                 size: Arc::new(Mutex::new(size)),
                 wakeup_pending: Arc::new(AtomicBool::new(false)),
             },
-        )
+        );
+        (term, command_receiver, ui_receiver)
+    }
+
+    /// Each link on screen: the text of its cells and where it leads.
+    fn screen_links(term: &AlacrittyTerm) -> Vec<(String, String)> {
+        let mut marker = LinkMarker::new(visible_links(term, &mut url_search()));
+        let mut texts: Vec<String> = Vec::new();
+        for indexed in term.renderable_content().display_iter {
+            let Some(link) = marker.mark(indexed.point, indexed.cell.hyperlink()) else {
+                continue;
+            };
+            if texts.len() <= link {
+                texts.resize(link + 1, String::new());
+            }
+            if !indexed.cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                texts[link].push(indexed.cell.c);
+            }
+        }
+        let links = marker.into_links();
+        texts
+            .into_iter()
+            .zip(links.iter().map(ToString::to_string))
+            .collect()
+    }
+
+    fn link(text: &str, uri: &str) -> (String, String) {
+        (text.to_string(), uri.to_string())
+    }
+
+    #[test]
+    fn web_addresses_in_the_text_are_links_without_the_sentence_around_them() {
+        let mut term = test_term(80, 4);
+        feed(
+            &mut term,
+            "Docs: https://help.ubuntu.com. (see https://a.b/c)\r\n详见https://a.b/d，谢谢\r\n"
+                .as_bytes(),
+        );
+        feed(
+            &mut term,
+            b"https://en.wikipedia.org/wiki/Rust_(lang) ftp://a.b www.c.d\r\n",
+        );
+        assert_eq!(
+            screen_links(&term),
+            [
+                link("https://help.ubuntu.com", "https://help.ubuntu.com"),
+                link("https://a.b/c", "https://a.b/c"),
+                link("https://a.b/d", "https://a.b/d"),
+                link(
+                    "https://en.wikipedia.org/wiki/Rust_(lang)",
+                    "https://en.wikipedia.org/wiki/Rust_(lang)"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_wrapped_address_is_one_link() {
+        let mut term = test_term(20, 4);
+        feed(&mut term, b"go https://example.com/a/long/path now\r\n");
+        let url = "https://example.com/a/long/path";
+        assert_eq!(screen_links(&term), [link(url, url)]);
+    }
+
+    #[test]
+    fn a_marked_link_leads_where_it_says_and_only_to_the_web() {
+        let mut term = test_term(80, 4);
+        feed(
+            &mut term,
+            "\x1b]8;;https://example.com/real\x1b\\示例\x1b]8;;\x1b\\ ".as_bytes(),
+        );
+        // The text of a marked link is not looked at: it is the mark that
+        // says where it goes.
+        feed(
+            &mut term,
+            b"\x1b]8;;https://x.y/\x1b\\https://elsewhere.z\x1b]8;;\x1b\\\r\n",
+        );
+        feed(
+            &mut term,
+            b"\x1b]8;;file://host/etc/hosts\x1b\\hosts\x1b]8;;\x1b\\\r\n",
+        );
+        assert_eq!(
+            screen_links(&term),
+            [
+                link("示例", "https://example.com/real"),
+                link("https://elsewhere.z", "https://x.y/"),
+            ]
+        );
+    }
+
+    #[test]
+    fn programs_may_copy_to_the_clipboard_but_not_read_it() {
+        let (mut term, commands, ui_events) = test_term_with_channels(20, 2);
+        feed(&mut term, b"\x1b]52;c;aGVsbG8=\x07");
+        let copied: Vec<_> = ui_events
+            .try_iter()
+            .filter_map(|event| match event.kind {
+                TerminalUiEventKind::ClipboardStore(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(copied, ["hello"]);
+        // The primary selection is left alone, and asking for the clipboard
+        // gets no answer.
+        feed(&mut term, b"\x1b]52;p;aGVsbG8=\x07\x1b]52;c;?\x07");
+        assert!(
+            ui_events
+                .try_iter()
+                .all(|event| !matches!(event.kind, TerminalUiEventKind::ClipboardStore(_)))
+        );
+        assert!(commands.try_iter().next().is_none());
     }
 
     fn feed(term: &mut AlacrittyTerm, bytes: &[u8]) {
@@ -1168,6 +1321,7 @@ mod tests {
             } else {
                 SearchMark::None
             },
+            link: None,
         };
         let mut cells = vec![
             cell(Flags::WIDE_CHAR, true),

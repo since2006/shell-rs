@@ -14,6 +14,8 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::PopupMenu,
+    tooltip::Tooltip,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -25,6 +27,7 @@ use crate::app::{
 };
 use crate::connection::{ConnectionPromptReply, Latency};
 
+use super::mouse::{self, MouseReport, ReportButton, ReportKind};
 use super::search::SearchMark;
 use super::{
     SearchDirection, SharedTerminalTransportFactory, TerminalEngine, TerminalEvent, TerminalFont,
@@ -39,6 +42,25 @@ pub const TERMINAL_FIND_KEY_CONTEXT: &str = "TerminalFind";
 /// A full search of a long scrollback takes a frame or more, so it waits for
 /// the query to settle rather than running on every keystroke.
 const FIND_DEBOUNCE: Duration = Duration::from_millis(80);
+
+/// How long the pointer rests on a link before its address shows.
+const LINK_TOOLTIP_DELAY: Duration = Duration::from_millis(500);
+
+/// The key held to open a link with a click, as the tooltip names it.
+#[cfg(target_os = "macos")]
+const OPEN_LINK_KEY: &str = "⌘";
+#[cfg(not(target_os = "macos"))]
+const OPEN_LINK_KEY: &str = "Ctrl";
+
+/// Whether `modifiers` hold the key that opens a link: ⌘, or Ctrl where
+/// there is no ⌘. A plain click selects text, as it always has.
+fn opens_links(modifiers: &Modifiers) -> bool {
+    if cfg!(target_os = "macos") {
+        modifiers.platform
+    } else {
+        modifiers.control
+    }
+}
 
 /// The commands a terminal's owner adds to the bottom of its context menu,
 /// built from the terminal's lifecycle when the menu opens.
@@ -65,6 +87,8 @@ pub(crate) fn terminal_key_bindings() -> [KeyBinding; 2] {
 enum ScrollTarget {
     History,
     AlternateScreen,
+    /// The program asked for the mouse: the wheel is reported to it.
+    Report,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -130,6 +154,21 @@ struct TerminalViewport {
 }
 
 impl TerminalViewport {
+    /// The cell on screen under `position`, if it is over the grid.
+    fn cell_at(&self, position: gpui_kit::Point<Pixels>) -> Option<(usize, usize)> {
+        screen_cell(&self.geometry, self.columns, self.rows, position)
+    }
+
+    /// The cell on screen nearest `position`, which may be outside: where a
+    /// drag that left the terminal is reported.
+    fn nearest_cell(&self, position: gpui_kit::Point<Pixels>) -> (usize, usize) {
+        let (point, _) = self.grid_point(position);
+        (
+            point.column.0,
+            (point.line.0 + self.display_offset as i32).max(0) as usize,
+        )
+    }
+
     fn grid_point(&self, position: gpui_kit::Point<Pixels>) -> (TerminalPoint, Side) {
         grid_point(
             position,
@@ -141,6 +180,15 @@ impl TerminalViewport {
             self.rows,
         )
     }
+}
+
+/// The link under the pointer, and where the pointer is.
+#[derive(Clone, Debug, PartialEq)]
+struct HoveredLink {
+    /// Which link of the snapshot, as the cells number them.
+    index: usize,
+    uri: SharedString,
+    position: gpui_kit::Point<Pixels>,
 }
 
 pub struct TerminalView {
@@ -162,6 +210,14 @@ pub struct TerminalView {
     find: Option<FindBar>,
     cursor_visible: bool,
     focused: bool,
+    hovered_link: Option<HoveredLink>,
+    /// The hovered link's address shows, the pointer having rested on it.
+    link_tooltip: bool,
+    link_tooltip_task: Option<Task<()>>,
+    /// The button the program was told went down, until it hears it go up.
+    reported_button: Option<ReportButton>,
+    /// The cell the program last heard of: motion is reported once a cell.
+    reported_cell: Option<(usize, usize)>,
     _subscriptions: Vec<Subscription>,
     _blink_task: Task<()>,
 }
@@ -236,6 +292,11 @@ impl TerminalView {
             find: None,
             cursor_visible: true,
             focused: false,
+            hovered_link: None,
+            link_tooltip: false,
+            link_tooltip_task: None,
+            reported_button: None,
+            reported_cell: None,
             _subscriptions: subscriptions,
             _blink_task: blink_task,
         }
@@ -280,6 +341,11 @@ impl TerminalView {
         self.context_menu_subscription = None;
         self.find = None;
         self.cursor_visible = true;
+        self.hovered_link = None;
+        self.link_tooltip = false;
+        self.link_tooltip_task = None;
+        self.reported_button = None;
+        self.reported_cell = None;
     }
 
     pub fn shutdown(&mut self, cx: &mut Context<Self>) {
@@ -496,9 +562,19 @@ impl TerminalView {
         self.engine.update(cx, |engine, cx| engine.resize(size, cx));
     }
 
-    fn scroll(&mut self, delta: ScrollDelta, line_height: Pixels, cx: &mut Context<Self>) {
+    fn scroll(
+        &mut self,
+        delta: ScrollDelta,
+        line_height: Pixels,
+        cell: (usize, usize),
+        modifiers: Modifiers,
+        cx: &mut Context<Self>,
+    ) {
         let mode = self.engine.read(cx).mode();
-        let target = if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
+        // Shift scrolls the history even while the program has the mouse.
+        let target = if mode.intersects(TermMode::MOUSE_MODE) && !modifiers.shift {
+            ScrollTarget::Report
+        } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
             ScrollTarget::AlternateScreen
         } else {
             ScrollTarget::History
@@ -507,7 +583,18 @@ impl TerminalView {
         if lines == 0 {
             return;
         }
-        if target == ScrollTarget::AlternateScreen {
+        // The text under the pointer moves on.
+        self.hover_link(None, cx);
+        if target == ScrollTarget::Report {
+            let button = if lines > 0 {
+                ReportButton::WheelUp
+            } else {
+                ReportButton::WheelDown
+            };
+            for _ in 0..lines.unsigned_abs().min(12) {
+                self.report_mouse(button, ReportKind::Press, cell, modifiers, cx);
+            }
+        } else if target == ScrollTarget::AlternateScreen {
             let sequence = if lines > 0 { b"\x1bOA" } else { b"\x1bOB" };
             for _ in 0..lines.unsigned_abs().min(12) {
                 self.engine.read(cx).write(sequence.to_vec());
@@ -536,7 +623,87 @@ impl TerminalView {
             .update(cx, |engine, cx| engine.update_selection(point, side, cx));
     }
 
+    /// Tell the program of the mouse, if it asked to hear of it. Shift keeps
+    /// the mouse for selecting text, unless a reported button is down.
+    /// Whether the program was told.
+    fn report_mouse(
+        &mut self,
+        button: ReportButton,
+        kind: ReportKind,
+        cell: (usize, usize),
+        modifiers: Modifiers,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mode = self.engine.read(cx).mode();
+        let held = self.reported_button.is_some();
+        if (modifiers.shift && !held) || !mouse::wants(mode, kind, held) {
+            return false;
+        }
+        let button = match kind {
+            ReportKind::Motion if self.reported_cell == Some(cell) => return true,
+            ReportKind::Motion => self.reported_button.unwrap_or(ReportButton::None),
+            _ => button,
+        };
+        let report = MouseReport {
+            button,
+            kind,
+            column: cell.0,
+            row: cell.1,
+            alt: modifiers.alt,
+            control: modifiers.control,
+        };
+        if let Some(bytes) = mouse::encode(report, mode) {
+            self.engine.read(cx).write(bytes);
+        }
+        self.reported_cell = Some(cell);
+        if kind == ReportKind::Press && matches!(button, ReportButton::Left | ReportButton::Middle)
+        {
+            self.reported_button = Some(button);
+        }
+        true
+    }
+
+    /// A button went up: the program hears of it if it heard it go down.
+    fn release_mouse(
+        &mut self,
+        button: ReportButton,
+        cell: (usize, usize),
+        modifiers: Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        if self.reported_button == Some(button) {
+            self.report_mouse(button, ReportKind::Release, cell, modifiers, cx);
+            self.reported_button = None;
+        }
+    }
+
+    /// The pointer moved onto a link or off one. Its address shows once the
+    /// pointer rests there.
+    fn hover_link(&mut self, link: Option<HoveredLink>, cx: &mut Context<Self>) {
+        let same = match (&self.hovered_link, &link) {
+            (Some(hovered), Some(link)) => hovered.index == link.index && hovered.uri == link.uri,
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.link_tooltip = false;
+        self.link_tooltip_task = link.as_ref().map(|_| {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(LINK_TOOLTIP_DELAY).await;
+                let _ = this.update(cx, |this, cx| {
+                    this.link_tooltip = true;
+                    cx.notify();
+                });
+            })
+        });
+        self.hovered_link = link;
+        cx.notify();
+    }
+
     fn send_user_input(&mut self, bytes: impl Into<Vec<u8>>, cx: &mut Context<Self>) {
+        self.hover_link(None, cx);
         self.selecting = false;
         self.scroll_accumulator.reset();
         self.cursor_visible = true;
@@ -730,7 +897,7 @@ impl EntityInputHandler for TerminalView {
 }
 
 impl Render for TerminalView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.engine.read(cx).snapshot();
         let view = cx.entity();
         let context_menu = self.context_menu.clone();
@@ -773,7 +940,22 @@ impl Render for TerminalView {
                     )
                     .with_priority(gpui_kit::base::POPUP_PRIORITY),
                 )
-            });
+            })
+            // Below the pointer, so the pointer stays on the link.
+            .when_some(
+                self.hovered_link.clone().filter(|_| self.link_tooltip),
+                |terminal, link| {
+                    terminal.child(
+                        deferred(
+                            anchored()
+                                .position(link.position + point(px(0.), px(20.)))
+                                .snap_to_window_with_margin(px(8.))
+                                .child(link_tooltip(link.uri, window, cx)),
+                        )
+                        .with_priority(1),
+                    )
+                },
+            );
 
         // The find bar is the terminal's sibling, not its child: keys typed
         // into it must not bubble to the terminal's key handler, which would
@@ -787,6 +969,24 @@ impl Render for TerminalView {
                 container.child(self.render_find_bar(find, cx))
             })
     }
+}
+
+/// Where a link leads and how to open it: the address may not be its text.
+fn link_tooltip(uri: SharedString, window: &mut Window, cx: &mut App) -> AnyView {
+    Tooltip::element(move |_, cx| {
+        v_flex()
+            .id("terminal-link-tooltip")
+            .test_support()
+            .aria_label(uri.clone())
+            .max_w(rems(32.))
+            .child(uri.clone())
+            .child(
+                div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("{OPEN_LINK_KEY} 单击打开")),
+            )
+    })
+    .build(window, cx)
 }
 
 impl TerminalView {
@@ -975,6 +1175,19 @@ impl Element for TerminalElement {
             cell_width,
             line_height,
         };
+        // The link under the pointer, lit a little brighter.
+        let hovered_link = screen_cell(
+            &geometry,
+            self.snapshot.columns,
+            self.snapshot.rows,
+            window.mouse_position(),
+        )
+        .and_then(|(column, row)| {
+            self.snapshot
+                .cells
+                .get(row * self.snapshot.columns + column)?
+                .link
+        });
         let mut lines = Vec::with_capacity(self.snapshot.rows);
         let mut backgrounds = Vec::new();
         for (row_index, row) in self
@@ -1022,6 +1235,16 @@ impl Element for TerminalElement {
                 let font = terminal_font(text_style.font(), cell.flags);
                 let len = character.len();
                 text.push_str(character);
+                // Links always show as links, blue whatever color the
+                // program gave them. Not the theme's `link`: that is the
+                // color of text.
+                let link = cell.link.map(|link| {
+                    if hovered_link == Some(link) {
+                        cx.theme().blue_light
+                    } else {
+                        cx.theme().blue
+                    }
+                });
                 runs.push(TextRun {
                     len,
                     font,
@@ -1030,16 +1253,25 @@ impl Element for TerminalElement {
                     } else if cell.search == SearchMark::Focused {
                         cx.theme().warning_foreground
                     } else {
-                        foreground
+                        link.unwrap_or(foreground)
                     },
                     background_color: None,
-                    underline: cell.flags.intersects(Flags::ALL_UNDERLINES).then_some(
-                        UnderlineStyle {
+                    underline: match link {
+                        Some(color) => Some(UnderlineStyle {
                             thickness: px(1.),
-                            color: Some(foreground),
-                            wavy: cell.flags.contains(Flags::UNDERCURL),
-                        },
-                    ),
+                            color: Some(color),
+                            wavy: false,
+                        }),
+                        None => {
+                            cell.flags
+                                .intersects(Flags::ALL_UNDERLINES)
+                                .then_some(UnderlineStyle {
+                                    thickness: px(1.),
+                                    color: Some(foreground),
+                                    wavy: cell.flags.contains(Flags::UNDERCURL),
+                                })
+                        }
+                    },
                     strikethrough: cell.flags.contains(Flags::STRIKEOUT).then_some(
                         StrikethroughStyle {
                             thickness: px(1.),
@@ -1176,21 +1408,125 @@ impl Element for TerminalElement {
         let hitbox = state.hitbox.clone();
         let view = self.view.clone();
         let viewport = state.viewport;
-        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-            if event.button != MouseButton::Left || !phase.bubble() || !hitbox.is_hovered(window) {
-                return;
+        let links = Rc::new(ScreenLinks::new(&self.snapshot));
+
+        // A hand over a link while the key that opens it is held; pressing
+        // or letting go of the key changes it at once.
+        let pointer_on_link = hitbox.is_hovered(window)
+            && viewport
+                .cell_at(window.mouse_position())
+                .and_then(|cell| links.at(cell))
+                .is_some();
+        if pointer_on_link {
+            if opens_links(&window.modifiers()) {
+                window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
             }
-            let (point, side) = viewport.grid_point(event.position);
-            let selection_type = match event.click_count {
-                2 => SelectionType::Semantic,
-                count if count >= 3 => SelectionType::Lines,
-                _ => SelectionType::Simple,
-            };
-            view.update(cx, |view, cx| {
-                view.focus(window, cx);
-                view.start_selection(point, side, selection_type, cx);
-            });
-            cx.stop_propagation();
+            let view = view.clone();
+            window.on_modifiers_changed(move |_, _, cx| view.update(cx, |_, cx| cx.notify()));
+        }
+
+        // A click opens a link with ⌘ held; otherwise it goes to the program
+        // that asked for the mouse, or selects text.
+        window.on_mouse_event({
+            let (hitbox, view, links) = (hitbox.clone(), view.clone(), links.clone());
+            move |event: &MouseDownEvent, phase, window, cx| {
+                if !phase.bubble() || !hitbox.is_hovered(window) {
+                    return;
+                }
+                let Some(cell) = viewport.cell_at(event.position) else {
+                    return;
+                };
+                let button = match event.button {
+                    MouseButton::Left => ReportButton::Left,
+                    MouseButton::Middle => ReportButton::Middle,
+                    _ => return,
+                };
+                if button == ReportButton::Left
+                    && opens_links(&event.modifiers)
+                    && let Some((_, uri)) = links.at(cell)
+                {
+                    cx.open_url(uri);
+                    view.update(cx, |view, cx| view.hover_link(None, cx));
+                    cx.stop_propagation();
+                    return;
+                }
+                let reported = view.update(cx, |view, cx| {
+                    view.focus(window, cx);
+                    view.report_mouse(button, ReportKind::Press, cell, event.modifiers, cx)
+                });
+                if reported {
+                    cx.stop_propagation();
+                } else if button == ReportButton::Left {
+                    let (point, side) = viewport.grid_point(event.position);
+                    let selection_type = match event.click_count {
+                        2 => SelectionType::Semantic,
+                        count if count >= 3 => SelectionType::Lines,
+                        _ => SelectionType::Simple,
+                    };
+                    view.update(cx, |view, cx| {
+                        view.start_selection(point, side, selection_type, cx);
+                    });
+                    cx.stop_propagation();
+                }
+            }
+        });
+
+        // The link under the pointer, for its tooltip; and motion, for a
+        // program that asked for it. A drag that leaves the terminal is
+        // reported at its edge.
+        window.on_mouse_event({
+            let (hitbox, view, links) = (hitbox.clone(), view.clone(), links.clone());
+            move |event: &MouseMoveEvent, phase, window, cx| {
+                if !phase.bubble() {
+                    return;
+                }
+                let cell = hitbox
+                    .is_hovered(window)
+                    .then(|| viewport.cell_at(event.position))
+                    .flatten();
+                let link = cell
+                    .and_then(|cell| links.at(cell))
+                    .map(|(index, uri)| HoveredLink {
+                        index,
+                        uri: uri.clone(),
+                        position: event.position,
+                    });
+                view.update(cx, |view, cx| {
+                    view.hover_link(link, cx);
+                    let cell = match (cell, view.reported_button) {
+                        (_, Some(_)) => Some(viewport.nearest_cell(event.position)),
+                        (cell, None) => cell,
+                    };
+                    if let Some(cell) = cell {
+                        view.report_mouse(
+                            ReportButton::None,
+                            ReportKind::Motion,
+                            cell,
+                            event.modifiers,
+                            cx,
+                        );
+                    }
+                });
+            }
+        });
+
+        // A reported button going up is reported wherever it is let go.
+        window.on_mouse_event({
+            let view = view.clone();
+            move |event: &MouseUpEvent, phase, _, cx| {
+                if !phase.capture() {
+                    return;
+                }
+                let button = match event.button {
+                    MouseButton::Left => ReportButton::Left,
+                    MouseButton::Middle => ReportButton::Middle,
+                    _ => return,
+                };
+                let cell = viewport.nearest_cell(event.position);
+                view.update(cx, |view, cx| {
+                    view.release_mouse(button, cell, event.modifiers, cx)
+                });
+            }
         });
 
         let view = self.view.clone();
@@ -1224,8 +1560,15 @@ impl Element for TerminalElement {
             if !phase.bubble() || !hitbox.should_handle_scroll(window) {
                 return;
             }
+            let cell = viewport.nearest_cell(event.position);
             view.update(cx, |view, cx| {
-                view.scroll(event.delta, viewport.geometry.line_height, cx)
+                view.scroll(
+                    event.delta,
+                    viewport.geometry.line_height,
+                    cell,
+                    event.modifiers,
+                    cx,
+                )
             });
             cx.stop_propagation();
         });
@@ -1441,6 +1784,44 @@ fn cursor_quad(
         }
     };
     Some(fill(cursor, palette.cursor.opacity(0.75)))
+}
+
+/// The cell on screen under `position`, if it is over the grid.
+fn screen_cell(
+    geometry: &TerminalGeometry,
+    columns: usize,
+    rows: usize,
+    position: gpui_kit::Point<Pixels>,
+) -> Option<(usize, usize)> {
+    let local = position - geometry.bounds.origin;
+    if local.x < px(0.) || local.y < px(0.) || columns == 0 || rows == 0 {
+        return None;
+    }
+    let column = (local.x / geometry.cell_width).floor() as usize;
+    let row = (local.y / geometry.line_height).floor() as usize;
+    (column < columns && row < rows).then_some((column, row))
+}
+
+/// Which link each cell on screen belongs to, for the pointer's handlers.
+struct ScreenLinks {
+    columns: usize,
+    cells: Vec<Option<usize>>,
+    links: Vec<SharedString>,
+}
+
+impl ScreenLinks {
+    fn new(snapshot: &TerminalSnapshot) -> Self {
+        Self {
+            columns: snapshot.columns,
+            cells: snapshot.cells.iter().map(|cell| cell.link).collect(),
+            links: snapshot.links.clone(),
+        }
+    }
+
+    fn at(&self, (column, row): (usize, usize)) -> Option<(usize, &SharedString)> {
+        let link = (*self.cells.get(row * self.columns + column)?)?;
+        Some((link, self.links.get(link)?))
+    }
 }
 
 fn grid_point(
