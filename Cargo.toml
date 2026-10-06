@@ -44,6 +44,9 @@ gpui-kit = { version = "0.6.1", features = [
 alacritty_terminal = "0.26"
 anyhow = "1"
 async-channel = "2"
+# A terminal's parser thread waits for output only until a synchronized
+# update has to be drawn.
+async-io = "2"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 dirs = "6"

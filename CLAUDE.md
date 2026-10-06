@@ -259,6 +259,7 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
   - 通知在解析线程上：按 `\n` 切开输出，在 LF **之前**读光标所在的逻辑行（这时 `\r` 和颜色都已生效），锁外匹配。备用屏和同步更新进行中不读。
   - 规则由 `settings::apply` 编译成全局量 `TerminalHighlights`，引擎 `observe_global` 后换进与解析线程共用的槽；重启运行时也要把槽传过去。
   - `settings.json` 里读不了的规则单条丢掉（`readable_rules`），否则整个设置文件会回退成默认值。
+- **同步更新（DEC 2026）要解析线程自己收尾**：vte 只管攒住 `\e[?2026h` 之后的输出，超时（150 ms）后调 `stop_sync` 是调用方的事，alacritty 自己的事件循环就是这么做的。解析线程等输出时带着截止时间（`receive`，用 `async_io` 的定时器），到点就画出来；输出一直不停时在 `advance` 前补查；退出、出错追加提示前也先 `stop_sync`。否则程序死在一帧中间、连接断在一帧中间时，屏幕会一直冻住。
 - **OSC 52 只写不读**（`Osc52::OnlyCopy`），只认剪贴板 `c`，主选择区忽略。
 - **通知**：OSC 9 / 777 由 `terminal/notices.rs` 的扫描器在解析线程上认（alacritty 会丢掉），OSC 9 里「数字;」开头的是 ConEmu 的命令，不算通知。投递在 `workspace/notices.rs`：窗口不在前台走 GPUI 的 `show_system_notification`（tag 是 `terminal:local:<id>` / `terminal:remote:<id>`，点击回调按 tag 切标签），在前台走应用内通知。`shellrs::init` 里的 `set_app_identity` 用 bundle id，测试平台没有它就不发系统通知；macOS 上 `cargo run` 没有 bundle，看不到系统通知。
 

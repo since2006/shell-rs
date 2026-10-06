@@ -14,7 +14,10 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::COUNT;
 use alacritty_terminal::term::search::RegexSearch;
 use alacritty_terminal::term::{ClipboardType, Config, Osc52, TermMode};
-use alacritty_terminal::vte::ansi::{Color, CursorShape, CursorStyle, Processor, Rgb};
+use alacritty_terminal::vte::ansi::{
+    Color, CursorShape, CursorStyle, Processor, Rgb, Timeout as _,
+};
+use futures::future::{Either, select};
 
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply, Latency};
 use crate::host::HostOs;
@@ -654,11 +657,26 @@ impl TerminalRuntime {
         thread::Builder::new()
             .name("shellrs-terminal-parser".into())
             .spawn(move || {
-                let mut processor = Processor::new();
+                let mut processor: Processor = Processor::new();
                 // Alacritty drops the notifications programs ask for.
                 let mut notices = NoticeScanner::default();
                 let mut watcher = LineWatcher::new(current(&highlights));
-                while let Ok(event) = transport_receiver.recv_blocking() {
+                loop {
+                    // Output inside a synchronized update is held back until
+                    // the program ends it. Alacritty's own event loop draws
+                    // it anyway once the update's time is up, so a program
+                    // that never ends it (killed mid-frame, or its connection
+                    // lost) does not freeze the screen; this loop has to too.
+                    let deadline = processor.sync_timeout().sync_timeout();
+                    let event = match receive(&transport_receiver, deadline) {
+                        Received::Event(event) => event,
+                        Received::Closed => break,
+                        Received::Overdue => {
+                            processor.stop_sync(&mut *parser_term.lock());
+                            parser_proxy.wakeup();
+                            continue;
+                        }
+                    };
                     match event {
                         TerminalTransportEvent::Started => {
                             parser_proxy.send(TerminalUiEventKind::Started);
@@ -667,12 +685,18 @@ impl TerminalRuntime {
                             watcher.sync(current(&highlights));
                             // The lines are only read under the lock; the
                             // rules match them once it is let go.
-                            let lines = advance_watching(
-                                &mut processor,
-                                &mut parser_term.lock(),
-                                &bytes,
-                                watcher.is_watching(),
-                            );
+                            let lines = {
+                                let mut term = parser_term.lock();
+                                // Output that never pauses gives the wait no
+                                // chance to see the time is up.
+                                end_overdue_sync(&mut processor, &mut term);
+                                advance_watching(
+                                    &mut processor,
+                                    &mut term,
+                                    &bytes,
+                                    watcher.is_watching(),
+                                )
+                            };
                             if let Some(hit) = watcher.check(lines, Instant::now()) {
                                 parser_proxy.send(TerminalUiEventKind::Keyword(hit));
                             }
@@ -895,7 +919,55 @@ fn append_message_with_processor(
     message: &str,
 ) {
     let line = format!("\r\n\x1b[2m[{message}]\x1b[0m\r\n");
-    processor.advance(&mut *term.lock(), line.as_bytes());
+    let mut term = term.lock();
+    // A program that ended mid-frame left its synchronized update open:
+    // neither that frame nor this message would show.
+    if processor.sync_timeout().pending_timeout() {
+        processor.stop_sync(&mut *term);
+    }
+    processor.advance(&mut *term, line.as_bytes());
+}
+
+/// What waiting for the transport came to.
+enum Received<T> {
+    Event(T),
+    /// The open synchronized update's time is up before anything came.
+    Overdue,
+    /// The transport is gone.
+    Closed,
+}
+
+/// The transport's next event; with a synchronized update open, waiting
+/// only until its `deadline`. `recv_blocking` cannot stop at a time, hence
+/// the timer.
+fn receive<T>(events: &async_channel::Receiver<T>, deadline: Option<Instant>) -> Received<T> {
+    let Some(deadline) = deadline else {
+        return events
+            .recv_blocking()
+            .map_or(Received::Closed, Received::Event);
+    };
+    async_io::block_on(async {
+        let next = std::pin::pin!(events.recv());
+        // What has come already wins over a deadline that has passed.
+        match select(next, async_io::Timer::at(deadline)).await {
+            Either::Left((Ok(event), _)) => Received::Event(event),
+            Either::Left((Err(_), _)) => Received::Closed,
+            Either::Right(_) => Received::Overdue,
+        }
+    })
+}
+
+/// Draw what an open synchronized update has held back, if its time is up.
+/// Says whether it was.
+fn end_overdue_sync(processor: &mut Processor, term: &mut AlacrittyTerm) -> bool {
+    let overdue = processor
+        .sync_timeout()
+        .sync_timeout()
+        .is_some_and(|deadline| deadline <= Instant::now());
+    if overdue {
+        processor.stop_sync(term);
+    }
+    overdue
 }
 
 fn sanitize_title(title: &str) -> Option<String> {
@@ -1520,5 +1592,141 @@ mod tests {
         assert!(encode_command(lines, true, true, TermMode::default()).is_ok());
         // vim and less have the keys to themselves.
         assert!(encode_command("ls", true, true, TermMode::ALT_SCREEN).is_err());
+    }
+
+    /// Sends its events, then stays quiet until shut down, as a shell does
+    /// when nothing is typed.
+    struct ScriptedTransport(Vec<TerminalTransportEvent>);
+
+    impl super::super::TerminalTransport for ScriptedTransport {
+        fn run(
+            self: Box<Self>,
+            _: TerminalSize,
+            commands: mpsc::Receiver<TerminalTransportCommand>,
+            events: async_channel::Sender<TerminalTransportEvent>,
+        ) -> anyhow::Result<()> {
+            for event in self.0 {
+                events.send_blocking(event)?;
+            }
+            while let Ok(command) = commands.recv() {
+                if matches!(command, TerminalTransportCommand::Shutdown) {
+                    break;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// A terminal whose transport plays `script`.
+    fn run_script(script: Vec<TerminalTransportEvent>) -> TerminalRuntime {
+        let (ui_events, _) = mpsc::channel();
+        TerminalRuntime::start(
+            1,
+            TerminalSize::new(40, 4, 8, 16),
+            Box::new(ScriptedTransport(script)),
+            ui_events,
+            Arc::default(),
+        )
+    }
+
+    /// The screen's text once it holds `text`, or what it holds after two
+    /// seconds of waiting.
+    fn screen_once_it_shows(runtime: &TerminalRuntime, text: &str) -> String {
+        let started = Instant::now();
+        loop {
+            let term = runtime.term.lock();
+            let screen = (0..4)
+                .map(|line| {
+                    term.grid()[Line(line)]
+                        .into_iter()
+                        .filter(|cell| !cell.flags.contains(Flags::WIDE_CHAR_SPACER))
+                        .map(|cell| cell.c)
+                        .collect::<String>()
+                        .trim_end()
+                        .to_owned()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            drop(term);
+            if screen.contains(text) || started.elapsed() > Duration::from_secs(2) {
+                return screen;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn an_update_left_open_is_drawn_once_its_time_is_up() {
+        // `printf '\e[?2026h'`, or a program killed between beginning a
+        // frame and ending it: nothing ends the update.
+        let started = Instant::now();
+        let runtime = run_script(vec![
+            TerminalTransportEvent::Started,
+            TerminalTransportEvent::Output(b"before \x1b[?2026hframe".to_vec()),
+        ]);
+        assert!(screen_once_it_shows(&runtime, "before frame").contains("before frame"));
+        // Held back meanwhile, as the update asked.
+        assert!(started.elapsed() >= Duration::from_millis(150));
+    }
+
+    #[test]
+    fn an_update_ended_in_time_is_drawn_whole() {
+        let runtime = run_script(vec![
+            TerminalTransportEvent::Output(b"\x1b[?2026hone ".to_vec()),
+            TerminalTransportEvent::Output(b"two\x1b[?2026l".to_vec()),
+        ]);
+        assert!(screen_once_it_shows(&runtime, "one two").contains("one two"));
+    }
+
+    #[test]
+    fn a_program_that_ends_mid_frame_still_shows_the_frame_and_its_exit() {
+        let runtime = run_script(vec![
+            TerminalTransportEvent::Output(b"\x1b[?2026hframe".to_vec()),
+            TerminalTransportEvent::Exited {
+                code: 137,
+                signal: None,
+            },
+        ]);
+        let screen = screen_once_it_shows(&runtime, "退出码 137");
+        assert!(screen.contains("frame"), "{screen}");
+        assert!(screen.contains("[进程已退出，退出码 137]"), "{screen}");
+    }
+
+    #[test]
+    fn output_that_never_pauses_does_not_hold_an_update_open() {
+        let mut term = test_term(40, 4);
+        let mut processor: Processor = Processor::new();
+        processor.advance(&mut term, b"\x1b[?2026hframe");
+        assert!(!end_overdue_sync(&mut processor, &mut term));
+        assert_eq!(line_text(&term, 0), "");
+        thread::sleep(Duration::from_millis(160));
+        assert!(end_overdue_sync(&mut processor, &mut term));
+        assert_eq!(line_text(&term, 0), "frame");
+        // Done with, the next output is drawn as it comes.
+        processor.advance(&mut term, b" more");
+        assert_eq!(line_text(&term, 0), "frame more");
+    }
+
+    #[test]
+    fn waiting_stops_at_the_deadline_but_not_before_what_has_come() {
+        // Something comes in the end, so a wait past the deadline fails the
+        // test rather than hangs it.
+        let (late, receiver) = async_channel::unbounded();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(1));
+            let _ = late.send_blocking(0);
+        });
+        let soon = Instant::now() + Duration::from_millis(20);
+        assert!(matches!(receive(&receiver, Some(soon)), Received::Overdue));
+        assert!(Instant::now() >= soon);
+
+        let (sender, receiver) = async_channel::unbounded();
+        sender.send_blocking(1).unwrap();
+        let past = Instant::now();
+        assert!(matches!(receive(&receiver, Some(past)), Received::Event(1)));
+        sender.send_blocking(2).unwrap();
+        assert!(matches!(receive(&receiver, None), Received::Event(2)));
+        drop(sender);
+        assert!(matches!(receive(&receiver, None), Received::Closed));
     }
 }
