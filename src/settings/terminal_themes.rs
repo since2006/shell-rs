@@ -1,12 +1,15 @@
-//! 外观 → 终端主题: the light themes and the dark ones side by side, a card
+//! 外观 → 主题: the light themes and the dark ones side by side, a card
 //! each showing a few lines of a shell in its colors, the one in use marked.
 //! Choosing a card writes the settings at once; which column is in effect
-//! follows the app's appearance.
+//! follows the app's appearance, and the app and its terminals both take
+//! its colors.
 
 use gpui_kit::base::{Radio, RadioGroup};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, ThemeMode, h_flex,
-    scroll::ScrollableElement as _, setting::SettingItem, v_flex,
+    scroll::ScrollableElement as _,
+    setting::{SettingField, SettingItem},
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -51,18 +54,37 @@ pub(super) fn terminal_theme_item(store: &Entity<SettingsStore>) -> SettingItem 
             .child(column(ThemeMode::Dark, &chosen, &reader, cx))
     })
     .keywords(
-        ["终端主题", "主题", "配色", "颜色", "浅色", "深色"]
+        ["主题", "终端主题", "配色", "颜色", "浅色", "深色"]
             .into_iter()
             .chain(TerminalTheme::all().iter().map(TerminalTheme::name)),
     )
     .on_reset(
-        move |cx| dirty.read(cx).settings().terminal_theme != TerminalThemeSettings::default(),
+        move |cx| !dirty.read(cx).settings().terminal_theme.is_default_choice(),
         move |_, cx| {
             reset.update(cx, |store, cx| {
-                store.update(|settings| settings.terminal_theme = Default::default(), cx)
+                store.update(|settings| settings.terminal_theme.reset_choice(), cx)
             });
         },
     )
+}
+
+/// 界面跟随主题: off, the app is neutral, gpui-kit's own black, white and
+/// grays, and only the terminals take the theme's colors.
+pub(super) fn app_follows_item(store: &Entity<SettingsStore>) -> SettingItem {
+    let (reader, writer) = (store.clone(), store.clone());
+    SettingItem::new(
+        "界面跟随主题",
+        SettingField::switch(
+            move |cx| reader.read(cx).settings().terminal_theme.app_follows,
+            move |on, cx| {
+                writer.update(cx, |store, cx| {
+                    store.update(|settings| settings.terminal_theme.app_follows = on, cx)
+                });
+            },
+        )
+        .default_value(false),
+    )
+    .description("关闭时界面用中性的黑白灰，只有终端按所选主题配色。")
 }
 
 /// One appearance's themes under its name, scrolling on their own.

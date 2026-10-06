@@ -28,7 +28,7 @@ use crate::terminal::{
 use crate::update::{Phase, Tone, UpdateSnapshot, UpdateStep, Updater, build_info, platform};
 
 use super::highlight_rules::HighlightRulesEditor;
-use super::terminal_themes::terminal_theme_item;
+use super::terminal_themes::{app_follows_item, terminal_theme_item};
 use super::{AppSettings, Choice, NotificationSettings, SettingsStore};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,9 +268,9 @@ fn appearance_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
             ),
         ]),
         SettingGroup::new()
-            .title("终端主题")
-            .description("浅色外观时终端用左栏选中的主题，深色外观时用右栏的。")
-            .items([terminal_theme_item(store)]),
+            .title("主题")
+            .description("浅色外观时用左栏选中的主题，深色外观时用右栏的。")
+            .items([app_follows_item(store), terminal_theme_item(store)]),
     ]
 }
 

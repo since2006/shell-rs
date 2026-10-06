@@ -1,5 +1,6 @@
 //! 设置: the settings tab, the settings it edits and how they are applied.
 
+mod app_theme;
 mod apply;
 mod highlight_rules;
 mod model;

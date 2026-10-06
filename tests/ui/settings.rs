@@ -366,7 +366,15 @@ fn terminal_themes_follow_the_appearance_and_a_card_chooses_one(cx: &mut TestApp
         )
     });
     // The light column is the one in effect, so the terminals change now.
+    // The app stays neutral until 界面跟随主题 is on.
     assert_eq!(in_effect(cx), light.key());
+    let neutral = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            let name = cx.theme().theme_name().clone();
+            name == "Default Light" || name == "Default Dark"
+        })
+    };
+    assert!(neutral(cx));
     in_frame(cx, handle, |window, cx| {
         assert_eq!(window.find(card(light)).checked(), Some(true));
         assert_eq!(
@@ -378,10 +386,52 @@ fn terminal_themes_follow_the_appearance_and_a_card_chooses_one(cx: &mut TestApp
     // The dark one waits for the dark appearance.
     cx.update(|cx| assert_eq!(settings.read(cx).settings().terminal_theme.dark, dark.key()));
     assert_eq!(in_effect(cx), light.key());
+
+    // 主题 is the second group, the switch its first item.
+    let switch = |window: &mut gpui_kit::Window, cx: &mut App| {
+        window
+            .within("settings")
+            .within("group-1")
+            .within("item-0")
+            .click("check", cx)
+    };
+    in_frame(cx, handle, |window, cx| {
+        let on = window
+            .within("settings")
+            .within("group-1")
+            .within("item-0")
+            .find("check")
+            .checked();
+        assert_eq!(on, Some(false));
+        switch(window, cx);
+    });
+    assert!(cx.update(|cx| settings.read(cx).settings().terminal_theme.app_follows));
+    // On, the app takes the theme's colors, for either appearance.
+    let background = |cx: &mut TestAppContext| cx.update(|cx| cx.theme().background.to_rgb());
+    let near = |a: gpui_kit::Rgba, b: gpui_kit::Rgba| {
+        (a.r - b.r).abs() + (a.g - b.g).abs() + (a.b - b.b).abs() < 4. / 255.
+    };
+    assert!(near(background(cx), light.background().to_rgb()));
     set_appearance(Appearance::Dark, cx);
     assert_eq!(in_effect(cx), dark.key());
+    assert!(cx.update(|cx| cx.theme().is_dark()));
+    assert!(near(background(cx), dark.background().to_rgb()));
     set_appearance(Appearance::Light, cx);
     assert_eq!(in_effect(cx), light.key());
+    assert!(near(background(cx), light.background().to_rgb()));
+
+    // Off again, the app is neutral and the terminals keep the theme.
+    in_frame(cx, handle, |window, cx| switch(window, cx));
+    assert_eq!(in_effect(cx), light.key());
+    assert!(neutral(cx));
+    in_frame(cx, handle, |window, cx| switch(window, cx));
+
+    // Back on the default, the app is gpui-kit's own light theme again.
+    in_frame(cx, handle, |window, cx| {
+        window.click("terminal-theme-shellrs-light", cx)
+    });
+    assert_eq!(in_effect(cx), "shellrs-light");
+    cx.update(|cx| assert_eq!(cx.theme().theme_name().as_ref(), "Default Light"));
 }
 
 /// The 关键字高亮 rules, as the settings hold them.

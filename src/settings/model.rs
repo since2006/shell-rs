@@ -34,13 +34,17 @@ pub struct AppSettings {
     pub terminal_highlight: TerminalHighlightSettings,
 }
 
-/// 外观 → 终端主题: by key, the theme terminals use while the app is light
-/// and the one while it is dark.
+/// 外观 → 主题: by key, the theme used while the app is light and the one
+/// while it is dark, and whether the app takes its colors or only the
+/// terminals do.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TerminalThemeSettings {
     pub light: String,
     pub dark: String,
+    /// 界面跟随主题. Off until the user turns it on: the app keeps
+    /// gpui-kit's own neutral light or dark colors.
+    pub app_follows: bool,
 }
 
 impl Default for TerminalThemeSettings {
@@ -48,11 +52,35 @@ impl Default for TerminalThemeSettings {
         Self {
             light: TerminalTheme::default_for(ThemeMode::Light).key().into(),
             dark: TerminalTheme::default_for(ThemeMode::Dark).key().into(),
+            app_follows: false,
         }
     }
 }
 
 impl TerminalThemeSettings {
+    /// The theme the app's colors come from for `mode`: the chosen one, or
+    /// the default, which is gpui-kit's own, when the app does not follow.
+    pub fn app_theme(&self, mode: ThemeMode) -> &'static TerminalTheme {
+        if self.app_follows {
+            self.theme(mode)
+        } else {
+            TerminalTheme::default_for(mode)
+        }
+    }
+
+    /// Whether both columns have their defaults, the switch aside.
+    pub fn is_default_choice(&self) -> bool {
+        let default = Self::default();
+        self.light == default.light && self.dark == default.dark
+    }
+
+    /// Both columns back to their defaults, the switch left as it is.
+    pub fn reset_choice(&mut self) {
+        let default = Self::default();
+        self.light = default.light;
+        self.dark = default.dark;
+    }
+
     /// The theme for `mode`. A key this version does not know (from a newer
     /// one, or a typo), or one of a theme for the other appearance, gives
     /// way to the default rather than failing the file.
@@ -485,8 +513,22 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_value(&themes).unwrap(),
-            serde_json::json!({"light": "shellrs-light", "dark": dark.key()})
+            serde_json::json!({"light": "shellrs-light", "dark": dark.key(), "app_follows": false})
         );
+
+        // The app stays neutral, the default's colors, gpui-kit's own,
+        // unless told to follow; the terminals have the theme either way.
+        assert_eq!(
+            themes.app_theme(ThemeMode::Dark),
+            TerminalTheme::default_for(ThemeMode::Dark)
+        );
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"terminal_theme":{"dark":"nord","app_follows":true}}"#)
+                .unwrap();
+        let themes = &settings.terminal_theme;
+        assert_eq!(themes.theme(ThemeMode::Dark).key(), "nord");
+        assert_eq!(themes.app_theme(ThemeMode::Dark).key(), "nord");
+        assert!(!themes.is_default_choice());
     }
 
     #[test]
