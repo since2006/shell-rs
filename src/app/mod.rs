@@ -176,6 +176,21 @@ fn file_list_key_bindings() -> Vec<KeyBinding> {
         let bind = |keys: &str, command: ExplorerCommand, context: &str| {
             KeyBinding::new(keys, ExplorerShortcut(command), Some(context))
         };
+        // 显示隐藏文件: Finder's ⌘⇧. (macOS reports it as ⌘>), WinSCP's
+        // Ctrl+Alt+H elsewhere.
+        let side = crate::explorer::PaneSide::from_remote(remote);
+        #[cfg(target_os = "macos")]
+        bindings.push(KeyBinding::new(
+            "cmd->",
+            ToggleHiddenFiles(side),
+            Some(context),
+        ));
+        #[cfg(not(target_os = "macos"))]
+        bindings.push(KeyBinding::new(
+            "ctrl-alt-h",
+            ToggleHiddenFiles(side),
+            Some(context),
+        ));
         // Several keys per command: the last one registered is the one
         // tooltips show, so WinSCP's key goes last.
         #[cfg(target_os = "macos")]

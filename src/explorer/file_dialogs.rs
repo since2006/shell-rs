@@ -156,7 +156,7 @@ impl ExplorerPanel {
         let existing: Vec<String> = self
             .pane(remote)
             .read(cx)
-            .entries(cx)
+            .listed_entries(cx)
             .iter()
             .filter(|entry| !entry.is_parent())
             .map(|entry| entry.name.to_string())

@@ -31,8 +31,8 @@ use crate::app::{
     MoveHostNode, NewChildGroup, NewGroup, NewHost, NewHostInGroup, NewLocalTerminal,
     NewTemporaryConnection, OpenExplorer, OpenSettings, PasteTerminal, QuickConnect,
     ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, RenameExplorer,
-    RenameGroup, RenameTerminal, RestartLocalTerminal, SetFileSizeFormat, ToggleHostPanel,
-    ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
+    RenameGroup, RenameTerminal, RestartLocalTerminal, SetFileSizeFormat, ToggleHiddenFiles,
+    ToggleHostPanel, ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
 };
 use crate::cli::{CliIntegration, CliServer, CliTarget, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -2048,6 +2048,20 @@ impl Workspace {
         });
     }
 
+    /// Saved like any setting; applying it lists that side of every SFTP
+    /// tab again.
+    fn on_toggle_hidden_files(
+        &mut self,
+        action: &ToggleHiddenFiles,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let side = action.0;
+        self.settings.update(cx, |settings, cx| {
+            settings.update(|settings| settings.show_hidden.toggle(side), cx)
+        });
+    }
+
     fn on_focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
         if !self.dock_area.read(cx).is_dock_open(DockPlacement::Left) {
             self.dock_area.update(cx, |area, cx| {
@@ -2391,6 +2405,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_remove_cli_command))
             .on_action(cx.listener(Self::on_install_agent_skill))
             .on_action(cx.listener(Self::on_set_file_size_format))
+            .on_action(cx.listener(Self::on_toggle_hidden_files))
             .on_action(cx.listener(Self::on_remove_agent_skill))
             .on_action(cx.listener(Self::on_refresh_cli_integration))
             .on_action(cx.listener(Self::on_check_for_updates))

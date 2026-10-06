@@ -98,7 +98,12 @@ pub(super) enum MenuHit {
 /// the pane's; the table's own row selection stays off.
 pub struct FileListing {
     columns: Vec<Column>,
+    /// Everything the directory holds, as read.
+    listed: Vec<FileEntry>,
+    /// The rows shown, sorted: `listed` less the hidden files while they
+    /// are not shown.
     rows: Vec<FileEntry>,
+    show_hidden: bool,
     sort: Option<(usize, ColumnSort)>,
     side: PaneSide,
     context: ListingContext,
@@ -132,7 +137,9 @@ impl FileListing {
     pub fn new(side: PaneSide) -> Self {
         Self {
             columns: columns(side),
+            listed: Vec::new(),
             rows: Vec::new(),
+            show_hidden: false,
             sort: None,
             side,
             context: ListingContext::default(),
@@ -143,8 +150,19 @@ impl FileListing {
         self.context = context;
     }
 
+    /// The rows shown, in display order.
     pub fn rows(&self) -> &[FileEntry] {
         &self.rows
+    }
+
+    /// Everything the directory holds, hidden files included.
+    pub fn listed(&self) -> &[FileEntry] {
+        &self.listed
+    }
+
+    /// How many hidden files are left out.
+    pub fn hidden_count(&self) -> usize {
+        self.listed.len() - self.rows.len()
     }
 
     /// Row names in display order, `..` included.
@@ -247,7 +265,29 @@ impl FileListing {
     }
 
     pub fn set_rows(&mut self, rows: Vec<FileEntry>) {
-        self.rows = rows;
+        self.listed = rows;
+        self.filter();
+    }
+
+    pub fn shows_hidden(&self) -> bool {
+        self.show_hidden
+    }
+
+    pub fn set_show_hidden(&mut self, show: bool) {
+        if self.show_hidden != show {
+            self.show_hidden = show;
+            self.filter();
+        }
+    }
+
+    fn filter(&mut self) {
+        let show_hidden = self.show_hidden;
+        self.rows = self
+            .listed
+            .iter()
+            .filter(|entry| show_hidden || !entry.is_hidden())
+            .cloned()
+            .collect();
         self.apply_sort();
     }
 
@@ -366,7 +406,8 @@ impl TableDelegate for FileListing {
                     .child(
                         icon_for(entry)
                             .small()
-                            .text_color(cx.theme().muted_foreground),
+                            .text_color(cx.theme().muted_foreground)
+                            .when(entry.is_hidden(), |icon| icon.opacity(0.6)),
                     )
                     .child(div().min_w_0().truncate().child(entry.name.clone()));
                 let label = if parent {
@@ -447,8 +488,13 @@ impl TableDelegate for FileListing {
         // `render_td`. `DataTable` paints its hover over the whole row after
         // this row's own style, so the row covers it with the table's own
         // (opaque) background, under the cells.
+        // A hidden file, when shown, is lighter than the rest, every column
+        // of it.
         let row = div()
             .id(ElementId::Name(format!("file:{name}").into()))
+            .when(entry.is_hidden(), |row| {
+                row.text_color(cx.theme().muted_foreground)
+            })
             .child(div().absolute().inset_0().bg(cx.theme().tokens.table))
             // Where this row paints tells where every row is. Offsets are
             // explicit: an absolute child without them lands below the cells.

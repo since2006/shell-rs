@@ -68,6 +68,7 @@ icon_assets!(
         FilePenLine,
         Save,
         Eye,
+        EyeOff,
         ZoomIn,
         ZoomOut,
         Zap,

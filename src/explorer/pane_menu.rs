@@ -2,8 +2,10 @@
 //! and the toolbar's bookmark and 新建 menus. Each item dispatches the same
 //! `ExplorerCommand` as the toolbar button with that verb.
 
-use super::{ExplorerId, FileSizeFormat, NewEntryKind, PreviewKind};
-use crate::app::{CatalogIcon, ExplorerAction, ExplorerCommand, SetFileSizeFormat};
+use super::{ExplorerId, FileSizeFormat, NewEntryKind, PaneSide, PreviewKind};
+use crate::app::{
+    CatalogIcon, ExplorerAction, ExplorerCommand, SetFileSizeFormat, ToggleHiddenFiles,
+};
 use gpui_kit::component::{Icon, IconName, menu::PopupMenu};
 use gpui_kit::*;
 
@@ -29,6 +31,8 @@ pub(super) struct PaneMenuState {
     pub can_modify: bool,
     /// A transfer can start now.
     pub can_transfer: bool,
+    /// 显示隐藏文件 is on for this side.
+    pub show_hidden: bool,
 }
 
 impl PaneMenuState {
@@ -121,7 +125,14 @@ pub(super) fn directory_menu(
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
     let create = state.clone();
-    add_bookmark_item(refresh_items(menu, state, window, cx), state)
+    let menu = refresh_items(menu, state, window, cx)
+        .menu_with_check(
+            "显示隐藏文件",
+            state.show_hidden,
+            Box::new(ToggleHiddenFiles(PaneSide::from_remote(state.remote))),
+        )
+        .separator();
+    add_bookmark_item(menu, state)
         .separator()
         .submenu("新建", window, cx, move |menu, _, _| {
             new_menu(menu, &create)
@@ -136,7 +147,7 @@ pub(super) fn path_menu(
     cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
     let remote = state.remote;
-    add_bookmark_item(refresh_items(menu, state, window, cx), state)
+    add_bookmark_item(refresh_items(menu, state, window, cx).separator(), state)
         .menu_with_icon(
             "复制路径",
             Icon::new(IconName::Copy),
@@ -150,7 +161,7 @@ pub(super) fn path_menu(
         )
 }
 
-/// 前往 ▸ and 刷新, then a separator.
+/// 前往 ▸ and 刷新.
 fn refresh_items(
     menu: PopupMenu,
     state: &PaneMenuState,
@@ -197,7 +208,6 @@ fn refresh_items(
         Icon::new(CatalogIcon::RefreshCw),
         state.action(ExplorerCommand::Refresh { remote }),
     )
-    .separator()
 }
 
 fn add_bookmark_item(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {

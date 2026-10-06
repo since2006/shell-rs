@@ -1,7 +1,8 @@
 //! Directory row snapshots and display formatting.
 
+use super::PaneSide;
 use crate::sftp::{DirectoryEntry, EntryKind};
-use gpui_kit::{Global, SharedString};
+use gpui_kit::{App, Global, SharedString};
 use serde::{Deserialize, Serialize};
 
 /// Stable identity for one SFTP tab. A host can have several, each with
@@ -139,6 +140,12 @@ impl FileEntry {
         self.name.as_ref() == ".."
     }
 
+    /// A dot file, which the lists leave out while hidden files are not
+    /// shown. `..` is not one.
+    pub fn is_hidden(&self) -> bool {
+        !self.is_parent() && self.name.starts_with('.')
+    }
+
     /// The type shown in the 类型 column: the kind, or the extension for files.
     pub fn type_label(&self) -> String {
         if self.is_parent() {
@@ -264,6 +271,43 @@ pub enum FileSizeFormat {
 }
 
 impl Global for FileSizeFormat {}
+
+/// 显示隐藏文件: whether the lists show dot files, for each side on its own
+/// (dot files on the server are often wanted, the local home's seldom). A
+/// side's choice holds for every SFTP tab, kept in the settings and set from
+/// them like `FileSizeFormat`. Off until the user turns it on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ShowHiddenFiles {
+    pub local: bool,
+    pub remote: bool,
+}
+
+impl Global for ShowHiddenFiles {}
+
+impl ShowHiddenFiles {
+    /// Whether `side` shows them now.
+    pub fn get(side: PaneSide, cx: &App) -> bool {
+        cx.try_global::<Self>()
+            .copied()
+            .unwrap_or_default()
+            .on(side)
+    }
+
+    pub fn on(self, side: PaneSide) -> bool {
+        match side {
+            PaneSide::Local => self.local,
+            PaneSide::Remote => self.remote,
+        }
+    }
+
+    pub fn toggle(&mut self, side: PaneSide) {
+        match side {
+            PaneSide::Local => self.local = !self.local,
+            PaneSide::Remote => self.remote = !self.remote,
+        }
+    }
+}
 
 impl FileSizeFormat {
     /// In the order the menu lists them.

@@ -7,7 +7,7 @@ use crate::{
     cli::AgentKind,
     docker::{ContainerCommand, DockerObject},
     editor::EditorId,
-    explorer::{ExplorerId, FileSizeFormat},
+    explorer::{ExplorerId, FileSizeFormat, PaneSide},
     host::{
         CredentialId, ForwardId, GroupId, HostId, HostNode, NodeDrop, SnippetCategoryId, SnippetId,
     },
@@ -219,6 +219,9 @@ id_actions! {
 
     /// Show the SFTP 大小 column in another format, from its title's menu.
     SetFileSizeFormat(FileSizeFormat);
+    /// Show the dot files of one side of the SFTP tabs, or stop showing
+    /// them: that side of every tab, kept in the settings.
+    ToggleHiddenFiles(PaneSide);
 
     /// Show a tool in the right sidebar, or hide the sidebar if it is
     /// already showing that tool.

@@ -161,7 +161,7 @@ impl ExplorerPanel {
     ) -> TransferSources {
         let pane = self.pane(remote).read(cx);
         let listed: HashMap<String, bool> = pane
-            .entries(cx)
+            .listed_entries(cx)
             .iter()
             .filter(|entry| !entry.is_parent())
             .map(|entry| (pane.child_path_of(&entry.name), entry.is_dir()))

@@ -2,7 +2,7 @@ use gpui_kit::WindowAppearance;
 use gpui_kit::component::ThemeMode;
 use serde::{Deserialize, Serialize};
 
-use crate::explorer::FileSizeFormat;
+use crate::explorer::{FileSizeFormat, ShowHiddenFiles};
 use crate::terminal::{DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, LINE_HEIGHT_RANGE};
 use crate::update::Channel;
 
@@ -20,6 +20,9 @@ pub struct AppSettings {
     /// The SFTP 大小 column, switched from the column title's menu rather
     /// than the settings page, as in WinSCP.
     pub file_size_format: FileSizeFormat,
+    /// 显示隐藏文件 in the SFTP lists, each side on its own, switched from
+    /// their toolbars and menus.
+    pub show_hidden: ShowHiddenFiles,
 }
 
 /// 外部 CLI.
@@ -265,6 +268,16 @@ mod tests {
         let settings: AppSettings =
             serde_json::from_str(r#"{"file_size_format":"short"}"#).unwrap();
         assert_eq!(settings.file_size_format, FileSizeFormat::Short);
+        // Hidden files are left out unless the file says otherwise, for
+        // each side on its own.
+        assert_eq!(
+            AppSettings::default().show_hidden,
+            ShowHiddenFiles::default()
+        );
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"show_hidden":{"remote":true}}"#).unwrap();
+        assert!(settings.show_hidden.remote);
+        assert!(!settings.show_hidden.local);
     }
 
     #[test]

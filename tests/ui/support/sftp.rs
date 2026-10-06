@@ -119,6 +119,7 @@ impl SftpTransport for FakeSftpTransport {
                     let result = match path.as_str() {
                         "/denied" => Err("权限不足".into()),
                         "/empty" => Ok(DirectoryListing::new("/empty", vec![])),
+                        "/dotfiles" => Ok(dotfiles_listing()),
                         // The files put there, as `with_files` gave them.
                         "/pictures" => Ok(files_listing(&self.files, "/pictures")),
                         _ => Ok(fake_listing(path.as_str())),
@@ -371,6 +372,27 @@ pub fn files_listing(files: &FakeFiles, path: &str) -> DirectoryListing {
         })
         .collect();
     DirectoryListing::new(path, entries)
+}
+
+/// A home of mostly hidden files: `.bashrc`, `.ssh` and one `notes.txt`.
+fn dotfiles_listing() -> DirectoryListing {
+    DirectoryListing::new(
+        "/dotfiles",
+        vec![
+            DirectoryEntry::new(
+                ".bashrc",
+                FileMetadata::new(EntryKind::File, 10, Some(100), Some(0o644)),
+            ),
+            DirectoryEntry::new(
+                ".ssh",
+                FileMetadata::new(EntryKind::Directory, 0, None, Some(0o700)),
+            ),
+            DirectoryEntry::new(
+                "notes.txt",
+                FileMetadata::new(EntryKind::File, 20, Some(200), Some(0o644)),
+            ),
+        ],
+    )
 }
 
 pub fn fake_listing(path: &str) -> DirectoryListing {

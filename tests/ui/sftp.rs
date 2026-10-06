@@ -285,6 +285,144 @@ async fn sftp_size_column_shows_kilobytes_until_another_format_is_chosen(cx: &mu
     }
 }
 
+/// 显示隐藏文件 is a switch for each side on its own, saved like the size
+/// format and off at first: a side's toolbar button and the key turn it on
+/// and off, its icon and tooltip follow, and a hidden file leaves the
+/// selection.
+#[gpui_kit::test]
+async fn sftp_hidden_files_show_and_hide_from_the_toolbar_and_key(cx: &mut TestAppContext) {
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
+    use shellrs::explorer::ShowHiddenFiles;
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::Navigate {
+                    remote: true,
+                    path: "/dotfiles".into(),
+                },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .try_find("file:notes.txt")
+            .is_some()
+    })
+    .await;
+    let saved = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .show_hidden
+        })
+    };
+    let shown = |local, remote| ShowHiddenFiles { local, remote };
+    // The button's label is what a click does.
+    let button = |window: &mut gpui_kit::Window, pane: &'static str| {
+        window
+            .within((pane, SFTP_TAB))
+            .find("hidden-files")
+            .label()
+            .map(str::to_string)
+    };
+    assert_eq!(saved(cx), shown(false, false), "left out until turned on");
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let remote = window.within(("remote-pane", SFTP_TAB));
+        assert!(remote.try_find("file:.bashrc").is_none());
+        assert!(remote.try_find("file:.ssh").is_none());
+        assert_eq!(
+            remote.find("pane-status").label(),
+            Some("1 个项目 · 隐藏 2 项")
+        );
+        assert_eq!(
+            button(window, "remote-pane").as_deref(),
+            Some("显示隐藏文件")
+        );
+        assert_eq!(
+            button(window, "local-pane").as_deref(),
+            Some("显示隐藏文件")
+        );
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .click("hidden-files", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    // The other side keeps its own.
+    assert_eq!(saved(cx), shown(false, true));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let remote = window.within(("remote-pane", SFTP_TAB));
+        assert!(remote.try_find("file:.bashrc").is_some());
+        assert!(remote.try_find("file:.ssh").is_some());
+        assert_eq!(remote.find("pane-status").label(), Some("3 个项目"));
+        assert_eq!(
+            button(window, "remote-pane").as_deref(),
+            Some("不显示隐藏文件")
+        );
+        assert_eq!(
+            button(window, "local-pane").as_deref(),
+            Some("显示隐藏文件")
+        );
+    })
+    .unwrap();
+
+    // The key, from a list, switches that list's side.
+    #[cfg(target_os = "macos")]
+    let key = "cmd->";
+    #[cfg(not(target_os = "macos"))]
+    let key = "ctrl-alt-h";
+    press_on_row(cx, handle, "local-pane", "目录", key);
+    assert_eq!(saved(cx), shown(true, true));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            button(window, "local-pane").as_deref(),
+            Some("不显示隐藏文件")
+        );
+    })
+    .unwrap();
+    // Leaving them out again takes the selected one with them.
+    press_on_row(cx, handle, "remote-pane", ".bashrc", key);
+    assert_eq!(saved(cx), shown(true, false));
+    cx.update(|cx| assert!(pane_selection(&workspace, true, cx).is_empty()));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let remote = window.within(("remote-pane", SFTP_TAB));
+        assert!(remote.try_find("file:.bashrc").is_none());
+        assert_eq!(
+            remote.find("pane-status").label(),
+            Some("1 个项目 · 隐藏 2 项")
+        );
+    })
+    .unwrap();
+    // The pane still knows them: a new name is checked against them.
+    cx.update(|cx| {
+        let explorer = workspace.read(cx).explorer(ExplorerId(SFTP_TAB)).unwrap();
+        let names: Vec<_> = explorer
+            .read(cx)
+            .remote()
+            .read(cx)
+            .listed_entries(cx)
+            .iter()
+            .map(|entry| entry.name.to_string())
+            .collect();
+        assert!(names.contains(&".bashrc".to_string()));
+    });
+}
+
 /// Click a toolbar button of the remote pane and wait for the path it lands on.
 async fn click_remote_tool(
     cx: &mut TestAppContext,

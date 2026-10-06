@@ -1,6 +1,6 @@
 use super::{
     ClickMode, CursorMotion, ExplorerId, FileEntry, FileListing, FileSizeFormat, LoadIntent,
-    NavigationHistory, PreviewKind, Selection, child_path,
+    NavigationHistory, PreviewKind, Selection, ShowHiddenFiles, child_path,
     file_listing::{ListGeometry, ListingContext, MenuHit, Pressed, accept_drops, offer_drop},
     pane_menu::{
         PaneMenuState, bookmark_menu, directory_menu, item_menu, new_menu, size_format_menu,
@@ -12,7 +12,7 @@ use crate::app::ExplorerDispatch as _;
 use crate::{
     app::{
         CatalogIcon, ExplorerAction, ExplorerCommand, ExplorerShortcut, LOCAL_FILE_LIST_CONTEXT,
-        REMOTE_FILE_LIST_CONTEXT,
+        REMOTE_FILE_LIST_CONTEXT, ToggleHiddenFiles,
     },
     host::{BookmarkSide, ConnectionState, HostId, HostStore},
     sftp::{DirectoryListing, SharedLocalDirectoryProvider},
@@ -77,6 +77,9 @@ pub enum PaneSide {
     Remote,
 }
 impl PaneSide {
+    pub fn from_remote(remote: bool) -> Self {
+        if remote { Self::Remote } else { Self::Local }
+    }
     pub fn label(self) -> &'static str {
         if self == Self::Local {
             "本地"
@@ -227,7 +230,8 @@ impl FilePane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let listing = FileListing::new(side);
+        let mut listing = FileListing::new(side);
+        listing.set_show_hidden(ShowHiddenFiles::get(side, cx));
         // The pane owns selection (multi-select by name); the table's single
         // row selection stays off so it never paints a competing highlight.
         let table = cx.new(|cx| {
@@ -257,6 +261,7 @@ impl FilePane {
                 },
             ),
             cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.observe_global::<ShowHiddenFiles>(|pane, cx| pane.sync_hidden_files(cx)),
         ];
         let mut pane = Self {
             side,
@@ -355,8 +360,27 @@ impl FilePane {
         let listing = table.delegate();
         listing.entry(listing.position(cursor)?).cloned()
     }
+    /// The rows shown, in display order.
     pub fn entries(&self, cx: &App) -> Vec<FileEntry> {
         self.table.read(cx).delegate().rows().to_vec()
+    }
+    /// Everything the directory holds, hidden files included: what a new
+    /// name must not clash with.
+    pub fn listed_entries(&self, cx: &App) -> Vec<FileEntry> {
+        self.table.read(cx).delegate().listed().to_vec()
+    }
+    /// List the rows again when this side's hidden files are shown or no
+    /// longer are. A hidden file leaves the selection with its row.
+    fn sync_hidden_files(&mut self, cx: &mut Context<Self>) {
+        let show = ShowHiddenFiles::get(self.side, cx);
+        if self.table.read(cx).delegate().shows_hidden() == show {
+            return;
+        }
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().set_show_hidden(show);
+            table.refresh(cx);
+        });
+        self.update_selection(cx, |selection, order| selection.retain(order));
     }
     pub fn column_names(&self, cx: &App) -> Vec<SharedString> {
         let table = self.table.read(cx);
@@ -465,7 +489,9 @@ impl FilePane {
             pane: Some(cx.entity().downgrade()),
             menu_hit: self.menu_hit.clone(),
             geometry: self.geometry.clone(),
-            placeholder: self.placeholder().into(),
+            placeholder: self
+                .placeholder(self.table.read(cx).delegate().hidden_count())
+                .into(),
         };
         self.table.update(cx, |table, cx| {
             table.delegate_mut().configure(context);
@@ -476,12 +502,15 @@ impl FilePane {
     /// has been read, what is going on until then, in the status line's
     /// words. An empty directory being read again keeps saying 空目录 until
     /// the read is slow, like the status line, so a quick refresh does not
-    /// flicker.
-    fn placeholder(&self) -> &'static str {
+    /// flicker. A directory of nothing but hidden files, not shown, is not
+    /// empty.
+    fn placeholder(&self, hidden: usize) -> &'static str {
         if self.connection == ConnectionState::Connecting {
             "正在连接 SFTP…"
         } else if self.loading && (!self.listed || self.slow_load) {
             "正在读取目录…"
+        } else if self.listed && hidden > 0 {
+            "只有隐藏文件"
         } else if self.listed {
             "空目录"
         } else if self.connection == ConnectionState::Disconnected {
@@ -656,16 +685,22 @@ impl FilePane {
     /// count. It is always there, so none of these move the list. What went
     /// wrong goes to the window's status line instead, see `problem`.
     fn render_status(&self, file_count: usize, selected: usize, cx: &App) -> impl IntoElement {
+        let hidden = self.table.read(cx).delegate().hidden_count();
         let status = if self.connection == ConnectionState::Connecting {
             "正在连接 SFTP…".to_string()
         } else if let Some(name) = &self.opening {
             format!("正在打开 {name}…")
         } else if self.slow_load {
             "正在读取目录…".to_string()
-        } else if selected == 0 {
-            format!("{file_count} 个项目")
         } else {
-            format!("{file_count} 个项目 · 已选择 {selected} 项")
+            let mut status = format!("{file_count} 个项目");
+            if hidden > 0 {
+                status.push_str(&format!(" · 隐藏 {hidden} 项"));
+            }
+            if selected > 0 {
+                status.push_str(&format!(" · 已选择 {selected} 项"));
+            }
+            status
         };
         h_flex()
             .id("pane-status")
@@ -949,6 +984,7 @@ impl FilePane {
             bookmarks: self.bookmarks(cx),
             can_modify: self.takes_commands() && !self.busy,
             can_transfer: self.transfer_enabled,
+            show_hidden: ShowHiddenFiles::get(self.side, cx),
         }
     }
 }
@@ -1001,6 +1037,11 @@ impl Render for FilePane {
                 .border_b_1()
                 .border_color(cx.theme().border)
                 .child(row)
+        };
+        let hidden_files_tip = if state.show_hidden {
+            "不显示隐藏文件"
+        } else {
+            "显示隐藏文件"
         };
         let navigation = toolbar()
             // `Select` fills its parent (`size_full`), so it needs a sized
@@ -1089,6 +1130,36 @@ impl Render for FilePane {
                     ExplorerCommand::Forward { remote },
                 )
                 .disabled(!navigable || !state.can_go_forward),
+            )
+            .child(Separator::vertical())
+            // This side's switch, for every SFTP tab. The icon is how things
+            // are, an open eye while hidden files show; the tooltip is what a
+            // click does.
+            .child(
+                Button::new("hidden-files")
+                    .ghost()
+                    .small()
+                    .icon(Icon::new(if state.show_hidden {
+                        CatalogIcon::Eye
+                    } else {
+                        CatalogIcon::EyeOff
+                    }))
+                    .accessibility_label(hidden_files_tip)
+                    .tooltip_with_action(
+                        hidden_files_tip,
+                        &ToggleHiddenFiles(self.side),
+                        Some(context),
+                    )
+                    .on_click({
+                        let dispatch = self.dispatch.clone();
+                        let side = self.side;
+                        move |_, window, cx| {
+                            let dispatch = dispatch.clone();
+                            window.defer(cx, move |window, cx| {
+                                dispatch.dispatch_action(&ToggleHiddenFiles(side), window, cx)
+                            });
+                        }
+                    }),
             );
         let transfer_shortcut = ExplorerShortcut(ExplorerCommand::Transfer { remote });
         let (id, icon, label, tip) = if remote {
