@@ -73,7 +73,8 @@ icon_assets!(
         ZoomOut,
         Zap,
         ExternalLink,
-        Highlighter
+        Highlighter,
+        GripVertical
     ]
 );
 

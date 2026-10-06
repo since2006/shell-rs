@@ -318,70 +318,12 @@ fn the_appearance_setting_drives_the_theme_and_the_title_bar_switch(cx: &mut Tes
     .unwrap();
 }
 
-/// The patterns of the 关键字高亮 rules, in order.
-fn highlight_patterns(workspace: &Entity<Workspace>, cx: &App) -> Vec<String> {
-    workspace
-        .read(cx)
-        .settings()
-        .read(cx)
-        .settings()
-        .terminal_highlight
-        .rules
-        .iter()
-        .map(|rule| rule.pattern.clone())
-        .collect()
-}
-
-#[gpui_kit::test]
-async fn highlight_rules_are_added_edited_and_deleted_on_their_page(cx: &mut TestAppContext) {
-    use shellrs::terminal::{HighlightColor, HighlightRule, PatternKind, TerminalHighlights};
-
-    let (handle, workspace) = open_workspace(cx);
-    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
-    // 关键字高亮 comes right after 终端, with the examples a new
-    // installation starts with.
-    in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-2", cx)
-    });
-    in_frame(cx, handle, |window, _| {
-        assert!(window.find(("highlight-rule", 2usize)).visible());
-        assert!(window.try_find(("highlight-rule", 3usize)).is_none());
-    });
-    let examples = [
-        "ERROR".to_string(),
-        "WARN".into(),
-        r"\b\d{1,3}(\.\d{1,3}){3}\b".into(),
-    ];
-    assert_eq!(cx.update(|cx| highlight_patterns(&workspace, cx)), examples);
-
-    // A new rule takes the keyboard at once; a regex that does not compile
-    // is refused, the dialog staying open.
-    in_frame(cx, handle, |window, cx| {
-        window.click("add-highlight-rule", cx)
-    });
-    in_frame(cx, handle, |window, cx| {
-        assert_eq!(window.find("highlight-pattern").focused(), Some(true));
-        window.input("OutOf(Memory", cx);
-        window.within("highlight-kind").click(1usize, cx);
-        window.click("commit", cx);
-    });
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
-        window
-            .try_find("form-error")
-            .is_some_and(|error| error.label() == Some("正则表达式写法有误"))
-    })
-    .await;
-    in_frame(cx, handle, |window, cx| {
-        window.click("highlight-pattern", cx);
-        window.press("cmd-a", cx);
-        window.input(r"OutOfMemory\w*", cx);
-        window.within("highlight-color").click(5usize, cx);
-        window.click("highlight-bold", cx);
-        window.click("highlight-notify", cx);
-        window.click("commit", cx);
-    });
-    cx.run_until_parked();
-    let rules = cx.update(|cx| {
+/// The 关键字高亮 rules, as the settings hold them.
+fn highlight_rules(
+    workspace: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> Vec<shellrs::terminal::HighlightRule> {
+    cx.update(|cx| {
         workspace
             .read(cx)
             .settings()
@@ -389,50 +331,166 @@ async fn highlight_rules_are_added_edited_and_deleted_on_their_page(cx: &mut Tes
             .settings()
             .terminal_highlight
             .rules
+    })
+}
+
+fn patterns(rules: &[shellrs::terminal::HighlightRule]) -> Vec<&str> {
+    rules.iter().map(|rule| rule.pattern.as_str()).collect()
+}
+
+/// Scroll the settings page down to the rules, below the window's fold.
+fn scroll_to_highlight_rules(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+    in_frame(cx, handle, |window, cx| {
+        let position = window.find("highlight-preview").bounds().center();
+        window.dispatch_event(
+            gpui_kit::ScrollWheelEvent {
+                position,
+                delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-600.))),
+                modifiers: gpui_kit::Modifiers::default(),
+                touch_phase: gpui_kit::TouchPhase::Moved,
+            }
+            .to_platform_input(),
+            cx,
+        );
     });
+}
+
+#[gpui_kit::test]
+async fn highlight_rules_are_edited_in_place_on_their_page(cx: &mut TestAppContext) {
+    use shellrs::terminal::{HighlightColor, TerminalHighlights};
+
+    let (handle, workspace) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    // 关键字高亮 comes right after 终端, with the examples a new
+    // installation starts with: rows 0 to 2.
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-2", cx)
+    });
+    let ip = r"\b\d{1,3}(\.\d{1,3}){3}\b";
     assert_eq!(
-        rules.last(),
-        Some(&HighlightRule {
-            pattern: r"OutOfMemory\w*".into(),
-            kind: PatternKind::Regex,
-            color: HighlightColor::Magenta,
-            bold: true,
-            notify: true,
-        })
+        patterns(&highlight_rules(&workspace, cx)),
+        ["ERROR", "WARN", ip]
+    );
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find(("highlight-rule", 2usize)).visible());
+        assert!(window.find("highlight-preview").visible());
+    });
+
+    // Off until turned on: the examples color nothing before.
+    let colored = |cx: &mut TestAppContext| {
+        cx.update(|cx| !TerminalHighlights::current(cx).spans("ERROR").is_empty())
+    };
+    assert!(!colored(cx));
+    in_frame(cx, handle, |window, cx| {
+        // 常规 › 启用关键字高亮.
+        let switch = window
+            .within("settings")
+            .within("group-0")
+            .within("item-0")
+            .find("check");
+        assert_eq!(switch.checked(), Some(false));
+        window
+            .within("settings")
+            .within("group-0")
+            .within("item-0")
+            .click("check", cx);
+    });
+    cx.run_until_parked();
+    assert!(colored(cx));
+
+    // A new row takes the keyboard at once; what does not compile says so
+    // under it, and the settings have it as typed.
+    in_frame(cx, handle, |window, cx| {
+        window.click("add-highlight-rule", cx)
+    });
+    scroll_to_highlight_rules(cx, handle);
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find(("highlight-rule-pattern", 3usize)).focused(),
+            Some(true)
+        );
+        window.input("OutOf(Memory", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find(("highlight-rule-error", 3usize)).label(),
+            Some("正则表达式写法有误")
+        );
+        window.press("cmd-a", cx);
+        window.input(r"OutOfMemory\w*", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find(("highlight-rule-error", 3usize)).is_none());
+        window.click(("highlight-rule-note", 3usize), cx);
+        window.input("内存溢出", cx);
+        window.click(("highlight-rule-color", 3usize), cx);
+        window.press("cmd-a", cx);
+        window.input("#D946EF", cx);
+        window.click(("highlight-rule-notify", 3usize), cx);
+        window.click(("highlight-rule-enabled", 0usize), cx);
+    });
+    cx.run_until_parked();
+    let rules = highlight_rules(&workspace, cx);
+    assert_eq!(rules[3].pattern, r"OutOfMemory\w*");
+    assert_eq!(rules[3].note, "内存溢出");
+    assert_eq!(rules[3].color, HighlightColor::from_hex("#d946ef").unwrap());
+    assert!(rules[3].enabled && rules[3].notify);
+    assert!(!rules[0].enabled);
+
+    // The color picker opens on its palette. (Its swatches are keyed by
+    // color; the a11y tree that would catch two of one color is not built
+    // in tests, see FEATURED_COLORS.)
+    in_frame(cx, handle, |window, cx| {
+        window.click(("highlight-rule-picker", 3usize), cx)
+    });
+    in_frame(cx, handle, |window, cx| window.press("escape", cx));
+
+    // Dragged by its handle, the new row goes first.
+    in_frame(cx, handle, |window, cx| {
+        window.drag_to(
+            ("highlight-rule-handle", 3usize),
+            ("highlight-rule", 0usize),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        patterns(&highlight_rules(&workspace, cx)),
+        [r"OutOfMemory\w*", "ERROR", "WARN", ip]
     );
 
-    // With the dialog closed nothing has focus, and the row's button still
-    // reaches the workspace.
+    // Deleted at once, WARN goes; the terminals follow every change.
     in_frame(cx, handle, |window, cx| {
-        window.click(("edit-highlight-rule", 3usize), cx)
-    });
-    in_frame(cx, handle, |window, cx| {
-        assert_eq!(window.find("highlight-pattern").focused(), Some(true));
-        window.press("cmd-a", cx);
-        window.input("OOM", cx);
-        window.within("highlight-kind").click(0usize, cx);
-        window.click("commit", cx);
+        window.click(("delete-highlight-rule", 1usize), cx)
     });
     cx.run_until_parked();
-    assert_eq!(cx.update(|cx| highlight_patterns(&workspace, cx))[3], "OOM");
-
-    // Deleted once confirmed; the terminals follow.
-    in_frame(cx, handle, |window, cx| {
-        window.click(("delete-highlight-rule", 0usize), cx)
+    assert_eq!(
+        patterns(&highlight_rules(&workspace, cx)),
+        [r"OutOfMemory\w*", "ERROR", ip]
+    );
+    cx.update(|cx| {
+        let colored = TerminalHighlights::current(cx).spans("OutOfMemoryError ERROR 10.0.0.1");
+        // ERROR is off; the new rule and the address color.
+        assert_eq!(
+            colored
+                .iter()
+                .map(|(range, _)| range.clone())
+                .collect::<Vec<_>>(),
+            [0..16, 23..31]
+        );
     });
-    in_frame(cx, handle, |window, cx| window.click("ok", cx));
+
+    // 启用关键字高亮 off, nothing colors.
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    settings.update(cx, |settings, cx| {
+        settings.update(|settings| settings.terminal_highlight.enabled = false, cx)
+    });
     cx.run_until_parked();
     cx.update(|cx| {
-        let patterns = highlight_patterns(&workspace, cx);
-        assert_eq!(
-            patterns,
-            [examples[1].clone(), examples[2].clone(), "OOM".into()]
+        assert!(
+            TerminalHighlights::current(cx)
+                .spans("OutOfMemoryError")
+                .is_empty()
         );
-        let in_effect: Vec<_> = TerminalHighlights::current(cx)
-            .rules()
-            .iter()
-            .map(|rule| rule.pattern.clone())
-            .collect();
-        assert_eq!(in_effect, patterns);
     });
 }

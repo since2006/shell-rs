@@ -1001,7 +1001,8 @@ async fn terminals_notify_where_the_user_will_see_it(cx: &mut TestAppContext) {
     });
 }
 
-/// Have the settings hold `rules`, as the 关键字高亮 page writes them.
+/// Have the settings hold `rules`, as the 关键字高亮 page writes them, with
+/// highlighting on.
 fn set_highlight_rules(
     cx: &mut TestAppContext,
     workspace: &Entity<Workspace>,
@@ -1009,7 +1010,13 @@ fn set_highlight_rules(
 ) {
     let settings = cx.update(|cx| workspace.read(cx).settings().clone());
     settings.update(cx, |settings, cx| {
-        settings.update(|settings| settings.terminal_highlight.rules = rules, cx)
+        settings.update(
+            |settings| {
+                settings.terminal_highlight.enabled = true;
+                settings.terminal_highlight.rules = rules;
+            },
+            cx,
+        )
     });
     cx.run_until_parked();
 }

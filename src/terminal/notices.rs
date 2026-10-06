@@ -10,8 +10,8 @@ use alacritty_terminal::vte::{Parser, Perform};
 /// The longest title and body a notification shows, in characters.
 const TITLE_LIMIT: usize = 80;
 const BODY_LIMIT: usize = 240;
-/// The longest pattern a notification's title names, in characters.
-const PATTERN_LIMIT: usize = 40;
+/// The longest rule name a notification's title has, in characters.
+const RULE_LIMIT: usize = 40;
 
 /// Something a terminal asks the user to look at.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -22,8 +22,8 @@ pub enum TerminalNotice {
     /// for an answer usually has its question on.
     Bell { line: String },
     /// A line of new output matched a 关键字高亮 rule that notifies: the
-    /// rule's pattern, and the line.
-    Keyword { pattern: String, line: String },
+    /// rule, by its note or pattern, and the line.
+    Keyword { rule: String, line: String },
 }
 
 impl TerminalNotice {
@@ -34,10 +34,10 @@ impl TerminalNotice {
         }
     }
 
-    /// A rule with `pattern` matched `line`.
-    pub fn keyword(pattern: &str, line: &str) -> Self {
+    /// The rule called `rule` matched `line`.
+    pub fn keyword(rule: &str, line: &str) -> Self {
         TerminalNotice::Keyword {
-            pattern: clean_text(pattern, PATTERN_LIMIT),
+            rule: clean_text(rule, RULE_LIMIT),
             line: clean_text(line, BODY_LIMIT),
         }
     }
@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(
             TerminalNotice::keyword(" ERROR ", "12:00\tERROR\x1b boom"),
             TerminalNotice::Keyword {
-                pattern: "ERROR".into(),
+                rule: "ERROR".into(),
                 line: "12:00 ERROR boom".into()
             }
         );

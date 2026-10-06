@@ -32,12 +32,15 @@ pub struct AppSettings {
     pub terminal_highlight: TerminalHighlightSettings,
 }
 
-/// 关键字高亮: the rules every terminal colors its text by, in the order
-/// they win where they overlap. A file without them gets the examples a new
-/// installation starts with; one the user emptied stays empty.
+/// 关键字高亮: whether terminals color their text by the rules, and the
+/// rules, in the order they win where they overlap. Off until the user turns
+/// it on. A file without the rules gets the examples a new installation
+/// starts with, ready once it is on; one the user emptied stays empty.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TerminalHighlightSettings {
+    /// 启用关键字高亮. Off, no rule colors anything or notifies.
+    pub enabled: bool,
     #[serde(deserialize_with = "readable_rules")]
     pub rules: Vec<HighlightRule>,
 }
@@ -45,6 +48,7 @@ pub struct TerminalHighlightSettings {
 impl Default for TerminalHighlightSettings {
     fn default() -> Self {
         Self {
+            enabled: false,
             rules: default_rules(),
         }
     }
@@ -133,10 +137,6 @@ impl AppSettings {
     /// file nor a typed value can give the terminal a size of zero.
     pub fn normalized(mut self) -> Self {
         self.terminal_font = self.terminal_font.normalized();
-        // A rule with nothing to match matches nothing.
-        self.terminal_highlight
-            .rules
-            .retain(|rule| !rule.pattern.trim().is_empty());
         self
     }
 }
@@ -353,57 +353,54 @@ mod tests {
 
     #[test]
     fn highlight_rules_start_as_examples_and_stay_as_the_user_leaves_them() {
+        // Off, with the examples each on and quiet, ready for when it is.
         let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.terminal_highlight.enabled);
         assert_eq!(settings.terminal_highlight.rules, default_rules());
+        assert!(
+            default_rules()
+                .iter()
+                .all(|rule| rule.enabled && !rule.notify)
+        );
         let settings: AppSettings =
-            serde_json::from_str(r#"{"terminal_highlight":{"rules":[]}}"#).unwrap();
+            serde_json::from_str(r#"{"terminal_highlight":{"enabled":true,"rules":[]}}"#).unwrap();
+        assert!(settings.terminal_highlight.enabled);
         assert!(settings.terminal_highlight.rules.is_empty());
         let json = serde_json::to_value(AppSettings::default()).unwrap();
         assert_eq!(
             json["terminal_highlight"]["rules"][0],
             serde_json::json!({
+                "enabled": true,
                 "pattern": "ERROR",
-                "kind": "keyword",
-                "color": "red",
-                "bold": true,
+                "note": "错误",
+                "color": "#e5484d",
                 "notify": false
             })
         );
-        assert_eq!(json["terminal_highlight"]["rules"][2]["kind"], "regex");
     }
 
     #[test]
     fn a_rule_this_version_cannot_read_costs_only_itself() {
         let settings: AppSettings = serde_json::from_str(
-            r#"{
+            r##"{
                 "appearance": "dark",
                 "terminal_highlight": {"rules": [
                     {"pattern": "FATAL", "color": "orange"},
-                    {"pattern": "OOM", "color": "magenta", "notify": true},
+                    {"pattern": "OOM", "color": "#D946EF", "notify": true},
+                    {"pattern": ""},
                     7
                 ]}
-            }"#,
+            }"##,
         )
         .unwrap();
         assert_eq!(settings.appearance, Appearance::Dark);
         let rules = &settings.terminal_highlight.rules;
-        assert_eq!(rules.len(), 1);
+        assert_eq!(rules.len(), 2);
         assert_eq!(rules[0].pattern, "OOM");
-        assert!(rules[0].notify && !rules[0].bold);
-    }
-
-    #[test]
-    fn a_rule_with_nothing_to_match_is_dropped() {
-        let mut settings = AppSettings::default();
-        settings.terminal_highlight.rules[1].pattern = "  ".into();
-        let rules = settings.normalized().terminal_highlight.rules;
-        assert_eq!(
-            rules
-                .iter()
-                .map(|rule| rule.pattern.as_str())
-                .collect::<Vec<_>>(),
-            ["ERROR", r"\b\d{1,3}(\.\d{1,3}){3}\b"]
-        );
+        assert_eq!(rules[0].color.to_hex(), "#d946ef");
+        assert!(rules[0].enabled && rules[0].notify);
+        // A row added and not filled in yet stays, to be filled in.
+        assert_eq!(rules[1], HighlightRule::default());
     }
 
     #[test]

@@ -1140,7 +1140,7 @@ impl Workspace {
         // Something may have been installed or removed since last time.
         integration.update(cx, |integration, cx| integration.refresh(cx));
         let updater = self.updater.clone();
-        let panel = cx.new(|cx| SettingsPanel::new(store, integration, updater, cx));
+        let panel = cx.new(|cx| SettingsPanel::new(store, integration, updater, window, cx));
         let subscription = cx.subscribe_in(
             &panel,
             window,
@@ -2470,9 +2470,6 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_refresh_history))
             .on_action(cx.listener(Self::on_enter_command))
             .on_action(cx.listener(Self::on_copy_command))
-            .on_action(cx.listener(Self::on_new_highlight_rule))
-            .on_action(cx.listener(Self::on_edit_highlight_rule))
-            .on_action(cx.listener(Self::on_delete_highlight_rule))
             .on_action(cx.listener(Self::on_new_snippet))
             .on_action(cx.listener(Self::on_new_snippet_in))
             .on_action(cx.listener(Self::on_edit_snippet))

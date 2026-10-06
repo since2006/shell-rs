@@ -26,9 +26,8 @@ use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Processor, Timeout as _};
-use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::{App, Global, Hsla};
-use regex::{Regex, RegexBuilder};
+use gpui_kit::{App, Global, Hsla, Rgba};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use super::search::MAX_WRAPPED_LINES;
@@ -43,85 +42,90 @@ const RETELL_AFTER: Duration = Duration::from_secs(300);
 /// How many lines told of are remembered.
 const TOLD_LIMIT: usize = 64;
 
-/// One rule: what to match, how to show it, and whether to tell of it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// One rule: a regular expression, the color its matches show in, and
+/// whether to tell of them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HighlightRule {
+    pub enabled: bool,
+    /// A regular expression, case and all; `(?i)` ignores case. Empty in a
+    /// row just added, when it matches nothing.
     pub pattern: String,
-    pub kind: PatternKind,
+    /// What the rule is for, in the user's words; a notification's title.
+    pub note: String,
     pub color: HighlightColor,
-    pub bold: bool,
     /// Tell the user when a finished line of new output matches, while they
     /// cannot see the terminal.
     pub notify: bool,
 }
 
-/// How a rule's pattern reads.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PatternKind {
-    /// Literally, in upper and lower case alike unless it has a capital, as
-    /// find has it.
-    #[default]
-    Keyword,
-    /// As a regular expression, case and all; `(?i)` ignores case.
-    Regex,
+impl Default for HighlightRule {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            pattern: String::new(),
+            note: String::new(),
+            color: HighlightColor::RED,
+            notify: false,
+        }
+    }
 }
 
-/// The colors a rule may show its matches in: the theme's, so they read on
-/// a light background and a dark one alike, as the links' blue does.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HighlightColor {
-    #[default]
-    Red,
-    Yellow,
-    Green,
-    Cyan,
-    Blue,
-    Magenta,
-}
+/// The color a rule shows its matches in, as the user picked it: data, not
+/// a theme role, so it is the same in a light theme and a dark one. Written
+/// `#rrggbb` in the settings file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct HighlightColor(u32);
 
 impl HighlightColor {
-    /// Every color, in the order the dialog offers them.
-    pub const ALL: [Self; 6] = [
-        Self::Red,
-        Self::Yellow,
-        Self::Green,
-        Self::Cyan,
-        Self::Blue,
-        Self::Magenta,
-    ];
+    /// A new rule's color, and the examples'.
+    pub const RED: Self = Self(0xe5484d);
+    pub const AMBER: Self = Self(0xf5b51c);
+    pub const BLUE: Self = Self(0x2d8ce6);
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Red => "红",
-            Self::Yellow => "黄",
-            Self::Green => "绿",
-            Self::Cyan => "青",
-            Self::Blue => "蓝",
-            Self::Magenta => "紫",
-        }
+    /// `0xrrggbb`.
+    pub const fn from_rgb(rgb: u32) -> Self {
+        Self(rgb & 0xffffff)
     }
 
-    pub fn hsla(self, cx: &App) -> Hsla {
-        let theme = cx.theme();
-        match self {
-            Self::Red => theme.red,
-            Self::Yellow => theme.yellow,
-            Self::Green => theme.green,
-            Self::Cyan => theme.cyan,
-            Self::Blue => theme.blue,
-            Self::Magenta => theme.magenta,
-        }
+    /// `#rrggbb` (or `rrggbb`), in either case.
+    pub fn from_hex(text: &str) -> Option<Self> {
+        let digits = text.trim().strip_prefix('#').unwrap_or(text.trim());
+        (digits.len() == 6 && digits.chars().all(|digit| digit.is_ascii_hexdigit()))
+            .then(|| u32::from_str_radix(digits, 16).ok().map(Self))
+            .flatten()
+    }
+
+    /// `#rrggbb`, in lower case.
+    pub fn to_hex(self) -> String {
+        format!("#{:06x}", self.0)
+    }
+
+    /// The nearest color to `color` this can hold: its alpha is dropped.
+    pub fn from_hsla(color: Hsla) -> Self {
+        let Rgba { r, g, b, .. } = color.to_rgb();
+        let channel = |value: f32| (value.clamp(0., 1.) * 255.).round() as u32;
+        Self((channel(r) << 16) | (channel(g) << 8) | channel(b))
+    }
+
+    pub fn hsla(self) -> Hsla {
+        gpui_kit::rgb(self.0).into()
     }
 }
 
-/// How a match shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HighlightStyle {
-    pub color: HighlightColor,
-    pub bold: bool,
+impl TryFrom<String> for HighlightColor {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, String> {
+        Self::from_hex(&text).ok_or_else(|| format!("not a #rrggbb color: {text}"))
+    }
+}
+
+impl From<HighlightColor> for String {
+    fn from(color: HighlightColor) -> Self {
+        color.to_hex()
+    }
 }
 
 /// The rules a new installation starts with, none of them notifying.
@@ -129,55 +133,49 @@ pub fn default_rules() -> Vec<HighlightRule> {
     vec![
         HighlightRule {
             pattern: "ERROR".into(),
-            kind: PatternKind::Keyword,
-            color: HighlightColor::Red,
-            bold: true,
-            notify: false,
+            note: "错误".into(),
+            ..HighlightRule::default()
         },
         HighlightRule {
             pattern: "WARN".into(),
-            kind: PatternKind::Keyword,
-            color: HighlightColor::Yellow,
-            bold: false,
-            notify: false,
+            note: "警告".into(),
+            color: HighlightColor::AMBER,
+            ..HighlightRule::default()
         },
         HighlightRule {
             pattern: r"\b\d{1,3}(\.\d{1,3}){3}\b".into(),
-            kind: PatternKind::Regex,
-            color: HighlightColor::Blue,
-            bold: false,
-            notify: false,
+            note: "IPv4 地址".into(),
+            color: HighlightColor::BLUE,
+            ..HighlightRule::default()
         },
     ]
 }
 
 impl HighlightRule {
-    pub fn style(&self) -> HighlightStyle {
-        HighlightStyle {
-            color: self.color,
-            bold: self.bold,
-        }
-    }
-
-    /// The pattern, ready to match; or why it cannot be, as the dialog says
-    /// it.
-    pub fn compile(&self) -> Result<Regex, &'static str> {
-        if self.pattern.trim().is_empty() {
-            return Err("请输入要匹配的内容");
+    /// The pattern, ready to match: `None` while it is empty, and so
+    /// matches nothing; or why it cannot match, as the rule's row says it.
+    pub fn compile(&self) -> Result<Option<Regex>, &'static str> {
+        if self.pattern.is_empty() {
+            return Ok(None);
         }
         if self.pattern.chars().count() > PATTERN_LIMIT {
-            return Err("内容不能超过 500 个字符");
+            return Err("不能超过 500 个字符");
         }
-        let built = match self.kind {
-            PatternKind::Keyword => RegexBuilder::new(&regex::escape(&self.pattern))
-                .case_insensitive(!self.pattern.chars().any(char::is_uppercase))
-                .build(),
-            PatternKind::Regex => Regex::new(&self.pattern),
-        };
-        built.map_err(|error| match error {
-            regex::Error::CompiledTooBig(_) => "正则表达式过于复杂",
-            _ => "正则表达式写法有误",
-        })
+        Regex::new(&self.pattern)
+            .map(Some)
+            .map_err(|error| match error {
+                regex::Error::CompiledTooBig(_) => "正则表达式过于复杂",
+                _ => "正则表达式写法有误",
+            })
+    }
+
+    /// What a notification calls the rule: its note, or its pattern.
+    fn title(&self) -> &str {
+        if self.note.trim().is_empty() {
+            &self.pattern
+        } else {
+            &self.note
+        }
     }
 }
 
@@ -187,12 +185,14 @@ fn finds_text(regex: &Regex, text: &str) -> bool {
     regex.find_iter(text).any(|found| !found.is_empty())
 }
 
-/// The rules, compiled once for every terminal. A rule that does not compile
-/// (only a hand-edited settings file has one) is left out of matching.
+/// The rules in effect, compiled once for every terminal: none while
+/// 启用关键字高亮 is off. A rule turned off, empty or that does not compile
+/// (only a hand-edited settings file has one) is left out.
 #[derive(Debug, Default)]
 pub struct HighlightSet {
+    enabled: bool,
     rules: Vec<HighlightRule>,
-    compiled: Vec<Result<Regex, &'static str>>,
+    compiled: Vec<Option<Regex>>,
 }
 
 // Shared by the UI thread and every terminal's parser thread.
@@ -202,19 +202,27 @@ const _: fn() = || {
 };
 
 impl HighlightSet {
-    pub fn new(rules: Vec<HighlightRule>) -> Self {
-        let compiled = rules.iter().map(HighlightRule::compile).collect();
-        Self { rules, compiled }
+    pub fn new(enabled: bool, rules: Vec<HighlightRule>) -> Self {
+        let compiled = rules
+            .iter()
+            .map(|rule| {
+                if enabled && rule.enabled {
+                    rule.compile().ok().flatten()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        Self {
+            enabled,
+            rules,
+            compiled,
+        }
     }
 
-    /// The rules this set was compiled from, in their order.
-    pub fn rules(&self) -> &[HighlightRule] {
-        &self.rules
-    }
-
-    /// Why the rule at `ix` matches nothing, when it does not compile.
-    pub fn error(&self, ix: usize) -> Option<&'static str> {
-        self.compiled.get(ix)?.as_ref().err().copied()
+    /// Whether this was made from `rules` with highlighting `enabled`.
+    pub fn is_made_of(&self, enabled: bool, rules: &[HighlightRule]) -> bool {
+        self.enabled == enabled && self.rules == rules
     }
 
     /// Whether any rule tells of the lines it matches.
@@ -222,33 +230,59 @@ impl HighlightSet {
         self.notifying().next().is_some()
     }
 
-    /// The rules that compiled, by their index.
+    /// The rules that match, by their index.
     fn active(&self) -> impl DoubleEndedIterator<Item = (usize, &HighlightRule, &Regex)> {
         self.rules
             .iter()
             .zip(&self.compiled)
             .enumerate()
-            .filter_map(|(ix, (rule, compiled))| Some((ix, rule, compiled.as_ref().ok()?)))
+            .filter_map(|(ix, (rule, compiled))| Some((ix, rule, compiled.as_ref()?)))
     }
 
     fn notifying(&self) -> impl Iterator<Item = (usize, &HighlightRule, &Regex)> {
         self.active().filter(|(_, rule, _)| rule.notify)
     }
 
-    /// How each cell in view shows. Nothing while a full-screen program has
-    /// the alternate screen: it redraws itself, and an editor's `error`
+    /// The runs of `text` the rules color, in order, by byte range. Where
+    /// rules overlap, the earlier one keeps its color.
+    pub fn spans(&self, text: &str) -> Vec<(Range<usize>, HighlightColor)> {
+        if self.active().next().is_none() {
+            return Vec::new();
+        }
+        let mut colors = vec![None; text.len()];
+        // The last rule first, so an earlier one paints over it.
+        for (_, rule, regex) in self.active().rev() {
+            for found in regex.find_iter(text) {
+                colors[found.range()].fill(Some(rule.color));
+            }
+        }
+        let mut spans: Vec<(Range<usize>, HighlightColor)> = Vec::new();
+        for (offset, color) in colors.into_iter().enumerate() {
+            let Some(color) = color else { continue };
+            match spans.last_mut() {
+                Some((range, last)) if range.end == offset && *last == color => {
+                    range.end = offset + 1;
+                }
+                _ => spans.push((offset..offset + 1, color)),
+            }
+        }
+        spans
+    }
+
+    /// The color of each cell in view. Nothing while a full-screen program
+    /// has the alternate screen: it redraws itself, and an editor's `error`
     /// identifier is not news.
     pub fn screen<T>(&self, term: &Term<T>) -> ScreenHighlights {
         let columns = term.columns();
         let rows = term.screen_lines();
         let mut screen = ScreenHighlights {
             columns,
-            styles: Vec::new(),
+            colors: Vec::new(),
         };
         if self.active().next().is_none() || term.mode().contains(TermMode::ALT_SCREEN) {
             return screen;
         }
-        screen.styles = vec![None; columns * rows];
+        screen.colors = vec![None; columns * rows];
         let top = Line(-(term.grid().display_offset() as i32));
         let bottom = Line(top.0 + rows as i32 - 1);
         // From where the line the top row is part of starts, so a match that
@@ -257,12 +291,8 @@ impl HighlightSet {
         while line <= bottom {
             let end = line_end(term, line);
             let text = LineText::read(term, line, end);
-            // The last rule first, so an earlier one paints over it where
-            // they overlap.
-            for (_, rule, regex) in self.active().rev() {
-                for found in regex.find_iter(&text.text) {
-                    screen.mark(&text, found.range(), rule.style(), top);
-                }
+            for (span, color) in self.spans(&text.text) {
+                screen.mark(&text, span, color, top);
             }
             line = Line(end.0 + 1);
         }
@@ -278,8 +308,8 @@ pub struct TerminalHighlights(Arc<HighlightSet>);
 impl Global for TerminalHighlights {}
 
 impl TerminalHighlights {
-    pub fn new(rules: Vec<HighlightRule>) -> Self {
-        Self(Arc::new(HighlightSet::new(rules)))
+    pub fn new(enabled: bool, rules: Vec<HighlightRule>) -> Self {
+        Self(Arc::new(HighlightSet::new(enabled, rules)))
     }
 
     /// The rules in effect; none before settings are applied.
@@ -305,24 +335,24 @@ pub(super) fn current(shared: &SharedHighlights) -> Arc<HighlightSet> {
         .clone()
 }
 
-/// How each cell in view shows, by its row on screen and column.
+/// The color of each cell in view, by its row on screen and column.
 pub struct ScreenHighlights {
     columns: usize,
     /// Row by row; empty when nothing is highlighted.
-    styles: Vec<Option<HighlightStyle>>,
+    colors: Vec<Option<HighlightColor>>,
 }
 
 impl ScreenHighlights {
-    pub fn style(&self, row: usize, column: usize) -> Option<HighlightStyle> {
-        self.styles
+    pub fn color(&self, row: usize, column: usize) -> Option<HighlightColor> {
+        self.colors
             .get(row * self.columns + column)
             .copied()
             .flatten()
     }
 
-    /// Show the characters of `text` in the byte range `found` with
-    /// `style`, those in view: the view's top row is `top`.
-    fn mark(&mut self, text: &LineText, found: Range<usize>, style: HighlightStyle, top: Line) {
+    /// Show the characters of `text` in the byte range `found` in `color`,
+    /// those in view: the view's top row is `top`.
+    fn mark(&mut self, text: &LineText, found: Range<usize>, color: HighlightColor, top: Line) {
         let first = text.cells.partition_point(|cell| cell.offset < found.start);
         let last = text.cells.partition_point(|cell| cell.offset < found.end);
         for cell in &text.cells[first..last] {
@@ -332,8 +362,8 @@ impl ScreenHighlights {
                 if row < 0 || column >= self.columns {
                     continue;
                 }
-                if let Some(slot) = self.styles.get_mut(row as usize * self.columns + column) {
-                    *slot = Some(style);
+                if let Some(slot) = self.colors.get_mut(row as usize * self.columns + column) {
+                    *slot = Some(color);
                 }
             }
         }
@@ -464,10 +494,11 @@ pub(super) fn advance_watching<T: EventListener>(
     finished
 }
 
-/// A finished line of new output that a notifying rule matched.
+/// A finished line of new output that a notifying rule matched: the rule,
+/// by its note or pattern, and the line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeywordHit {
-    pub pattern: String,
+    pub rule: String,
     pub line: String,
 }
 
@@ -521,7 +552,7 @@ impl LineWatcher {
                 }
                 self.told.push_back((ix, line.clone(), now));
                 return Some(KeywordHit {
-                    pattern: rule.pattern.clone(),
+                    rule: rule.title().to_string(),
                     line,
                 });
             }
@@ -539,18 +570,15 @@ mod tests {
     use super::*;
     use crate::terminal::TerminalSize;
 
-    fn keyword(pattern: &str, color: HighlightColor) -> HighlightRule {
+    const RED: HighlightColor = HighlightColor(0xff0000);
+    const AMBER: HighlightColor = HighlightColor(0xffaa00);
+    const BLUE: HighlightColor = HighlightColor(0x0000ff);
+
+    fn rule(pattern: &str, color: HighlightColor) -> HighlightRule {
         HighlightRule {
             pattern: pattern.into(),
             color,
             ..HighlightRule::default()
-        }
-    }
-
-    fn regex(pattern: &str, color: HighlightColor) -> HighlightRule {
-        HighlightRule {
-            kind: PatternKind::Regex,
-            ..keyword(pattern, color)
         }
     }
 
@@ -559,6 +587,10 @@ mod tests {
             notify: true,
             ..rule
         }
+    }
+
+    fn set(rules: Vec<HighlightRule>) -> HighlightSet {
+        HighlightSet::new(true, rules)
     }
 
     /// A terminal fed by one parser, as a terminal's parser thread feeds it.
@@ -597,7 +629,7 @@ mod tests {
         /// color. A run goes on from the end of one row to the start of the
         /// next, as a wrapped match does.
         fn marks(&self, rules: Vec<HighlightRule>) -> Vec<(String, HighlightColor)> {
-            let screen = HighlightSet::new(rules).screen(&self.term);
+            let screen = set(rules).screen(&self.term);
             let offset = self.term.grid().display_offset() as i32;
             let mut runs: Vec<(String, HighlightColor)> = Vec::new();
             let mut open = false;
@@ -605,11 +637,10 @@ mod tests {
                 let line = &self.term.grid()[Line(row as i32 - offset)];
                 for column in 0..self.term.columns() {
                     let cell = &line[Column(column)];
-                    match screen.style(row, column) {
-                        Some(style) => {
-                            if !open || runs.last().is_some_and(|(_, color)| *color != style.color)
-                            {
-                                runs.push((String::new(), style.color));
+                    match screen.color(row, column) {
+                        Some(color) => {
+                            if !open || runs.last().is_some_and(|(_, last)| *last != color) {
+                                runs.push((String::new(), color));
                             }
                             open = true;
                             if !cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
@@ -631,46 +662,77 @@ mod tests {
             .collect()
     }
 
-    use HighlightColor::{Blue, Red, Yellow};
-
     #[test]
-    fn keywords_are_literal_and_smart_case_regexes_are_as_written() {
-        let compile = |rule: HighlightRule| rule.compile().unwrap();
-        let dotted = compile(keyword("a.b", Red));
-        assert!(dotted.is_match("x a.b y") && !dotted.is_match("axb"));
-        assert!(compile(regex("a.b", Red)).is_match("axb"));
-        // A keyword in lower case finds any case; with a capital, its own.
-        assert!(compile(keyword("error", Red)).is_match("ERROR: x"));
-        assert!(!compile(keyword("ERROR", Red)).is_match("error: x"));
-        assert!(!compile(regex("error", Red)).is_match("ERROR"));
-        assert!(compile(regex("(?i)error", Red)).is_match("ERROR"));
-        let address = compile(default_rules().remove(2));
-        assert!(address.is_match("from 10.0.0.12 port 22"));
-        assert!(!address.is_match("1234.5.6.7"));
+    fn colors_are_written_as_hex() {
+        assert_eq!(
+            HighlightColor::from_hex("#D0021B"),
+            Some(HighlightColor(0xd0021b))
+        );
+        assert_eq!(
+            HighlightColor::from_hex("f59e0b"),
+            Some(HighlightColor(0xf59e0b))
+        );
+        assert_eq!(HighlightColor(0xd0021b).to_hex(), "#d0021b");
+        for text in ["", "#fff", "#12345g", "#1234567"] {
+            assert_eq!(HighlightColor::from_hex(text), None, "{text}");
+        }
+        let color = HighlightColor(0x3b82f6);
+        assert_eq!(HighlightColor::from_hsla(color.hsla()), color);
     }
 
     #[test]
-    fn a_rule_that_cannot_match_says_why() {
+    fn a_pattern_is_a_regular_expression_as_written() {
+        let compile = |pattern: &str| rule(pattern, RED).compile();
+        let regex = compile("a.b").unwrap().unwrap();
+        assert!(regex.is_match("axb"));
+        assert!(!compile("error").unwrap().unwrap().is_match("ERROR"));
+        assert!(compile("(?i)error").unwrap().unwrap().is_match("ERROR"));
+        let address = default_rules().remove(2).compile().unwrap().unwrap();
+        assert!(address.is_match("from 10.0.0.12 port 22"));
+        assert!(!address.is_match("1234.5.6.7"));
+        // A row just added matches nothing, and says nothing of it.
+        assert!(matches!(compile(""), Ok(None)));
+        assert_eq!(compile("(ERROR").err(), Some("正则表达式写法有误"));
         assert_eq!(
-            keyword(" ", Red).compile().err(),
-            Some("请输入要匹配的内容")
-        );
-        assert_eq!(
-            regex("(ERROR", Red).compile().err(),
-            Some("正则表达式写法有误")
-        );
-        assert_eq!(
-            regex(r"(\w{1000}){1000}", Red).compile().err(),
+            compile(r"(\w{1000}){1000}").err(),
             Some("正则表达式过于复杂")
         );
         let long = "x".repeat(PATTERN_LIMIT + 1);
-        assert_eq!(
-            keyword(&long, Red).compile().err(),
-            Some("内容不能超过 500 个字符")
+        assert_eq!(compile(&long).err(), Some("不能超过 500 个字符"));
+    }
+
+    #[test]
+    fn rules_turned_off_or_unfinished_match_nothing() {
+        let rules = vec![
+            HighlightRule {
+                enabled: false,
+                ..rule("ERROR", RED)
+            },
+            rule("", AMBER),
+            rule("(", AMBER),
+            rule("WARN", BLUE),
+        ];
+        assert_eq!(set(rules.clone()).spans("ERROR WARN"), [(6..10, BLUE)]);
+        // 启用关键字高亮 off, nothing at all.
+        assert!(
+            HighlightSet::new(false, rules)
+                .spans("ERROR WARN")
+                .is_empty()
         );
-        let set = HighlightSet::new(vec![regex("(", Red), keyword("ok", Red)]);
-        assert_eq!(set.error(0), Some("正则表达式写法有误"));
-        assert_eq!(set.error(1), None);
+    }
+
+    #[test]
+    fn spans_keep_the_earlier_rule_where_rules_overlap() {
+        let rules = set(vec![rule("Memory", BLUE), rule(r"\w+Error", RED)]);
+        assert_eq!(
+            rules.spans("OutOfMemoryError!"),
+            [(0..5, RED), (5..11, BLUE), (11..16, RED)]
+        );
+        // Byte ranges, whole characters.
+        assert_eq!(
+            set(vec![rule("错误", RED)]).spans("连接错误"),
+            [(6..12, RED)]
+        );
     }
 
     #[test]
@@ -678,14 +740,14 @@ mod tests {
         let mut screen = Screen::new(30, 4);
         screen.feed("ok ERROR x WARN\r\n");
         assert_eq!(
-            screen.marks(vec![keyword("ERROR", Red), keyword("WARN", Yellow)]),
-            runs(&[("ERROR", Red), ("WARN", Yellow)])
+            screen.marks(vec![rule("ERROR", RED), rule("WARN", AMBER)]),
+            runs(&[("ERROR", RED), ("WARN", AMBER)])
         );
         // A word split between two colors is one word on screen.
         screen.feed("E\x1b[31mRR\x1b[0mOR\r\n");
         assert_eq!(
-            screen.marks(vec![keyword("ERROR", Red)]),
-            runs(&[("ERROR", Red), ("ERROR", Red)])
+            screen.marks(vec![rule("ERROR", RED)]),
+            runs(&[("ERROR", RED), ("ERROR", RED)])
         );
     }
 
@@ -694,22 +756,19 @@ mod tests {
         let mut screen = Screen::new(30, 5);
         screen.feed("a ERROR\r\nERROR b\r\n2024-10 ERROR\r\n");
         assert_eq!(
-            screen.marks(vec![regex("^ERROR", Red)]),
-            runs(&[("ERROR", Red)])
+            screen.marks(vec![rule("^ERROR", RED)]),
+            runs(&[("ERROR", RED)])
         );
         // The blanks padding a row are not text before `$`.
         assert_eq!(
-            screen.marks(vec![regex("ERROR$", Red)]),
-            runs(&[("ERROR", Red), ("ERROR", Red)])
+            screen.marks(vec![rule("ERROR$", RED)]),
+            runs(&[("ERROR", RED), ("ERROR", RED)])
         );
         assert_eq!(
-            screen.marks(vec![regex(r"^\d+", Blue)]),
-            runs(&[("2024", Blue)])
+            screen.marks(vec![rule(r"^\d+", BLUE)]),
+            runs(&[("2024", BLUE)])
         );
-        assert_eq!(
-            screen.marks(vec![regex(r"\bRR", Red)]),
-            Vec::<(String, HighlightColor)>::new()
-        );
+        assert!(screen.marks(vec![rule(r"\bRR", RED)]).is_empty());
     }
 
     #[test]
@@ -717,18 +776,18 @@ mod tests {
         // `1234567ERR` and `OR tail`.
         let mut screen = Screen::new(10, 6);
         screen.feed("1234567ERROR tail\r\n");
-        let rules = || vec![keyword("ERROR", Red)];
-        assert_eq!(screen.marks(rules()), runs(&[("ERROR", Red)]));
+        let rules = || vec![rule("ERROR", RED)];
+        assert_eq!(screen.marks(rules()), runs(&[("ERROR", RED)]));
         // Narrowed, Alacritty reflows them to `1234567E`, pushed into the
         // scrollback, and `RROR tai` on the screen's top row.
         screen.resize(8, 6);
-        assert_eq!(screen.marks(rules()), runs(&[("RROR", Red)]));
+        assert_eq!(screen.marks(rules()), runs(&[("RROR", RED)]));
         screen.term.scroll_display(Scroll::Delta(1));
-        assert_eq!(screen.marks(rules()), runs(&[("ERROR", Red)]));
+        assert_eq!(screen.marks(rules()), runs(&[("ERROR", RED)]));
         // Widened, one row again.
         screen.term.scroll_display(Scroll::Bottom);
         screen.resize(40, 6);
-        assert_eq!(screen.marks(rules()), runs(&[("ERROR", Red)]));
+        assert_eq!(screen.marks(rules()), runs(&[("ERROR", RED)]));
     }
 
     #[test]
@@ -736,12 +795,12 @@ mod tests {
         // `xxxxE` and `RROR` in the scrollback, `next` and `last` on screen.
         let mut screen = Screen::new(5, 2);
         screen.feed("xxxxERROR\r\nnext\r\nlast");
-        assert!(screen.marks(vec![keyword("ERROR", Red)]).is_empty());
+        assert!(screen.marks(vec![rule("ERROR", RED)]).is_empty());
         // Scrolled back a row, the view starts at `RROR`.
         screen.term.scroll_display(Scroll::Delta(1));
         assert_eq!(
-            screen.marks(vec![keyword("ERROR", Red)]),
-            runs(&[("RROR", Red)])
+            screen.marks(vec![rule("ERROR", RED)]),
+            runs(&[("RROR", RED)])
         );
     }
 
@@ -750,18 +809,8 @@ mod tests {
         let mut screen = Screen::new(20, 2);
         screen.feed("连接错误 x");
         assert_eq!(
-            screen.marks(vec![keyword("错误", Red)]),
-            runs(&[("错误", Red)])
-        );
-    }
-
-    #[test]
-    fn the_first_rule_wins_where_rules_overlap() {
-        let mut screen = Screen::new(30, 2);
-        screen.feed("OutOfMemoryError");
-        assert_eq!(
-            screen.marks(vec![keyword("Memory", Blue), regex(r"\w+Error", Red)]),
-            runs(&[("OutOf", Red), ("Memory", Blue), ("Error", Red)])
+            screen.marks(vec![rule("错误", RED)]),
+            runs(&[("错误", RED)])
         );
     }
 
@@ -769,12 +818,12 @@ mod tests {
     fn nothing_is_marked_on_the_alternate_screen() {
         let mut screen = Screen::new(20, 3);
         screen.feed("\x1b[?1049hERROR");
-        assert!(screen.marks(vec![keyword("ERROR", Red)]).is_empty());
+        assert!(screen.marks(vec![rule("ERROR", RED)]).is_empty());
         screen.feed("\x1b[?1049l");
         screen.feed("ERROR");
         assert_eq!(
-            screen.marks(vec![keyword("ERROR", Red)]),
-            runs(&[("ERROR", Red)])
+            screen.marks(vec![rule("ERROR", RED)]),
+            runs(&[("ERROR", RED)])
         );
     }
 
@@ -811,19 +860,23 @@ mod tests {
 
     #[test]
     fn a_notifying_rule_tells_of_a_line_once_in_a_while() {
-        let set = Arc::new(HighlightSet::new(vec![
-            keyword("WARN", Yellow),
-            notifying(keyword("ERROR", Red)),
+        let rules = Arc::new(set(vec![
+            rule("WARN", AMBER),
+            notifying(HighlightRule {
+                note: "错误".into(),
+                ..rule("ERROR", RED)
+            }),
         ]));
-        let mut watcher = LineWatcher::new(set);
+        let mut watcher = LineWatcher::new(rules);
         assert!(watcher.is_watching());
         let start = Instant::now();
         let lines = |lines: &[&str]| lines.iter().map(|line| line.to_string()).collect();
         assert_eq!(watcher.check(lines(&["WARN low disk"]), start), None);
+        // Named by its note.
         assert_eq!(
             watcher.check(lines(&["ok", "1 ERROR a", "2 ERROR b"]), start),
             Some(KeywordHit {
-                pattern: "ERROR".into(),
+                rule: "错误".into(),
                 line: "1 ERROR a".into()
             })
         );
@@ -832,19 +885,21 @@ mod tests {
         assert!(watcher.check(lines(&["2 ERROR b"]), start).is_some());
         let later = start + RETELL_AFTER;
         assert!(watcher.check(lines(&["1 ERROR a"]), later).is_some());
-        // New rules start afresh.
-        watcher.sync(Arc::new(HighlightSet::new(vec![notifying(keyword(
-            "ERROR", Red,
-        ))])));
-        assert!(watcher.check(lines(&["1 ERROR a"]), later).is_some());
-        watcher.sync(Arc::new(HighlightSet::new(vec![keyword("ERROR", Red)])));
+        // New rules start afresh; without a note, the pattern names it.
+        watcher.sync(Arc::new(set(vec![notifying(rule("ERROR", RED))])));
+        assert_eq!(
+            watcher
+                .check(lines(&["1 ERROR a"]), later)
+                .map(|hit| hit.rule),
+            Some("ERROR".into())
+        );
+        watcher.sync(Arc::new(set(vec![rule("ERROR", RED)])));
         assert!(!watcher.is_watching());
     }
 
     #[test]
     fn a_match_of_nothing_tells_of_nothing() {
-        let set = Arc::new(HighlightSet::new(vec![notifying(regex(r"\b", Red))]));
-        let mut watcher = LineWatcher::new(set);
+        let mut watcher = LineWatcher::new(Arc::new(set(vec![notifying(rule(r"\b", RED))])));
         assert_eq!(
             watcher.check(vec!["any words".into()], Instant::now()),
             None

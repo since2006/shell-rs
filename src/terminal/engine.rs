@@ -23,7 +23,7 @@ use crate::connection::{ConnectionPrompt, ConnectionPromptReply, Latency};
 use crate::host::HostOs;
 
 use super::highlight::{
-    HighlightStyle, KeywordHit, LineWatcher, SharedHighlights, TerminalHighlights,
+    HighlightColor, KeywordHit, LineWatcher, SharedHighlights, TerminalHighlights,
     advance_watching, current,
 };
 use super::links::{LinkMarker, url_search, visible_links};
@@ -46,8 +46,8 @@ pub struct TerminalCell {
     pub search: SearchMark,
     /// The link the cell belongs to, an index into the snapshot's `links`.
     pub link: Option<usize>,
-    /// How a 关键字高亮 rule shows the cell, when one matches it.
-    pub highlight: Option<HighlightStyle>,
+    /// The color a 关键字高亮 rule shows the cell in, when one matches it.
+    pub highlight: Option<HighlightColor>,
 }
 
 #[derive(Clone, Debug)]
@@ -224,8 +224,7 @@ impl TerminalEngine {
             }
             TerminalUiEventKind::Keyword(hit) => {
                 return Some(TerminalEvent::Notice(TerminalNotice::keyword(
-                    &hit.pattern,
-                    &hit.line,
+                    &hit.rule, &hit.line,
                 )));
             }
         }
@@ -537,7 +536,7 @@ impl TerminalEngine {
                     }),
                     search: marker.mark(indexed.point),
                     link: links.mark(indexed.point, indexed.cell.hyperlink()),
-                    highlight: highlights.style(
+                    highlight: highlights.color(
                         (indexed.point.line.0 + display_offset) as usize,
                         indexed.point.column.0,
                     ),

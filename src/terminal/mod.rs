@@ -22,8 +22,7 @@ pub use font::{
     TerminalFontPreview, is_font_installed, monospace_font_families,
 };
 pub use highlight::{
-    HighlightColor, HighlightRule, HighlightSet, HighlightStyle, PATTERN_LIMIT, PatternKind,
-    TerminalHighlights, default_rules,
+    HighlightColor, HighlightRule, HighlightSet, TerminalHighlights, default_rules,
 };
 pub use local_pty::LocalPtyTransportFactory;
 pub use local_terminal_panel::{LocalTerminalPanel, LocalTerminalPanelEvent};

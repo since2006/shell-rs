@@ -11,24 +11,23 @@ use gpui_kit::component::{
     tooltip::Tooltip,
     v_flex,
 };
-use std::sync::Arc;
-
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CenterTab, CheckForUpdates, CloseSettings, CopyAgentSkill, DeleteHighlightRule,
-    DownloadUpdate, EditHighlightRule, InstallAgentSkill, InstallCliCommand, NewHighlightRule,
-    OpenDownloadPage, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, ShowUpdate,
+    CatalogIcon, CenterTab, CheckForUpdates, CloseSettings, CopyAgentSkill, DownloadUpdate,
+    InstallAgentSkill, InstallCliCommand, OpenDownloadPage, RefreshCliIntegration,
+    RemoveAgentSkill, RemoveCliCommand, ShowUpdate,
 };
 use crate::cli::{AgentKind, BinaryStatus, CliIntegration, IntegrationStatus, SkillStatus};
 use crate::shared::{ClosableTabTitle, close_tab_items};
 use crate::terminal::{
-    FONT_SIZE_RANGE, HighlightSet, LINE_HEIGHT_RANGE, PatternKind, TerminalFontPreview,
-    TerminalHighlights, is_font_installed, monospace_font_families,
+    FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalFont, TerminalFontPreview, TerminalHighlights,
+    is_font_installed, monospace_font_families,
 };
 use crate::update::{Phase, Tone, UpdateSnapshot, UpdateStep, Updater, build_info, platform};
 
+use super::highlight_rules::HighlightRulesEditor;
 use super::{AppSettings, Choice, NotificationSettings, SettingsStore};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +49,9 @@ pub struct SettingsPanel {
     integration: Entity<CliIntegration>,
     /// Where updating stands, for 关于.
     updater: Entity<Updater>,
+    /// The rule table of 关键字高亮, whose fields keep their state across
+    /// the page's renders.
+    highlight_rules: Entity<HighlightRulesEditor>,
     /// The monospace families to choose the terminal font from; empty until
     /// the scan in the background comes back.
     font_families: &'static [SharedString],
@@ -64,8 +66,10 @@ impl SettingsPanel {
         store: Entity<SettingsStore>,
         integration: Entity<CliIntegration>,
         updater: Entity<Updater>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let highlight_rules = cx.new(|cx| HighlightRulesEditor::new(store.clone(), window, cx));
         let subscriptions = [
             cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe(&integration, |_, _, cx| cx.notify()),
@@ -87,6 +91,7 @@ impl SettingsPanel {
             store,
             integration,
             updater,
+            highlight_rules,
             font_families: &[],
             focus_handle: cx.focus_handle(),
             tab_group: None,
@@ -364,173 +369,98 @@ fn notification_group(store: &Entity<SettingsStore>) -> SettingGroup {
         ])
 }
 
-/// 关键字高亮: the rules every terminal colors its text by. Taken from the
-/// rules in effect, which also know which of them do not compile.
+/// What the 关键字高亮 preview shows: a service's log followed on a server,
+/// with what the example rules color (levels and addresses) and lines they
+/// leave alone.
+const HIGHLIGHT_PREVIEW_LINES: &[&str] = &[
+    "root@web-01:~# tail -f /var/log/orders/app.log",
+    "09:12:03 INFO  orders listening on 0.0.0.0:8080",
+    "09:12:41 WARN  slow query: 2.31s on table order_items",
+    "09:13:07 ERROR upstream 10.20.3.15:5432 refused connection",
+    "09:13:08 INFO  retrying in 5s (attempt 2/5)",
+];
+
+/// 关键字高亮: the switch, a preview of the rules in the terminal's font and
+/// colors, and the rules.
 fn highlight_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
+    let (reader, writer) = (panel.store.clone(), panel.store.clone());
+    let count = panel
+        .store
+        .read(cx)
+        .settings()
+        .terminal_highlight
+        .rules
+        .len();
+    let editor = panel.highlight_rules.clone();
     vec![
-        SettingGroup::new()
-            .title("规则")
-            .description(
-                "匹配的文字在所有终端里按所选样式显示：只改显示，不改服务器的输出，\
-                 复制出的文字也不变。几条规则匹配到同一处时，靠前的优先。\
-                 全屏程序（vim、less、tmux 等）里不高亮。",
+        SettingGroup::new().title("常规").items([SettingItem::new(
+            "启用关键字高亮",
+            SettingField::switch(
+                move |cx| reader.read(cx).settings().terminal_highlight.enabled,
+                move |enabled, cx| {
+                    writer.update(cx, |store, cx| {
+                        store.update(|settings| settings.terminal_highlight.enabled = enabled, cx)
+                    });
+                },
             )
-            .items([highlight_rules_item(
-                TerminalHighlights::current(cx),
-                panel.focus_handle.clone(),
-            )]),
+            .default_value(true),
+        )
+        .description("全屏程序（vim、less、tmux 等）里不高亮。")]),
+        SettingGroup::new()
+            .title("预览")
+            .description("使用当前终端主题")
+            .items([highlight_preview_item()]),
+        SettingGroup::new()
+            .title(format!("规则（{count}）"))
+            .description("规则按从上到下应用，勾选「通知」的规则在看不到终端时弹出提醒。")
+            .items([
+                SettingItem::render(move |_, _, _| editor.clone()).keywords([
+                    "规则",
+                    "正则",
+                    "关键字",
+                    "高亮",
+                    "颜色",
+                    "备注",
+                    "通知",
+                    "排序",
+                ]),
+            ]),
     ]
 }
 
-/// The rules, one row each with the pattern in its own style, and the
-/// button that adds one. The buttons dispatch through the panel's focus
-/// handle: after a dialog closes nothing has focus, and an action
-/// dispatched from the window would never reach the workspace.
-fn highlight_rules_item(rules: Arc<HighlightSet>, dispatch: FocusHandle) -> SettingItem {
-    SettingItem::render(move |options, _, cx| {
-        let size = options.size();
-        let muted = cx.theme().muted_foreground;
-        let header = h_flex()
-            .w_full()
-            .gap_3()
-            .pb_1()
-            .text_xs()
-            .text_color(muted)
-            .child(div().flex_1().min_w_0().child("内容"))
-            .child(div().w_16().flex_shrink_0().child("匹配方式"))
-            .child(div().w_8().flex_shrink_0().child("通知"))
-            // Over the row buttons' lane.
-            .child(div().w_16().flex_shrink_0());
-        let rows = rules.rules().iter().enumerate().map(|(ix, rule)| {
-            let error = rules.error(ix);
-            let dispatch_edit = dispatch.clone();
-            let dispatch_buttons = (dispatch.clone(), dispatch.clone());
-            h_flex()
-                .id(("highlight-rule", ix))
-                .test_support()
-                .w_full()
-                .gap_3()
-                .py_1()
-                .border_t_1()
-                .border_color(cx.theme().border)
-                .on_click(move |event, window, cx| {
-                    if event.click_count() == 2 {
-                        dispatch_edit.dispatch_action(&EditHighlightRule(ix), window, cx);
-                    }
-                })
-                .child(
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_2()
-                        .child(
-                            // The pattern as the terminal shows its matches.
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_sm()
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .text_color(rule.color.hsla(cx))
-                                .when(rule.bold, |text| text.font_weight(FontWeight::BOLD))
-                                .child(rule.pattern.clone()),
-                        )
-                        .when_some(error, |row, error| {
-                            row.child(
-                                div()
-                                    .flex_shrink_0()
-                                    .text_xs()
-                                    .text_color(cx.theme().danger)
-                                    .child(format!("表达式无效：{error}")),
-                            )
-                        }),
-                )
-                .child(
-                    div()
-                        .w_16()
-                        .flex_shrink_0()
-                        .text_sm()
-                        .text_color(muted)
-                        .child(match rule.kind {
-                            PatternKind::Keyword => "关键字",
-                            PatternKind::Regex => "正则",
-                        }),
-                )
-                .child(
-                    div()
-                        .w_8()
-                        .flex_shrink_0()
-                        .text_sm()
-                        .text_color(muted)
-                        .child(if rule.notify { "是" } else { "—" }),
-                )
-                .child(
-                    h_flex()
-                        .w_16()
-                        .flex_shrink_0()
-                        .justify_end()
-                        .gap_1()
-                        .child(
-                            Button::new(("edit-highlight-rule", ix))
-                                .ghost()
-                                .xsmall()
-                                .icon(Icon::new(CatalogIcon::Pencil))
-                                .tooltip("编辑…")
-                                .on_click(move |_, window, cx| {
-                                    dispatch_buttons.0.dispatch_action(
-                                        &EditHighlightRule(ix),
-                                        window,
-                                        cx,
-                                    )
-                                }),
-                        )
-                        .child(
-                            Button::new(("delete-highlight-rule", ix))
-                                .ghost()
-                                .xsmall()
-                                .icon(Icon::new(CatalogIcon::Trash))
-                                .tooltip("删除…")
-                                .on_click(move |_, window, cx| {
-                                    dispatch_buttons.1.dispatch_action(
-                                        &DeleteHighlightRule(ix),
-                                        window,
-                                        cx,
-                                    )
-                                }),
-                        ),
-                )
-        });
-        let add = dispatch.clone();
-        v_flex()
-            .id("highlight-rules")
+/// The preview: sample output in the terminal's font and colors, colored by
+/// the rules in effect, as a terminal would show it. The group's outline is
+/// its frame.
+fn highlight_preview_item() -> SettingItem {
+    SettingItem::render(|_, window, cx| {
+        let rules = TerminalHighlights::current(cx);
+        let font = TerminalFont::current(cx);
+        div()
+            .id("highlight-preview")
             .test_support()
             .w_full()
-            .gap_3()
-            .child(if rules.rules().is_empty() {
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .font_family(font.family(cx))
+            .text_size(font.size)
+            .line_height(font.row_height(window))
+            .overflow_hidden()
+            .children(HIGHLIGHT_PREVIEW_LINES.iter().map(|line| {
+                let highlights = rules.spans(line).into_iter().map(|(range, color)| {
+                    (
+                        range,
+                        HighlightStyle {
+                            color: Some(color.hsla()),
+                            ..HighlightStyle::default()
+                        },
+                    )
+                });
                 div()
-                    .text_sm()
-                    .text_color(muted)
-                    .child("还没有规则。")
-                    .into_any_element()
-            } else {
-                v_flex()
-                    .w_full()
-                    .child(header)
-                    .children(rows)
-                    .into_any_element()
-            })
-            .child(
-                h_flex().child(
-                    Button::new("add-highlight-rule")
-                        .with_size(size)
-                        .icon(Icon::new(IconName::Plus))
-                        .label("添加规则…")
-                        .on_click(move |_, window, cx| {
-                            add.dispatch_action(&NewHighlightRule, window, cx)
-                        }),
-                ),
-            )
+                    .whitespace_nowrap()
+                    .child(StyledText::new(*line).with_highlights(highlights))
+            }))
     })
-    .keywords(["高亮", "关键字", "正则", "规则", "颜色", "通知"])
+    .keywords(["预览", "高亮"])
 }
 
 /// 外部 CLI: whether the `shellrs` command may use the saved hosts, the

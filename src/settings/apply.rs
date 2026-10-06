@@ -44,10 +44,16 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
 
     // Compiled once here for every terminal, which observe it; only when
     // the rules change, not on every change of the system appearance.
-    let rules = settings.terminal_highlight.rules;
-    let current = cx.try_global::<TerminalHighlights>();
-    if current.map(|highlights| highlights.set().rules()) != Some(rules.as_slice()) {
-        cx.set_global(TerminalHighlights::new(rules));
+    let highlight = settings.terminal_highlight;
+    let unchanged = cx
+        .try_global::<TerminalHighlights>()
+        .is_some_and(|current| {
+            current
+                .set()
+                .is_made_of(highlight.enabled, &highlight.rules)
+        });
+    if !unchanged {
+        cx.set_global(TerminalHighlights::new(highlight.enabled, highlight.rules));
     }
 
     if cx.try_global::<FileSizeFormat>() != Some(&settings.file_size_format) {

@@ -68,7 +68,7 @@ pub(super) fn notice_text(tab: &str, notice: &TerminalNotice) -> (String, String
         } => (format!("{tab}：{title}"), body.clone()),
         TerminalNotice::Program { title: None, body } => (tab.to_string(), body.clone()),
         TerminalNotice::Bell { line } => (format!("{tab}：响铃"), line.clone()),
-        TerminalNotice::Keyword { pattern, line } => (format!("{tab}：{pattern}"), line.clone()),
+        TerminalNotice::Keyword { rule, line } => (format!("{tab}：{rule}"), line.clone()),
     }
 }
 
@@ -225,7 +225,7 @@ mod tests {
     }
 
     fn keyword() -> TerminalNotice {
-        TerminalNotice::keyword("ERROR", "12:00 ERROR boom")
+        TerminalNotice::keyword("错误", "12:00 ERROR boom")
     }
 
     #[test]
@@ -265,7 +265,7 @@ mod tests {
         );
         assert_eq!(
             notice_text("web-01", &keyword()),
-            ("web-01：ERROR".to_string(), "12:00 ERROR boom".to_string())
+            ("web-01：错误".to_string(), "12:00 ERROR boom".to_string())
         );
     }
 

@@ -1228,17 +1228,12 @@ impl Element for TerminalElement {
                 }
 
                 let character = painted_cell_text(&cell.character, cell.flags);
-                // A 关键字高亮 rule's bold adds to the program's.
-                let flags = match cell.highlight {
-                    Some(highlight) if highlight.bold => cell.flags | Flags::BOLD,
-                    _ => cell.flags,
-                };
-                let font = terminal_font(text_style.font(), flags);
+                let font = terminal_font(text_style.font(), cell.flags);
                 let len = character.len();
                 text.push_str(character);
                 // A rule's color, dimmed as the program dimmed the text.
                 let highlight = cell.highlight.map(|highlight| {
-                    let color = highlight.color.hsla(cx);
+                    let color = highlight.hsla();
                     if cell.flags.contains(Flags::DIM) {
                         color.opacity(0.66)
                     } else {
