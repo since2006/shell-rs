@@ -44,6 +44,7 @@ ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH �
 - **开始页**：没有标签时显示「最近连接」。「快速连接」搜索保存的主机、回车连接；多选做好但关着（常量 `MULTIPLE`）。
 - **右侧栏**：窗口最右一列竖排的工具切换。
   - 显示规则：只跟着 SSH 远程终端出现，SFTP、本地终端、设置、开始页都不显示。它是工作区级的一份，开合和所选工具在所有终端间共用。默认收起，宽 320 px，只能往宽里拉。⌘⌥B / Ctrl+Alt+B 切换。
+  - 中间区分屏时不隐藏：跟着最近一次在前（切到或焦点点进）、而且还在屏幕上的远程终端；点进另一半的 SFTP、本地终端等不换；屏幕上一个远程终端都没有才隐藏。标题写出主机（「系统监控 · web-01」），状态栏也跟焦点走。用户比较过「分屏就隐藏」，选了这个。
   - 工具从上到下：命令片段、历史命令、Docker、系统服务、进程管理、网络连接、系统监控。
   - 已知不是 Linux 的主机不显示系统监控、网络连接、进程管理、系统服务；已知是 Windows 的再去掉 Docker 和历史命令；外部连接只有命令片段。
   - 系统监控每 2 秒读一次（运行时长随读数刷新，不自己走），磁盘每 30 秒，只在显示时读。≥ 70% 黄、≥ 90% 红。
@@ -249,7 +250,8 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
   - 显示按键别写死文字，用 `tooltip_with_action` / `Kbd` 从 keymap 取，否则改绑后会过期。
 - **标签页全部可关。** 关闭走 `DockArea::remove_panel`（`TabGroup::close_panel` 拒绝关最后一个）。中间区面板的 `closable()` 返回 `false`，否则「…」菜单会多一个绕过确认的「关闭」。标题用 `ClosableTabTitle`，它带标签菜单，双击切换侧栏。`panel_name()` 是持久化键，不能改。
 - **左右侧栏各是一个面板。** 左侧 Dock 里只有 `Sidebar`（三个列表），右侧 Dock 里只有 `ToolSidebar`。不用 `set_dock` 换面板，否则焦点会丢。
-  - 当前标签只经 `Workspace::set_active_tab` 改，否则右侧栏不跟着变。
+  - 当前标签只经 `Workspace::set_active_tab` 改，否则右侧栏不跟着变。分屏时焦点决定谁在前：每个中间区标签创建时都要用 `front::follow_focus` 登记焦点（它在焦点阶段触发，处理要 `defer_in`）；布局变化（拖动合并标签组）后 `sync_front` 重新核对。右侧栏跟的终端由 `visible_center_tabs`（各组显示的标签，放大时只算放大的那组）判断是否还在屏幕上。
+  - 测试里拆分、合并标签组用 `DockArea::move_panel` 加 `InsertTarget::Split` / `Tabs`，同拖放；`split_at` 不会把面板从原组移走。
   - 右侧 Dock 不可折叠，否则标签栏会多出 gpui-kit 的折叠按钮；关闭时临时设成可折叠。
   - 最窄 320 px，由 `hold_tool_sidebar_width` 维持。
 - **动画用 gpui-kit 的 `animate_keyframes`**（转发示意图），不自己写播放。

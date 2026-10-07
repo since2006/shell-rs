@@ -3,7 +3,9 @@
 //!
 //! The sidebar goes with SSH terminals: with an SFTP tab, a local terminal,
 //! the settings or the start page in front it is not there at all, switch
-//! included. Whether it is open and which tool it shows stay as they were,
+//! included. With the center split it works on the SSH terminal in front
+//! last, as long as that one is on screen, and names its host; it hides once
+//! no SSH terminal shows. Whether it is open and which tool it shows stay as they were,
 //! so the next SSH terminal brings it back the same. A tool that cannot work
 //! on the host in front (the monitor on a host known not to run Linux) is
 //! not offered there: no button, and no sidebar while it is the one picked.
@@ -45,11 +47,19 @@ use super::{
 pub(super) const TOOL_SIDEBAR_WIDTH: Pixels = px(320.);
 
 impl Workspace {
-    /// The SSH terminal in front, which the right sidebar works on.
+    /// The SSH terminal the right sidebar works on: the one in front last
+    /// while it is on screen, else another that is.
     pub(super) fn tool_terminal(&self, cx: &App) -> Option<ToolTerminal> {
-        let CenterTab::Terminal(id) = self.active_tab? else {
-            return None;
-        };
+        let visible = self.visible_center_tabs(cx);
+        let id = self
+            .tool_terminal_choice
+            .filter(|id| visible.contains(&CenterTab::Terminal(*id)))
+            .or_else(|| {
+                visible.iter().find_map(|tab| match tab {
+                    CenterTab::Terminal(id) => Some(*id),
+                    _ => None,
+                })
+            })?;
         let panel = self.terminals.get(&id)?.read(cx);
         Some(ToolTerminal {
             id,
@@ -91,6 +101,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.active_tab = tab;
+        if let Some(CenterTab::Terminal(id)) = tab {
+            self.tool_terminal_choice = Some(id);
+        }
         self.sync_tool_sidebar(window, cx);
     }
 

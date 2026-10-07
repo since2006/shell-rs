@@ -110,6 +110,8 @@ pub struct ToolSidebar {
     terminal: Option<ToolTerminal>,
     /// Whether the right dock is open.
     shown: bool,
+    /// For the name of the terminal's host, beside the tool's.
+    store: Entity<HostStore>,
     monitor: Entity<MonitorPanel>,
     snippets: Entity<SnippetPanel>,
     history: Entity<HistoryPanel>,
@@ -133,6 +135,7 @@ impl ToolSidebar {
             tool: ToolKind::default(),
             terminal: None,
             shown: false,
+            store: store.clone(),
             monitor: cx.new(|_| MonitorPanel::new(dispatch.clone())),
             snippets: cx.new(|cx| SnippetPanel::new(store, dispatch.clone(), window, cx)),
             history: cx.new(|cx| HistoryPanel::new(dispatch.clone(), window, cx)),
@@ -327,11 +330,38 @@ impl BasePanel for ToolSidebar {
 }
 
 impl Panel for ToolSidebar {
-    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    /// The tool, and the host it works on: with the center split, more than
+    /// one SSH terminal may show.
+    fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let host = self.terminal.as_ref().and_then(|terminal| {
+            self.store
+                .read(cx)
+                .host(terminal.host)
+                .map(|host| host.name.clone())
+        });
+        let muted = cx.theme().muted_foreground;
         h_flex()
+            .id("tool-sidebar-title")
+            .test_support()
+            .min_w_0()
             .gap_1()
             .child(self.tool.icon().small())
-            .child(self.tool.label())
+            .child(div().flex_shrink_0().child(self.tool.label()))
+            .when_some(host, |title, host| {
+                title
+                    .aria_label(format!("{} · {host}", self.tool.label()))
+                    .child(div().flex_shrink_0().text_color(muted).child("·"))
+                    .child(
+                        div()
+                            .id("tool-sidebar-host")
+                            .test_support()
+                            .aria_label(host.clone())
+                            .min_w_0()
+                            .truncate()
+                            .text_color(muted)
+                            .child(host),
+                    )
+            })
     }
 
     fn zoom_control(&self, _: &App) -> Option<PanelControl> {

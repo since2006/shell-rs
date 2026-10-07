@@ -8,6 +8,7 @@ use gpui_kit::component::dock::{DockPlacement, panel_handle};
 use gpui_kit::*;
 
 use super::Workspace;
+use super::front::follow_focus;
 use crate::analytics::Counter;
 use crate::app::{CenterTab, CloseEditor, EditorAction, EditorCommand, EditorShortcut};
 use crate::editor::{EditorId, EditorKey, EditorPanel, EditorPanelEvent, EditorSource};
@@ -95,6 +96,9 @@ impl Workspace {
             cx.new(|cx| EditorPanel::new(id, source, location, file, store, dispatch, window, cx));
         let subscription = cx.subscribe_in(&editor, window, Self::on_editor_event);
         self._subscriptions.push(subscription);
+        let focus = editor.read(cx).focus_handle(cx);
+        self._subscriptions
+            .push(follow_focus(CenterTab::Editor(id), &focus, window, cx));
         self.editors.insert(id, editor.clone());
         self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(

@@ -8,6 +8,7 @@ mod credentials;
 mod dock_skin;
 mod editors;
 mod forwards;
+mod front;
 mod links;
 mod notices;
 mod recent_hosts;

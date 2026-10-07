@@ -20,6 +20,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::editors::describe_files;
+use super::front::follow_focus;
 use crate::analytics::{Analytics, AnalyticsServices, Counter};
 use crate::app::ExplorerDispatch as _;
 use crate::app::{
@@ -187,10 +188,15 @@ pub struct Workspace {
     next_remote_terminal_id: u64,
     next_local_terminal_id: u64,
     next_explorer_id: u64,
-    /// The center tab displayed most recently; `CloseActiveTab` closes it.
-    /// Changed through `set_active_tab`, which shows or hides the right
-    /// sidebar with it.
+    /// The center tab in front: shown most recently, or, with the center
+    /// split, the one the focus went into last (see `front.rs`).
+    /// `CloseActiveTab` closes it. Changed through `set_active_tab`, which
+    /// brings the right sidebar in line.
     pub(super) active_tab: Option<CenterTab>,
+    /// The SSH terminal the right sidebar works on while it shows: the last
+    /// one in front. Another tab in front of the other half of a split
+    /// leaves it be.
+    pub(super) tool_terminal_choice: Option<RemoteTerminalId>,
     /// Whether the right sidebar is to show while an SSH terminal is in
     /// front. It hides with any other tab and comes back with the next one.
     pub(super) tool_sidebar_wanted: bool,
@@ -472,6 +478,13 @@ impl Workspace {
             );
             center = center.panel_view(panel_handle(panel.clone()), cx);
             subscriptions.push(subscription);
+            let focus = panel.read(cx).focus_handle(cx);
+            subscriptions.push(follow_focus(
+                CenterTab::Terminal(terminal_id),
+                &focus,
+                window,
+                cx,
+            ));
             terminals.insert(terminal_id, panel);
         }
 
@@ -535,6 +548,7 @@ impl Workspace {
             next_local_terminal_id: 1,
             next_explorer_id: 1,
             active_tab: None,
+            tool_terminal_choice: None,
             tool_sidebar_wanted: false,
             prompt_queue: VecDeque::new(),
             active_prompt: None,
@@ -553,6 +567,11 @@ impl Workspace {
     }
 
     /// The host store, for tests and for panels created later.
+    /// The dock area: the center's tabs and the two sidebars.
+    pub fn dock_area(&self) -> &Entity<DockArea> {
+        &self.dock_area
+    }
+
     pub fn store(&self) -> &Entity<HostStore> {
         &self.store
     }
@@ -643,29 +662,9 @@ impl Workspace {
     /// Give the focus to the center: the tab shown last, or the start page
     /// while there is none. For when the focus is about to go off screen.
     pub(super) fn focus_center(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let tab = match self.active_tab {
-            Some(CenterTab::Terminal(id)) => self
-                .terminals
-                .get(&id)
-                .map(|panel| panel.read(cx).focus_handle(cx)),
-            Some(CenterTab::Explorer(id)) => self
-                .explorers
-                .get(&id)
-                .map(|panel| panel.read(cx).focus_handle(cx)),
-            Some(CenterTab::LocalTerminal(id)) => self
-                .local_terminals
-                .get(&id)
-                .map(|panel| panel.read(cx).focus_handle(cx)),
-            Some(CenterTab::Settings) => self
-                .settings_tab
-                .as_ref()
-                .map(|panel| panel.read(cx).focus_handle(cx)),
-            Some(CenterTab::Editor(id)) => self
-                .editors
-                .get(&id)
-                .map(|panel| panel.read(cx).focus_handle(cx)),
-            None => None,
-        };
+        let tab = self
+            .active_tab
+            .and_then(|tab| self.tab_focus_handle(tab, cx));
         let handle = tab.or_else(|| {
             self.skin
                 .is_center_empty()
@@ -673,6 +672,32 @@ impl Workspace {
         });
         if let Some(handle) = handle {
             window.focus(&handle, cx);
+        }
+    }
+
+    /// Where the focus goes in `tab`.
+    pub(super) fn tab_focus_handle(&self, tab: CenterTab, cx: &App) -> Option<FocusHandle> {
+        match tab {
+            CenterTab::Terminal(id) => self
+                .terminals
+                .get(&id)
+                .map(|panel| panel.read(cx).focus_handle(cx)),
+            CenterTab::Explorer(id) => self
+                .explorers
+                .get(&id)
+                .map(|panel| panel.read(cx).focus_handle(cx)),
+            CenterTab::LocalTerminal(id) => self
+                .local_terminals
+                .get(&id)
+                .map(|panel| panel.read(cx).focus_handle(cx)),
+            CenterTab::Settings => self
+                .settings_tab
+                .as_ref()
+                .map(|panel| panel.read(cx).focus_handle(cx)),
+            CenterTab::Editor(id) => self
+                .editors
+                .get(&id)
+                .map(|panel| panel.read(cx).focus_handle(cx)),
         }
     }
 
@@ -689,6 +714,8 @@ impl Workspace {
             let page = self.recent.read(cx).focus_handle(cx);
             window.focus(&page, cx);
         }
+        // A tab dragged into another group may hide the one in front.
+        self.sync_front(window, cx);
     }
 
     pub(super) fn enqueue_prompt(
@@ -1081,6 +1108,13 @@ impl Workspace {
             cx,
         );
         self._subscriptions.push(subscription);
+        let focus = panel.read(cx).focus_handle(cx);
+        self._subscriptions.push(follow_focus(
+            CenterTab::Terminal(terminal_id),
+            &focus,
+            window,
+            cx,
+        ));
         self.terminals.insert(terminal_id, panel.clone());
         self.refresh_host_connection_state(host_id, cx);
         self.dock_area.update(cx, |area, cx| {
@@ -1112,6 +1146,9 @@ impl Workspace {
         self.next_explorer_id += 1;
         let (panel, subscription) = new_explorer_panel(self, id, host_id, window, cx);
         self._subscriptions.push(subscription);
+        let focus = panel.read(cx).focus_handle(cx);
+        self._subscriptions
+            .push(follow_focus(CenterTab::Explorer(id), &focus, window, cx));
         self.explorers.insert(id, panel.clone());
         self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
@@ -1129,6 +1166,13 @@ impl Workspace {
         let (panel, subscription) =
             new_local_terminal_panel(id, self.local_terminal_factory.clone(), window, cx);
         self._subscriptions.push(subscription);
+        let focus = panel.read(cx).focus_handle(cx);
+        self._subscriptions.push(follow_focus(
+            CenterTab::LocalTerminal(id),
+            &focus,
+            window,
+            cx,
+        ));
         self.local_terminals.insert(id, panel.clone());
         self.count(Counter::LocalTerminal);
         self.dock_area.update(cx, |area, cx| {
@@ -1174,6 +1218,9 @@ impl Workspace {
             },
         );
         self._subscriptions.push(subscription);
+        let focus = panel.read(cx).focus_handle(cx);
+        self._subscriptions
+            .push(follow_focus(CenterTab::Settings, &focus, window, cx));
         self.settings_tab = Some(panel.clone());
         self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
@@ -1564,7 +1611,7 @@ impl Workspace {
     }
 
     /// The center tab a dock panel stands for, if it is one of ours.
-    fn center_tab_for_panel(&self, panel: PanelId) -> Option<CenterTab> {
+    pub(super) fn center_tab_for_panel(&self, panel: PanelId) -> Option<CenterTab> {
         let is = |entity: EntityId| PanelId::from(entity) == panel;
         self.terminals
             .iter()

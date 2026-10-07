@@ -2,6 +2,10 @@
 //! the title bar and dialogs in general.
 
 use crate::support::*;
+use gpui_kit::component::{
+    Placement,
+    dock::{DockPlacement, InsertTarget, PanelId},
+};
 
 #[gpui_kit::test]
 fn tab_close_button_closes_the_terminal_and_disconnects(cx: &mut TestAppContext) {
@@ -981,6 +985,167 @@ async fn the_tool_sidebar_goes_with_ssh_terminals_only(cx: &mut TestAppContext) 
         assert_eq!(sidebar.label(), Some("命令片段"));
         assert_eq!(window.find("tool-snippets").checked(), Some(true));
     });
+}
+
+/// With the center split, two SSH terminals show at once: the sidebar works
+/// on the one the focus went into last, and names its host, as does the
+/// status bar.
+#[gpui_kit::test]
+fn with_the_center_split_the_tool_sidebar_follows_the_focus(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| {
+        window.activate_window();
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx);
+    });
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("tool-sidebar-host").label(), Some("web-01"));
+    });
+
+    // staging-api's terminal to a group of its own on the right.
+    cx.update_window(handle.into(), |_, window, cx| {
+        let panel = PanelId::from(
+            workspace
+                .read(cx)
+                .remote_terminal(RemoteTerminalId(INITIAL_STAGING_TERMINAL))
+                .expect("staging-api's terminal")
+                .entity_id(),
+        );
+        let area = workspace.read(cx).dock_area().clone();
+        area.update(cx, |area, cx| {
+            let node = area
+                .layout(DockPlacement::Center)
+                .and_then(|tree| tree.find_panel_node(panel))
+                .expect("in the center");
+            // As a drag to the group's right edge does.
+            area.move_panel(
+                panel,
+                InsertTarget::Split {
+                    node,
+                    placement: Placement::Right,
+                    size: None,
+                },
+                window,
+                cx,
+            );
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let front = |cx: &mut TestAppContext| {
+        in_frame(cx, handle, |window, _| {
+            assert!(window.find(("terminal", INITIAL_WEB_TERMINAL)).visible());
+            assert!(
+                window
+                    .find(("terminal", INITIAL_STAGING_TERMINAL))
+                    .visible()
+            );
+            (
+                window.find("tool-sidebar-host").label().map(str::to_string),
+                window.find("status-connection").label().map(str::to_string),
+            )
+        })
+    };
+    // A click into either half, no tab switched to, brings it in front.
+    for (terminal, host) in [
+        (INITIAL_WEB_TERMINAL, "web-01"),
+        (INITIAL_STAGING_TERMINAL, "staging-api"),
+        (INITIAL_WEB_TERMINAL, "web-01"),
+    ] {
+        in_frame(cx, handle, |window, cx| {
+            window.click(("terminal", terminal), cx)
+        });
+        let (sidebar, status) = front(cx);
+        assert_eq!(sidebar.as_deref(), Some(host));
+        // 「连接中 web-01」 until the fake connects: the host is what counts.
+        assert!(status.is_some_and(|status| status.ends_with(&format!(" {host}"))));
+    }
+}
+
+/// A tab dragged over the terminal's group, shown in front of it, takes the
+/// sidebar away with the terminal: neither is on screen any more.
+#[gpui_kit::test]
+async fn a_tab_dropped_over_the_terminal_takes_the_sidebar_with_it(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace_with_sftp(cx, Arc::new(FakeSftpProvider::default()));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
+    open_test_explorer(cx, handle).await;
+
+    let explorer = cx.update(|cx| {
+        PanelId::from(
+            workspace
+                .read(cx)
+                .explorer(ExplorerId(SFTP_TAB))
+                .expect("the SFTP tab")
+                .entity_id(),
+        )
+    });
+    let terminal = cx.update(|cx| {
+        PanelId::from(
+            workspace
+                .read(cx)
+                .remote_terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))
+                .expect("web-01's terminal")
+                .entity_id(),
+        )
+    });
+    let move_explorer = |into_group: bool, cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let area = workspace.read(cx).dock_area().clone();
+            area.update(cx, |area, cx| {
+                let tree = area.layout(DockPlacement::Center).expect("the center");
+                let node = tree.find_panel_node(explorer).expect("in the center");
+                if into_group {
+                    let target = tree.find_panel_node(terminal).expect("the terminals");
+                    area.move_panel(
+                        explorer,
+                        InsertTarget::Tabs {
+                            node: target,
+                            ix: None,
+                            activate: true,
+                        },
+                        window,
+                        cx,
+                    );
+                } else {
+                    area.move_panel(
+                        explorer,
+                        InsertTarget::Split {
+                            node,
+                            placement: Placement::Bottom,
+                            size: None,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let shown = |cx: &mut TestAppContext| {
+        in_frame(cx, handle, |window, _| {
+            (
+                window.try_find("tool-switch").is_some(),
+                window.try_find("tool-sidebar-host").is_some(),
+            )
+        })
+    };
+
+    // Below the terminals: a terminal shows, and so do the tools.
+    move_explorer(false, cx);
+    assert_eq!(shown(cx), (true, true));
+    // Back into their group, in front, as a drop leaves it: no terminal
+    // shows.
+    move_explorer(true, cx);
+    assert_eq!(shown(cx), (false, false));
+    let front = cx.update(|cx| workspace.read(cx).active_tab());
+    assert_eq!(front, Some(CenterTab::Explorer(ExplorerId(SFTP_TAB))));
 }
 
 #[gpui_kit::test]
