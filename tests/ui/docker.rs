@@ -135,7 +135,6 @@ async fn containers_show_by_project_and_the_rest_on_their_own(cx: &mut TestAppCo
             window.within("docker-tabs").find(0usize).label(),
             Some("容器 4")
         );
-        assert_tabs_share_the_width(window, "docker-tabs", 4);
     });
 
     // Unfold the stopped project, fold the running one.

@@ -9,9 +9,7 @@ type ChangeHandler = Rc<dyn Fn(&usize, &mut Window, &mut App)>;
 
 /// One choice out of a few, side by side in one track, the chosen one
 /// standing out as a raised block: a segmented control, for a form's choice
-/// between ways of doing the same thing (密码 / 使用凭据 / 无密码), and, small
-/// and with counts, for what a right-sidebar tool's list shows (容器 9 / 卷
-/// 0 …, see `count_tabs`).
+/// between ways of doing the same thing (密码 / 使用凭据 / 无密码).
 ///
 /// Behavior comes from gpui-base's radio group: activation by pointer, Enter
 /// or Space, a tab stop per segment, and the radio group's semantics for
@@ -30,8 +28,6 @@ pub struct SegmentedControl {
 /// One segment of a [`SegmentedControl`].
 pub struct Segment {
     label: SharedString,
-    /// How many there are of what it shows, quieter beside the label.
-    count: Option<usize>,
     disabled: bool,
     /// Why a disabled segment cannot be chosen.
     tooltip: Option<SharedString>,
@@ -41,16 +37,9 @@ impl Segment {
     pub fn new(label: impl Into<SharedString>) -> Self {
         Self {
             label: label.into(),
-            count: None,
             disabled: false,
             tooltip: None,
         }
-    }
-
-    /// How many there are of what it shows: 「容器 9」.
-    pub fn count(mut self, count: usize) -> Self {
-        self.count = Some(count);
-        self
     }
 
     pub fn disabled(mut self, disabled: bool) -> Self {
@@ -120,7 +109,6 @@ impl RenderOnce for SegmentedControl {
         let total = self.segments.len();
         let selected = self.selected;
         let on_change = self.on_change;
-        let muted = theme.muted_foreground;
 
         RadioGroup::new(self.id)
             .axis(Axis::Horizontal)
@@ -142,10 +130,7 @@ impl RenderOnce for SegmentedControl {
                 Radio::new(ix)
                     .checked(checked)
                     .disabled(segment.disabled)
-                    .accessibility_label(match segment.count {
-                        Some(count) => format!("{} {count}", segment.label).into(),
-                        None => segment.label.clone(),
-                    })
+                    .accessibility_label(segment.label.clone())
                     .set_position(ix + 1, total)
                     // Equal shares of the track, whatever the labels.
                     .flex_1()
@@ -194,15 +179,6 @@ impl RenderOnce for SegmentedControl {
                         })
                     })
                     .child(div().truncate().child(segment.label))
-                    .when_some(segment.count, |radio, count| {
-                        radio.child(
-                            div()
-                                .flex_shrink_0()
-                                .ml_1()
-                                .text_color(muted)
-                                .child(count.to_string()),
-                        )
-                    })
             }))
     }
 }

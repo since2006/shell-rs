@@ -8,6 +8,7 @@ use gpui_kit::component::{
     h_flex,
     scroll::ScrollableElement as _,
     spinner::Spinner,
+    tab::{Tab, TabBar},
     tag::Tag,
     v_flex,
 };
@@ -25,7 +26,7 @@ use crate::app::{
     ToggleDockerProject,
 };
 use crate::i18n::t;
-use crate::shared::{count_tabs, soft_tag, tinted};
+use crate::shared::{soft_tag, tinted};
 use crate::terminal::{ExecResult, ExecTarget, RemoteTerminalId, exec_answer};
 
 /// How long a terminal not connected is left before it is asked again.
@@ -249,55 +250,80 @@ impl DockerPanel {
         self.sync_list(&rows);
         let summary = table.summary();
         let refresh = self.dispatch.clone();
-        let header = v_flex()
-            .flex_shrink_0()
-            .px_3()
-            .pt_3()
-            .pb_2()
-            .gap_2()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .id("docker-summary")
-                            .test_support()
-                            .aria_label(summary.clone())
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(summary),
-                    )
-                    .child(
-                        Button::new("docker-refresh")
-                            .ghost()
-                            .xsmall()
-                            .icon(Icon::new(CatalogIcon::RefreshCw))
-                            .loading(self.loading)
-                            .tooltip(t!("tools.refresh"))
-                            .accessibility_label(t!("tools.refresh"))
-                            .on_click(move |_, window, cx| {
-                                refresh.dispatch_action(&RefreshDocker, window, cx)
-                            }),
+        let header =
+            v_flex()
+                .flex_shrink_0()
+                .px_3()
+                .pt_3()
+                .pb_2()
+                .gap_2()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .id("docker-summary")
+                                .test_support()
+                                .aria_label(summary.clone())
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(summary),
+                        )
+                        .child(
+                            Button::new("docker-refresh")
+                                .ghost()
+                                .xsmall()
+                                .icon(Icon::new(CatalogIcon::RefreshCw))
+                                .loading(self.loading)
+                                .tooltip(t!("tools.refresh"))
+                                .accessibility_label(t!("tools.refresh"))
+                                .on_click(move |_, window, cx| {
+                                    refresh.dispatch_action(&RefreshDocker, window, cx)
+                                }),
+                        ),
+                )
+                .when_some(problem, |header, problem| {
+                    header.child(render_problem(&problem, cx))
+                })
+                .child(
+                    // gpui-kit's underlined tabs, as 系统服务's: each as wide as
+                    // its label and count, and where they do not all fit the bar
+                    // scrolls sideways rather than cut a label short, whatever
+                    // the language ("Containers 12" has no room in a quarter of
+                    // the panel).
+                    div().id("docker-tabs").test_support().child(
+                        TabBar::new("docker-tab-bar")
+                            .underline()
+                            .small()
+                            .selected_index(
+                                DockerTab::ALL
+                                    .iter()
+                                    .position(|tab| *tab == self.tab)
+                                    .unwrap_or(0),
+                            )
+                            .on_click(cx.listener(|this, index: &usize, _, cx| {
+                                this.show(DockerTab::ALL[*index], cx)
+                            }))
+                            .children(DockerTab::ALL.iter().zip(table.counts()).map(
+                                |(tab, count)| {
+                                    Tab::new()
+                                        .label(tab.label())
+                                        .aria_label(format!("{} {count}", tab.label()))
+                                        // Beside the label: the suffix would sit
+                                        // outside the label's box.
+                                        .child(
+                                            div()
+                                                .ml_1()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(count.to_string()),
+                                        )
+                                },
+                            )),
                     ),
-            )
-            .when_some(problem, |header, problem| {
-                header.child(render_problem(&problem, cx))
-            })
-            .child(count_tabs(
-                "docker-tabs",
-                DockerTab::ALL
-                    .iter()
-                    .map(|tab| tab.label())
-                    .zip(table.counts()),
-                DockerTab::ALL
-                    .iter()
-                    .position(|tab| *tab == self.tab)
-                    .unwrap_or(0),
-                cx.listener(|this, index: &usize, _, cx| this.show(DockerTab::ALL[*index], cx)),
-            ));
+                );
 
         let empty = match self.tab {
             DockerTab::Containers => t!("docker.panel.no_containers"),

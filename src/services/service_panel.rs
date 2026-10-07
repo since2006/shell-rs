@@ -295,7 +295,7 @@ impl ServicePanel {
                     // count: 「已停止 202」 does not fit an equal share of the
                     // panel, and where they all do not fit the bar scrolls
                     // sideways rather than cut a label short (the user's
-                    // choice; Docker's shorter labels share the width).
+                    // choice, Docker's too).
                     div().id("services-tabs").test_support().child(
                         TabBar::new("services-tab-bar")
                             .underline()
