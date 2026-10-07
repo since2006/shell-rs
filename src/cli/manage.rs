@@ -9,6 +9,7 @@ use crate::host::{
     AuthKind, Credential, CredentialDraft, CredentialId, CredentialKind, GroupId, Host, HostDraft,
     HostId, HostStore, PastedKey, ProxyKind, ProxySettings, Route,
 };
+use crate::i18n::t;
 use crate::secrets::SecretRef;
 
 use super::protocol::{
@@ -202,9 +203,10 @@ pub fn with_saved_credential_secrets(
 /// The credential search: its name, user, kind or ID.
 pub fn credential_matches(details: &CredentialDetails, query: &str) -> bool {
     let needle = query.trim().to_lowercase();
+    // Both languages' words, whichever the agent or its user types.
     let kind = match details.kind {
-        CredentialKindChoice::Password => "password 密码",
-        CredentialKindChoice::Key => "key 密钥",
+        CredentialKindChoice::Password => "password 密码", // i18n: keep
+        CredentialKindChoice::Key => "key 密钥",           // i18n: keep
         CredentialKindChoice::Agent => "agent ssh agent",
     };
     needle.is_empty()
@@ -218,10 +220,17 @@ fn bad(message: impl Into<String>) -> CliError {
     CliError::new(ErrorCode::BadRequest, message)
 }
 
-fn host_not_found(id: &str) -> CliError {
+pub(super) fn host_not_found(id: &str) -> CliError {
     CliError::new(
         ErrorCode::HostNotFound,
-        format!("没有 ID 为 {id} 的主机：请用 shellrs hosts list 查看"),
+        t!("cli.error.host_not_found", id = id),
+    )
+}
+
+pub(super) fn credential_not_found(id: &str) -> CliError {
+    CliError::new(
+        ErrorCode::CredentialNotFound,
+        t!("cli.error.credential_not_found", id = id),
     )
 }
 
@@ -239,10 +248,7 @@ pub fn find_host<'a>(store: &'a HostStore, id: &str) -> Result<&'a Host, CliErro
 pub fn find_saved_host(store: &HostStore, id: &str) -> Result<HostId, CliError> {
     let host = find_host(store, id)?;
     if store.is_temporary(host.id) {
-        return Err(bad(format!(
-            "「{}」是没有保存的连接（临时连接或外部连接），不能修改或删除：关闭它的标签即可",
-            host.name
-        )));
+        return Err(bad(t!("cli.host.temporary", name = host.name)));
     }
     Ok(host.id)
 }
@@ -252,12 +258,7 @@ pub fn find_credential<'a>(store: &'a HostStore, id: &str) -> Result<&'a Credent
         .credentials()
         .iter()
         .find(|credential| credential.keychain_id.as_str() == id.trim())
-        .ok_or_else(|| {
-            CliError::new(
-                ErrorCode::CredentialNotFound,
-                format!("没有 ID 为 {id} 的凭据：请用 shellrs credentials list 查看"),
-            )
-        })
+        .ok_or_else(|| credential_not_found(id))
 }
 
 /// Where a host goes in the tree.
@@ -359,9 +360,7 @@ pub fn plan_host(
     };
     let credential = match (fields.auth, named) {
         (Some(AuthChoice::Password | AuthChoice::NoPassword), Some(_)) => {
-            return Err(bad(
-                "auth 为 password 或 no_password 时不能同时指定 credential",
-            ));
+            return Err(bad(t!("cli.host.credential_with_own_auth")));
         }
         (Some(AuthChoice::Password | AuthChoice::NoPassword), None) => None,
         (_, Some(named)) => Some(named),
@@ -369,15 +368,12 @@ pub fn plan_host(
         (_, None) => draft.credential.and_then(|id| store.credential(id)),
     };
     match (fields.auth, credential) {
-        (Some(AuthChoice::Credential), None) => return Err(bad("请选择凭据")),
+        (Some(AuthChoice::Credential), None) => return Err(bad(t!("cli.host.no_credential"))),
         (_, Some(credential)) => {
             if let Some(user) = &fields.user
                 && user.trim() != credential.user.as_ref()
             {
-                return Err(bad(format!(
-                    "使用凭据的主机以凭据的用户名 {} 登录：去掉 user，或改凭据的用户名",
-                    credential.user
-                )));
+                return Err(bad(t!("cli.host.credential_user", user = credential.user)));
             }
             draft.credential = Some(credential.id);
             draft.user = credential.user.clone();
@@ -401,7 +397,7 @@ pub fn plan_host(
     }
     let own_password = draft.credential.is_none() && draft.auth == AuthKind::Password;
     if !own_password && matches!(fields.password, Some(Some(_))) {
-        return Err(bad("只有 auth 为 password 的主机才保存自己的密码"));
+        return Err(bad(t!("cli.host.password_without_auth")));
     }
 
     // The proxy password field, when the route was given at all.
@@ -419,7 +415,7 @@ pub fn plan_host(
             } => {
                 let user = user.unwrap_or_default();
                 if user.trim().is_empty() && matches!(password, Some(Some(_))) {
-                    return Err(bad("填写代理密码时请同时填写用户名"));
+                    return Err(bad(t!("cli.host.proxy_password_without_user")));
                 }
                 proxy_field = Some(password);
                 let kind = match kind {
@@ -475,13 +471,13 @@ fn jump_hosts(
         };
         let hop = find_host(store, id)?;
         if store.is_temporary(hop.id) {
-            return Err(bad(format!("跳板只能是保存的主机：{id} 是没有保存的连接")));
+            return Err(bad(t!("cli.host.jump_temporary", id = id)));
         }
         if Some(hop.id) == own {
-            return Err(bad("跳板主机不能是这台主机自己"));
+            return Err(bad(t!("cli.host.jump_self")));
         }
         if hops.contains(&Some(hop.id)) {
-            return Err(bad(format!("跳板主机 {id} 重复了")));
+            return Err(bad(t!("cli.host.jump_repeated", id = id)));
         }
         hops.push(Some(hop.id));
     }
@@ -498,14 +494,11 @@ fn resolve_group(store: &HostStore, path: &str) -> Result<GroupPlan, CliError> {
     }
     let names: Vec<&str> = path.split('/').map(str::trim).collect();
     if names.iter().any(|name| name.is_empty()) {
-        return Err(bad(format!("分组路径「{path}」里有空的一级")));
+        return Err(bad(t!("cli.group.empty_level", path = path)));
     }
     let wanted = names.join("/");
-    let ambiguous = |count: usize, path: &str| {
-        bad(format!(
-            "有 {count} 个分组的路径都是「{path}」：请先在 ShellRS 里给它们改名"
-        ))
-    };
+    let ambiguous =
+        |count: usize, path: &str| bad(t!("cli.group.ambiguous", count = count, path = path));
     let whole: Vec<GroupId> = store
         .groups()
         .iter()
@@ -587,22 +580,25 @@ pub fn plan_credential(
         draft.user = user.into();
     }
     if gives_key && kind != CredentialKind::Key {
-        return Err(bad("只有密钥凭据（kind 为 key）才有私钥"));
+        return Err(bad(t!("cli.credential.key_without_kind")));
     }
     if kind != CredentialKind::Password && matches!(fields.password, Some(Some(_))) {
-        return Err(bad("只有密码凭据（kind 为 password）才保存密码"));
+        return Err(bad(t!("cli.credential.password_without_kind")));
     }
     if kind != CredentialKind::Key && matches!(fields.passphrase, Some(Some(_))) {
-        return Err(bad("只有密钥凭据（kind 为 key）才有口令"));
+        return Err(bad(t!("cli.credential.passphrase_without_kind")));
     }
     let private_key = match (fields.key_path, fields.private_key) {
-        (Some(_), Some(_)) => return Err(bad("key_path 和 private_key 只能给一个")),
+        (Some(_), Some(_)) => return Err(bad(t!("cli.credential.two_keys"))),
         (Some(path), None) => {
             if !path.is_absolute() {
-                return Err(bad(format!("私钥文件必须是绝对路径：{}", path.display())));
+                return Err(bad(t!(
+                    "cli.credential.key_not_absolute",
+                    path = path.display()
+                )));
             }
             if !Path::new(&path).is_file() {
-                return Err(bad(format!("私钥文件不存在：{}", path.display())));
+                return Err(bad(t!("cli.credential.key_missing", path = path.display())));
             }
             draft = draft.with_key_path(path.display().to_string());
             None
@@ -612,11 +608,12 @@ pub fn plan_credential(
             if store.key_dir().is_none() {
                 return Err(CliError::new(
                     ErrorCode::SaveFailed,
-                    "没有可以保存私钥的目录",
+                    t!("cli.credential.no_key_dir"),
                 ));
             }
-            // Stands in until the key file is written, so the draft passes.
-            draft = draft.with_key_path("（新私钥）");
+            // Stands in until the key file is written, so the draft passes;
+            // never saved or shown.
+            draft = draft.with_key_path("(pasted key)");
             Some(pasted)
         }
         (None, None) => None,

@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use super::error::UpdateError;
 use super::install::{InstallKind, Installer, Launch, Relaunch, Staged};
 use super::manifest::Release;
+use crate::i18n::t;
 
 /// Waits for ShellRS to exit, runs the setup, then starts ShellRS again if
 /// asked. Values come in through the environment, not the script's text,
@@ -85,7 +86,9 @@ impl Installer for SetupInstaller {
 
     fn apply(&self, staged: &Staged, relaunch: bool) -> Result<Relaunch, UpdateError> {
         if !staged.path.is_file() {
-            return Err(UpdateError::Install("找不到下载的安装程序".into()));
+            return Err(UpdateError::Install(
+                t!("update.install.setup_missing").to_string(),
+            ));
         }
         Ok(Relaunch::Hand(waiter(
             std::process::id(),

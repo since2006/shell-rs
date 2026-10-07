@@ -12,6 +12,7 @@ use std::{
 };
 
 use super::install::{BinaryStatus, IntegrationPaths, UserPath};
+use crate::i18n::t;
 
 pub(super) fn binary_status(paths: &IntegrationPaths) -> BinaryStatus {
     let source = fs::metadata(&paths.exe).ok();
@@ -56,7 +57,7 @@ pub(super) fn install_binary(paths: &IntegrationPaths) -> io::Result<()> {
     if !paths.exe.exists() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("找不到 {}", paths.exe.display()),
+            t!("cli.install.missing", path = paths.exe.display()).to_string(),
         ));
     }
     let folder = folder(paths);

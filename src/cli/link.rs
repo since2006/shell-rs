@@ -46,7 +46,7 @@ fn without_password(url: &str) -> String {
             }
             parsed.to_string()
         }
-        Err(_) => "<无法解析的链接>".into(),
+        Err(_) => "<unreadable link>".into(),
     }
 }
 

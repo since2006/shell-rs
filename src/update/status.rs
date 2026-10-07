@@ -2,7 +2,10 @@
 //! button, which buttons apply, and what a restart interrupts. Pure, so
 //! every wording is tested without a window.
 
+use gpui_kit::SharedString;
+
 use super::updater::{Phase, Stage, UpdateSnapshot};
+use crate::i18n::{join_list, t, tn};
 
 /// The title bar's update button.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,51 +55,76 @@ impl UpdateSnapshot {
 
     /// The line under 当前版本 on 设置 › 关于.
     pub fn status_line(&self) -> (String, Tone) {
-        let offered = self.offered_version().unwrap_or_default();
-        match &self.phase {
+        let version = self.offered_version().unwrap_or_default();
+        let version = version.as_str();
+        let (text, tone) = match &self.phase {
             Phase::Off => (
-                format!(
-                    "{}。",
-                    self.unsupported
-                        .as_ref()
-                        .map(|reason| reason.reason())
-                        .unwrap_or_else(|| "不检查更新".into())
-                ),
+                match &self.unsupported {
+                    Some(reason) => t!("update.status.unsupported", reason = reason.reason()),
+                    None => t!("update.status.off"),
+                },
                 Tone::Plain,
             ),
-            Phase::Idle => ("尚未检查更新。".into(), Tone::Plain),
-            Phase::Checking => ("正在检查更新…".into(), Tone::Plain),
-            Phase::UpToDate => ("当前已是最新版本。".into(), Tone::Plain),
+            Phase::Idle => (t!("update.status.idle"), Tone::Plain),
+            Phase::Checking => (t!("update.status.checking"), Tone::Plain),
+            Phase::UpToDate => (t!("update.status.up_to_date"), Tone::Plain),
             Phase::Available if self.manual.is_some() => (
-                format!("发现新版本 {offered}，需要从官网下载安装。"),
+                t!("update.status.available_manual", version = version),
                 Tone::Warning,
             ),
             Phase::Available => match &self.unsupported {
                 Some(reason) => (
-                    format!("发现新版本 {offered}。{}。", reason.reason()),
+                    t!(
+                        "update.status.available_unsupported",
+                        version = version,
+                        reason = reason.reason()
+                    ),
                     Tone::Warning,
                 ),
-                None => (format!("发现新版本 {offered}。"), Tone::Plain),
+                None => (
+                    t!("update.status.available", version = version),
+                    Tone::Plain,
+                ),
             },
             Phase::Downloading { done, total } => (
-                format!("正在下载新版本 {offered}… {}%", percent(*done, *total)),
+                t!(
+                    "update.status.downloading",
+                    version = version,
+                    percent = percent(*done, *total)
+                ),
                 Tone::Plain,
             ),
-            Phase::Verifying => (format!("正在校验新版本 {offered}…"), Tone::Plain),
-            Phase::Ready => (
-                format!("新版本 {offered} 已下载，重启 ShellRS 即可完成更新。"),
+            Phase::Verifying => (
+                t!("update.status.verifying", version = version),
                 Tone::Plain,
             ),
-            Phase::Installing => (format!("正在安装新版本 {offered}…"), Tone::Plain),
+            Phase::Ready => (t!("update.status.ready", version = version), Tone::Plain),
+            Phase::Installing => (
+                t!("update.status.installing", version = version),
+                Tone::Plain,
+            ),
             Phase::Failed { stage, error } => (
                 match stage {
-                    Stage::Check => format!("检查更新失败：{error}"),
-                    Stage::Download => format!("下载新版本 {offered} 失败：{error}"),
-                    Stage::Install => format!("安装新版本 {offered} 失败：{error}"),
+                    Stage::Check => t!("update.status.check_failed", error = error),
+                    Stage::Download => {
+                        t!(
+                            "update.status.download_failed",
+                            version = version,
+                            error = error
+                        )
+                    }
+                    Stage::Install => {
+                        t!(
+                            "update.status.install_failed",
+                            version = version,
+                            error = error
+                        )
+                    }
                 },
                 Tone::Danger,
             ),
-        }
+        };
+        (text.to_string(), tone)
     }
 
     /// What the version on offer needs next, for the button next to the
@@ -119,24 +147,26 @@ impl UpdateSnapshot {
     /// version ready to install, one that has to be downloaded by hand, or
     /// automatic downloads that keep failing.
     pub fn badge(&self) -> Option<UpdateBadge> {
-        let offered = self.offered_version()?;
+        let version = self.offered_version()?;
+        let version = version.as_str();
         let (label, trouble) = match &self.phase {
-            Phase::Ready => (format!("新版本 {offered} 已就绪"), false),
+            Phase::Ready => (t!("update.badge.ready", version = version), false),
             Phase::Available if self.needs_download_page() => {
-                (format!("新版本 {offered} 可用"), false)
+                (t!("update.badge.available", version = version), false)
             }
             Phase::Failed {
                 stage: Stage::Download,
                 ..
             } if self.download_failures >= super::updater::FAILURES_BEFORE_BADGE => {
-                (format!("新版本 {offered} 下载失败"), true)
+                (t!("update.badge.download_failed", version = version), true)
             }
             Phase::Failed {
                 stage: Stage::Install,
                 ..
-            } => (format!("新版本 {offered} 安装失败"), true),
+            } => (t!("update.badge.install_failed", version = version), true),
             _ => return None,
         };
+        let label = label.to_string();
         Some(UpdateBadge { label, trouble })
     }
 
@@ -185,45 +215,44 @@ pub struct RestartImpact {
 /// 「重启会关闭 2 个远程终端和 1 个 SFTP 标签，停止 1 个传输（保留续传进度）。」,
 /// or nothing when a restart interrupts nothing.
 pub fn restart_note(impact: RestartImpact) -> Option<String> {
-    let closes = join(&[
-        (impact.remote_terminals, "个远程终端"),
-        (impact.sftp_tabs, "个 SFTP 标签"),
-        (impact.local_terminals, "个本地终端"),
+    let closes = phrases(&[
+        (impact.remote_terminals > 0)
+            .then(|| tn!("update.restart.remote_terminals", impact.remote_terminals)),
+        (impact.sftp_tabs > 0).then(|| tn!("update.restart.sftp_tabs", impact.sftp_tabs)),
+        (impact.local_terminals > 0)
+            .then(|| tn!("update.restart.local_terminals", impact.local_terminals)),
     ]);
-    let stops = join(&[
-        (impact.transfers, "个传输（保留续传进度）"),
-        (impact.forwards, "条端口转发"),
+    let stops = phrases(&[
+        (impact.transfers > 0).then(|| tn!("update.restart.transfers", impact.transfers)),
+        (impact.forwards > 0).then(|| tn!("update.restart.forwards", impact.forwards)),
     ]);
     let note = match (closes, stops) {
         (None, None) => None,
-        (Some(closes), None) => Some(format!("重启会关闭 {closes}。")),
-        (None, Some(stops)) => Some(format!("重启会停止 {stops}。")),
-        (Some(closes), Some(stops)) => Some(format!("重启会关闭 {closes}，停止 {stops}。")),
+        (Some(closes), None) => Some(t!("update.restart.closes", closes = closes)),
+        (None, Some(stops)) => Some(t!("update.restart.stops", stops = stops)),
+        (Some(closes), Some(stops)) => Some(t!(
+            "update.restart.closes_and_stops",
+            closes = closes,
+            stops = stops
+        )),
     };
-    let unsaved = (impact.unsaved_files > 0).then(|| {
-        format!(
-            "{} 个文件有未保存的修改，重启后会丢失。",
-            impact.unsaved_files
-        )
-    });
-    match (note, unsaved) {
-        (Some(note), Some(unsaved)) => Some(format!("{note}{unsaved}")),
+    let unsaved = (impact.unsaved_files > 0)
+        .then(|| tn!("update.restart.unsaved_files", impact.unsaved_files));
+    let note = match (note, unsaved) {
+        (Some(note), Some(unsaved)) => Some(t!(
+            "update.restart.and_unsaved_files",
+            note = note,
+            unsaved = unsaved
+        )),
         (note, unsaved) => note.or(unsaved),
-    }
+    };
+    note.map(|note| note.to_string())
 }
 
 /// `2 个远程终端、1 个 SFTP 标签和 1 个本地终端`, leaving out what is none.
-fn join(parts: &[(usize, &str)]) -> Option<String> {
-    let parts: Vec<String> = parts
-        .iter()
-        .filter(|(count, _)| *count > 0)
-        .map(|(count, noun)| format!("{count} {noun}"))
-        .collect();
-    match parts.as_slice() {
-        [] => None,
-        [one] => Some(one.clone()),
-        [rest @ .., last] => Some(format!("{}和 {}", rest.join("、"), last)),
-    }
+fn phrases(parts: &[Option<SharedString>]) -> Option<String> {
+    let parts: Vec<&SharedString> = parts.iter().flatten().collect();
+    (!parts.is_empty()).then(|| join_list(&parts))
 }
 
 #[cfg(test)]
@@ -293,6 +322,67 @@ mod tests {
             })
             .as_deref(),
             Some("重启会关闭 1 个 SFTP 标签。2 个文件有未保存的修改，重启后会丢失。")
+        );
+    }
+
+    #[test]
+    fn restarting_says_what_it_interrupts_in_english() {
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("en");
+        assert_eq!(
+            restart_note(RestartImpact {
+                remote_terminals: 2,
+                sftp_tabs: 1,
+                local_terminals: 1,
+                transfers: 1,
+                forwards: 3,
+                unsaved_files: 0,
+            })
+            .as_deref(),
+            Some(
+                "Restarting closes 2 remote terminals, 1 SFTP tab and 1 local terminal \
+                 and stops 1 transfer (its progress is kept) and 3 port forwards."
+            )
+        );
+        assert_eq!(
+            restart_note(RestartImpact {
+                sftp_tabs: 2,
+                unsaved_files: 1,
+                ..RestartImpact::default()
+            })
+            .as_deref(),
+            Some("Restarting closes 2 SFTP tabs. Unsaved changes in 1 file will be lost.")
+        );
+        assert_eq!(
+            restart_note(RestartImpact {
+                unsaved_files: 3,
+                ..RestartImpact::default()
+            })
+            .as_deref(),
+            Some("Unsaved changes in 3 files will be lost.")
+        );
+        assert_eq!(
+            snapshot(Phase::Downloading {
+                done: 45,
+                total: 100
+            })
+            .status_line()
+            .0,
+            "Downloading ShellRS 0.2.0… 45%"
+        );
+        let failed = snapshot(Phase::Failed {
+            stage: Stage::Download,
+            error: UpdateError::Http(503),
+        });
+        assert_eq!(
+            failed.status_line().0,
+            "Couldn’t download ShellRS 0.2.0: the update server answered HTTP 503"
+        );
+        let mut off = snapshot(Phase::Off);
+        off.unsupported = Some(Unsupported::DevelopmentBuild);
+        assert_eq!(
+            off.status_line().0,
+            "Development builds don’t check for updates."
         );
     }
 

@@ -10,6 +10,7 @@ use std::{
 use super::protocol::{CliError, ErrorCode, TransferCounters, TransferSummary};
 use super::server::{CliBackend, CliTarget};
 use crate::connection::{ConnectionPromptKind, ConnectionPromptReply};
+use crate::i18n::t;
 use crate::secrets::{SecretRef, SharedSecretStore};
 use crate::sftp::{
     DownloadRequest, RemotePath, SftpCommand, SftpEvent, SharedSftpTransportProvider,
@@ -72,7 +73,7 @@ impl SshCliBackend {
                     Ok(SftpEvent::Prompt(prompt)) => run.refuse(&commands, &prompt),
                     Ok(SftpEvent::Disconnected(reason)) => return Err(run.failure(reason)),
                     Ok(_) => {}
-                    Err(_) => return Err(run.failure("SFTP 连接意外结束".into())),
+                    Err(_) => return Err(run.failure(t!("cli.transfer.sftp_ended").into())),
                 }
             }
             let _ = commands.send_blocking(command);
@@ -140,7 +141,7 @@ impl CliBackend for SshCliBackend {
             Ok(ExecExit::Signal(signal)) => {
                 let _ = output(
                     ExecStream::Stderr,
-                    format!("shellrs: 远程命令被信号 {signal} 终止\n").as_bytes(),
+                    format!("shellrs: {}\n", t!("cli.exec.signal", signal = signal)).as_bytes(),
                 );
                 Ok(signal_exit_code(&signal))
             }
@@ -190,7 +191,7 @@ impl CliBackend for SshCliBackend {
         if !source.is_dir() {
             return Err(CliError::new(
                 ErrorCode::BadRequest,
-                format!("本地目录不存在：{}", source.display()),
+                t!("cli.transfer.no_local_folder", path = source.display()),
             ));
         }
         let request = UploadRequest::sync(source.to_path_buf(), remote_path(destination)?, delete);
@@ -225,15 +226,15 @@ impl Transfer {
         let refused = match prompt.kind() {
             ConnectionPromptKind::UnknownHost(_) => CliError::new(
                 ErrorCode::HostKeyUnknown,
-                "尚未信任这台主机的密钥：请先在 ShellRS 中连接一次这台主机",
+                t!("cli.transfer.host_key_unknown"),
             ),
             ConnectionPromptKind::HostKeyChanged(_) => CliError::new(
                 ErrorCode::HostKeyChanged,
-                "主机密钥与已保存的不一致，已拒绝连接。请先核实服务器身份",
+                t!("cli.transfer.host_key_changed"),
             ),
             ConnectionPromptKind::Authentication(_) => CliError::new(
                 ErrorCode::MissingCredential,
-                "这台主机没有保存可用的密码或口令：请先在 ShellRS 中连接一次这台主机并保存密码",
+                t!("cli.transfer.missing_credential"),
             ),
         };
         self.refused.get_or_insert(refused);
@@ -264,7 +265,7 @@ impl Transfer {
                     ErrorCode::TransferFailed,
                     self.notice
                         .take()
-                        .unwrap_or_else(|| "传输未完成".to_string()),
+                        .unwrap_or_else(|| t!("cli.transfer.unfinished").to_string()),
                 )
             })),
         }
@@ -287,7 +288,10 @@ fn remote_path(path: &str) -> Result<RemotePath, CliError> {
     let path = path.trim();
     let path = match path {
         "" => {
-            return Err(CliError::new(ErrorCode::BadRequest, "远程路径不能为空"));
+            return Err(CliError::new(
+                ErrorCode::BadRequest,
+                t!("cli.transfer.empty_remote_path"),
+            ));
         }
         "~" => ".".to_string(),
         _ if path.starts_with("~/") => format!(".{}", &path[1..]),

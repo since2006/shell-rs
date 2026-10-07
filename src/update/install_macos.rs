@@ -18,6 +18,7 @@ use super::build_info::APPLE_TEAM_ID;
 use super::error::UpdateError;
 use super::install::{InstallKind, Installer, Relaunch, Staged, sibling};
 use super::manifest::Release;
+use crate::i18n::t;
 
 /// The macOS tools staging relies on, behind a seam for the tests.
 pub trait MacTools: Send + Sync {
@@ -37,18 +38,28 @@ pub struct SystemTools;
 
 impl SystemTools {
     fn run(program: &str, args: &[&OsStr]) -> Result<String, UpdateError> {
-        let output = Command::new(program)
-            .args(args)
-            .output()
-            .map_err(|error| UpdateError::Install(format!("{program}：{error}")))?;
+        let output = Command::new(program).args(args).output().map_err(|error| {
+            UpdateError::Install(
+                t!(
+                    "update.install.tool_failed",
+                    program = program,
+                    error = error
+                )
+                .to_string(),
+            )
+        })?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(UpdateError::Install(format!(
-                "{program}：{}",
-                stderr.trim()
-            )))
+            Err(UpdateError::Install(
+                t!(
+                    "update.install.tool_failed",
+                    program = program,
+                    error = stderr.trim()
+                )
+                .to_string(),
+            ))
         }
     }
 }
@@ -94,7 +105,7 @@ impl MacTools for SystemTools {
         args.push(bundle.as_os_str());
         Self::run("/usr/bin/codesign", &args)
             .map(drop)
-            .map_err(|_| UpdateError::Install("新版本的签名无效或不是 ShellRS 的开发者".into()))
+            .map_err(|_| UpdateError::Install(t!("update.install.bad_signature").to_string()))
     }
 }
 
@@ -151,9 +162,11 @@ impl MacInstaller {
             .flatten()
             .map(|entry| entry.path())
             .find(|path| path.extension().is_some_and(|extension| extension == "app"))
-            .ok_or_else(|| UpdateError::Install("更新包里没有应用程序".into()))?;
+            .ok_or_else(|| UpdateError::Install(t!("update.install.no_app").to_string()))?;
         if self.tools.bundle_version(&app)? != release.version.to_string() {
-            return Err(UpdateError::Install("更新包的版本与更新清单不符".into()));
+            return Err(UpdateError::Install(
+                t!("update.install.wrong_version").to_string(),
+            ));
         }
         self.tools.check_signature(&app, self.team.as_deref())?;
         Ok(app)

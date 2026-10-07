@@ -26,6 +26,8 @@ use std::{
 
 use clap::{Parser, Subcommand};
 
+use crate::i18n::t;
+
 pub use backend::SshCliBackend;
 pub use client::{Console, FAILURE_EXIT, PARTIAL_EXIT, activate_running_app};
 pub use install::{
@@ -48,12 +50,17 @@ pub use protocol::{
 };
 pub use server::{ChangeReply, CliBackend, CliServer, CliTarget, CliUse};
 
-const AFTER_HELP: &str = "\
-Hosts are named by the 16-character ID that `shellrs hosts list` prints (the one ShellRS copies with 复制 ID).
-ShellRS must be running, with 设置 → 外部 CLI → 启用外部 CLI turned on.
-
-Exit codes: exec exits with the remote command's code; 1 means a transfer finished with failures;
-255 means shellrs could not do what was asked (the reason is printed as `shellrs: [code] message`).";
+// `--help` is English whatever the interface language, so it names the
+// settings it points to in both.
+const AFTER_HELP: &str = concat!(
+    "Hosts are named by the 16-character ID that `shellrs hosts list` prints, ",
+    "the one ShellRS copies with Copy ID (复制 ID).\n", // i18n: keep
+    "ShellRS must be running, with Settings → External CLI → Enable external CLI ",
+    "(设置 → 外部 CLI → 启用外部 CLI) turned on.\n", // i18n: keep
+    "\n",
+    "Exit codes: exec exits with the remote command's code; 1 means a transfer finished with failures;\n",
+    "255 means shellrs could not do what was asked (the reason is printed as `shellrs: [code] message`).",
+);
 
 const HOST_FIELDS: &str = "\
 Reads one JSON object from stdin. Every field may be left out; `update` changes only the fields given.
@@ -61,7 +68,7 @@ Reads one JSON object from stdin. Every field may be left out; `update` changes 
   host        The address (IP or host name). Required to create. Also read as `address`.
   port        Default 22.
   user        Default root. A host using a credential logs in as the credential's user.
-  group       A group path such as \"生产/数据库\", made when it is not there; null for the top level.
+  group       A group path such as \"Production/Databases\", made when it is not there; null for the top level.
   auth        \"password\", \"credential\" or \"no_password\".
   credential  A credential ID from `shellrs credentials list`, for auth \"credential\" (implied).
   password    The host's own password, saved to the keychain and never printed; null deletes it.
@@ -332,7 +339,7 @@ fn request(command: Command, console: &mut Console) -> Result<Request, i32> {
             };
             let command = normalize_command(&command);
             if command.trim().is_empty() {
-                return Err(console.error(ErrorCode::BadRequest, "命令不能为空"));
+                return Err(console.error(ErrorCode::BadRequest, &t!("cli.exec.empty")));
             }
             Request::Exec { host, command }
         }
@@ -450,7 +457,7 @@ fn read_json(console: &mut Console, example: &str) -> Result<serde_json::Value, 
     if io::stdin().is_terminal() {
         return Err(console.error(
             ErrorCode::BadRequest,
-            &format!("请从标准输入传入 JSON，例如 {example}"),
+            &t!("cli.json.from_terminal", example = example),
         ));
     }
     let text = read_stdin(console)?;
@@ -458,23 +465,31 @@ fn read_json(console: &mut Console, example: &str) -> Result<serde_json::Value, 
     serde_json::from_str(text).map_err(|error| {
         console.error(
             ErrorCode::BadRequest,
-            &format!("标准输入不是 JSON：{error}"),
+            &t!("cli.json.not_json", error = error),
         )
     })
 }
 
 fn host_fields(console: &mut Console, example: &str) -> Result<HostFields, i32> {
     let value = read_json(console, example)?;
-    manage::host_fields(value)
-        .map_err(|error| console.error(ErrorCode::BadRequest, &format!("JSON 有误：{error}")))
+    manage::host_fields(value).map_err(|error| {
+        console.error(
+            ErrorCode::BadRequest,
+            &t!("cli.json.invalid", error = error),
+        )
+    })
 }
 
 /// A key file named relative to here, or to the home directory, is sent
 /// as the absolute path the app can find.
 fn credential_fields(console: &mut Console, example: &str) -> Result<CredentialFields, i32> {
     let value = read_json(console, example)?;
-    let mut fields = manage::credential_fields(value)
-        .map_err(|error| console.error(ErrorCode::BadRequest, &format!("JSON 有误：{error}")))?;
+    let mut fields = manage::credential_fields(value).map_err(|error| {
+        console.error(
+            ErrorCode::BadRequest,
+            &t!("cli.json.invalid", error = error),
+        )
+    })?;
     if let Some(path) = fields.key_path.take() {
         let path = match path.strip_prefix("~") {
             Ok(rest) => dirs::home_dir().map(|home| home.join(rest)).unwrap_or(path),
@@ -490,7 +505,10 @@ fn read_stdin(console: &mut Console) -> Result<String, i32> {
     std::io::stdin()
         .read_to_string(&mut text)
         .map_err(|error| {
-            console.error(ErrorCode::BadRequest, &format!("无法读取标准输入：{error}"))
+            console.error(
+                ErrorCode::BadRequest,
+                &t!("cli.stdin.unreadable", error = error),
+            )
         })?;
     Ok(text)
 }
@@ -506,7 +524,12 @@ struct ExecJson {
 fn exec_request(text: &str) -> Result<(String, String), String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let request: ExecJson = serde_json::from_str(text).map_err(|error| {
-        format!("标准输入不是 {{\"host\": ..., \"command\": ...}} 形式的 JSON：{error}")
+        t!(
+            "cli.exec.bad_json",
+            form = r#"{"host": ..., "command": ...}"#,
+            error = error
+        )
+        .to_string()
     })?;
     Ok((request.host, request.command))
 }
@@ -526,7 +549,11 @@ fn absolute(path: PathBuf, console: &mut Console) -> Result<PathBuf, i32> {
     std::path::absolute(&path).map_err(|error| {
         console.error(
             ErrorCode::BadRequest,
-            &format!("无法解析路径 {}：{error}", path.display()),
+            &t!(
+                "cli.path.unresolvable",
+                path = path.display(),
+                error = error
+            ),
         )
     })
 }

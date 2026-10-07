@@ -24,6 +24,7 @@ use super::feed::{HttpFeed, UpdateFeed};
 use super::install::{Installer, Launch, Relaunch, Staged, Unsupported, system_installer};
 use super::manifest::{Offer, Release};
 use super::verify::{Opened, TrustedKeys, open_envelope, verify_file};
+use crate::i18n::t;
 
 /// The first look, a while after start so it does not compete with the
 /// window coming up.
@@ -408,7 +409,7 @@ impl Updater {
                             this.phase = Phase::Failed {
                                 stage: Stage::Install,
                                 error: UpdateError::Install(
-                                    "无法自动重新启动，请手动重新打开 ShellRS".into(),
+                                    t!("update.updater.restart_failed").to_string(),
                                 ),
                             };
                             this.changed(cx);
@@ -576,7 +577,9 @@ impl Updater {
                     ) {
                         self.phase = Phase::Failed {
                             stage: Stage::Check,
-                            error: UpdateError::Network("检查意外中止".into()),
+                            error: UpdateError::Network(
+                                t!("update.updater.check_stopped").to_string(),
+                            ),
                         };
                         self.changed(cx);
                     }
@@ -794,7 +797,7 @@ pub fn start_handed_over() {
     if let Some(launch) = launch
         && let Err(error) = launch.spawn()
     {
-        eprintln!("shellrs: 无法启动更新安装程序：{error}");
+        eprintln!("shellrs: could not start the update installer: {error}");
     }
 }
 

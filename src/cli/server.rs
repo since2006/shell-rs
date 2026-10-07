@@ -21,8 +21,8 @@ use tokio::sync::watch;
 use super::link::OpenLink;
 use super::manage::{
     CliChange, CredentialSecrets, HostSecrets, credential_details, credential_matches,
-    credential_secrets, host_details, host_info, host_secrets, with_saved_credential_secrets,
-    with_saved_passwords,
+    credential_not_found, credential_secrets, host_details, host_info, host_not_found,
+    host_secrets, with_saved_credential_secrets, with_saved_passwords,
 };
 use super::protocol::{
     CliError, CredentialDetails, Envelope, ErrorCode, FrameKind, HostDetails, HostInfo,
@@ -30,6 +30,7 @@ use super::protocol::{
     read_frame, write_frame, write_json,
 };
 use crate::host::{Host, HostLogin, HostStore, matches_query};
+use crate::i18n::t;
 use crate::secrets::SecretRef;
 use crate::ssh::ExecStream;
 
@@ -538,12 +539,15 @@ struct Listener;
 fn listen(_: PathBuf, _: Arc<Shared>) -> io::Result<Listener> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "此系统暂不支持外部 CLI",
+        t!("cli.unsupported").to_string(),
     ))
 }
 
 fn another_app() -> io::Error {
-    io::Error::new(io::ErrorKind::AddrInUse, "另一个 ShellRS 已在提供外部 CLI")
+    io::Error::new(
+        io::ErrorKind::AddrInUse,
+        t!("cli.server.another_app").to_string(),
+    )
 }
 
 /// Read one request and answer it.
@@ -593,15 +597,14 @@ fn respond(
     if version.version != PROTOCOL_VERSION {
         return Err(CliError::new(
             ErrorCode::VersionMismatch,
-            "shellrs 命令与正在运行的 ShellRS 版本不同：\
-             请重新启动 ShellRS，或在 设置 → 外部 CLI 中更新 CLI",
+            t!("cli.server.version_mismatch"),
         ));
     }
     let envelope = envelope.map_err(bad_request)?;
     if !shared.enabled.load(Ordering::Acquire) {
         return Err(CliError::new(
             ErrorCode::NotEnabled,
-            "ShellRS 未启用外部 CLI：请在 ShellRS 的 设置 → 外部 CLI 中打开「启用外部 CLI」",
+            t!("cli.server.not_enabled"),
         ));
     }
     if let Some(usage) = CliUse::of(&envelope.request) {
@@ -718,14 +721,7 @@ fn respond(
                 .iter()
                 .find(|known| known.details.id == credential.trim())
                 .cloned()
-                .ok_or_else(|| {
-                    CliError::new(
-                        ErrorCode::CredentialNotFound,
-                        format!(
-                            "没有 ID 为 {credential} 的凭据：请用 shellrs credentials list 查看"
-                        ),
-                    )
-                })?;
+                .ok_or_else(|| credential_not_found(&credential))?;
             let saved = |secret: &SecretRef| shared.backend.is_saved(secret);
             Ok(Reply::Credential(with_saved_credential_secrets(
                 found.details,
@@ -758,7 +754,7 @@ fn change(shared: &Shared, change: CliChange) -> Result<Reply, CliError> {
     let gone = || {
         CliError::new(
             ErrorCode::ConnectFailed,
-            "ShellRS 在处理改动时关闭了：请重新打开 ShellRS，用 shellrs hosts list 查看改动是否已完成",
+            t!("cli.server.closed_during_change"),
         )
     };
     let (sender, outcome) = mpsc::channel();
@@ -786,7 +782,7 @@ fn change(shared: &Shared, change: CliChange) -> Result<Reply, CliError> {
             changes.remove(index);
             return Err(CliError::new(
                 ErrorCode::ConnectFailed,
-                "ShellRS 没有及时处理这项改动，改动没有做：请稍后再试",
+                t!("cli.server.change_timed_out"),
             ));
         }
     }
@@ -802,17 +798,12 @@ fn find(shared: &Shared, id: &str) -> Result<CliTarget, CliError> {
         .iter()
         .find(|target| target.info.id == id.trim())
         .cloned()
-        .ok_or_else(|| {
-            CliError::new(
-                ErrorCode::HostNotFound,
-                format!("没有 ID 为 {id} 的主机：请用 shellrs hosts list 查看"),
-            )
-        })
+        .ok_or_else(|| host_not_found(id))
 }
 
 fn not_absolute(path: &Path) -> CliError {
     CliError::new(
         ErrorCode::BadRequest,
-        format!("本地路径必须是绝对路径：{}", path.display()),
+        t!("cli.server.not_absolute", path = path.display()),
     )
 }

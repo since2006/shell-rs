@@ -1,0 +1,257 @@
+_version: 2
+
+# 在线升级: the status line on 设置 › 关于, the title bar button, the update
+# dialog and what goes wrong. Reasons that follow a colon start in lower
+# case in English, like the system's own errors they stand beside.
+
+# `UpdateError`, always shown after 「检查更新失败：」 and the like.
+update.error.network:
+  zh-CN: 无法连接更新服务器：%{reason}
+  en: "couldn’t reach the update server: %{reason}"
+update.error.http:
+  zh-CN: 更新服务器返回 HTTP %{status}
+  en: the update server answered HTTP %{status}
+update.error.stalled:
+  zh-CN: 下载长时间没有进展，已中断
+  en: the download stalled and was stopped
+update.error.bad_signature:
+  zh-CN: 更新清单的签名无效
+  en: the update manifest’s signature isn’t valid
+update.error.bad_manifest:
+  zh-CN: 无法读取更新清单：%{reason}
+  en: "couldn’t read the update manifest: %{reason}"
+update.error.corrupt:
+  zh-CN: 下载的文件与更新清单不符
+  en: the downloaded file doesn’t match the update manifest
+update.error.no_space:
+  zh-CN: 磁盘空间不足
+  en: not enough disk space
+update.error.disk:
+  zh-CN: 无法写入更新文件：%{reason}
+  en: "couldn’t write the update file: %{reason}"
+update.error.install:
+  zh-CN: 无法安装新版本：%{reason}
+  en: "couldn’t install the new version: %{reason}"
+update.error.cancelled:
+  zh-CN: 已取消
+  en: cancelled
+
+# The reasons inside those errors.
+update.feed.wrong_range:
+  zh-CN: 服务器返回的续传位置不对
+  en: the server resumed at the wrong position
+update.feed.cut_off:
+  zh-CN: 连接在下载完成前断开
+  en: the connection closed before the download finished
+update.feed.too_large:
+  zh-CN: 文件过大
+  en: the file is too large
+update.feed.no_urls:
+  zh-CN: 没有下载地址
+  en: there’s no download address
+update.feed.timed_out:
+  zh-CN: 连接超时
+  en: the connection timed out
+update.updater.restart_failed:
+  zh-CN: 无法自动重新启动，请手动重新打开 ShellRS
+  en: ShellRS couldn’t restart itself, so open it again
+update.updater.check_stopped:
+  zh-CN: 检查意外中止
+  en: the check stopped unexpectedly
+update.install.not_possible:
+  zh-CN: 这份 ShellRS 无法自动更新
+  en: this copy of ShellRS can’t update itself
+update.install.setup_missing:
+  zh-CN: 找不到下载的安装程序
+  en: the downloaded setup program is missing
+update.install.tool_failed:
+  zh-CN: "%{program}：%{error}"
+  en: "%{program}: %{error}"
+update.install.bad_signature:
+  zh-CN: 新版本的签名无效或不是 ShellRS 的开发者
+  en: the new version’s signature isn’t valid or isn’t from ShellRS’s developer
+update.install.no_app:
+  zh-CN: 更新包里没有应用程序
+  en: the update package has no app in it
+update.install.wrong_version:
+  zh-CN: 更新包的版本与更新清单不符
+  en: the update package’s version doesn’t match the update manifest
+
+# Why this copy cannot replace itself: on 设置 › 关于 (with a full stop
+# added) and in the update dialog.
+update.unsupported.development_build:
+  zh-CN: 开发构建，不检查更新
+  en: Development builds don’t check for updates
+update.unsupported.translocated:
+  zh-CN: ShellRS 不在“应用程序”文件夹中，无法自动更新。请把它移到“应用程序”文件夹后重新打开
+  en: ShellRS isn’t in the Applications folder, so it can’t update itself. Move it to Applications, then open it again
+update.unsupported.disk_image:
+  zh-CN: ShellRS 正在从磁盘映像运行，无法自动更新。请先把它拖到“应用程序”文件夹
+  en: ShellRS is running from its disk image, so it can’t update itself. Drag it to the Applications folder first
+update.unsupported.read_only:
+  zh-CN: 没有权限写入 %{folder}，无法自动更新
+  en: ShellRS can’t write to %{folder}, so it can’t update itself
+update.unsupported.not_bundled:
+  zh-CN: ShellRS 不是从应用程序包运行的，无法自动更新
+  en: ShellRS isn’t running from an app bundle, so it can’t update itself
+update.unsupported.not_installed:
+  zh-CN: 这份 ShellRS 不是用安装程序安装的，无法自动更新
+  en: This copy of ShellRS wasn’t installed by the setup program, so it can’t update itself
+update.unsupported.not_appimage:
+  zh-CN: 这份 ShellRS 不是 AppImage，请用安装它的方式更新
+  en: This copy of ShellRS isn’t an AppImage. Update it the way you installed it
+update.unsupported.platform:
+  zh-CN: ShellRS 没有为这个系统提供更新
+  en: ShellRS has no updates for this system
+
+# The line under 当前版本 on 设置 › 关于.
+update.status.unsupported:
+  zh-CN: "%{reason}。"
+  en: "%{reason}."
+update.status.off:
+  zh-CN: 不检查更新。
+  en: Not checking for updates.
+update.status.idle:
+  zh-CN: 尚未检查更新。
+  en: Not checked for updates yet.
+update.status.checking:
+  zh-CN: 正在检查更新…
+  en: Checking for updates…
+update.status.up_to_date:
+  zh-CN: 当前已是最新版本。
+  en: ShellRS is up to date.
+update.status.available_manual:
+  zh-CN: 发现新版本 %{version}，需要从官网下载安装。
+  en: ShellRS %{version} is available. Download it from the website to install it.
+update.status.available_unsupported:
+  zh-CN: 发现新版本 %{version}。%{reason}。
+  en: ShellRS %{version} is available. %{reason}.
+update.status.available:
+  zh-CN: 发现新版本 %{version}。
+  en: ShellRS %{version} is available.
+update.status.downloading:
+  zh-CN: 正在下载新版本 %{version}… %{percent}%
+  en: Downloading ShellRS %{version}… %{percent}%
+update.status.verifying:
+  zh-CN: 正在校验新版本 %{version}…
+  en: Verifying ShellRS %{version}…
+update.status.ready:
+  zh-CN: 新版本 %{version} 已下载，重启 ShellRS 即可完成更新。
+  en: ShellRS %{version} is downloaded. Restart ShellRS to finish updating.
+update.status.installing:
+  zh-CN: 正在安装新版本 %{version}…
+  en: Installing ShellRS %{version}…
+update.status.check_failed:
+  zh-CN: 检查更新失败：%{error}
+  en: "Couldn’t check for updates: %{error}"
+update.status.download_failed:
+  zh-CN: 下载新版本 %{version} 失败：%{error}
+  en: "Couldn’t download ShellRS %{version}: %{error}"
+update.status.install_failed:
+  zh-CN: 安装新版本 %{version} 失败：%{error}
+  en: "Couldn’t install ShellRS %{version}: %{error}"
+
+# The title bar button's tooltip.
+update.badge.ready:
+  zh-CN: 新版本 %{version} 已就绪
+  en: ShellRS %{version} is ready to install
+update.badge.available:
+  zh-CN: 新版本 %{version} 可用
+  en: ShellRS %{version} is available
+update.badge.download_failed:
+  zh-CN: 新版本 %{version} 下载失败
+  en: Couldn’t download ShellRS %{version}
+update.badge.install_failed:
+  zh-CN: 新版本 %{version} 安装失败
+  en: Couldn’t install ShellRS %{version}
+
+# The update dialog.
+update.dialog.title:
+  zh-CN: ShellRS 更新
+  en: ShellRS update
+update.dialog.versions_released:
+  zh-CN: 当前版本 %{current} · 新版本发布于 %{day}
+  en: Current version %{current} · New version released %{day}
+update.dialog.current_version:
+  zh-CN: 当前版本 %{current}
+  en: Current version %{current}
+update.dialog.ready:
+  zh-CN: 新版本已下载，重启 ShellRS 即可完成更新。
+  en: The new version is downloaded. Restart ShellRS to finish updating.
+update.dialog.downloading:
+  zh-CN: 正在下载 · %{percent}%
+  en: Downloading · %{percent}%
+update.dialog.verifying:
+  zh-CN: 正在校验…
+  en: Verifying…
+update.dialog.check_failed:
+  zh-CN: 检查失败：%{error}
+  en: "Couldn’t check for updates: %{error}"
+update.dialog.download_failed:
+  zh-CN: 下载失败：%{error}
+  en: "Couldn’t download the update: %{error}"
+update.dialog.install_failed:
+  zh-CN: 安装失败：%{error}
+  en: "Couldn’t install the update: %{error}"
+update.dialog.manual:
+  zh-CN: 这个版本需要从官网下载安装，无法在 ShellRS 中直接更新。
+  en: This version can’t be installed from within ShellRS. Download it from the website.
+update.dialog.restart:
+  zh-CN: 重启并安装
+  en: Restart to update
+update.dialog.download_page:
+  zh-CN: 前往下载页
+  en: Open download page
+update.dialog.retry:
+  zh-CN: 重试
+  en: Retry
+update.dialog.download:
+  zh-CN: 下载
+  en: Download
+update.dialog.whats_new:
+  zh-CN: 查看更新内容
+  en: What’s new
+
+# What a restart interrupts, in the update dialog above 重启并安装.
+update.restart.remote_terminals.one:
+  en: 1 remote terminal
+update.restart.remote_terminals.other:
+  zh-CN: "%{count} 个远程终端"
+  en: "%{count} remote terminals"
+update.restart.sftp_tabs.one:
+  en: 1 SFTP tab
+update.restart.sftp_tabs.other:
+  zh-CN: "%{count} 个 SFTP 标签"
+  en: "%{count} SFTP tabs"
+update.restart.local_terminals.one:
+  en: 1 local terminal
+update.restart.local_terminals.other:
+  zh-CN: "%{count} 个本地终端"
+  en: "%{count} local terminals"
+update.restart.transfers.one:
+  en: 1 transfer (its progress is kept)
+update.restart.transfers.other:
+  zh-CN: "%{count} 个传输（保留续传进度）"
+  en: "%{count} transfers (their progress is kept)"
+update.restart.forwards.one:
+  en: 1 port forward
+update.restart.forwards.other:
+  zh-CN: "%{count} 条端口转发"
+  en: "%{count} port forwards"
+update.restart.closes:
+  zh-CN: 重启会关闭 %{closes}。
+  en: Restarting closes %{closes}.
+update.restart.stops:
+  zh-CN: 重启会停止 %{stops}。
+  en: Restarting stops %{stops}.
+update.restart.closes_and_stops:
+  zh-CN: 重启会关闭 %{closes}，停止 %{stops}。
+  en: Restarting closes %{closes} and stops %{stops}.
+update.restart.unsaved_files.one:
+  en: Unsaved changes in 1 file will be lost.
+update.restart.unsaved_files.other:
+  zh-CN: "%{count} 个文件有未保存的修改，重启后会丢失。"
+  en: Unsaved changes in %{count} files will be lost.
+update.restart.and_unsaved_files:
+  zh-CN: "%{note}%{unsaved}"
+  en: "%{note} %{unsaved}"

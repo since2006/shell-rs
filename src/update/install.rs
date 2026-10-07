@@ -18,6 +18,7 @@ use semver::Version;
 
 use super::error::UpdateError;
 use super::manifest::Release;
+use crate::i18n::t;
 
 /// Where this ShellRS runs from, as far as updating goes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,23 +63,19 @@ pub enum Unsupported {
 impl Unsupported {
     /// Why, for 设置 › 关于 and the update dialog.
     pub fn reason(&self) -> String {
-        match self {
-            Self::DevelopmentBuild => "开发构建，不检查更新".into(),
-            Self::Translocated => {
-                "ShellRS 不在“应用程序”文件夹中，无法自动更新。请把它移到“应用程序”文件夹后重新打开"
-                    .into()
-            }
-            Self::DiskImage => {
-                "ShellRS 正在从磁盘映像运行，无法自动更新。请先把它拖到“应用程序”文件夹".into()
-            }
+        let reason = match self {
+            Self::DevelopmentBuild => t!("update.unsupported.development_build"),
+            Self::Translocated => t!("update.unsupported.translocated"),
+            Self::DiskImage => t!("update.unsupported.disk_image"),
             Self::ReadOnly(folder) => {
-                format!("没有权限写入 {}，无法自动更新", folder.display())
+                t!("update.unsupported.read_only", folder = folder.display())
             }
-            Self::NotBundled => "ShellRS 不是从应用程序包运行的，无法自动更新".into(),
-            Self::NotInstalled => "这份 ShellRS 不是用安装程序安装的，无法自动更新".into(),
-            Self::NotAppImage => "这份 ShellRS 不是 AppImage，请用安装它的方式更新".into(),
-            Self::Platform => "ShellRS 没有为这个系统提供更新".into(),
-        }
+            Self::NotBundled => t!("update.unsupported.not_bundled"),
+            Self::NotInstalled => t!("update.unsupported.not_installed"),
+            Self::NotAppImage => t!("update.unsupported.not_appimage"),
+            Self::Platform => t!("update.unsupported.platform"),
+        };
+        reason.to_string()
     }
 }
 
@@ -229,11 +226,15 @@ impl Installer for NoInstaller {
     }
 
     fn stage(&self, _: &Path, _: &Release) -> Result<Staged, UpdateError> {
-        Err(UpdateError::Install("这份 ShellRS 无法自动更新".into()))
+        Err(UpdateError::Install(
+            t!("update.install.not_possible").to_string(),
+        ))
     }
 
     fn apply(&self, _: &Staged, _: bool) -> Result<Relaunch, UpdateError> {
-        Err(UpdateError::Install("这份 ShellRS 无法自动更新".into()))
+        Err(UpdateError::Install(
+            t!("update.install.not_possible").to_string(),
+        ))
     }
 
     fn clean_up(&self) {}

@@ -18,6 +18,7 @@ use crate::cli::{
     plan_host, with_saved_credential_secrets, with_saved_passwords,
 };
 use crate::host::{CredentialId, GroupDraft, GroupId, HostId, HostStore};
+use crate::i18n::t;
 use crate::secrets::{SecretRef, SharedSecretStore};
 
 use super::workspace_view::Workspace;
@@ -157,7 +158,9 @@ impl Workspace {
                         .host(id)
                         .map(|host| (host_details(host, store), host_secrets(host, store)))
                 })
-                .ok_or_else(|| CliError::new(ErrorCode::HostNotFound, "主机保存后不见了"))?;
+                .ok_or_else(|| {
+                    CliError::new(ErrorCode::HostNotFound, t!("cli.change.host_gone"))
+                })?;
             let details = cx
                 .background_executor()
                 .spawn(async move {
@@ -180,7 +183,10 @@ impl Workspace {
         let store = self.store.read(cx);
         let id = find_saved_host(store, host)?;
         let Some(host) = store.host(id) else {
-            return Err(CliError::new(ErrorCode::HostNotFound, "主机已不存在"));
+            return Err(CliError::new(
+                ErrorCode::HostNotFound,
+                t!("cli.change.host_missing"),
+            ));
         };
         let deleted = HostDeleted {
             host: host_details(host, store),
@@ -190,10 +196,7 @@ impl Workspace {
         if !force && self.has_tabs(id, cx) {
             return Err(CliError::new(
                 ErrorCode::HostInUse,
-                format!(
-                    "主机「{}」有打开的标签：先关闭它们，或加 --force 连同标签一起关闭",
-                    deleted.host.name
-                ),
+                t!("cli.change.host_in_use", name = deleted.host.name),
             ));
         }
         self.close_host_tabs(id, window, cx);
@@ -241,7 +244,7 @@ impl Workspace {
                         )
                     })
                 })
-                .ok_or_else(|| CliError::new(ErrorCode::CredentialNotFound, "凭据保存后不见了"))?;
+                .ok_or_else(credential_gone)?;
             let details = cx
                 .background_executor()
                 .spawn(async move {
@@ -310,7 +313,10 @@ fn save_credential(
         let path = store
             .save_private_key(existing, pasted.text())
             .map_err(|error| {
-                CliError::new(ErrorCode::SaveFailed, format!("私钥未能保存：{error}"))
+                CliError::new(
+                    ErrorCode::SaveFailed,
+                    t!("cli.change.key_not_saved", error = error),
+                )
             })?;
         draft = draft.with_key_path(path);
     }
@@ -322,10 +328,7 @@ fn save_credential(
         None => store.insert_credential(draft, cx),
     });
     let Some(credential) = store.credential(id).cloned() else {
-        return Err(CliError::new(
-            ErrorCode::CredentialNotFound,
-            "凭据保存后不见了",
-        ));
+        return Err(credential_gone());
     };
     let mut writes = Vec::new();
     if let Some(value) = plan.password.value() {
@@ -369,13 +372,18 @@ fn is_saved(secrets: &SharedSecretStore, secret: &SecretRef) -> bool {
     secrets.get(secret).is_ok_and(|value| value.is_some())
 }
 
-fn save_failed(failures: Vec<SharedString>) -> CliError {
+fn credential_gone() -> CliError {
     CliError::new(
-        ErrorCode::SaveFailed,
-        failures
-            .iter()
-            .map(SharedString::as_ref)
-            .collect::<Vec<_>>()
-            .join("；"),
+        ErrorCode::CredentialNotFound,
+        t!("cli.change.credential_gone"),
     )
+}
+
+/// Every failure, one after the other.
+fn save_failed(failures: Vec<SharedString>) -> CliError {
+    let message = failures
+        .into_iter()
+        .reduce(|before, next| t!("cli.change.failures", before = before, next = next))
+        .unwrap_or_default();
+    CliError::new(ErrorCode::SaveFailed, message)
 }

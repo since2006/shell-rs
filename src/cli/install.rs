@@ -7,6 +7,10 @@
 use std::path::Path;
 use std::{fs, io, path::PathBuf};
 
+use gpui_kit::SharedString;
+
+use crate::i18n::t;
+
 /// The skill that teaches an agent to use `shellrs`.
 pub const SKILL: &str = include_str!("SKILL.md");
 
@@ -36,19 +40,19 @@ impl AgentKind {
         AgentKind::WorkBuddy,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            AgentKind::Generic => "通用 Agent",
-            AgentKind::Codex => "Codex",
-            AgentKind::ClaudeCode => "Claude Code",
-            AgentKind::OpenCode => "OpenCode",
-            AgentKind::WorkBuddy => "WorkBuddy",
+            AgentKind::Generic => t!("cli.agent.generic"),
+            AgentKind::Codex => "Codex".into(),
+            AgentKind::ClaudeCode => "Claude Code".into(),
+            AgentKind::OpenCode => "OpenCode".into(),
+            AgentKind::WorkBuddy => "WorkBuddy".into(),
         }
     }
 
-    pub fn description(self) -> Option<&'static str> {
+    pub fn description(self) -> Option<SharedString> {
         match self {
-            AgentKind::Generic => Some("安装到 Agent Skills 标准目录，供支持该目录的 Agent 使用。"),
+            AgentKind::Generic => Some(t!("cli.agent.generic_description")),
             _ => None,
         }
     }
@@ -277,7 +281,7 @@ fn link_binary(paths: &IntegrationPaths) -> io::Result<()> {
     #[cfg(not(unix))]
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "此系统暂不支持安装 shellrs 命令",
+        t!("cli.install.unsupported").to_string(),
     ))
 }
 
@@ -300,7 +304,7 @@ fn remove_link(paths: &IntegrationPaths) -> io::Result<()> {
 fn occupied(link: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::AlreadyExists,
-        format!("{} 已被其他程序占用，ShellRS 不会改动它", link.display()),
+        t!("cli.install.occupied", path = link.display()).to_string(),
     )
 }
 
@@ -323,7 +327,10 @@ fn run_as_administrator(command: &str) -> io::Result<()> {
     let message = String::from_utf8_lossy(&output.stderr);
     // AppleScript's "User canceled." is error -128.
     if message.contains("-128") {
-        return Err(io::Error::new(io::ErrorKind::Interrupted, "已取消"));
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            t!("cli.install.cancelled").to_string(),
+        ));
     }
     Err(io::Error::other(message.trim().to_string()))
 }

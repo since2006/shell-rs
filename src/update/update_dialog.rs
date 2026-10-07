@@ -19,6 +19,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{CatalogIcon, DownloadUpdate, OpenChangelog, OpenDownloadPage, RestartToUpdate};
+use crate::i18n::t;
 
 use super::status::{RestartImpact, UpdateStep, percent, restart_note};
 use super::updater::{Phase, Stage, UpdateSnapshot, Updater};
@@ -57,8 +58,12 @@ impl Render for UpdateDialog {
             .as_ref()
             .and_then(|release| release.published_on())
         {
-            Some(day) => format!("当前版本 {} · 新版本发布于 {day}", snapshot.current),
-            None => format!("当前版本 {}", snapshot.current),
+            Some(day) => t!(
+                "update.dialog.versions_released",
+                current = snapshot.current,
+                day = day
+            ),
+            None => t!("update.dialog.current_version", current = snapshot.current),
         };
         v_flex()
             .id("update-dialog")
@@ -73,7 +78,7 @@ impl Render for UpdateDialog {
                             div()
                                 .id("update-ready")
                                 .test_support()
-                                .child("新版本已下载，重启 ShellRS 即可完成更新。"),
+                                .child(t!("update.dialog.ready")),
                         )
                     })
                     .child(div().text_color(muted).child(versions)),
@@ -122,29 +127,33 @@ impl Render for UpdateDialog {
 }
 
 /// The progress line and bar while downloading or checking the package.
-fn progress(snapshot: &UpdateSnapshot) -> Option<(String, f32)> {
+fn progress(snapshot: &UpdateSnapshot) -> Option<(SharedString, f32)> {
     match snapshot.phase {
         Phase::Downloading { done, total } => {
             let percent = percent(done, total);
-            Some((format!("正在下载 · {percent}%"), percent as f32))
+            Some((
+                t!("update.dialog.downloading", percent = percent),
+                percent as f32,
+            ))
         }
-        Phase::Verifying => Some(("正在校验…".into(), 100.)),
+        Phase::Verifying => Some((t!("update.dialog.verifying"), 100.)),
         _ => None,
     }
 }
 
 /// Why the last step failed, or why this copy cannot install the update.
-fn problem(snapshot: &UpdateSnapshot) -> Option<String> {
+fn problem(snapshot: &UpdateSnapshot) -> Option<SharedString> {
     match &snapshot.phase {
         Phase::Failed { stage, error } => Some(match stage {
-            Stage::Check => format!("检查失败：{error}"),
-            Stage::Download => format!("下载失败：{error}"),
-            Stage::Install => format!("安装失败：{error}"),
+            Stage::Check => t!("update.dialog.check_failed", error = error),
+            Stage::Download => t!("update.dialog.download_failed", error = error),
+            Stage::Install => t!("update.dialog.install_failed", error = error),
         }),
-        _ if snapshot.manual.is_some() => {
-            Some("这个版本需要从官网下载安装，无法在 ShellRS 中直接更新。".into())
-        }
-        _ => snapshot.unsupported.as_ref().map(|reason| reason.reason()),
+        _ if snapshot.manual.is_some() => Some(t!("update.dialog.manual")),
+        _ => snapshot
+            .unsupported
+            .as_ref()
+            .map(|reason| reason.reason().into()),
     }
 }
 
@@ -161,8 +170,8 @@ pub fn open_update_dialog(
     window.open_dialog(cx, move |dialog, window, cx| {
         let snapshot = updater.read(cx).snapshot();
         let title = match snapshot.offered_version() {
-            Some(version) => format!("ShellRS {version}"),
-            None => "ShellRS 更新".into(),
+            Some(version) => SharedString::from(format!("ShellRS {version}")),
+            None => t!("update.dialog.title"),
         };
         dialog
             .title(title)
@@ -179,20 +188,26 @@ pub fn open_update_dialog(
 /// Where to read what changed, and the one step that applies now. The
 /// dialog closes by its close button or Escape.
 fn footer(snapshot: &UpdateSnapshot, dispatch: FocusHandle) -> DialogFooter {
-    let action: Option<(&'static str, &'static str, Box<dyn Action>)> =
+    let action: Option<(&'static str, SharedString, Box<dyn Action>)> =
         snapshot.step().map(|step| -> (_, _, Box<dyn Action>) {
             match step {
-                UpdateStep::Restart => {
-                    ("restart-to-update", "重启并安装", Box::new(RestartToUpdate))
-                }
+                UpdateStep::Restart => (
+                    "restart-to-update",
+                    t!("update.dialog.restart"),
+                    Box::new(RestartToUpdate),
+                ),
                 UpdateStep::DownloadPage => (
                     "open-download-page",
-                    "前往下载页",
+                    t!("update.dialog.download_page"),
                     Box::new(OpenDownloadPage),
                 ),
                 UpdateStep::Download { retry } => (
                     "download-update",
-                    if retry { "重试" } else { "下载" },
+                    if retry {
+                        t!("update.dialog.retry")
+                    } else {
+                        t!("update.dialog.download")
+                    },
                     Box::new(DownloadUpdate),
                 ),
             }
@@ -202,7 +217,7 @@ fn footer(snapshot: &UpdateSnapshot, dispatch: FocusHandle) -> DialogFooter {
         .child(
             Button::new("open-changelog")
                 .icon(CatalogIcon::ExternalLink)
-                .label("查看更新内容")
+                .label(t!("update.dialog.whats_new"))
                 .on_click(move |_, window, cx| {
                     changelog.dispatch_action(&OpenChangelog, window, cx);
                 }),

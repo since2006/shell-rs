@@ -17,6 +17,7 @@ use reqwest::header::{CONTENT_RANGE, RANGE};
 use super::build_info::{self, Channel};
 use super::error::UpdateError;
 use super::platform;
+use crate::i18n::t;
 
 /// Where manifests and packages come from.
 pub trait UpdateFeed: Send + Sync {
@@ -127,7 +128,9 @@ impl HttpFeed {
                 if range_start(&response) != Some(have) {
                     // Not the bytes that were asked for: start over next time.
                     fs::remove_file(part)?;
-                    return Err(UpdateError::Network("服务器返回的续传位置不对".into()));
+                    return Err(UpdateError::Network(
+                        t!("update.feed.wrong_range").to_string(),
+                    ));
                 }
                 OpenOptions::new().append(true).open(part)?
             }
@@ -159,7 +162,7 @@ impl HttpFeed {
         }
         file.sync_all().map_err(write_error)?;
         if have < size {
-            return Err(UpdateError::Network("连接在下载完成前断开".into()));
+            return Err(UpdateError::Network(t!("update.feed.cut_off").to_string()));
         }
         Ok(())
     }
@@ -182,7 +185,9 @@ impl UpdateFeed for HttpFeed {
             .read_to_end(&mut body)
             .map_err(read_error)?;
         if body.len() as u64 > MANIFEST_LIMIT {
-            return Err(UpdateError::BadManifest("文件过大".into()));
+            return Err(UpdateError::BadManifest(
+                t!("update.feed.too_large").to_string(),
+            ));
         }
         Ok(body)
     }
@@ -197,7 +202,7 @@ impl UpdateFeed for HttpFeed {
     ) -> Result<(), UpdateError> {
         let client = self.client()?;
         let part = part_path(dest);
-        let mut last = UpdateError::Network("没有下载地址".into());
+        let mut last = UpdateError::Network(t!("update.feed.no_urls").to_string());
         for url in urls {
             match self.download_from(&client, url, size, &part, progress, cancel) {
                 Ok(()) => {
@@ -257,7 +262,7 @@ fn write_error(error: io::Error) -> UpdateError {
 /// URL, the reason is at the end of its chain.
 fn describe(error: &reqwest::Error) -> String {
     if error.is_timeout() {
-        return "连接超时".into();
+        return t!("update.feed.timed_out").to_string();
     }
     let mut source: &dyn std::error::Error = error;
     while let Some(next) = source.source() {

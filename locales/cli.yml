@@ -1,0 +1,392 @@
+_version: 2
+
+# 外部 CLI: what the `shellrs` command prints, and the messages the app
+# sends back to it. CLI output uses plain ASCII quotes and apostrophes, so
+# it copies into a shell unchanged; the texts shown in the app's window
+# (the settings page, notifications) use “ ” and ’ like the rest of the UI.
+
+# The command could not reach the app.
+cli.client.not_running:
+  zh-CN: ShellRS 未运行：请先打开 ShellRS，并在 设置 → 外部 CLI 中打开「启用外部 CLI」
+  en: ShellRS isn't running. Open ShellRS and turn on Enable external CLI in Settings → External CLI.
+cli.client.broken:
+  zh-CN: 与 ShellRS 的连接意外中断：%{error}
+  en: "The connection to ShellRS broke off: %{error}"
+cli.client.no_permission:
+  zh-CN: 没有权限连接 ShellRS：Agent 可能运行在沙箱中，需要允许它访问本机的进程间通信
+  en: No permission to connect to ShellRS. The agent may be running in a sandbox; allow it local interprocess communication.
+cli.client.foreign_pipe:
+  zh-CN: 外部 CLI 的管道不属于当前用户，已拒绝连接
+  en: The external CLI's pipe belongs to another user, so the connection was refused.
+cli.client.older_app:
+  zh-CN: 正在运行的 ShellRS 不认识这个命令：请把 ShellRS 升级到最新版本，然后重新启动它
+  en: The running ShellRS doesn't know this command. Update ShellRS to the latest version, then restart it.
+# Also the app's notification when the server cannot start.
+cli.unsupported:
+  zh-CN: 此系统暂不支持外部 CLI
+  en: The external CLI is not supported on this system.
+
+# Reading the command line and stdin.
+cli.exec.empty:
+  zh-CN: 命令不能为空
+  en: The command is empty.
+cli.exec.bad_json:
+  zh-CN: 标准输入不是 %{form} 形式的 JSON：%{error}
+  en: "The input on stdin isn't JSON of the form %{form}: %{error}"
+cli.json.from_terminal:
+  zh-CN: 请从标准输入传入 JSON，例如 %{example}
+  en: "Pass the JSON on stdin, for example: %{example}"
+cli.json.not_json:
+  zh-CN: 标准输入不是 JSON：%{error}
+  en: "The input on stdin isn't JSON: %{error}"
+cli.json.invalid:
+  zh-CN: JSON 有误：%{error}
+  en: "The JSON is invalid: %{error}"
+cli.stdin.unreadable:
+  zh-CN: 无法读取标准输入：%{error}
+  en: "Couldn't read stdin: %{error}"
+cli.path.unresolvable:
+  zh-CN: 无法解析路径 %{path}：%{error}
+  en: "Couldn't resolve the path %{path}: %{error}"
+
+# `hosts list` and `credentials list`: the column headers, upper case in
+# English as command line tables have them.
+cli.column.id:
+  zh-CN: ID
+  en: ID
+cli.column.name:
+  zh-CN: 名称
+  en: NAME
+cli.column.group:
+  zh-CN: 分组
+  en: GROUP
+cli.column.address:
+  zh-CN: 地址
+  en: ADDRESS
+cli.column.os:
+  zh-CN: 系统
+  en: SYSTEM
+cli.column.kind:
+  zh-CN: 类型
+  en: TYPE
+cli.column.user:
+  zh-CN: 用户名
+  en: USERNAME
+cli.column.hosts:
+  zh-CN: 主机数
+  en: HOSTS
+cli.hosts.none:
+  zh-CN: 没有匹配的主机
+  en: No matching hosts
+cli.credentials.none:
+  zh-CN: 没有匹配的凭据
+  en: No matching credentials
+# The group of a host connected to without saving.
+cli.group.not_saved:
+  zh-CN: （未保存）
+  en: (not saved)
+
+# `hosts show` and `credentials show`: the labels, then the values.
+cli.field.id:
+  zh-CN: ID
+  en: ID
+cli.field.name:
+  zh-CN: 名称
+  en: Name
+cli.field.group:
+  zh-CN: 分组
+  en: Group
+cli.field.address:
+  zh-CN: 地址
+  en: Address
+cli.field.auth:
+  zh-CN: 认证
+  en: Authentication
+cli.field.route:
+  zh-CN: 连接方式
+  en: Connection
+cli.field.os:
+  zh-CN: 系统
+  en: System
+cli.field.notes:
+  zh-CN: 备注
+  en: Notes
+cli.field.kind:
+  zh-CN: 类型
+  en: Type
+cli.field.user:
+  zh-CN: 用户名
+  en: Username
+cli.field.private_key:
+  zh-CN: 私钥
+  en: Private key
+cli.field.passphrase:
+  zh-CN: 口令
+  en: Passphrase
+cli.field.hosts:
+  zh-CN: 主机
+  en: Hosts
+cli.show.saved:
+  zh-CN: "%{label}（已保存）"
+  en: "%{label} (saved)"
+cli.show.not_saved:
+  zh-CN: "%{label}（未保存）"
+  en: "%{label} (not saved)"
+cli.auth.password:
+  zh-CN: 密码
+  en: Password
+cli.auth.credential:
+  zh-CN: 凭据 %{id}
+  en: Credential %{id}
+cli.auth.no_password:
+  zh-CN: 无密码
+  en: No password
+cli.route.direct:
+  zh-CN: 直接连接
+  en: Direct
+cli.route.jump:
+  zh-CN: SSH 跳板 %{hosts}
+  en: Jump hosts %{hosts}
+cli.route.deleted_host:
+  zh-CN: （已删除的主机）
+  en: (deleted host)
+cli.route.http:
+  zh-CN: HTTP 代理 %{address}
+  en: HTTP proxy %{address}
+cli.route.socks5:
+  zh-CN: SOCKS5 代理 %{address}
+  en: SOCKS5 proxy %{address}
+cli.route.password_saved:
+  zh-CN: "%{proxy}（密码已保存）"
+  en: "%{proxy} (password saved)"
+cli.route.password_not_saved:
+  zh-CN: "%{proxy}（密码未保存）"
+  en: "%{proxy} (password not saved)"
+cli.kind.password:
+  zh-CN: 密码
+  en: Password
+cli.kind.key:
+  zh-CN: 密钥
+  en: Key
+cli.kind.agent:
+  zh-CN: SSH Agent
+  en: SSH Agent
+cli.credential.kept_key:
+  zh-CN: 由 ShellRS 保存
+  en: Kept by ShellRS
+cli.credential.passphrase_saved:
+  zh-CN: 已保存
+  en: Saved
+cli.credential.passphrase_not_saved:
+  zh-CN: 未保存
+  en: Not saved
+
+# What `create`, `update` and `delete` did.
+cli.host.created:
+  zh-CN: 已创建主机「%{name}」，ID %{id}
+  en: 'Created host "%{name}", ID %{id}'
+cli.host.saved:
+  zh-CN: 已保存主机「%{name}」（ID %{id}）
+  en: 'Saved host "%{name}" (ID %{id})'
+cli.host.deleted:
+  zh-CN: 已删除主机「%{name}」
+  en: 'Deleted host "%{name}"'
+cli.host.deleted_with_forwards.one:
+  en: 'Deleted host "%{name}" and its port forwarding rule'
+cli.host.deleted_with_forwards.other:
+  zh-CN: 已删除主机「%{name}」，连同它的 %{count} 条端口转发规则
+  en: 'Deleted host "%{name}" and its %{count} port forwarding rules'
+cli.host.deleted_jump_users.one:
+  en: "%{deleted}; 1 host jumped through it and now has a deleted jump host"
+cli.host.deleted_jump_users.other:
+  zh-CN: "%{deleted}；%{count} 台主机经它跳转，现在那一跳是「已删除的主机」"
+  en: "%{deleted}; %{count} hosts jumped through it and now have a deleted jump host"
+cli.credential.created:
+  zh-CN: 已创建凭据「%{name}」，ID %{id}
+  en: 'Created credential "%{name}", ID %{id}'
+cli.credential.saved:
+  zh-CN: 已保存凭据「%{name}」（ID %{id}）
+  en: 'Saved credential "%{name}" (ID %{id})'
+cli.credential.deleted:
+  zh-CN: 已删除凭据「%{name}」
+  en: 'Deleted credential "%{name}"'
+cli.credential.deleted_released.one:
+  en: "%{deleted}; 1 host now logs in on its own: %{hosts}"
+cli.credential.deleted_released.other:
+  zh-CN: "%{deleted}；%{count} 台主机改为自己登录：%{hosts}"
+  en: "%{deleted}; %{count} hosts now log in on their own: %{hosts}"
+
+# `upload`, `download` and `sync`: the progress line and the summary.
+cli.progress:
+  zh-CN: "%{files}/%{total_files} 个文件，%{bytes} / %{total_bytes}"
+  en: "%{files}/%{total_files} files, %{bytes} / %{total_bytes}"
+cli.summary.transferred.one:
+  en: Transferred 1 file (%{size})
+cli.summary.transferred.other:
+  zh-CN: 已传输 %{count} 个文件，共 %{size}
+  en: Transferred %{count} files (%{size})
+cli.summary.unchanged:
+  zh-CN: "%{summary}，未变 %{count} 个"
+  en: "%{summary}, %{count} unchanged"
+cli.summary.skipped:
+  zh-CN: "%{summary}，跳过 %{count} 个"
+  en: "%{summary}, %{count} skipped"
+cli.summary.deleted:
+  zh-CN: "%{summary}，删除 %{count} 个"
+  en: "%{summary}, %{count} deleted"
+cli.summary.failed:
+  zh-CN: "%{summary}，失败 %{count} 个"
+  en: "%{summary}, %{count} failed"
+
+# What the app answers when it will not take the request.
+cli.server.version_mismatch:
+  zh-CN: shellrs 命令与正在运行的 ShellRS 版本不同：请重新启动 ShellRS，或在 设置 → 外部 CLI 中更新 CLI
+  en: The shellrs command and the running ShellRS are different versions. Restart ShellRS, or update the CLI in Settings → External CLI.
+cli.server.not_enabled:
+  zh-CN: ShellRS 未启用外部 CLI：请在 ShellRS 的 设置 → 外部 CLI 中打开「启用外部 CLI」
+  en: The external CLI is turned off. Turn on Enable external CLI in ShellRS under Settings → External CLI.
+cli.server.closed_during_change:
+  zh-CN: ShellRS 在处理改动时关闭了：请重新打开 ShellRS，用 shellrs hosts list 查看改动是否已完成
+  en: ShellRS closed while making the change. Open ShellRS again and check with shellrs hosts list whether it was made.
+cli.server.change_timed_out:
+  zh-CN: ShellRS 没有及时处理这项改动，改动没有做：请稍后再试
+  en: ShellRS didn't get to the change in time, so it wasn't made. Try again later.
+cli.server.not_absolute:
+  zh-CN: 本地路径必须是绝对路径：%{path}
+  en: "The local path must be absolute: %{path}"
+# The app's notification when a second ShellRS starts.
+cli.server.another_app:
+  zh-CN: 另一个 ShellRS 已在提供外部 CLI
+  en: Another ShellRS is already serving the external CLI.
+cli.error.host_not_found:
+  zh-CN: 没有 ID 为 %{id} 的主机：请用 shellrs hosts list 查看
+  en: No host has the ID %{id}. List the hosts with shellrs hosts list.
+cli.error.credential_not_found:
+  zh-CN: 没有 ID 为 %{id} 的凭据：请用 shellrs credentials list 查看
+  en: No credential has the ID %{id}. List the credentials with shellrs credentials list.
+
+# Checking what `hosts create` / `update` ask for.
+cli.host.temporary:
+  zh-CN: 「%{name}」是没有保存的连接（临时连接或外部连接），不能修改或删除：关闭它的标签即可
+  en: '"%{name}" isn''t saved (it came from Quick connect or an external connection), so it can''t be changed or deleted. Closing its tab is enough.'
+cli.host.credential_with_own_auth:
+  zh-CN: auth 为 password 或 no_password 时不能同时指定 credential
+  en: With auth password or no_password, credential can't be given.
+cli.host.no_credential:
+  zh-CN: 请选择凭据
+  en: Choose a credential.
+cli.host.credential_user:
+  zh-CN: 使用凭据的主机以凭据的用户名 %{user} 登录：去掉 user，或改凭据的用户名
+  en: A host using a credential logs in as the credential's user, %{user}. Leave out user, or change the credential's username.
+cli.host.password_without_auth:
+  zh-CN: 只有 auth 为 password 的主机才保存自己的密码
+  en: Only a host with auth password keeps a password of its own.
+cli.host.proxy_password_without_user:
+  zh-CN: 填写代理密码时请同时填写用户名
+  en: Enter a username along with the proxy password.
+cli.host.jump_temporary:
+  zh-CN: 跳板只能是保存的主机：%{id} 是没有保存的连接
+  en: "Jump hosts must be saved hosts: %{id} isn't saved."
+cli.host.jump_self:
+  zh-CN: 跳板主机不能是这台主机自己
+  en: A host can't be its own jump host.
+cli.host.jump_repeated:
+  zh-CN: 跳板主机 %{id} 重复了
+  en: Jump host %{id} is listed twice.
+cli.group.empty_level:
+  zh-CN: 分组路径「%{path}」里有空的一级
+  en: 'The group path "%{path}" has an empty level.'
+cli.group.ambiguous:
+  zh-CN: 有 %{count} 个分组的路径都是「%{path}」：请先在 ShellRS 里给它们改名
+  en: '%{count} groups have the path "%{path}". Rename them in ShellRS first.'
+
+# Checking what `credentials create` / `update` ask for.
+cli.credential.key_without_kind:
+  zh-CN: 只有密钥凭据（kind 为 key）才有私钥
+  en: Only a key credential (kind key) has a private key.
+cli.credential.password_without_kind:
+  zh-CN: 只有密码凭据（kind 为 password）才保存密码
+  en: Only a password credential (kind password) keeps a password.
+cli.credential.passphrase_without_kind:
+  zh-CN: 只有密钥凭据（kind 为 key）才有口令
+  en: Only a key credential (kind key) has a passphrase.
+cli.credential.two_keys:
+  zh-CN: key_path 和 private_key 只能给一个
+  en: Give key_path or private_key, not both.
+cli.credential.key_not_absolute:
+  zh-CN: 私钥文件必须是绝对路径：%{path}
+  en: "The private key file must be an absolute path: %{path}"
+cli.credential.key_missing:
+  zh-CN: 私钥文件不存在：%{path}
+  en: "The private key file doesn't exist: %{path}"
+cli.credential.no_key_dir:
+  zh-CN: 没有可以保存私钥的目录
+  en: There's no folder to keep the private key in.
+
+# Making the change in the app.
+cli.change.host_gone:
+  zh-CN: 主机保存后不见了
+  en: The host was gone after saving.
+cli.change.host_missing:
+  zh-CN: 主机已不存在
+  en: The host no longer exists.
+cli.change.host_in_use:
+  zh-CN: 主机「%{name}」有打开的标签：先关闭它们，或加 --force 连同标签一起关闭
+  en: 'Host "%{name}" has tabs open. Close them first, or add --force to close them along with it.'
+cli.change.credential_gone:
+  zh-CN: 凭据保存后不见了
+  en: The credential was gone after saving.
+cli.change.key_not_saved:
+  zh-CN: 私钥未能保存：%{error}
+  en: "Couldn't save the private key: %{error}"
+# One failure after another.
+cli.change.failures:
+  zh-CN: "%{before}；%{next}"
+  en: "%{before}; %{next}"
+
+# Running commands and moving files.
+cli.exec.signal:
+  zh-CN: 远程命令被信号 %{signal} 终止
+  en: The remote command was killed by signal %{signal}.
+cli.transfer.sftp_ended:
+  zh-CN: SFTP 连接意外结束
+  en: The SFTP connection ended unexpectedly.
+cli.transfer.no_local_folder:
+  zh-CN: 本地目录不存在：%{path}
+  en: "The local folder doesn't exist: %{path}"
+cli.transfer.host_key_unknown:
+  zh-CN: 尚未信任这台主机的密钥：请先在 ShellRS 中连接一次这台主机
+  en: This host's key isn't trusted yet. Connect to the host once in ShellRS first.
+cli.transfer.host_key_changed:
+  zh-CN: 主机密钥与已保存的不一致，已拒绝连接。请先核实服务器身份
+  en: The host key doesn't match the saved one, so the connection was refused. Check the server's identity first.
+cli.transfer.missing_credential:
+  zh-CN: 这台主机没有保存可用的密码或口令：请先在 ShellRS 中连接一次这台主机并保存密码
+  en: No usable password or passphrase is saved for this host. Connect to it once in ShellRS and save the password.
+cli.transfer.unfinished:
+  zh-CN: 传输未完成
+  en: The transfer didn't finish.
+cli.transfer.empty_remote_path:
+  zh-CN: 远程路径不能为空
+  en: The remote path is empty.
+
+# 设置 › 外部 CLI: the agents the skill installs for, and installing the
+# command.
+cli.agent.generic:
+  zh-CN: 通用 Agent
+  en: Any agent
+cli.agent.generic_description:
+  zh-CN: 安装到 Agent Skills 标准目录，供支持该目录的 Agent 使用。
+  en: Installs to the standard Agent Skills folder, for agents that read it.
+cli.install.unsupported:
+  zh-CN: 此系统暂不支持安装 shellrs 命令
+  en: Installing the shellrs command isn’t supported on this system.
+cli.install.occupied:
+  zh-CN: "%{path} 已被其他程序占用，ShellRS 不会改动它"
+  en: "%{path} belongs to another program, so ShellRS leaves it alone"
+cli.install.cancelled:
+  zh-CN: 已取消
+  en: Cancelled
+cli.install.missing:
+  zh-CN: 找不到 %{path}
+  en: Can’t find %{path}

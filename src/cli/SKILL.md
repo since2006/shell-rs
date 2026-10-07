@@ -21,7 +21,7 @@ shellrs download <host-id> <remote-path> <local-path>
 shellrs sync <host-id> <local-dir> <remote-dir> [--delete]
 ```
 
-`<host-id>` is the 16-character `id` from `shellrs hosts list` (the same ID that ShellRS copies with 复制 ID).
+`<host-id>` is the 16-character `id` from `shellrs hosts list`, the same ID that ShellRS copies with Copy ID (复制 ID).
 
 For a simple command, pass one complete remote shell command string as `<command>`.
 Pass a command through stdin when it contains quotes, pipes, redirects, JSON, `$`, backticks, or nested shell code, and quote the heredoc delimiter so the local shell leaves it alone:
@@ -119,7 +119,7 @@ To create or update a host or credential from Windows PowerShell 5.1, pipe the J
 Errors are printed to stderr with a code in brackets, such as `[not_enabled]`. Exit code 255 means `shellrs` could not run the command at all.
 
 - `not_running`: ShellRS is not open. Ask the user to open ShellRS.
-- `not_enabled`: ask the user to turn on 启用外部 CLI in ShellRS under 设置 → 外部 CLI.
+- `not_enabled`: ask the user to turn on Enable external CLI (启用外部 CLI) in ShellRS under Settings → External CLI (设置 → 外部 CLI).
 - `host_not_found`: run `shellrs hosts list` again and use an `id` from its output. `credential_not_found`: the same with `shellrs credentials list`.
 - `bad_request` from `create` or `update`: the message says which field is wrong, in the words the ShellRS forms use.
 - `host_in_use`: the host's tabs are open in ShellRS. Ask the user whether to close them (`--force`).

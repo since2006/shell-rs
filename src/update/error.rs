@@ -3,6 +3,8 @@
 
 use std::fmt;
 
+use crate::i18n::t;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UpdateError {
     /// The server could not be reached, or the transfer broke off.
@@ -30,18 +32,19 @@ pub enum UpdateError {
 
 impl fmt::Display for UpdateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Network(reason) => write!(f, "无法连接更新服务器：{reason}"),
-            Self::Http(status) => write!(f, "更新服务器返回 HTTP {status}"),
-            Self::Stalled => f.write_str("下载长时间没有进展，已中断"),
-            Self::BadSignature => f.write_str("更新清单的签名无效"),
-            Self::BadManifest(reason) => write!(f, "无法读取更新清单：{reason}"),
-            Self::Corrupt => f.write_str("下载的文件与更新清单不符"),
-            Self::NoSpace => f.write_str("磁盘空间不足"),
-            Self::Disk(reason) => write!(f, "无法写入更新文件：{reason}"),
-            Self::Install(reason) => write!(f, "无法安装新版本：{reason}"),
-            Self::Cancelled => f.write_str("已取消"),
-        }
+        let text = match self {
+            Self::Network(reason) => t!("update.error.network", reason = reason),
+            Self::Http(status) => t!("update.error.http", status = status),
+            Self::Stalled => t!("update.error.stalled"),
+            Self::BadSignature => t!("update.error.bad_signature"),
+            Self::BadManifest(reason) => t!("update.error.bad_manifest", reason = reason),
+            Self::Corrupt => t!("update.error.corrupt"),
+            Self::NoSpace => t!("update.error.no_space"),
+            Self::Disk(reason) => t!("update.error.disk", reason = reason),
+            Self::Install(reason) => t!("update.error.install", reason = reason),
+            Self::Cancelled => t!("update.error.cancelled"),
+        };
+        f.write_str(&text)
     }
 }
 
