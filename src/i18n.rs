@@ -178,8 +178,13 @@ mod tests {
     /// translated, until it is all of `src`.
     const TRANSLATED: &[&str] = &[
         "src/app",
+        "src/connection.rs",
+        "src/credential",
+        "src/forward",
+        "src/host",
         "src/i18n.rs",
         "src/main.rs",
+        "src/secrets",
         "src/settings",
         "src/shared",
         "src/workspace/analytics.rs",
