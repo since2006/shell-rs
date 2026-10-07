@@ -144,6 +144,8 @@ gpui_kit::actions!(
         OpenDownloadPage,
         /// Open the website's changelog.
         OpenChangelog,
+        /// Open the ShellRS website.
+        OpenWebsite,
     ]
 );
 

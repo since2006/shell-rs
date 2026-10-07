@@ -22,7 +22,7 @@ use gpui_kit::*;
 
 use crate::app::{
     CatalogIcon, CenterTab, CheckForUpdates, CloseSettings, CopyAgentSkill, DownloadUpdate,
-    InstallAgentSkill, InstallCliCommand, OpenDownloadPage, RefreshCliIntegration,
+    InstallAgentSkill, InstallCliCommand, OpenDownloadPage, OpenWebsite, RefreshCliIntegration,
     RemoveAgentSkill, RemoveCliCommand, ShowUpdate,
 };
 use crate::cli::{AgentKind, BinaryStatus, CliIntegration, IntegrationStatus, SkillStatus};
@@ -632,6 +632,20 @@ fn about_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
             )
             .description("检测到新版本后自动下载，下载完成后点击「重启并安装」完成更新。"),
         ]),
+        SettingGroup::new()
+            .title("ShellRS")
+            .items([SettingItem::new(
+                "官网",
+                SettingField::render(|options, _, _| {
+                    Button::new("open-website")
+                        .outline()
+                        .with_size(options.size())
+                        .icon(Icon::new(CatalogIcon::ExternalLink))
+                        .label("shellrs.com")
+                        .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenWebsite), cx))
+                }),
+            )
+            .description("功能介绍、下载和更新内容。")]),
     ]
 }
 

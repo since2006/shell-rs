@@ -24,6 +24,9 @@ pub const APPLE_TEAM_ID: Option<&str> = option_env!("SHELLRS_APPLE_TEAM_ID");
 /// new `schema`, not a new path.
 pub const MANIFEST_URL: &str = "https://dl.shellrs.com/update/v1/{channel}.json";
 
+/// The ShellRS website.
+pub const WEBSITE: &str = "https://shellrs.com";
+
 /// Where a person downloads ShellRS by hand.
 pub const DOWNLOAD_PAGE: &str = "https://shellrs.com/download";
 

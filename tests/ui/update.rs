@@ -226,6 +226,14 @@ fn serve_updates(
     }
 }
 
+#[gpui_kit::test]
+fn the_about_page_opens_the_website(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    open_about_settings(cx, handle);
+    in_frame(cx, handle, |window, cx| window.click("open-website", cx));
+    assert_eq!(cx.opened_url().as_deref(), Some("https://shellrs.com"));
+}
+
 /// Open 设置 › 关于.
 fn open_about_settings(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));

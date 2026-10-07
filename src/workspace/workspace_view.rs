@@ -2453,6 +2453,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_restart_to_update))
             .on_action(cx.listener(Self::on_open_download_page))
             .on_action(cx.listener(Self::on_open_changelog))
+            .on_action(cx.listener(Self::on_open_website))
             .on_action(cx.listener(Self::on_copy_agent_skill))
             .on_action(cx.listener(Self::on_close_settings))
             .on_action(cx.listener(Self::on_close_active_tab))

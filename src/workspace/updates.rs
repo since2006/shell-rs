@@ -7,11 +7,12 @@ use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::*;
 
 use crate::app::{
-    CheckForUpdates, DownloadUpdate, OpenChangelog, OpenDownloadPage, RestartToUpdate, ShowUpdate,
+    CheckForUpdates, DownloadUpdate, OpenChangelog, OpenDownloadPage, OpenWebsite, RestartToUpdate,
+    ShowUpdate,
 };
 use crate::host::ConnectionState;
 use crate::terminal::TerminalLifecycle;
-use crate::update::build_info::CHANGELOG_PAGE;
+use crate::update::build_info::{CHANGELOG_PAGE, WEBSITE};
 use crate::update::{RestartImpact, UpdaterEvent, open_update_dialog};
 
 use super::workspace_view::Workspace;
@@ -87,6 +88,15 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         cx.open_url(CHANGELOG_PAGE);
+    }
+
+    pub(super) fn on_open_website(
+        &mut self,
+        _: &OpenWebsite,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.open_url(WEBSITE);
     }
 
     /// The title bar shows the update button only in some phases; the
