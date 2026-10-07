@@ -46,7 +46,7 @@ pub use protocol::{
     CredentialKindChoice, ErrorCode, HostDeleted, HostDetails, HostFields, HostInfo, ProxyChoice,
     Reply, Request, RouteDetails, RouteFields, Secret, TransferCounters, TransferSummary,
 };
-pub use server::{ChangeReply, CliBackend, CliServer, CliTarget};
+pub use server::{ChangeReply, CliBackend, CliServer, CliTarget, CliUse};
 
 const AFTER_HELP: &str = "\
 Hosts are named by the 16-character ID that `shellrs hosts list` prints (the one ShellRS copies with 复制 ID).

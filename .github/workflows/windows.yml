@@ -15,6 +15,7 @@ on:
     branches: ["**"]
     paths:
       - "src/cli/**"
+      - "src/analytics/**"
       - "src/update/**"
       - "src/app/paths.rs"
       - "src/app/window_hiding.rs"

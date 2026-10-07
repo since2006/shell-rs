@@ -189,6 +189,43 @@ struct Shared {
     /// them up: only the UI thread can change the store.
     changes: Mutex<VecDeque<PendingChange>>,
     next_change: AtomicU64,
+    /// What kinds of command were served, for 匿名使用统计, until the app
+    /// takes them.
+    usage: Mutex<Vec<CliUse>>,
+}
+
+/// The kind of a `shellrs` command, as 匿名使用统计 counts them: nothing
+/// of what it asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CliUse {
+    Exec,
+    Upload,
+    Download,
+    Sync,
+    Hosts,
+    Credentials,
+}
+
+impl CliUse {
+    fn of(request: &Request) -> Option<Self> {
+        match request {
+            Request::Exec { .. } => Some(Self::Exec),
+            Request::Upload { .. } => Some(Self::Upload),
+            Request::Download { .. } => Some(Self::Download),
+            Request::Sync { .. } => Some(Self::Sync),
+            Request::List { .. }
+            | Request::ShowHost { .. }
+            | Request::CreateHost { .. }
+            | Request::UpdateHost { .. }
+            | Request::DeleteHost { .. } => Some(Self::Hosts),
+            Request::ListCredentials { .. }
+            | Request::ShowCredential { .. }
+            | Request::CreateCredential { .. }
+            | Request::UpdateCredential { .. }
+            | Request::DeleteCredential { .. } => Some(Self::Credentials),
+            Request::Activate { .. } => None,
+        }
+    }
 }
 
 /// Listens on the CLI socket until dropped. Always listening, even with
@@ -212,6 +249,7 @@ impl CliServer {
             activation: Mutex::new(None),
             changes: Mutex::new(VecDeque::new()),
             next_change: AtomicU64::new(0),
+            usage: Mutex::new(Vec::new()),
         });
         let listener = listen(endpoint, shared.clone())?;
         Ok(Self {
@@ -268,6 +306,18 @@ impl CliServer {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take()
+    }
+
+    /// The kinds of command served since this was last asked, oldest first.
+    /// Asked on the same timer as `take_activation`.
+    pub fn take_usage(&self) -> Vec<CliUse> {
+        std::mem::take(
+            &mut *self
+                .shared
+                .usage
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        )
     }
 }
 
@@ -553,6 +603,13 @@ fn respond(
             ErrorCode::NotEnabled,
             "ShellRS 未启用外部 CLI：请在 ShellRS 的 设置 → 外部 CLI 中打开「启用外部 CLI」",
         ));
+    }
+    if let Some(usage) = CliUse::of(&envelope.request) {
+        shared
+            .usage
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(usage);
     }
     match envelope.request {
         Request::List { query } => {

@@ -132,6 +132,9 @@ impl Workspace {
     ) {
         self.forwards
             .update(cx, |forwards, cx| forwards.start(action.0, cx));
+        if let Some(rule) = self.store.read(cx).forward(action.0) {
+            self.count_forward(rule.kind);
+        }
     }
 
     pub(super) fn on_stop_forward(

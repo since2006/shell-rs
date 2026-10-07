@@ -8,7 +8,7 @@ ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH �
 
 - **术语。** 保存的一项叫「主机」（量词「台」），代码和库里叫 host（`Host`、`HostId`、`HostStore`、`hosts` 表）。它以前叫「会话」/ `Session`，已全部改掉，新代码和文案别再用。填 IP / 域名的字段叫「地址」（`Host.address`）。SSH 协议层的 session（「SSH 会话通道」、russh 的 `Session`、SFTP 会话）照旧。
 - **两种不保存的连接。** 「外部连接」：堡垒机像调 Xshell（`ssh://`、`-url`）或 WinSCP（`sftp://`）一样拉起 ShellRS，只开一个终端或 SFTP 标签（`HostStore::is_external`）。「临时连接」：标题栏「临时连接…」打开，功能齐全。两者共同的「不保存」在代码里叫 temporary（`HostInfo::temporary`）。
-- **全是真的。** SQLite（`~/Library/Application Support/shellrs/shellrs.db`，`SHELLRS_DATA_DIR` 可覆盖目录）、本地终端（`portable-pty` + `alacritty_terminal`）、SSH（`russh`）、SFTP（双栏、传输队列、断点续传）、端口转发（`-L` / `-R` / `-D`）、凭据、连接方式（直连、多级跳板、HTTP / SOCKS5 代理）、右侧栏七个工具、内置编辑器和预览、外部 CLI、在线升级。密码和口令只进系统钥匙串（`keyring`），**数据库里永远不出现秘密**。
+- **全是真的。** SQLite（`~/Library/Application Support/shellrs/shellrs.db`，`SHELLRS_DATA_DIR` 可覆盖目录）、本地终端（`portable-pty` + `alacritty_terminal`）、SSH（`russh`）、SFTP（双栏、传输队列、断点续传）、端口转发（`-L` / `-R` / `-D`）、凭据、连接方式（直连、多级跳板、HTTP / SOCKS5 代理）、右侧栏七个工具、内置编辑器和预览、外部 CLI、在线升级、匿名使用统计（Aptabase）。密码和口令只进系统钥匙串（`keyring`），**数据库里永远不出现秘密**。
 
 做 UI 之前先读 `gpui-kit` 与 `gpui-kit-design-guides` 两个技能（其中的 Coding Guides 和 Design Guides 在本仓库是规范，不是参考）。不要凭记忆臆造 gpui-kit API：以 `~/.cargo/registry/src/*/gpui-component-0.6.1/`、`gpui-base-0.6.1/` 的源码或 `https://gpui-kit.com/component/<name>.md` 为准。
 
@@ -55,8 +55,13 @@ ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH �
   - 清单地址 `https://dl.shellrs.com/update/v1/{channel}.json`、平台 key 的名字和公钥槽位一经发布就不能改。
   - 默认在后台检查并下载，下好、校验完才在标题栏亮按钮（`success` 色，出错时 `warning` 色）。
   - 更新对话框不列更新内容：「查看更新内容」打开整页的 `https://shellrs.com/changelog`，另一个按钮是「重启并安装」，没有「稍后」。不点也在退出时装好。
-  - 「设置 › 关于」两组：「应用更新」三行（当前版本、更新渠道（稳定版 / Beta，运行时切换）、自动升级），「ShellRS」一行「官网」（打开 `https://shellrs.com`）。
+  - 「设置 › 关于」三组：「应用更新」三行（当前版本、更新渠道（稳定版 / Beta，运行时切换）、自动升级），「隐私」一行（见下条），「ShellRS」一行「官网」（打开 `https://shellrs.com`）。
   - 检查只发 User-Agent，不发安装标识。
+- **匿名使用统计**：发给 Aptabase（没有 Rust SDK，自己调 `POST /api/v0/events`；App Key 是 `analytics::APP_KEY`，不是秘密）。「设置 › 关于 › 隐私 › 发送匿名使用统计」默认开，关掉就清空本机攒下的计数。
+  - 只发版本、系统名和版本、CPU 架构、设置快照（取值固定，主机等数量只报档位）和功能使用次数。不发主机、凭据、命令、文件名、路径、语言，也没有任何标识（Aptabase 用 IP + UA 加每日的盐算日活）。
+  - 四种事件：`app_installed`（`analytics.json` 记着已报过，送达后才记）、`app_started`、`app_active`（窗口到前台且当天 UTC 还没报过，macOS 藏在后台不算）、`usage`（功能次数，从第一次使用起满 4 小时汇总一条，不是每次使用一条：免费额度每月 2 万个事件）。
+  - 不用定时器：只在启动、窗口激活、用到功能、改设置时动作，满 4 小时的汇总和失败后的重试都等下一个信号。用户明确不要定时任务，数据有误差可以接受。
+  - 只有发布构建发；开发构建要设 `SHELLRS_ANALYTICS_DEBUG=1`，发的是调试事件，汇总周期 1 分钟、失败 10 秒后重试（`Pace::Debug`），好在面板上马上看到。
 - **编辑器**：中间区的「编辑器」Dock 标签，不用系统程序打开。
   - 双击、回车、F4、右键「编辑」都打开它，本地文件也行；新建文件后直接打开。
   - 只认 UTF-8（不做 GBK），上限 5 MB，约 15 种语言语法高亮。
@@ -134,6 +139,7 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 - `settings/`：`AppSettings`、写 `settings.json` 的 `SettingsStore`、把设置落到窗口上的 `apply`、设置标签。
 - `cli/`：外部 CLI（`shellrs hosts/credentials/exec/upload/download/sync`，给 AI Agent 用）、套接字协议、应用里的服务端、主机和凭据改动的校验（`manage.rs`）、PATH 和 Agent skill 的安装。
 - `update/`：在线升级，包括清单、验签、下载、各平台安装器和 `Updater`。
+- `analytics/`：匿名使用统计。`model.rs` 是纯的计数、事件和发送时机（`Reporter`），`system.rs` 用 `os_info` 读系统名和版本，`client.rs` 是投递线程和工作区拿着的 `Analytics` 句柄；工作区的接线在 `workspace/analytics.rs`。
 - `workspace/`：窗口壳。持有 store、`DockArea`、各类标签的注册表和**全部动作处理器**，按领域拆成多个文件（`forwards.rs`、`credentials.rs`、`links.rs`、`editors.rs`、`tools.rs`、`updates.rs`…）。另有标题栏、状态栏、左侧栏 `Sidebar`、右侧栏 `ToolSidebar`、开始页。
 - `shared/`：多个功能共用的展示片段（`ClosableTabTitle`、`HostMark`、`SegmentedControl`、`RowTooltips`、`confirm_danger`、`form_error_notification` 等）。
 
@@ -274,6 +280,11 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 - **在线升级**：
   - `new_with_services` 建的 `Updater` 没有服务（测试从不联网），生产路径再 `set_services` 加 `start`。
   - 重启走 `set_restart_path` 加 `restart`。Windows 不在退出过程中起进程，交给 `run` 返回之后的 `start_handed_over`。
+- **匿名使用统计**：
+  - 只在 `Workspace::new` 里启动（`AnalyticsServices::system`），`new_with_services` 没有；UI 测试用 `Analytics::new(sender)` 读信号。
+  - 计数只能是 `Counter` 的变体，快照字段只有 `&'static str`、开关和数量，用户输入的东西放不进去。计数的键发布后不能改，新加的要同步 `docs/manual.md`「隐私」一节的清单。
+  - UI 线程只往通道里发信号；系统检测（`os_info` 会起 `uname` 等子进程）、HTTP、写 `analytics.json` 都在 `shellrs-analytics` 线程上，退出不冲队列。
+  - SSH 连上靠 `TerminalEvent::Started` → `TerminalPanelEvent::Connected`，不能在每批输出都发的 `StatusChanged` 里记；SFTP 看 `StateChanged` 时的 `connection_state()`。外部 CLI 的请求种类由 `CliServer::take_usage` 交给 `serve_cli` 的轮询。
 - **发布走 tag** `v<版本>`（`release.yml`，需要人工批准，清单最后才上传）。`CHANGELOG.md` 那一节由改版本号的提交写，功能提交不改。一次性准备见 `docs/release.md`。
 - **macOS 上关窗口是隐藏**（`hide_when_closed`），⌘Q 才退出。测试平台的 `hide()` 没实现，所以这条只挂在生产路径上。
 

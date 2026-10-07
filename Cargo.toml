@@ -81,6 +81,9 @@ trash = "5"
 minisign-verify = "0.2"
 reqwest = { version = "0.13", features = ["blocking"] }
 semver = { version = "1", features = ["serde"] }
+# 匿名使用统计: the system's name and version for Aptabase, as its own Tauri
+# plugin reads them.
+os_info = { version = "3", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 # `access(2)`: whether the folder ShellRS runs from can take its update.

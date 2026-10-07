@@ -20,6 +20,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::editors::describe_files;
+use crate::analytics::{Analytics, AnalyticsServices, Counter};
 use crate::app::ExplorerDispatch as _;
 use crate::app::{
     CenterTab, ClearTerminal, CloseActiveTab, CloseEditor, CloseExplorer, CloseLocalTerminal,
@@ -42,7 +43,9 @@ use crate::connection::{
 };
 use crate::credential::CredentialPanel;
 use crate::editor::{EditorId, EditorPanel};
-use crate::explorer::{ExplorerId, ExplorerPanel, ExplorerPanelEvent, confirm_close_transfer};
+use crate::explorer::{
+    ExplorerId, ExplorerPanel, ExplorerPanelEvent, PreviewKind, confirm_close_transfer,
+};
 use crate::forward::{
     ForwardManager, ForwardManagerEvent, ForwardPanel, SharedForwardTransportProvider,
     SshForwardTransportProvider,
@@ -58,7 +61,7 @@ use crate::settings::{
 };
 use crate::sftp::{
     SharedLocalDirectoryProvider, SharedSftpTransportProvider, SshSftpTransportProvider,
-    SystemLocalDirectoryProvider,
+    SystemLocalDirectoryProvider, TransferDirection,
 };
 use crate::shared::{commit_footer, confirm_danger, open_rename_tab_dialog};
 use crate::terminal::{
@@ -171,6 +174,9 @@ pub struct Workspace {
     /// in UI tests, so it never reaches the network unless a test hands it
     /// fakes.
     pub(super) updater: Entity<Updater>,
+    /// 匿名使用统计. Production only, like the CLI server: UI tests hand in
+    /// one that only records.
+    pub(super) analytics: Option<super::analytics::Reporting>,
     local_terminal_factory: SharedTerminalTransportFactory,
     remote_terminal_provider: SharedRemoteTerminalTransportProvider,
     sftp_provider: SharedSftpTransportProvider,
@@ -266,6 +272,12 @@ impl Workspace {
             updater.set_services(UpdateServices::system(bundle), cx);
             updater.start(cx);
         });
+        if let Some(services) = AnalyticsServices::system() {
+            let enabled = this.settings.read(cx).settings().analytics.enabled;
+            this.set_analytics(Analytics::start(services, enabled), window, cx);
+            this.report_started(cx);
+            this.count_automatic_forwards(cx);
+        }
         this
     }
 
@@ -381,6 +393,7 @@ impl Workspace {
                 crate::settings::apply(settings.read(cx).settings(), window, cx);
                 this.sync_cli_server(cx);
                 this.sync_updater(cx);
+                this.sync_analytics(window, cx);
             }),
             cx.subscribe_in(
                 &updater,
@@ -511,6 +524,7 @@ impl Workspace {
             cli_integration: cx.new(|_| CliIntegration::new(None)),
             cli_server: None,
             updater,
+            analytics: None,
             local_terminal_factory,
             remote_terminal_provider,
             sftp_provider,
@@ -1099,6 +1113,7 @@ impl Workspace {
             new_local_terminal_panel(id, self.local_terminal_factory.clone(), window, cx);
         self._subscriptions.push(subscription);
         self.local_terminals.insert(id, panel.clone());
+        self.count(Counter::LocalTerminal);
         self.dock_area.update(cx, |area, cx| {
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
         });
@@ -1417,6 +1432,22 @@ impl Workspace {
             self.show_editor(&editor, window, cx);
             return;
         }
+        match action.command() {
+            ExplorerCommand::Enqueue(job) => self.count(match job.direction() {
+                TransferDirection::Upload => Counter::Upload,
+                TransferDirection::Download => Counter::Download,
+            }),
+            ExplorerCommand::Preview { remote, path } => {
+                if let Some((_, kind)) = panel.read(cx).preview_target(*remote, path.as_deref(), cx)
+                {
+                    self.count(match kind {
+                        PreviewKind::Image(_) => Counter::PreviewImage,
+                        PreviewKind::Markdown => Counter::PreviewMarkdown,
+                    });
+                }
+            }
+            _ => {}
+        }
         if matches!(action.command(), ExplorerCommand::CloseConfirmed) {
             self.remove_explorer(action.explorer(), window, cx);
         } else {
@@ -1669,6 +1700,7 @@ impl Workspace {
     ) {
         if let Some(terminal) = self.active_terminal(cx) {
             terminal.update(cx, |terminal, cx| terminal.open_find(window, cx));
+            self.count(Counter::Find);
         }
     }
 
@@ -2179,6 +2211,7 @@ fn new_terminal_panel(
                 this.refresh_host_connection_state(*host_id, cx);
                 cx.notify();
             }
+            TerminalPanelEvent::Connected(_, host_id) => this.count_connection(*host_id, false, cx),
             TerminalPanelEvent::PromptRequested(terminal_id, host_id, prompt) => this
                 .enqueue_prompt(
                     PromptOwner::Terminal(*terminal_id),
@@ -2300,6 +2333,12 @@ fn new_explorer_panel(
                     if let Some((owner @ PromptOwner::Sftp(s,g),_,_)) = this.active_prompt && s == *id && g != generation {
                         this.cancel_prompts_for_owner(owner,window,cx);
                     }
+                }
+                // Only connecting, connected and disconnected change it.
+                if this.explorers.get(id).is_some_and(|panel| {
+                    panel.read(cx).connection_state() == ConnectionState::Connected
+                }) {
+                    this.count_connection(*host_id, true, cx);
                 }
                 this.refresh_host_connection_state(*host_id, cx);
             },

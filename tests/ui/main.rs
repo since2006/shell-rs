@@ -7,6 +7,7 @@
 
 mod support;
 
+mod analytics;
 mod cli;
 mod connection;
 mod credential;

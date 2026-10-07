@@ -619,10 +619,11 @@ fn external_cli_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
 }
 
 /// 关于: 应用更新, as three rows: the version with where updating stands,
-/// the channel, and 自动升级.
+/// the channel, and 自动升级; then 隐私, whether usage statistics are sent.
 fn about_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     let snapshot = panel.updater.read(cx).snapshot();
     let (reader, writer) = (panel.store.clone(), panel.store.clone());
+    let (analytics_reader, analytics_writer) = (panel.store.clone(), panel.store.clone());
     vec![
         SettingGroup::new().title("应用更新").items([
             current_version_item(snapshot),
@@ -649,6 +650,22 @@ fn about_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
             )
             .description("检测到新版本后自动下载，下载完成后点击「重启并安装」完成更新。"),
         ]),
+        SettingGroup::new().title("隐私").items([SettingItem::new(
+            "发送匿名使用统计",
+            SettingField::switch(
+                move |cx| analytics_reader.read(cx).settings().analytics.enabled,
+                move |enabled, cx| {
+                    analytics_writer.update(cx, |store, cx| {
+                        store.update(|settings| settings.analytics.enabled = enabled, cx)
+                    });
+                },
+            )
+            .default_value(true),
+        )
+        .description(
+            "只发送版本、系统、CPU 架构和各功能的使用次数，用来改进 ShellRS；\
+             不含主机、凭据、命令或文件内容。",
+        )]),
         SettingGroup::new()
             .title("ShellRS")
             .items([SettingItem::new(

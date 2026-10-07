@@ -186,7 +186,10 @@ impl TerminalEngine {
         }
 
         match event.kind {
-            TerminalUiEventKind::Started => self.lifecycle = TerminalLifecycle::Running,
+            TerminalUiEventKind::Started => {
+                self.lifecycle = TerminalLifecycle::Running;
+                return Some(TerminalEvent::Started);
+            }
             TerminalUiEventKind::Wakeup => {
                 self.runtime.wakeup_pending.store(false, Ordering::Release);
             }
@@ -617,6 +620,9 @@ impl Drop for TerminalEngine {
 
 #[derive(Clone, Debug)]
 pub enum TerminalEvent {
+    /// The shell is there: connected, for a remote terminal, again after
+    /// each reconnection.
+    Started,
     PromptRequested(ConnectionPrompt),
     HostOsDetected(HostOs),
     /// Something to show the user while they look elsewhere.

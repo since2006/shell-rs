@@ -23,6 +23,8 @@ pub struct AppSettings {
     pub terminal_font: TerminalFontSettings,
     pub external_cli: ExternalCliSettings,
     pub update: UpdateSettings,
+    /// 关于 → 隐私.
+    pub analytics: AnalyticsSettings,
     /// The SFTP 大小 column, switched from the column title's menu rather
     /// than the settings page, as in WinSCP.
     pub file_size_format: FileSizeFormat,
@@ -210,6 +212,20 @@ impl Default for UpdateSettings {
             automatic: true,
             channel: Channel::of_this_build().unwrap_or(Channel::Stable),
         }
+    }
+}
+
+/// 关于 → 隐私.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnalyticsSettings {
+    /// 发送匿名使用统计. On unless the user turns it off.
+    pub enabled: bool,
+}
+
+impl Default for AnalyticsSettings {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
@@ -574,6 +590,17 @@ mod tests {
         let settings: AppSettings =
             serde_json::from_str(r#"{"update":{"automatic":false}}"#).unwrap();
         assert!(!settings.update.automatic);
+    }
+
+    #[test]
+    fn usage_statistics_are_sent_unless_the_file_says_otherwise() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(settings.analytics.enabled);
+        let settings: AppSettings = serde_json::from_str(r#"{"analytics":{}}"#).unwrap();
+        assert!(settings.analytics.enabled);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"analytics":{"enabled":false}}"#).unwrap();
+        assert!(!settings.analytics.enabled);
     }
 
     #[test]

@@ -17,7 +17,7 @@ use super::protocol::{
     AuthChoice, CliError, CredentialDetails, ErrorCode, HostDetails, HostFields, HostInfo, Reply,
     Request, RouteDetails, Secret, TransferCounters, TransferSummary,
 };
-use super::server::{CliBackend, CliServer, CliTarget};
+use super::server::{CliBackend, CliServer, CliTarget, CliUse};
 use super::{Cli, Command, CredentialsCommand, HostsCommand};
 use super::{ConsoleText, exec_request, normalize_command};
 use crate::app::cli_endpoint;
@@ -364,6 +364,27 @@ fn without_the_app_the_command_says_it_is_not_running() {
                 .starts_with("shellrs: [not_running]")
         );
     }
+}
+
+#[test]
+fn the_kinds_of_command_served_are_counted_and_nothing_else() {
+    let fixture = fixture();
+    run(&fixture.socket, Request::List { query: None }, true);
+    run(
+        &fixture.socket,
+        Request::Exec {
+            host: id(&fixture.web),
+            command: "uname -a".into(),
+        },
+        false,
+    );
+    assert_eq!(fixture.server.take_usage(), [CliUse::Hosts, CliUse::Exec]);
+    assert_eq!(fixture.server.take_usage(), []);
+    // Refused, or ShellRS opened again: not a command served.
+    fixture.server.set_enabled(false);
+    run(&fixture.socket, Request::List { query: None }, true);
+    assert!(client::activate_running_app(&fixture.socket, None));
+    assert_eq!(fixture.server.take_usage(), []);
 }
 
 #[test]

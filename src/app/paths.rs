@@ -57,6 +57,13 @@ pub fn window_state_path() -> PathBuf {
     data_dir().join("window.json")
 }
 
+/// What 匿名使用统计 keeps between runs: whether this installation was
+/// reported, and the uses not sent yet. Beside the database, so a fresh
+/// data directory is a fresh installation.
+pub fn analytics_path() -> PathBuf {
+    data_dir().join("analytics.json")
+}
+
 /// Where the running app listens for the `shellrs` command. The command
 /// and the app both ask here, so both follow `SHELLRS_DATA_DIR`.
 pub fn cli_socket_path() -> PathBuf {
