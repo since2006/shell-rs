@@ -26,11 +26,12 @@ use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Processor, Timeout as _};
-use gpui_kit::{App, Global, Hsla, Rgba};
+use gpui_kit::{App, Global, Hsla, Rgba, SharedString};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use super::search::MAX_WRAPPED_LINES;
+use crate::i18n::t;
 
 /// The longest pattern a rule may have, in characters.
 pub const PATTERN_LIMIT: usize = 500;
@@ -128,44 +129,65 @@ impl From<HighlightColor> for String {
     }
 }
 
-/// The rules a new installation starts with, none of them notifying.
+/// The rules a new installation starts with, none of them notifying. Their
+/// notes are in the interface language of the day they are made: from then
+/// on they are the user's.
 pub fn default_rules() -> Vec<HighlightRule> {
     vec![
         HighlightRule {
             pattern: "ERROR".into(),
-            note: "错误".into(),
+            note: t!("terminal.highlight.example.error").into(),
             ..HighlightRule::default()
         },
         HighlightRule {
             pattern: "WARN".into(),
-            note: "警告".into(),
+            note: t!("terminal.highlight.example.warning").into(),
             color: HighlightColor::AMBER,
             ..HighlightRule::default()
         },
         HighlightRule {
             pattern: r"\b\d{1,3}(\.\d{1,3}){3}\b".into(),
-            note: "IPv4 地址".into(),
+            note: t!("terminal.highlight.example.ipv4").into(),
             color: HighlightColor::BLUE,
             ..HighlightRule::default()
         },
     ]
 }
 
+/// Why a rule's pattern cannot match, as the rule's row says it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PatternError {
+    /// Longer than `PATTERN_LIMIT`.
+    TooLong,
+    TooComplex,
+    Invalid,
+}
+
+impl PatternError {
+    pub fn message(self) -> SharedString {
+        match self {
+            Self::TooLong => t!("terminal.highlight.too_long", limit = PATTERN_LIMIT),
+            Self::TooComplex => t!("terminal.highlight.too_complex"),
+            Self::Invalid => t!("terminal.highlight.invalid"),
+        }
+    }
+}
+
 impl HighlightRule {
     /// The pattern, ready to match: `None` while it is empty, and so
-    /// matches nothing; or why it cannot match, as the rule's row says it.
-    pub fn compile(&self) -> Result<Option<Regex>, &'static str> {
+    /// matches nothing; or why it cannot match.
+    pub fn compile(&self) -> Result<Option<Regex>, PatternError> {
         if self.pattern.is_empty() {
             return Ok(None);
         }
         if self.pattern.chars().count() > PATTERN_LIMIT {
-            return Err("不能超过 500 个字符");
+            return Err(PatternError::TooLong);
         }
         Regex::new(&self.pattern)
             .map(Some)
             .map_err(|error| match error {
-                regex::Error::CompiledTooBig(_) => "正则表达式过于复杂",
-                _ => "正则表达式写法有误",
+                regex::Error::CompiledTooBig(_) => PatternError::TooComplex,
+                _ => PatternError::Invalid,
             })
     }
 
@@ -692,13 +714,14 @@ mod tests {
         assert!(!address.is_match("1234.5.6.7"));
         // A row just added matches nothing, and says nothing of it.
         assert!(matches!(compile(""), Ok(None)));
-        assert_eq!(compile("(ERROR").err(), Some("正则表达式写法有误"));
+        let message = |pattern: &str| compile(pattern).err().map(PatternError::message);
+        assert_eq!(message("(ERROR"), Some("正则表达式写法有误".into()));
         assert_eq!(
-            compile(r"(\w{1000}){1000}").err(),
-            Some("正则表达式过于复杂")
+            message(r"(\w{1000}){1000}"),
+            Some("正则表达式过于复杂".into())
         );
         let long = "x".repeat(PATTERN_LIMIT + 1);
-        assert_eq!(compile(&long).err(), Some("不能超过 500 个字符"));
+        assert_eq!(message(&long), Some("不能超过 500 个字符".into()));
     }
 
     #[test]

@@ -1,6 +1,9 @@
 use std::fmt;
 
 use alacritty_terminal::grid::Dimensions;
+use gpui_kit::SharedString;
+
+use crate::i18n::t;
 
 /// Stable identity for one local-terminal tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -77,28 +80,35 @@ impl TerminalLifecycle {
         matches!(self, Self::Running)
     }
 
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> SharedString {
         match self {
-            Self::Starting => "正在启动",
-            Self::Running => "运行中",
-            Self::Exited { .. } => "已退出",
-            Self::Failed(_) => "启动失败",
-            Self::Closing => "正在关闭",
+            Self::Starting => t!("terminal.lifecycle.starting"),
+            Self::Running => t!("terminal.lifecycle.running"),
+            Self::Exited { .. } => t!("terminal.lifecycle.exited"),
+            Self::Failed(_) => t!("terminal.lifecycle.failed"),
+            Self::Closing => t!("terminal.lifecycle.closing"),
         }
     }
 }
 
 impl fmt::Display for TerminalLifecycle {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        let text = match self {
             Self::Exited {
                 code,
                 signal: Some(signal),
-            } => write!(formatter, "已退出（{signal}，退出码 {code}）"),
-            Self::Exited { code, signal: None } => write!(formatter, "已退出（退出码 {code}）"),
-            Self::Failed(error) => write!(formatter, "启动失败：{error}"),
-            state => formatter.write_str(state.label()),
-        }
+            } => t!(
+                "terminal.lifecycle.exited_signal",
+                signal = signal,
+                code = code
+            ),
+            Self::Exited { code, signal: None } => {
+                t!("terminal.lifecycle.exited_code", code = code)
+            }
+            Self::Failed(error) => t!("terminal.lifecycle.failed_with", error = error),
+            state => state.label(),
+        };
+        formatter.write_str(&text)
     }
 }
 

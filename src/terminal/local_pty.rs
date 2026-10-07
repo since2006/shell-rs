@@ -8,6 +8,8 @@ use anyhow::{Context as _, Result};
 use async_channel::Sender;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
+use crate::i18n::t;
+
 use super::{
     TerminalSize, TerminalTransport, TerminalTransportCommand, TerminalTransportEvent,
     TerminalTransportFactory, send_event,
@@ -36,7 +38,7 @@ impl TerminalTransport for LocalPtyTransport {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(to_pty_size(initial_size))
-            .context("无法创建本地 PTY")?;
+            .context(t!("terminal.pty.open_failed"))?;
 
         let mut command = self
             .command
@@ -49,11 +51,17 @@ impl TerminalTransport for LocalPtyTransport {
         let mut child = pair
             .slave
             .spawn_command(command)
-            .context("无法启动系统默认 shell")?;
+            .context(t!("terminal.pty.shell_failed"))?;
         drop(pair.slave);
 
-        let mut reader = pair.master.try_clone_reader().context("无法读取本地 PTY")?;
-        let mut writer = pair.master.take_writer().context("无法写入本地 PTY")?;
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .context(t!("terminal.pty.reader_failed"))?;
+        let mut writer = pair
+            .master
+            .take_writer()
+            .context(t!("terminal.pty.writer_failed"))?;
 
         let output_events = events.clone();
         let reader_thread = thread::Builder::new()
@@ -77,14 +85,16 @@ impl TerminalTransport for LocalPtyTransport {
                         Err(error) => {
                             send_event(
                                 &output_events,
-                                TerminalTransportEvent::Failed(format!("读取 PTY 失败：{error}")),
+                                TerminalTransportEvent::Failed(
+                                    t!("terminal.pty.read_error", error = error).into(),
+                                ),
                             );
                             break;
                         }
                     }
                 }
             })
-            .context("无法启动 PTY 读取线程")?;
+            .context(t!("terminal.pty.reader_thread"))?;
 
         send_event(&events, TerminalTransportEvent::Started);
         let mut shutting_down = false;
@@ -94,7 +104,9 @@ impl TerminalTransport for LocalPtyTransport {
                     if let Err(error) = writer.write_all(&bytes).and_then(|_| writer.flush()) {
                         send_event(
                             &events,
-                            TerminalTransportEvent::Failed(format!("写入 PTY 失败：{error}")),
+                            TerminalTransportEvent::Failed(
+                                t!("terminal.pty.write_error", error = error).into(),
+                            ),
                         );
                         let _ = child.kill();
                         shutting_down = true;
@@ -104,7 +116,9 @@ impl TerminalTransport for LocalPtyTransport {
                     if let Err(error) = pair.master.resize(to_pty_size(size)) {
                         send_event(
                             &events,
-                            TerminalTransportEvent::Failed(format!("调整 PTY 尺寸失败：{error}")),
+                            TerminalTransportEvent::Failed(
+                                t!("terminal.pty.resize_error", error = error).into(),
+                            ),
                         );
                     }
                 }
@@ -118,7 +132,7 @@ impl TerminalTransport for LocalPtyTransport {
                 Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
 
-            if let Some(status) = child.try_wait().context("无法读取 shell 退出状态")? {
+            if let Some(status) = child.try_wait().context(t!("terminal.pty.exit_status"))? {
                 break status;
             }
         };

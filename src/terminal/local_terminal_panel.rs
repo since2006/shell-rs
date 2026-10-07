@@ -10,6 +10,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{CatalogIcon, CenterTab, CloseLocalTerminal, RestartLocalTerminal};
+use crate::i18n::t;
 use crate::shared::{ClosableTabTitle, close_tab_items};
 
 use super::{
@@ -28,7 +29,6 @@ pub enum LocalTerminalPanelEvent {
 /// A local login-shell Dock tab backed by the shared terminal view.
 pub struct LocalTerminalPanel {
     id: LocalTerminalId,
-    default_title: String,
     terminal: Entity<TerminalView>,
     tab_group: Option<WeakEntity<TabGroup>>,
     _subscriptions: Vec<Subscription>,
@@ -41,11 +41,10 @@ impl LocalTerminalPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let default_title = format!("本地终端 {}", id.0);
         let terminal = cx.new(|cx| {
             TerminalView::new(
                 ("local-terminal", id.0),
-                default_title.clone(),
+                move |_| default_title(id),
                 factory,
                 window,
                 cx,
@@ -65,7 +64,6 @@ impl LocalTerminalPanel {
 
         Self {
             id,
-            default_title,
             terminal,
             tab_group: None,
             _subscriptions: subscriptions,
@@ -74,8 +72,8 @@ impl LocalTerminalPanel {
 
     /// 「本地终端 1」: what a notification calls it, whatever title the
     /// shell gives the tab.
-    pub fn default_title(&self) -> &str {
-        &self.default_title
+    pub fn default_title(&self) -> SharedString {
+        default_title(self.id)
     }
 
     pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
@@ -97,11 +95,11 @@ impl LocalTerminalPanel {
         window.focus(&focus, cx);
     }
 
-    fn display_title(&self, cx: &App) -> String {
+    fn display_title(&self, cx: &App) -> SharedString {
         self.terminal
             .read(cx)
             .title(cx)
-            .unwrap_or_else(|| self.default_title.clone())
+            .map_or_else(|| self.default_title(), SharedString::from)
     }
 }
 
@@ -166,7 +164,7 @@ impl Panel for LocalTerminalPanel {
         Some(vec![
             Button::new(("restart-local-terminal-toolbar", id.0))
                 .icon(Icon::new(CatalogIcon::RefreshCw))
-                .tooltip("重新启动")
+                .tooltip(t!("terminal.local.restart"))
                 .on_click(move |_, window, cx| {
                     window.dispatch_action(Box::new(RestartLocalTerminal(id)), cx)
                 }),
@@ -216,7 +214,7 @@ impl Render for LocalTerminalPanel {
                             Button::new(("restart-local-terminal", id.0))
                                 .small()
                                 .icon(Icon::new(CatalogIcon::RefreshCw))
-                                .label("重新启动")
+                                .label(t!("terminal.local.restart"))
                                 .on_click(move |_, window, cx| {
                                     window.dispatch_action(Box::new(RestartLocalTerminal(id)), cx)
                                 }),
@@ -224,6 +222,11 @@ impl Render for LocalTerminalPanel {
                 )
             })
     }
+}
+
+/// 「本地终端 1」, in the interface language.
+fn default_title(id: LocalTerminalId) -> SharedString {
+    t!("terminal.local.title", number = id.0)
 }
 
 /// The commands of a local terminal tab, shared by its context menu and the
@@ -237,7 +240,7 @@ fn tab_menu(
 ) -> PopupMenu {
     let menu = menu
         .menu_with_icon(
-            "重新启动",
+            t!("terminal.local.restart"),
             Icon::new(CatalogIcon::RefreshCw),
             Box::new(RestartLocalTerminal(id)),
         )

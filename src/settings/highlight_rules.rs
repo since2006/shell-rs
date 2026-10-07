@@ -17,7 +17,7 @@ use gpui_kit::*;
 
 use crate::app::CatalogIcon;
 use crate::i18n::{UiLocale, t};
-use crate::terminal::{HighlightColor, HighlightRule};
+use crate::terminal::{HighlightColor, HighlightRule, PatternError};
 
 use super::SettingsStore;
 
@@ -59,7 +59,7 @@ struct RuleRow {
     id: usize,
     rule: HighlightRule,
     /// Why the pattern matches nothing, when it does not compile.
-    error: Option<&'static str>,
+    error: Option<PatternError>,
     pattern: Entity<InputState>,
     note: Entity<InputState>,
     hex: Entity<InputState>,
@@ -412,11 +412,12 @@ impl HighlightRulesEditor {
                             .font_family(mono.clone()),
                     )
                     .when_some(row.error, |cell, error| {
+                        let error = error.message();
                         cell.child(
                             div()
                                 .id(("highlight-rule-error", id))
                                 .test_support()
-                                .aria_label(error)
+                                .aria_label(error.clone())
                                 .text_xs()
                                 .text_color(cx.theme().danger)
                                 .child(error),

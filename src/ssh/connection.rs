@@ -4,6 +4,7 @@ use crate::{
         ConnectionPrompt, ConnectionPromptField, ConnectionPromptKind, ConnectionPromptReply,
     },
     host::{HostLogin, JumpLogin, LoginMethod, LoginRoute, ProxyLogin},
+    i18n::t,
     secrets::{SecretRef, SharedSecretStore},
 };
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -39,7 +40,6 @@ const AUTH_RETRIES: usize = 3;
 /// How long to wait for the agent to answer the door. A named pipe that
 /// stays busy would otherwise be retried forever.
 const AGENT_TIMEOUT: Duration = Duration::from_secs(5);
-const CONNECT_FAILED: &str = "无法建立 SSH 连接，请检查地址、端口和主机密钥";
 static NEXT_PROMPT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// What one connection logs in with: a host's login as the store resolved
@@ -186,7 +186,7 @@ impl SshConnector {
         let connect = async {
             client::connect_stream(ssh_config(), tunnel, handler)
                 .await
-                .map_err(|error| error.context(CONNECT_FAILED))
+                .map_err(|error| error.context(t!("ssh.connect.failed")))
         };
         let mut handle = step(broker, connect).await?;
         let prompts = Asker {
@@ -196,7 +196,7 @@ impl SshConnector {
         let mut shutdown = broker.shutdown_receiver();
         tokio::select! {
             result = authenticate(&mut handle, login, secrets, &self.agent, prompts) => result?,
-            _ = shutdown.changed() => bail!("连接已取消"),
+            _ = shutdown.changed() => bail!(t!("ssh.connect.cancelled")),
         }
         let fingerprint = lock(&fingerprint).clone();
         Ok((handle, fingerprint))
@@ -217,10 +217,9 @@ impl SshConnector {
             .enumerate()
             .map(|(ix, hop)| match hop {
                 JumpLogin::Host { name, login } => Ok((name.as_str(), &**login)),
-                JumpLogin::Deleted => Err(anyhow!(RouteFailure(format!(
-                    "第 {} 台跳板主机已被删除，请编辑这台主机的连接方式",
-                    ix + 1
-                )))),
+                JumpLogin::Deleted => Err(anyhow!(RouteFailure(
+                    t!("ssh.jump.deleted", number = ix + 1).into()
+                ))),
             })
             .collect::<Result<Vec<_>>>()?;
         let mut tunnel = None;
@@ -245,11 +244,13 @@ impl SshConnector {
                         return error;
                     }
                     let reason = describe_login_error(&error);
-                    error.context(RouteFailure(format!("跳板主机「{name}」：{reason}")))
+                    error.context(RouteFailure(
+                        t!("ssh.jump.failed", name = name, reason = reason).into(),
+                    ))
                 })?;
             tunnel = Some(reached);
         }
-        tunnel.ok_or_else(|| anyhow!("没有可用的跳板主机"))
+        tunnel.ok_or_else(|| anyhow!(t!("ssh.jump.none")))
     }
 
     /// Log in to the jump host `hop`, over `tunnel` or else directly, and
@@ -280,17 +281,31 @@ impl SshConnector {
                 .channel_open_direct_tcpip(next_host, u32::from(next_port), "127.0.0.1", 0)
                 .await
                 .map_err(|error| {
-                    let reason = match &error {
+                    let text: String = match &error {
                         russh::Error::ChannelOpenFailure(
                             russh::ChannelOpenFailure::ConnectFailed,
-                        ) => "连接失败",
+                        ) => t!(
+                            "ssh.jump.forward.connect_failed",
+                            name = name,
+                            host = next_host,
+                            port = next_port
+                        ),
                         russh::Error::ChannelOpenFailure(
                             russh::ChannelOpenFailure::AdministrativelyProhibited,
-                        ) => "服务器不允许端口转发",
-                        _ => "无法打开转发通道",
-                    };
-                    let text =
-                        format!("跳板主机「{name}」无法连接到 {next_host}:{next_port}：{reason}");
+                        ) => t!(
+                            "ssh.jump.forward.prohibited",
+                            name = name,
+                            host = next_host,
+                            port = next_port
+                        ),
+                        _ => t!(
+                            "ssh.jump.forward.channel_failed",
+                            name = name,
+                            host = next_host,
+                            port = next_port
+                        ),
+                    }
+                    .into();
                     // Refused like a direct connection would be, so it is
                     // retried like one.
                     let refused = matches!(
@@ -376,7 +391,7 @@ async fn step<T>(broker: &SshPrompts, future: impl Future<Output = Result<T>>) -
     let mut shutdown = broker.shutdown_receiver();
     tokio::select! {
         result = timeout_excluding_prompts(future, broker.prompt_activity_receiver(), CONNECT_TIMEOUT) => result?,
-        _ = shutdown.changed() => bail!("连接已取消"),
+        _ = shutdown.changed() => bail!(t!("ssh.connect.cancelled")),
     }
 }
 
@@ -386,7 +401,7 @@ async fn tcp(host: &str, port: u16) -> Result<TcpStream> {
     let socket = TcpStream::connect((host, port))
         .await
         .map_err(russh::Error::IO)
-        .context(CONNECT_FAILED)?;
+        .context(t!("ssh.connect.failed"))?;
     // As russh's own connect does: the terminal's keystrokes go out at once.
     let _ = socket.set_nodelay(true);
     Ok(socket)
@@ -403,10 +418,15 @@ async fn through_proxy(
         .map_err(|error| {
             let error = anyhow::Error::from(russh::Error::IO(error));
             let reason = describe_login_error(&error);
-            error.context(RouteFailure(format!(
-                "无法连接代理服务器 {}:{}：{reason}",
-                proxy.host, proxy.port
-            )))
+            error.context(RouteFailure(
+                t!(
+                    "ssh.proxy.connect_failed",
+                    host = proxy.host,
+                    port = proxy.port,
+                    reason = reason
+                )
+                .into(),
+            ))
         })?;
     let _ = socket.set_nodelay(true);
     let password = proxy
@@ -494,12 +514,14 @@ pub enum MissingCredential {
 
 impl std::fmt::Display for MissingCredential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            MissingCredential::Password { rejected: true } => "用户名或密码错误",
-            MissingCredential::Password { rejected: false } => "未填写密码",
-            MissingCredential::Passphrase { rejected: true } => "私钥口令错误",
-            MissingCredential::Passphrase { rejected: false } => "私钥已加密，未填写口令",
-            MissingCredential::KeyboardInteractive => "服务器要求键盘交互式认证，无法在测试中完成",
+        f.write_str(&match self {
+            MissingCredential::Password { rejected: true } => t!("ssh.missing.password_rejected"),
+            MissingCredential::Password { rejected: false } => t!("ssh.missing.password"),
+            MissingCredential::Passphrase { rejected: true } => {
+                t!("ssh.missing.passphrase_rejected")
+            }
+            MissingCredential::Passphrase { rejected: false } => t!("ssh.missing.passphrase"),
+            MissingCredential::KeyboardInteractive => t!("ssh.missing.keyboard_interactive"),
         })
     }
 }
@@ -514,7 +536,7 @@ pub struct PasswordWanted;
 
 impl std::fmt::Display for PasswordWanted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("服务器要求密码，「无密码」不会询问；请改用「密码」或「使用凭据」")
+        f.write_str(&t!("ssh.password_wanted"))
     }
 }
 
@@ -556,12 +578,12 @@ impl SshPrompts {
         let _ = self.prompt_activity.send(true);
         let result = async {
             if !(self.events)(ConnectionPrompt::new(request_id, kind)) {
-                bail!("连接视图已关闭");
+                bail!(t!("ssh.prompt.view_closed"));
             }
             let mut shutdown = self.shutdown.clone();
             tokio::select! {
-                reply = receiver => reply.map_err(|_| anyhow!("认证请求已取消")),
-                _ = shutdown.changed() => bail!("连接已取消"),
+                reply = receiver => reply.map_err(|_| anyhow!(t!("ssh.prompt.request_cancelled"))),
+                _ = shutdown.changed() => bail!(t!("ssh.connect.cancelled")),
             }
         }
         .await;
@@ -616,7 +638,7 @@ where
                 result = &mut future => return Ok(result),
                 changed = prompt_activity.changed() => {
                     if changed.is_err() {
-                        bail!("连接已取消");
+                        bail!(t!("ssh.connect.cancelled"));
                     }
                 }
             }
@@ -629,7 +651,7 @@ where
             _ = tokio::time::sleep(remaining) => return Err(russh::Error::ConnectionTimeout.into()),
             changed = prompt_activity.changed() => {
                 if changed.is_err() {
-                    bail!("连接已取消");
+                    bail!(t!("ssh.connect.cancelled"));
                 }
                 remaining = remaining.saturating_sub(started.elapsed());
                 if remaining.is_zero() && !*prompt_activity.borrow() {
@@ -729,10 +751,16 @@ impl client::Handler for SshClientHandler {
             return Ok(true);
         }
         if !known.is_empty() {
-            bail!("保存主机密钥时发现信任文件已发生变化");
+            bail!(t!("ssh.known_hosts.changed_while_saving"));
         }
-        learn_known_hosts_path(&self.host, self.port, &key, &self.known_hosts_path)
-            .map_err(|_| anyhow!("无法写入主机信任文件：{}", self.known_hosts_path.display()))?;
+        learn_known_hosts_path(&self.host, self.port, &key, &self.known_hosts_path).map_err(
+            |_| {
+                anyhow!(t!(
+                    "ssh.known_hosts.write_failed",
+                    path = self.known_hosts_path.display()
+                ))
+            },
+        )?;
         Ok(true)
     }
 
@@ -816,7 +844,7 @@ pub fn is_network_error(error: &anyhow::Error) -> bool {
 fn read_known_keys(host: &str, port: u16, path: &Path) -> Result<Vec<(usize, PublicKey)>> {
     if path.exists() {
         let contents = std::fs::read_to_string(path)
-            .with_context(|| format!("无法读取主机信任文件：{}", path.display()))?;
+            .with_context(|| t!("ssh.known_hosts.read_failed", path = path.display()))?;
         for line in contents.lines().map(str::trim) {
             if line.is_empty() || line.starts_with('#') {
                 continue;
@@ -828,12 +856,12 @@ fn read_known_keys(host: &str, port: u16, path: &Path) -> Result<Vec<(usize, Pub
                     .next()
                     .is_some_and(|encoded| parse_public_key_base64(encoded).is_ok());
             if !valid {
-                bail!("主机信任文件已损坏：{}", path.display());
+                bail!(t!("ssh.known_hosts.corrupt", path = path.display()));
             }
         }
     }
     known_host_keys_path(host, port, path)
-        .map_err(|_| anyhow!("主机信任文件已损坏或无法读取：{}", path.display()))
+        .map_err(|_| anyhow!(t!("ssh.known_hosts.unreadable", path = path.display())))
 }
 
 async fn authenticate(
@@ -848,7 +876,7 @@ async fn authenticate(
     let first = handle
         .authenticate_none(user)
         .await
-        .map_err(|_| anyhow!("无法查询服务器支持的认证方式"))?;
+        .map_err(|_| anyhow!(t!("ssh.auth.methods_unknown")))?;
     if first.success() {
         return Ok(());
     }
@@ -871,10 +899,10 @@ async fn authenticate(
                 Err(_) => {}
             }
             if method == LoginMethod::Agent && !partial {
-                bail!("服务器未接受 SSH Agent 中的密钥");
+                bail!(t!("ssh.auth.agent_rejected"));
             }
         } else if method == LoginMethod::Agent {
-            bail!("服务器不接受公钥登录，无法使用 SSH Agent");
+            bail!(t!("ssh.auth.agent_no_publickey"));
         }
     }
 
@@ -889,12 +917,12 @@ async fn authenticate(
             let hash = handle
                 .best_supported_rsa_hash()
                 .await
-                .map_err(|_| anyhow!("无法协商 RSA 签名算法"))?
+                .map_err(|_| anyhow!(t!("ssh.auth.rsa_hash")))?
                 .flatten();
             let result = handle
                 .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash))
                 .await
-                .map_err(|_| anyhow!("私钥认证失败"))?;
+                .map_err(|_| anyhow!(t!("ssh.auth.key_failed")))?;
             if result.success() {
                 return Ok(());
             }
@@ -905,7 +933,7 @@ async fn authenticate(
             }
         }
         if method == LoginMethod::Key && !partial {
-            bail!("服务器未接受指定的私钥");
+            bail!(t!("ssh.auth.key_rejected"));
         }
     }
 
@@ -918,7 +946,7 @@ async fn authenticate(
         {
             return Err(PasswordWanted.into());
         }
-        bail!("服务器未接受 SSH Agent 和 ~/.ssh 中的任何私钥");
+        bail!(t!("ssh.auth.no_key_accepted"));
     }
 
     if method == LoginMethod::Password || partial {
@@ -929,7 +957,7 @@ async fn authenticate(
                 let result = handle
                     .authenticate_password(user, saved.to_string())
                     .await
-                    .map_err(|_| anyhow!("密码认证失败"))?;
+                    .map_err(|_| anyhow!(t!("ssh.auth.password_failed")))?;
                 if result.success() {
                     return Ok(());
                 }
@@ -941,9 +969,9 @@ async fn authenticate(
                 methods = remaining_methods(result);
             }
             let instructions = if saved_rejected {
-                "已保存的密码被服务器拒绝，请重新输入"
+                t!("ssh.auth.saved_password_rejected")
             } else {
-                "请输入登录密码"
+                t!("ssh.auth.enter_password")
             };
             if !partial && methods.contains(&MethodKind::Password) {
                 for _ in 0..AUTH_RETRIES {
@@ -952,15 +980,15 @@ async fn authenticate(
                         MissingCredential::Password {
                             rejected: saved_rejected,
                         },
-                        "SSH 登录",
-                        instructions,
-                        "密码",
+                        &t!("ssh.auth.prompt_title"),
+                        &instructions,
+                        &t!("ssh.auth.password_field"),
                     )
                     .await?;
                     let result = handle
                         .authenticate_password(user, answer.into_inner())
                         .await
-                        .map_err(|_| anyhow!("密码认证失败"))?;
+                        .map_err(|_| anyhow!(t!("ssh.auth.password_failed")))?;
                     if result.success() {
                         return Ok(());
                     }
@@ -980,7 +1008,7 @@ async fn authenticate(
             }
         }
     }
-    bail!("认证失败：服务器未接受可用的认证方式")
+    bail!(t!("ssh.auth.failed"))
 }
 
 type Agent = russh::keys::agent::client::AgentClient<
@@ -1001,11 +1029,11 @@ enum AgentProblem {
 
 impl std::fmt::Display for AgentProblem {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AgentProblem::Unreachable(reason) => write!(formatter, "无法连接 SSH Agent：{reason}"),
-            AgentProblem::Empty => formatter.write_str("SSH Agent 中没有密钥，请先用 ssh-add 添加"),
-            AgentProblem::Unsigned => formatter.write_str("SSH Agent 拒绝了签名请求"),
-        }
+        formatter.write_str(&match self {
+            AgentProblem::Unreachable(reason) => t!("ssh.agent.unreachable", reason = reason),
+            AgentProblem::Empty => t!("ssh.agent.empty"),
+            AgentProblem::Unsigned => t!("ssh.agent.unsigned"),
+        })
     }
 }
 
@@ -1029,7 +1057,7 @@ async fn try_agent(
     let hash = handle
         .best_supported_rsa_hash()
         .await
-        .map_err(|_| anyhow!("无法协商 SSH Agent 签名算法"))?
+        .map_err(|_| anyhow!(t!("ssh.agent.hash")))?
         .flatten();
     let mut last = None;
     for identity in identities {
@@ -1055,22 +1083,21 @@ async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> 
         AgentLocation::System => match std::env::var_os("SSH_AUTH_SOCK") {
             Some(path) if !path.is_empty() => PathBuf::from(path),
             _ => {
-                return Err(AgentProblem::Unreachable(
-                    "没有设置 SSH_AUTH_SOCK".to_string(),
-                ));
+                return Err(AgentProblem::Unreachable(t!("ssh.agent.no_socket").into()));
             }
         },
     };
     match tokio::time::timeout(AGENT_TIMEOUT, AgentClient::connect_uds(&path)).await {
         Ok(Ok(agent)) => Ok(agent.dynamic()),
         Ok(Err(russh::keys::Error::IO(error))) if error.kind() == std::io::ErrorKind::NotFound => {
-            Err(AgentProblem::Unreachable(format!(
-                "{} 不存在",
-                path.display()
-            )))
+            Err(AgentProblem::Unreachable(
+                t!("ssh.agent.missing_socket", path = path.display()).into(),
+            ))
         }
         Ok(Err(error)) => Err(AgentProblem::Unreachable(error.to_string())),
-        Err(_) => Err(AgentProblem::Unreachable("没有响应".to_string())),
+        Err(_) => Err(AgentProblem::Unreachable(
+            t!("ssh.agent.no_response").into(),
+        )),
     }
 }
 
@@ -1088,18 +1115,22 @@ async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> 
         Ok(Ok(agent)) => Ok(agent.dynamic()),
         Ok(Err(russh::keys::Error::IO(error))) if error.kind() == std::io::ErrorKind::NotFound => {
             Err(AgentProblem::Unreachable(
-                "OpenSSH Authentication Agent 服务没有运行".to_string(),
+                t!("ssh.agent.service_not_running").into(),
             ))
         }
         Ok(Err(error)) => Err(AgentProblem::Unreachable(error.to_string())),
-        Err(_) => Err(AgentProblem::Unreachable("没有响应".to_string())),
+        Err(_) => Err(AgentProblem::Unreachable(
+            t!("ssh.agent.no_response").into(),
+        )),
     }
 }
 
 #[cfg(not(any(unix, windows)))]
 async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
     let _ = location;
-    Err(AgentProblem::Unreachable("这个平台不支持".to_string()))
+    Err(AgentProblem::Unreachable(
+        t!("ssh.agent.unsupported").into(),
+    ))
 }
 
 fn key_paths(login: &HostLogin) -> Result<Vec<PathBuf>> {
@@ -1108,7 +1139,7 @@ fn key_paths(login: &HostLogin) -> Result<Vec<PathBuf>> {
             .key_path
             .clone()
             .map(|path| vec![path])
-            .ok_or_else(|| anyhow!("私钥认证需要选择私钥文件"));
+            .ok_or_else(|| anyhow!(t!("ssh.key.not_chosen")));
     }
     let Some(home) = dirs::home_dir() else {
         return Ok(Vec::new());
@@ -1130,7 +1161,7 @@ async fn load_private_key(
     match load_secret_key(path, None) {
         Ok(key) => return Ok(Some(key)),
         Err(russh::keys::Error::KeyIsEncrypted) => {}
-        Err(_) => bail!("无法读取私钥文件：{}", path.display()),
+        Err(_) => bail!(t!("ssh.key.unreadable", path = path.display())),
     }
     // Passphrases are saved per key file, so one saved answer unlocks the same
     // key for every host that uses it.
@@ -1142,9 +1173,9 @@ async fn load_private_key(
         saved_rejected = true;
     }
     let instructions = if saved_rejected {
-        format!("已保存的口令无法解开 {}，请重新输入", path.display())
+        t!("ssh.key.saved_passphrase_rejected", path = path.display())
     } else {
-        format!("请输入 {} 的口令", path.display())
+        t!("ssh.key.enter_passphrase", path = path.display())
     };
     for _ in 0..AUTH_RETRIES {
         let answer = ask_one_secret(
@@ -1152,16 +1183,16 @@ async fn load_private_key(
             MissingCredential::Passphrase {
                 rejected: saved_rejected,
             },
-            "私钥口令",
+            &t!("ssh.key.prompt_title"),
             &instructions,
-            "口令",
+            &t!("ssh.key.passphrase_field"),
         )
         .await?;
         if let Ok(key) = load_secret_key(path, Some(answer.expose())) {
             return Ok(Some(key));
         }
     }
-    bail!("私钥口令错误次数过多")
+    bail!(t!("ssh.key.too_many_attempts"))
 }
 
 /// Read a saved secret. A keychain that errors, is locked, or holds an empty
@@ -1198,8 +1229,8 @@ async fn ask_one_secret(
         .await?;
     match reply {
         ConnectionPromptReply::Answers(mut answers) if answers.len() == 1 => Ok(answers.remove(0)),
-        ConnectionPromptReply::Cancel => bail!("认证已取消"),
-        _ => bail!("认证回复无效"),
+        ConnectionPromptReply::Cancel => bail!(t!("ssh.auth.cancelled")),
+        _ => bail!(t!("ssh.auth.invalid_reply")),
     }
 }
 
@@ -1211,7 +1242,7 @@ async fn keyboard_interactive(
     let mut response = handle
         .authenticate_keyboard_interactive_start(user, None)
         .await
-        .map_err(|_| anyhow!("无法开始交互式认证"))?;
+        .map_err(|_| anyhow!(t!("ssh.auth.keyboard_start_failed")))?;
     loop {
         match response {
             KeyboardInteractiveAuthResponse::Success => return Ok(true),
@@ -1232,7 +1263,7 @@ async fn keyboard_interactive(
                     )
                     .await?;
                 let ConnectionPromptReply::Answers(answers) = reply else {
-                    bail!("交互式认证已取消")
+                    bail!(t!("ssh.auth.keyboard_cancelled"))
                 };
                 response = handle
                     .authenticate_keyboard_interactive_respond(
@@ -1242,7 +1273,7 @@ async fn keyboard_interactive(
                             .collect(),
                     )
                     .await
-                    .map_err(|_| anyhow!("交互式认证失败"))?;
+                    .map_err(|_| anyhow!(t!("ssh.auth.keyboard_failed")))?;
             }
         }
     }

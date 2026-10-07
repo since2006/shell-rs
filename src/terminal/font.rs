@@ -9,6 +9,7 @@ use gpui_kit::*;
 use unicode_width::UnicodeWidthChar as _;
 
 use super::TerminalColors;
+use crate::i18n::t;
 
 /// The size terminals had before it could be set: the theme's `mono_md`.
 pub const DEFAULT_FONT_SIZE: f32 = 13.;
@@ -130,10 +131,11 @@ impl RenderOnce for TerminalFontPreview {
             .id(self.id)
             .test_support()
             // What the preview shows, for tests and screen readers.
-            .aria_label(format!(
-                "{family} {} px，行高 {}",
-                font.size.as_f32(),
-                font.line_height
+            .aria_label(t!(
+                "terminal.font.preview",
+                family = family,
+                size = font.size.as_f32(),
+                line_height = font.line_height
             ))
             .w_full()
             .h(row_height * lines.len() as f32)

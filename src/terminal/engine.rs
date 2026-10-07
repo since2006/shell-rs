@@ -18,9 +18,11 @@ use alacritty_terminal::vte::ansi::{
     Color, CursorShape, CursorStyle, Processor, Rgb, Timeout as _,
 };
 use futures::future::{Either, select};
+use gpui_kit::SharedString;
 
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply, Latency};
 use crate::host::HostOs;
+use crate::i18n::t;
 
 use super::highlight::{
     HighlightColor, KeywordHit, LineWatcher, SharedHighlights, TerminalHighlights,
@@ -326,9 +328,9 @@ impl TerminalEngine {
         command: &str,
         run: bool,
         replace: bool,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), SharedString> {
         if !self.lifecycle.accepts_input() {
-            return Err("终端没有连接");
+            return Err(t!("terminal.command.not_connected"));
         }
         self.send_user_input(encode_command(command, run, replace, self.mode())?);
         Ok(())
@@ -723,8 +725,14 @@ impl TerminalRuntime {
                         TerminalTransportEvent::Exited { code, signal } => {
                             let description = signal
                                 .as_deref()
-                                .map(|signal| format!("进程已退出：{signal}，退出码 {code}"))
-                                .unwrap_or_else(|| format!("进程已退出，退出码 {code}"));
+                                .map(|signal| {
+                                    t!(
+                                        "terminal.notice.exited_signal",
+                                        signal = signal,
+                                        code = code
+                                    )
+                                })
+                                .unwrap_or_else(|| t!("terminal.notice.exited", code = code));
                             append_message_with_processor(
                                 &parser_term,
                                 &mut processor,
@@ -738,7 +746,7 @@ impl TerminalRuntime {
                             append_message_with_processor(
                                 &parser_term,
                                 &mut processor,
-                                &format!("终端错误：{error}"),
+                                &t!("terminal.notice.error", error = error),
                             );
                             parser_proxy.send(TerminalUiEventKind::Failed(error));
                             parser_proxy.wakeup();
@@ -1007,12 +1015,12 @@ fn encode_command(
     run: bool,
     replace: bool,
     mode: TermMode,
-) -> Result<Vec<u8>, &'static str> {
+) -> Result<Vec<u8>, SharedString> {
     if mode.contains(TermMode::ALT_SCREEN) {
-        return Err("终端里正在运行全屏程序，先退出它");
+        return Err(t!("terminal.command.full_screen"));
     }
     if !run && command.contains('\n') && !mode.contains(TermMode::BRACKETED_PASTE) {
-        return Err("这是一条多行命令，在这个终端里只能直接执行");
+        return Err(t!("terminal.command.multiline"));
     }
     let mut bytes = if replace {
         b"\x05\x15".to_vec()

@@ -12,6 +12,8 @@ use alacritty_terminal::term::Term;
 use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use gpui_kit::SharedString;
 
+use crate::i18n::{t, tn};
+
 /// How far a highlighted match may reach above the first visible row along a
 /// wrapped line. Longer wrapped lines are cut there, as in Alacritty.
 pub(super) const MAX_WRAPPED_LINES: i32 = 100;
@@ -58,9 +60,9 @@ impl SearchPosition {
     /// focused match away.
     pub fn label(&self) -> SharedString {
         match (self.total, self.current()) {
-            (0, _) => "无结果".into(),
+            (0, _) => t!("terminal.find.no_results"),
             (total, Some(current)) => format!("{current}/{total}").into(),
-            (total, None) => format!("{total} 项").into(),
+            (total, None) => tn!("terminal.find.count", total),
         }
     }
 }
@@ -375,6 +377,15 @@ mod tests {
         assert_eq!(SearchPosition::new(Some(2), 12).label(), "3/12");
         assert_eq!(SearchPosition::new(None, 0).label(), "无结果");
         assert_eq!(SearchPosition::new(None, 4).label(), "4 项");
+    }
+
+    #[test]
+    fn position_labels_count_matches_in_english() {
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("en");
+        assert_eq!(SearchPosition::new(None, 0).label(), "No results");
+        assert_eq!(SearchPosition::new(None, 1).label(), "1 match");
+        assert_eq!(SearchPosition::new(None, 4).label(), "4 matches");
     }
 
     fn step(

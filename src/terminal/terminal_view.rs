@@ -26,6 +26,7 @@ use crate::app::{
     FindNextInTerminal, FindPreviousInTerminal, PasteTerminal,
 };
 use crate::connection::{ConnectionPromptReply, Latency};
+use crate::i18n::{UiLocale, t};
 
 use super::mouse::{self, MouseReport, ReportButton, ReportKind};
 use super::search::SearchMark;
@@ -61,6 +62,10 @@ fn opens_links(modifiers: &Modifiers) -> bool {
         modifiers.control
     }
 }
+
+/// What a terminal is called for screen readers. Asked for each time it is
+/// drawn, so it follows the interface language.
+type TerminalLabel = Rc<dyn Fn(&App) -> SharedString>;
 
 /// The commands a terminal's owner adds to the bottom of its context menu,
 /// built from the terminal's lifecycle when the menu opens.
@@ -194,7 +199,7 @@ struct HoveredLink {
 pub struct TerminalView {
     engine: Entity<TerminalEngine>,
     element_id: ElementId,
-    aria_label: SharedString,
+    label: TerminalLabel,
     focus_handle: FocusHandle,
     marked_text: String,
     marked_selection: Range<usize>,
@@ -225,7 +230,7 @@ pub struct TerminalView {
 impl TerminalView {
     pub fn new(
         element_id: impl Into<ElementId>,
-        aria_label: impl Into<SharedString>,
+        label: impl Fn(&App) -> SharedString + 'static,
         factory: SharedTerminalTransportFactory,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -250,6 +255,14 @@ impl TerminalView {
                 this.selecting = false;
                 this.engine.read(cx).set_focused(false);
                 cx.notify();
+            }),
+            // An open find bar's placeholder, in the new language.
+            cx.observe_global_in::<UiLocale>(window, |this, window, cx| {
+                if let Some(find) = &this.find {
+                    find.input.update(cx, |input, cx| {
+                        input.set_placeholder(t!("terminal.find.placeholder"), window, cx)
+                    });
+                }
             }),
         ];
         let blink_task = cx.spawn(async move |this, cx| {
@@ -277,7 +290,7 @@ impl TerminalView {
         Self {
             engine,
             element_id: element_id.into(),
-            aria_label: aria_label.into(),
+            label: Rc::new(label),
             focus_handle,
             marked_text: String::new(),
             marked_selection: 0..0,
@@ -427,7 +440,7 @@ impl TerminalView {
         run: bool,
         replace: bool,
         cx: &mut Context<Self>,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), SharedString> {
         self.engine.read(cx).enter_command(command, run, replace)?;
         self.selecting = false;
         self.scroll_accumulator.reset();
@@ -460,7 +473,9 @@ impl TerminalView {
         let input = match &self.find {
             Some(find) => find.input.clone(),
             None => {
-                let input = cx.new(|cx| InputState::new(window, cx).placeholder("查找"));
+                let input = cx.new(|cx| {
+                    InputState::new(window, cx).placeholder(t!("terminal.find.placeholder"))
+                });
                 let subscription = cx.subscribe_in(
                     &input,
                     window,
@@ -736,25 +751,25 @@ impl TerminalView {
             let menu = menu
                 .action_context(action_context)
                 .menu_with_icon_and_disabled(
-                    "复制",
+                    t!("terminal.menu.copy"),
                     Icon::new(IconName::Copy),
                     Box::new(CopyTerminal),
                     !has_selection,
                 )
                 .menu_with_icon_and_disabled(
-                    "粘贴",
+                    t!("terminal.menu.paste"),
                     Icon::new(CatalogIcon::ClipboardPaste),
                     Box::new(PasteTerminal),
                     !can_paste,
                 )
                 .separator()
                 .menu_with_icon(
-                    "查找…",
+                    t!("terminal.menu.find"),
                     Icon::new(IconName::Search),
                     Box::new(FindInTerminal),
                 )
                 .menu_with_icon_and_disabled(
-                    "清屏",
+                    t!("terminal.menu.clear"),
                     Icon::new(CatalogIcon::Eraser),
                     Box::new(ClearTerminal),
                     !can_clear,
@@ -916,7 +931,7 @@ impl Render for TerminalView {
             .size_full()
             .font_family(font.family(cx))
             .text_size(font.size)
-            .aria_label(self.aria_label.clone())
+            .aria_label((self.label)(cx))
             .on_action(cx.listener(|this, _: &SendTab, _, cx| {
                 this.send_user_input(vec![b'\t'], cx);
             }))
@@ -982,7 +997,7 @@ fn link_tooltip(uri: SharedString, window: &mut Window, cx: &mut App) -> AnyView
             .child(
                 div()
                     .text_color(cx.theme().muted_foreground)
-                    .child(format!("{OPEN_LINK_KEY} 单击打开")),
+                    .child(t!("terminal.link.open_hint", key = OPEN_LINK_KEY)),
             )
     })
     .build(window, cx)
@@ -1038,7 +1053,7 @@ impl TerminalView {
                     .ghost()
                     .xsmall()
                     .icon(IconName::ChevronUp)
-                    .tooltip("上一项（⇧↩）")
+                    .tooltip(t!("terminal.find.previous"))
                     .disabled(!navigate)
                     .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(FindPreviousInTerminal), cx)
@@ -1049,7 +1064,7 @@ impl TerminalView {
                     .ghost()
                     .xsmall()
                     .icon(IconName::ChevronDown)
-                    .tooltip("下一项（↩）")
+                    .tooltip(t!("terminal.find.next"))
                     .disabled(!navigate)
                     .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(FindNextInTerminal), cx)
@@ -1060,7 +1075,7 @@ impl TerminalView {
                     .ghost()
                     .xsmall()
                     .icon(IconName::Close)
-                    .tooltip("关闭（Esc）")
+                    .tooltip(t!("terminal.find.close"))
                     .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(DismissTerminalFind), cx)
                     }),

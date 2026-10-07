@@ -10,10 +10,12 @@ use std::net::IpAddr;
 
 use anyhow::{Result, anyhow, bail};
 use base64::Engine as _;
+use gpui_kit::SharedString;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use zeroize::Zeroizing;
 
 use crate::host::ProxyKind;
+use crate::i18n::t;
 
 /// What a proxy that wants a user name and password is given.
 pub(super) struct ProxyAuth<'a> {
@@ -50,10 +52,10 @@ fn authority(host: &str, port: u16) -> String {
     }
 }
 
-/// An error that reads as the proxy's report on reaching `target`, of the
+/// An error that reads as the proxy's report on reaching the host, of the
 /// kind a direct connection would have failed with.
-fn unreachable(kind: ErrorKind, target: &str, reason: &str) -> anyhow::Error {
-    io::Error::new(kind, format!("代理服务器无法连接到 {target}：{reason}")).into()
+fn unreachable(kind: ErrorKind, message: SharedString) -> anyhow::Error {
+    io::Error::new(kind, String::from(message)).into()
 }
 
 async fn http_connect<S>(
@@ -89,21 +91,19 @@ where
     };
     match status {
         Some(200..=299) => Ok(()),
-        Some(407) if authenticated => bail!("代理服务器拒绝了用户名或密码"),
-        Some(407) => bail!("代理服务器要求认证，请填写代理的用户名和密码"),
-        Some(403) => bail!("代理服务器不允许连接到 {target}"),
+        Some(407) if authenticated => bail!(t!("ssh.proxy.bad_credentials")),
+        Some(407) => bail!(t!("ssh.proxy.auth_required")),
+        Some(403) => bail!(t!("ssh.proxy.forbidden", target = target)),
         Some(502) => Err(unreachable(
             ErrorKind::ConnectionRefused,
-            &target,
-            "连接失败（HTTP 502）",
+            t!("ssh.proxy.http.bad_gateway", target = target),
         )),
         Some(504) => Err(unreachable(
             ErrorKind::TimedOut,
-            &target,
-            "连接超时（HTTP 504）",
+            t!("ssh.proxy.http.gateway_timeout", target = target),
         )),
-        Some(_) => bail!("代理服务器拒绝了连接：{status_line}"),
-        None => bail!("代理服务器的回复无法识别，请确认它是 HTTP 代理"),
+        Some(_) => bail!(t!("ssh.proxy.http.refused", status = status_line)),
+        None => bail!(t!("ssh.proxy.http.unrecognized")),
     }
 }
 
@@ -116,12 +116,12 @@ where
     let mut head = Vec::new();
     while !head.ends_with(b"\r\n\r\n") {
         if head.len() >= MAX_HEAD {
-            bail!("代理服务器的回复过长");
+            bail!(t!("ssh.proxy.reply_too_long"));
         }
         let byte = stream
             .read_u8()
             .await
-            .map_err(|_| anyhow!("代理服务器没有回复就关闭了连接"))?;
+            .map_err(|_| anyhow!(t!("ssh.proxy.closed")))?;
         head.push(byte);
     }
     Ok(String::from_utf8_lossy(&head).into_owned())
@@ -151,14 +151,14 @@ where
     let mut chosen = [0u8; 2];
     read_reply(stream, &mut chosen).await?;
     if chosen[0] != SOCKS_VERSION {
-        bail!("代理服务器的回复无法识别，请确认它是 SOCKS5 代理");
+        bail!(t!("ssh.proxy.socks.unrecognized"));
     }
     match (chosen[1], auth) {
         (NO_AUTHENTICATION, _) => {}
         (USER_PASSWORD, Some(auth)) => {
             let (user, password) = (auth.user.as_bytes(), auth.password.as_bytes());
             if user.len() > 255 || password.len() > 255 {
-                bail!("代理的用户名或密码太长，SOCKS5 最多 255 个字节");
+                bail!(t!("ssh.proxy.socks.credentials_too_long"));
             }
             let mut request = Zeroizing::new(Vec::with_capacity(3 + user.len() + password.len()));
             request.push(0x01);
@@ -170,13 +170,13 @@ where
             let mut status = [0u8; 2];
             read_reply(stream, &mut status).await?;
             if status[1] != 0 {
-                bail!("代理服务器拒绝了用户名或密码");
+                bail!(t!("ssh.proxy.bad_credentials"));
             }
         }
         (NO_ACCEPTABLE_METHOD | USER_PASSWORD, None) => {
-            bail!("代理服务器要求认证，请填写代理的用户名和密码")
+            bail!(t!("ssh.proxy.auth_required"))
         }
-        _ => bail!("代理服务器不接受用户名和密码认证"),
+        _ => bail!(t!("ssh.proxy.socks.no_password_auth")),
     }
 
     let mut request = vec![SOCKS_VERSION, 0x01, 0x00];
@@ -193,7 +193,7 @@ where
         // host may only be known by that name on the proxy's side.
         Err(_) => {
             if host.len() > 255 {
-                bail!("主机名太长，SOCKS5 最多 255 个字节");
+                bail!(t!("ssh.proxy.socks.host_too_long"));
             }
             request.push(0x03);
             request.push(host.len() as u8);
@@ -207,36 +207,43 @@ where
     let mut reply = [0u8; 4];
     read_reply(stream, &mut reply).await?;
     if reply[0] != SOCKS_VERSION {
-        bail!("代理服务器的回复无法识别，请确认它是 SOCKS5 代理");
+        bail!(t!("ssh.proxy.socks.unrecognized"));
     }
     match reply[1] {
         0x00 => {}
-        0x02 => bail!("代理服务器的规则不允许连接到 {target}"),
+        0x02 => bail!(t!("ssh.proxy.socks.rules_forbid", target = target)),
         0x03 => {
             return Err(unreachable(
                 ErrorKind::NetworkUnreachable,
-                &target,
-                "网络不可达",
+                t!("ssh.proxy.socks.network_unreachable", target = target),
             ));
         }
         0x04 => {
             return Err(unreachable(
                 ErrorKind::HostUnreachable,
-                &target,
-                "主机不可达",
+                t!("ssh.proxy.socks.host_unreachable", target = target),
             ));
         }
         0x05 => {
             return Err(unreachable(
                 ErrorKind::ConnectionRefused,
-                &target,
-                "连接被拒绝",
+                t!("ssh.proxy.socks.refused", target = target),
             ));
         }
-        0x06 => return Err(unreachable(ErrorKind::TimedOut, &target, "连接超时")),
-        0x07 => bail!("代理服务器不支持 CONNECT 命令"),
-        0x08 => bail!("代理服务器不支持这种地址类型"),
-        _ => return Err(unreachable(ErrorKind::Other, &target, "代理服务器内部错误")),
+        0x06 => {
+            return Err(unreachable(
+                ErrorKind::TimedOut,
+                t!("ssh.proxy.socks.timeout", target = target),
+            ));
+        }
+        0x07 => bail!(t!("ssh.proxy.socks.no_connect")),
+        0x08 => bail!(t!("ssh.proxy.socks.address_type")),
+        _ => {
+            return Err(unreachable(
+                ErrorKind::Other,
+                t!("ssh.proxy.socks.internal", target = target),
+            ));
+        }
     }
     // The address the proxy connected from, which nothing here needs; it
     // has to be read off the stream all the same.
@@ -248,7 +255,7 @@ where
             read_reply(stream, &mut length).await?;
             usize::from(length[0])
         }
-        _ => bail!("代理服务器的回复无法识别，请确认它是 SOCKS5 代理"),
+        _ => bail!(t!("ssh.proxy.socks.unrecognized")),
     };
     let mut rest = vec![0u8; bound + 2];
     read_reply(stream, &mut rest).await?;
@@ -263,7 +270,7 @@ where
         .read_exact(buffer)
         .await
         .map(|_| ())
-        .map_err(|_| anyhow!("代理服务器没有回复就关闭了连接"))
+        .map_err(|_| anyhow!(t!("ssh.proxy.closed")))
 }
 
 #[cfg(test)]

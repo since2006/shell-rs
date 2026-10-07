@@ -7,6 +7,7 @@ use super::{
 use crate::{
     connection::Latency,
     host::HostLogin,
+    i18n::t,
     terminal::{
         ExecRequest, RemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalSize,
         TerminalTransport, TerminalTransportCommand, TerminalTransportEvent,
@@ -37,9 +38,6 @@ const EXEC_TIMEOUT: Duration = Duration::from_secs(10);
 /// The most output kept from a command run beside the shell; the rest is
 /// dropped.
 const EXEC_OUTPUT_LIMIT: usize = 1 << 20;
-
-/// The answer to a command for a terminal that carries nothing beside it.
-const SHELL_ONLY: &str = "这个终端经由堡垒机打开，只能使用终端本身，不能另外执行命令";
 
 /// Production remote-terminal adapter for the shared SSH connector.
 pub struct SshTerminalTransportProvider {
@@ -83,7 +81,7 @@ impl TerminalTransport for SshTerminalTransport {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .context("无法启动 SSH 运行时")?;
+            .context(t!("ssh.terminal.runtime_failed"))?;
         let (command_tx, command_rx) = tokio_mpsc::unbounded_channel();
         let stop = Arc::new(AtomicBool::new(false));
         let bridge_stop = stop.clone();
@@ -102,7 +100,7 @@ impl TerminalTransport for SshTerminalTransport {
                     }
                 }
             })
-            .context("无法启动 SSH 命令桥接线程")?;
+            .context(t!("ssh.terminal.bridge_failed"))?;
 
         let result = runtime.block_on(self.run_async(initial_size, command_rx, events));
         stop.store(true, Ordering::Release);
@@ -160,9 +158,9 @@ impl SshTerminalTransport {
         let mut shutdown = broker.shutdown_receiver();
         let mut channel = tokio::select! {
             result = handle.channel_open_session() => {
-                result.map_err(|_| anyhow!("无法创建 SSH 会话通道"))?
+                result.map_err(|_| anyhow!(t!("ssh.terminal.session_failed")))?
             }
-            _ = shutdown.changed() => bail!("连接已取消"),
+            _ = shutdown.changed() => bail!(t!("ssh.connect.cancelled")),
         };
         tokio::select! {
             result = channel.request_pty(
@@ -173,19 +171,19 @@ impl SshTerminalTransport {
                 pixel_dimension(initial_size.columns(), initial_size.cell_width()),
                 pixel_dimension(initial_size.rows(), initial_size.cell_height()),
                 &[],
-            ) => result.map_err(|_| anyhow!("服务器拒绝创建终端"))?,
-            _ = shutdown.changed() => bail!("连接已取消"),
+            ) => result.map_err(|_| anyhow!(t!("ssh.terminal.pty_refused")))?,
+            _ = shutdown.changed() => bail!(t!("ssh.connect.cancelled")),
         }
         tokio::select! {
             result = channel.request_shell(true) => {
-                result.map_err(|_| anyhow!("服务器拒绝启动 Shell"))?
+                result.map_err(|_| anyhow!(t!("ssh.terminal.shell_refused")))?
             }
-            _ = shutdown.changed() => bail!("连接已取消"),
+            _ = shutdown.changed() => bail!(t!("ssh.connect.cancelled")),
         }
         events
             .send(TerminalTransportEvent::Started)
             .await
-            .map_err(|_| anyhow!("终端标签页已关闭"))?;
+            .map_err(|_| anyhow!(t!("ssh.terminal.tab_closed")))?;
 
         // Ask what the host is running on a channel of its own, then let the
         // loop below collect the answer alongside the shell's output. Opening
@@ -230,14 +228,14 @@ impl SshTerminalTransport {
             tokio::select! {
                 command = io_rx.recv() => match command {
                     Some(TerminalTransportCommand::Write(bytes)) => {
-                        channel.data_bytes(bytes).await.map_err(|_| anyhow!("向远程终端写入失败"))?;
+                        channel.data_bytes(bytes).await.map_err(|_| anyhow!(t!("ssh.terminal.write_failed")))?;
                     }
                     Some(TerminalTransportCommand::Resize(size)) => {
                         channel.window_change(
                             dimension(size.columns()), dimension(size.rows()),
                             pixel_dimension(size.columns(), size.cell_width()),
                             pixel_dimension(size.rows(), size.cell_height()),
-                        ).await.map_err(|_| anyhow!("调整远程终端尺寸失败"))?;
+                        ).await.map_err(|_| anyhow!(t!("ssh.terminal.resize_failed")))?;
                     }
                     Some(TerminalTransportCommand::Shutdown) | None => {
                         let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, async {
@@ -253,7 +251,9 @@ impl SshTerminalTransport {
                         return Ok(());
                     }
                     Some(TerminalTransportCommand::Exec(request)) if shell_only => {
-                        let _ = request.reply.send(Err(SHELL_ONLY.into()));
+                        // The answer for a terminal that carries nothing
+                        // beside the shell.
+                        let _ = request.reply.send(Err(t!("ssh.terminal.shell_only").into()));
                     }
                     Some(TerminalTransportCommand::Exec(request)) => exec_queue.push_back(request),
                     Some(TerminalTransportCommand::PromptReply { .. }) => {}
@@ -338,11 +338,11 @@ async fn run_exec(handle: &SshHandle, request: ExecRequest) {
         let mut channel = handle
             .channel_open_session()
             .await
-            .map_err(|_| "无法打开 SSH 通道".to_string())?;
+            .map_err(|_| t!("ssh.exec.channel_failed").to_string())?;
         channel
             .exec(true, command)
             .await
-            .map_err(|_| "无法发送命令".to_string())?;
+            .map_err(|_| t!("ssh.exec.send_failed").to_string())?;
         let mut output = Vec::new();
         loop {
             match channel.wait().await {
@@ -350,7 +350,7 @@ async fn run_exec(handle: &SshHandle, request: ExecRequest) {
                     let room = EXEC_OUTPUT_LIMIT.saturating_sub(output.len());
                     output.extend_from_slice(&data[..data.len().min(room)]);
                 }
-                Some(ChannelMsg::Failure) => return Err("服务器拒绝执行命令".to_string()),
+                Some(ChannelMsg::Failure) => return Err(t!("ssh.exec.refused").to_string()),
                 Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
                 _ => {}
             }
@@ -358,7 +358,7 @@ async fn run_exec(handle: &SshHandle, request: ExecRequest) {
         Ok(String::from_utf8_lossy(&output).into_owned())
     })
     .await
-    .unwrap_or_else(|_| Err("命令超时".to_string()));
+    .unwrap_or_else(|_| Err(t!("ssh.exec.timeout").to_string()));
     // The asker may have stopped waiting.
     let _ = reply.send(result);
 }
@@ -1768,7 +1768,12 @@ mod tests {
 
         // No probe, and a tool's command answered here without asking the
         // server; the round trip is still measured.
-        assert_eq!(report.execs, vec![Err(SHELL_ONLY.to_string())]);
+        assert_eq!(
+            report.execs,
+            vec![Err(
+                "这个终端经由堡垒机打开，只能使用终端本身，不能另外执行命令".to_string()
+            )]
+        );
         assert_eq!(report.host_os, None);
         assert!(report.latency.is_some());
         let execs = server

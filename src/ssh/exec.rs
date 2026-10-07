@@ -18,6 +18,7 @@ use super::connection::{
 };
 use super::tester::describe_login_error;
 use crate::connection::{ConnectionPrompt, ConnectionPromptKind};
+use crate::i18n::t;
 
 /// How long logging in may take.
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(20);
@@ -83,7 +84,10 @@ pub fn run_command(
         .enable_all()
         .build()
         .map_err(|error| {
-            ExecError::new(ExecErrorKind::Connect, format!("无法启动连接：{error}"))
+            ExecError::new(
+                ExecErrorKind::Connect,
+                t!("ssh.exec.runtime_failed", error = error),
+            )
         })?;
     runtime.block_on(run(connector, config, command, output))
 }
@@ -143,12 +147,15 @@ async fn run_on(
     output: &mut dyn FnMut(ExecStream, &[u8]) -> io::Result<()>,
 ) -> Result<ExecExit, ExecError> {
     let channel_error = |error: russh::Error| {
-        ExecError::new(ExecErrorKind::Connect, format!("无法执行命令：{error}"))
+        ExecError::new(
+            ExecErrorKind::Connect,
+            t!("ssh.exec.command_failed", error = error),
+        )
     };
     let mut channel = handle.channel_open_session().await.map_err(channel_error)?;
     channel.exec(true, command).await.map_err(channel_error)?;
     channel.eof().await.map_err(channel_error)?;
-    let aborted = |_| ExecError::new(ExecErrorKind::Aborted, "输出已无人接收，命令已放弃");
+    let aborted = |_| ExecError::new(ExecErrorKind::Aborted, t!("ssh.exec.aborted"));
     let mut exit = None;
     // Until the channel closes, not just until EOF: the exit status can
     // arrive after the last output.
@@ -167,13 +174,16 @@ async fn run_on(
                 exit = Some(ExecExit::Signal(format!("{signal_name:?}")))
             }
             Some(ChannelMsg::Failure) => {
-                return Err(ExecError::new(ExecErrorKind::Connect, "服务器拒绝执行命令"));
+                return Err(ExecError::new(
+                    ExecErrorKind::Connect,
+                    t!("ssh.exec.refused"),
+                ));
             }
             Some(ChannelMsg::Close) | None => break,
             Some(_) => {}
         }
     }
-    exit.ok_or_else(|| ExecError::new(ExecErrorKind::Connect, "连接在命令结束前断开"))
+    exit.ok_or_else(|| ExecError::new(ExecErrorKind::Connect, t!("ssh.exec.disconnected")))
 }
 
 fn describe_failure(
@@ -185,30 +195,33 @@ fn describe_failure(
     if seen.changed {
         return ExecError::new(
             ExecErrorKind::HostKeyChanged,
-            format!("{endpoint} 的主机密钥与已保存的不一致，已拒绝连接。请先核实服务器身份"),
+            t!("ssh.exec.host_key_changed", endpoint = endpoint),
         );
     }
     if seen.unknown {
         return ExecError::new(
             ExecErrorKind::HostKeyUnknown,
-            format!("尚未信任 {endpoint} 的主机密钥：请先在 ShellRS 中连接一次这台主机"),
+            t!("ssh.exec.host_key_unknown", endpoint = endpoint),
         );
     }
     if let Some(need) = error
         .chain()
         .find_map(|cause| cause.downcast_ref::<MissingCredential>())
     {
-        let what = match need {
-            MissingCredential::Password { rejected: false } => "这台主机没有保存密码",
-            MissingCredential::Password { rejected: true } => "保存的密码被服务器拒绝",
-            MissingCredential::Passphrase { rejected: false } => "私钥已加密，但没有保存口令",
-            MissingCredential::Passphrase { rejected: true } => "保存的私钥口令不正确",
-            MissingCredential::KeyboardInteractive => "服务器要求键盘交互式认证",
+        let message = match need {
+            MissingCredential::Password { rejected: false } => t!("ssh.exec.no_saved_password"),
+            MissingCredential::Password { rejected: true } => {
+                t!("ssh.exec.saved_password_rejected")
+            }
+            MissingCredential::Passphrase { rejected: false } => {
+                t!("ssh.exec.no_saved_passphrase")
+            }
+            MissingCredential::Passphrase { rejected: true } => {
+                t!("ssh.exec.saved_passphrase_rejected")
+            }
+            MissingCredential::KeyboardInteractive => t!("ssh.exec.keyboard_interactive"),
         };
-        return ExecError::new(
-            ExecErrorKind::MissingCredential,
-            format!("{what}：请先在 ShellRS 中连接一次这台主机并保存密码"),
-        );
+        return ExecError::new(ExecErrorKind::MissingCredential, message);
     }
     ExecError::new(ExecErrorKind::Connect, describe_login_error(error))
 }

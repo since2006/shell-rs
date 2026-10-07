@@ -14,6 +14,7 @@ use crate::app::{
 };
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::host::{HostId, HostOs, HostStore};
+use crate::i18n::t;
 use crate::shared::{ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items};
 
 use super::{
@@ -67,9 +68,10 @@ impl TerminalPanel {
             (host, login)
         };
         let terminal = cx.new(|cx| {
+            let name = host.name.clone();
             let mut terminal = TerminalView::new(
                 ("terminal", id.0),
-                format!("{} 的终端", host.name),
+                move |_| t!("terminal.remote.label", host = name),
                 remote_provider.factory_for(&login),
                 window,
                 cx,
@@ -170,13 +172,15 @@ impl TerminalPanel {
     }
 
     pub fn disconnect(&mut self, cx: &mut Context<Self>) {
-        self.terminal
-            .update(cx, |terminal, cx| terminal.stop("已断开连接", cx));
+        self.terminal.update(cx, |terminal, cx| {
+            terminal.stop(&t!("terminal.notice.disconnected"), cx)
+        });
     }
 
     pub fn cancel_connection(&mut self, cx: &mut Context<Self>) {
-        self.terminal
-            .update(cx, |terminal, cx| terminal.stop("连接已取消", cx));
+        self.terminal.update(cx, |terminal, cx| {
+            terminal.stop(&t!("terminal.notice.cancelled"), cx)
+        });
     }
 
     pub fn reply_to_prompt(&self, request_id: u64, reply: ConnectionPromptReply, cx: &App) {
@@ -265,13 +269,13 @@ impl Panel for TerminalPanel {
             Button::new(("sftp", terminal_id.0))
                 .icon(Icon::new(CatalogIcon::FolderTree))
                 .label("SFTP")
-                .tooltip("打开 SFTP 文件浏览")
+                .tooltip(t!("terminal.remote.sftp_tooltip"))
                 .on_click(move |_, window, cx| {
                     window.dispatch_action(Box::new(OpenExplorer(host_id)), cx)
                 }),
             Button::new(("reconnect", terminal_id.0))
                 .icon(Icon::new(CatalogIcon::RefreshCw))
-                .tooltip("重新连接")
+                .tooltip(t!("terminal.remote.reconnect"))
                 .on_click(move |_, window, cx| {
                     window.dispatch_action(Box::new(ReconnectTerminal(terminal_id)), cx)
                 }),
@@ -300,17 +304,17 @@ fn connection_menu_items(id: RemoteTerminalId, host_id: HostId) -> TerminalMenuI
             TerminalLifecycle::Starting | TerminalLifecycle::Running
         );
         menu.menu_with_icon(
-            "打开 SFTP",
+            t!("terminal.remote.open_sftp"),
             Icon::new(CatalogIcon::FolderTree),
             Box::new(OpenExplorer(host_id)),
         )
         .menu_with_icon(
-            "重新连接",
+            t!("terminal.remote.reconnect"),
             Icon::new(CatalogIcon::RefreshCw),
             Box::new(ReconnectTerminal(id)),
         )
         .menu_with_icon_and_disabled(
-            "断开连接",
+            t!("terminal.remote.disconnect"),
             Icon::new(CatalogIcon::Unplug),
             Box::new(DisconnectTerminal(id)),
             !connected,
@@ -339,7 +343,7 @@ impl RenamableTab for TerminalPanel {
             .read(cx)
             .host(self.host_id)
             .map(|host| host.name.clone())
-            .unwrap_or_else(|| "终端".into())
+            .unwrap_or_else(|| t!("terminal.remote.fallback_title"))
     }
     /// The tab's label: its own title when it has one, else the host name.
     fn tab_title(&self, cx: &App) -> SharedString {
@@ -357,23 +361,23 @@ impl TabMenu {
     fn build(&self, menu: PopupMenu, cx: &App) -> PopupMenu {
         let (id, host_id) = (self.id, self.host_id);
         let copy_host = if self.host_is_ip {
-            "复制 IP 地址"
+            t!("terminal.remote.copy_ip")
         } else {
-            "复制主机名"
+            t!("terminal.remote.copy_host_name")
         };
         let mut menu = menu
             .menu_with_icon(
-                "重命名标签…",
+                t!("terminal.remote.rename"),
                 Icon::new(CatalogIcon::Pencil),
                 Box::new(RenameTerminal(id)),
             )
             .menu_with_icon(
-                "在新标签页中连接",
+                t!("terminal.remote.connect_in_new_tab"),
                 Icon::new(CatalogIcon::Plug),
                 Box::new(ConnectHost(host_id)),
             )
             .menu_with_icon(
-                "打开 SFTP",
+                t!("terminal.remote.open_sftp"),
                 Icon::new(CatalogIcon::FolderTree),
                 Box::new(OpenExplorer(host_id)),
             )
@@ -383,13 +387,13 @@ impl TabMenu {
                 Box::new(CopyHostAddress(host_id)),
             )
             .menu_with_icon(
-                "重新连接",
+                t!("terminal.remote.reconnect"),
                 Icon::new(CatalogIcon::RefreshCw),
                 Box::new(ReconnectTerminal(id)),
             );
         if self.editable {
             menu = menu.menu_with_icon(
-                "编辑主机…",
+                t!("terminal.remote.edit_host"),
                 Icon::new(CatalogIcon::Pencil),
                 Box::new(EditHost(host_id)),
             );

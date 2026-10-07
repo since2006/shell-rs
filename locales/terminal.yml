@@ -1,0 +1,193 @@
+_version: 2
+
+# Remote terminal tab
+terminal.remote.label:
+  zh-CN: "%{host} 的终端"
+  en: "Terminal on %{host}"
+terminal.remote.fallback_title:
+  zh-CN: 终端
+  en: Terminal
+terminal.remote.sftp_tooltip:
+  zh-CN: 打开 SFTP 文件浏览
+  en: Browse files over SFTP
+terminal.remote.open_sftp:
+  zh-CN: 打开 SFTP
+  en: Open SFTP
+terminal.remote.reconnect:
+  zh-CN: 重新连接
+  en: Reconnect
+terminal.remote.disconnect:
+  zh-CN: 断开连接
+  en: Disconnect
+terminal.remote.copy_ip:
+  zh-CN: 复制 IP 地址
+  en: Copy IP address
+terminal.remote.copy_host_name:
+  zh-CN: 复制主机名
+  en: Copy hostname
+terminal.remote.rename:
+  zh-CN: 重命名标签…
+  en: Rename tab…
+terminal.remote.connect_in_new_tab:
+  zh-CN: 在新标签页中连接
+  en: Connect in new tab
+terminal.remote.edit_host:
+  zh-CN: 编辑主机…
+  en: Edit host…
+
+# Local terminal tab
+terminal.local.title:
+  zh-CN: 本地终端 %{number}
+  en: Local terminal %{number}
+terminal.local.restart:
+  zh-CN: 重新启动
+  en: Restart
+
+# Notes written into the terminal itself
+terminal.notice.disconnected:
+  zh-CN: 已断开连接
+  en: Disconnected
+terminal.notice.cancelled:
+  zh-CN: 连接已取消
+  en: Connection cancelled
+terminal.notice.exited_signal:
+  zh-CN: 进程已退出：%{signal}，退出码 %{code}
+  en: "Process exited on signal %{signal}, exit code %{code}"
+terminal.notice.exited:
+  zh-CN: 进程已退出，退出码 %{code}
+  en: Process exited with code %{code}
+terminal.notice.error:
+  zh-CN: 终端错误：%{error}
+  en: "Terminal error: %{error}"
+
+# A command put on the input line (history, snippets)
+terminal.command.not_connected:
+  zh-CN: 终端没有连接
+  en: The terminal isn’t connected
+terminal.command.full_screen:
+  zh-CN: 终端里正在运行全屏程序，先退出它
+  en: A full-screen program is running in the terminal. Quit it first
+terminal.command.multiline:
+  zh-CN: 这是一条多行命令，在这个终端里只能直接执行
+  en: This is a multi-line command, which this terminal can only run directly
+
+# State of a terminal
+terminal.lifecycle.starting:
+  zh-CN: 正在启动
+  en: Starting
+terminal.lifecycle.running:
+  zh-CN: 运行中
+  en: Running
+terminal.lifecycle.exited:
+  zh-CN: 已退出
+  en: Exited
+terminal.lifecycle.failed:
+  zh-CN: 启动失败
+  en: Couldn’t start
+terminal.lifecycle.closing:
+  zh-CN: 正在关闭
+  en: Closing
+terminal.lifecycle.exited_signal:
+  zh-CN: 已退出（%{signal}，退出码 %{code}）
+  en: Exited (%{signal}, exit code %{code})
+terminal.lifecycle.exited_code:
+  zh-CN: 已退出（退出码 %{code}）
+  en: Exited (exit code %{code})
+terminal.lifecycle.failed_with:
+  zh-CN: 启动失败：%{error}
+  en: "Couldn’t start: %{error}"
+
+# Context menu
+terminal.menu.copy:
+  zh-CN: 复制
+  en: Copy
+terminal.menu.paste:
+  zh-CN: 粘贴
+  en: Paste
+terminal.menu.find:
+  zh-CN: 查找…
+  en: Find…
+terminal.menu.clear:
+  zh-CN: 清屏
+  en: Clear screen
+
+# Links
+terminal.link.open_hint:
+  zh-CN: "%{key} 单击打开"
+  en: "%{key}-click to open"
+
+# Find bar
+terminal.find.placeholder:
+  zh-CN: 查找
+  en: Find
+terminal.find.previous:
+  zh-CN: 上一项（⇧↩）
+  en: Previous (⇧↩)
+terminal.find.next:
+  zh-CN: 下一项（↩）
+  en: Next (↩)
+terminal.find.close:
+  zh-CN: 关闭（Esc）
+  en: Close (Esc)
+terminal.find.no_results:
+  zh-CN: 无结果
+  en: No results
+terminal.find.count.one:
+  en: "%{count} match"
+terminal.find.count.other:
+  zh-CN: "%{count} 项"
+  en: "%{count} matches"
+
+# Font preview in settings, for screen readers
+terminal.font.preview:
+  zh-CN: "%{family} %{size} px，行高 %{line_height}"
+  en: "%{family} %{size} px, line height %{line_height}"
+
+# Keyword highlighting
+terminal.highlight.example.error:
+  zh-CN: 错误
+  en: Error
+terminal.highlight.example.warning:
+  zh-CN: 警告
+  en: Warning
+terminal.highlight.example.ipv4:
+  zh-CN: IPv4 地址
+  en: IPv4 address
+terminal.highlight.too_long:
+  zh-CN: 不能超过 %{limit} 个字符
+  en: Can’t be longer than %{limit} characters
+terminal.highlight.too_complex:
+  zh-CN: 正则表达式过于复杂
+  en: This regular expression is too complex
+terminal.highlight.invalid:
+  zh-CN: 正则表达式写法有误
+  en: Not a valid regular expression
+
+# Local shell
+terminal.pty.open_failed:
+  zh-CN: 无法创建本地 PTY
+  en: Couldn’t create a local PTY
+terminal.pty.shell_failed:
+  zh-CN: 无法启动系统默认 shell
+  en: Couldn’t start the default shell
+terminal.pty.reader_failed:
+  zh-CN: 无法读取本地 PTY
+  en: Couldn’t read from the local PTY
+terminal.pty.writer_failed:
+  zh-CN: 无法写入本地 PTY
+  en: Couldn’t write to the local PTY
+terminal.pty.reader_thread:
+  zh-CN: 无法启动 PTY 读取线程
+  en: Couldn’t start the PTY reader thread
+terminal.pty.read_error:
+  zh-CN: 读取 PTY 失败：%{error}
+  en: "Couldn’t read from the PTY: %{error}"
+terminal.pty.write_error:
+  zh-CN: 写入 PTY 失败：%{error}
+  en: "Couldn’t write to the PTY: %{error}"
+terminal.pty.resize_error:
+  zh-CN: 调整 PTY 尺寸失败：%{error}
+  en: "Couldn’t resize the PTY: %{error}"
+terminal.pty.exit_status:
+  zh-CN: 无法读取 shell 退出状态
+  en: Couldn’t read the shell’s exit status

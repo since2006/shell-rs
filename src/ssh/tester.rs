@@ -18,6 +18,7 @@ use crate::{
         TrustCallback,
     },
     host::{JumpLogin, LoginMethod, LoginRoute},
+    i18n::t,
     secrets::{SecretRef, SecretStore, SharedSecretStore},
 };
 
@@ -42,7 +43,7 @@ impl ConnectionTester for SshConnectionTester {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(|error| format!("无法启动连接测试：{error}"))?;
+            .map_err(|error| t!("ssh.test.runtime_failed", error = error).to_string())?;
         runtime.block_on(self.run(request, trust))
     }
 }
@@ -72,7 +73,7 @@ impl SshConnectionTester {
         if let Some((host, port)) = first
             && tokio::net::lookup_host((host, port)).await.is_err()
         {
-            return Err(format!("无法解析主机 {host}"));
+            return Err(t!("ssh.test.unresolved", host = host).into());
         }
 
         // No password typed: go without one, as 「无密码」 does (the server's
@@ -165,10 +166,10 @@ impl SshConnectionTester {
 /// Why a test failed, in the words the notification shows.
 fn describe_test_failure(error: &anyhow::Error, host_trust: HostTrust) -> String {
     if host_trust.key_changed {
-        return "主机密钥与已保存的不一致，已阻止连接。请先核实服务器身份".into();
+        return t!("ssh.test.host_key_changed").into();
     }
     if host_trust.declined {
-        return "未信任该主机的密钥".into();
+        return t!("ssh.test.host_key_declined").into();
     }
     describe_login_error(error)
 }
@@ -191,13 +192,9 @@ pub fn describe_login_error(error: &anyhow::Error) -> String {
         match cause.downcast_ref::<russh::Error>() {
             // russh wraps the socket's own error rather than chaining it.
             Some(russh::Error::IO(io)) => return describe_connect_error(io),
-            Some(russh::Error::ConnectionTimeout) => return "连接超时".into(),
+            Some(russh::Error::ConnectionTimeout) => return t!("ssh.error.timeout").into(),
             Some(russh::Error::NoCommonAlgo { kind, theirs, .. }) => {
-                return format!(
-                    "无法建立 SSH 连接：和服务器没有共同的{}算法，服务器支持的是 {}",
-                    algorithm_kind(kind),
-                    theirs.join("、")
-                );
+                return no_common_algorithm(kind, &theirs.join(&*t!("common.list.separator")));
             }
             _ => {}
         }
@@ -205,14 +202,19 @@ pub fn describe_login_error(error: &anyhow::Error) -> String {
     format!("{error:#}")
 }
 
-fn algorithm_kind(kind: &russh::AlgorithmKind) -> &'static str {
+/// That the server has none of the algorithms of `kind` that ShellRS has,
+/// and which it has: `theirs`.
+fn no_common_algorithm(kind: &russh::AlgorithmKind, theirs: &str) -> String {
     match kind {
-        russh::AlgorithmKind::Kex => "密钥交换",
-        russh::AlgorithmKind::Key => "主机密钥",
-        russh::AlgorithmKind::Cipher => "加密",
-        russh::AlgorithmKind::Mac => "消息校验（MAC）",
-        russh::AlgorithmKind::Compression => "压缩",
+        russh::AlgorithmKind::Kex => t!("ssh.error.no_common.kex", theirs = theirs),
+        russh::AlgorithmKind::Key => t!("ssh.error.no_common.host_key", theirs = theirs),
+        russh::AlgorithmKind::Cipher => t!("ssh.error.no_common.cipher", theirs = theirs),
+        russh::AlgorithmKind::Mac => t!("ssh.error.no_common.mac", theirs = theirs),
+        russh::AlgorithmKind::Compression => {
+            t!("ssh.error.no_common.compression", theirs = theirs)
+        }
     }
+    .into()
 }
 
 /// A connect error in plain words. The common kinds get an explanation;
@@ -220,10 +222,12 @@ fn algorithm_kind(kind: &russh::AlgorithmKind) -> &'static str {
 fn describe_connect_error(error: &std::io::Error) -> String {
     use std::io::ErrorKind;
     match error.kind() {
-        ErrorKind::ConnectionRefused => "连接被拒绝，该端口上没有服务在监听".into(),
-        ErrorKind::TimedOut => "连接超时".into(),
-        ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable => "主机不可达".into(),
-        _ => format!("无法连接：{error}"),
+        ErrorKind::ConnectionRefused => t!("ssh.error.refused").into(),
+        ErrorKind::TimedOut => t!("ssh.error.timeout").into(),
+        ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable => {
+            t!("ssh.error.unreachable").into()
+        }
+        _ => t!("ssh.error.connect_failed", error = error).into(),
     }
 }
 
@@ -363,6 +367,40 @@ mod tests {
         assert_eq!(
             reason(kex),
             "无法建立 SSH 连接，请检查地址、端口和主机密钥: Key exchange failed"
+        );
+    }
+
+    #[test]
+    fn reasons_read_as_english_sentences() {
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("en");
+        let refused = anyhow::Error::from(Error::from(ErrorKind::ConnectionRefused))
+            .context("Couldn’t establish an SSH connection");
+        assert_eq!(
+            reason(refused),
+            "Connection refused: nothing is listening on that port"
+        );
+        assert_eq!(
+            reason(MissingCredential::Password { rejected: true }.into()),
+            "Incorrect username or password"
+        );
+        let mac = anyhow::Error::from(russh::Error::NoCommonAlgo {
+            kind: russh::AlgorithmKind::Mac,
+            ours: vec!["hmac-sha2-256".into()],
+            theirs: vec!["hmac-sha1".into(), "hmac-md5".into()],
+        });
+        assert_eq!(
+            reason(mac),
+            "Couldn’t establish an SSH connection: no MAC algorithm in common with the \
+             server, which supports hmac-sha1, hmac-md5"
+        );
+        let declined = HostTrust {
+            declined: true,
+            ..HostTrust::default()
+        };
+        assert_eq!(
+            describe_test_failure(&anyhow!("x"), declined),
+            "The host key wasn’t trusted"
         );
     }
 

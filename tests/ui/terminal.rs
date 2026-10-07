@@ -646,6 +646,47 @@ async fn find_highlights_matches_and_steps_between_them(cx: &mut TestAppContext)
     .await;
 }
 
+/// The interface language changes under an open find bar: the placeholder
+/// gpui-kit keeps is given again, and what is drawn is drawn in English.
+#[gpui_kit::test]
+async fn an_open_find_bar_follows_the_interface_language(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(FindInTerminal), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("terminal-find").label(), Some("查找"));
+        window.input("zzz", cx);
+    })
+    .unwrap();
+    wait_for_find_count(cx, handle, "无结果").await;
+
+    workspace.update(cx, |workspace, cx| {
+        workspace.settings().update(cx, |settings, cx| {
+            settings.update(
+                |settings| settings.language = InterfaceLanguage::English,
+                cx,
+            )
+        });
+    });
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("terminal-find").label(), Some("Find"));
+        assert_eq!(
+            window.find(("local-terminal", 1_u64)).label(),
+            Some("Local terminal 1")
+        );
+    })
+    .unwrap();
+    wait_for_find_count(cx, handle, "No results").await;
+}
+
 #[gpui_kit::test]
 async fn clearing_a_terminal_keeps_only_the_prompt_line(cx: &mut TestAppContext) {
     let factory = Arc::new(FakeTerminalFactory::default());
