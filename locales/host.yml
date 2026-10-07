@@ -1,0 +1,613 @@
+_version: 2
+
+# 主机: the saved hosts, their groups and the store that keeps them.
+
+host.state.disconnected:
+  zh-CN: 未连接
+  en: Not connected
+host.state.connecting:
+  zh-CN: 连接中
+  en: Connecting
+host.state.connected:
+  zh-CN: 已连接
+  en: Connected
+
+host.proxy_kind.http:
+  zh-CN: HTTP 代理
+  en: HTTP proxy
+host.proxy_kind.socks5:
+  zh-CN: SOCKS5 代理
+  en: SOCKS5 proxy
+
+host.draft.name:
+  zh-CN: 请输入名称
+  en: Enter a name
+host.draft.address:
+  zh-CN: 请输入地址
+  en: Enter an address
+host.draft.port:
+  zh-CN: 端口必须是 1 到 65535 之间的数字
+  en: The port must be a number from 1 to 65535
+host.draft.no_jump_hosts:
+  zh-CN: 请添加跳板主机
+  en: Add a jump host
+host.draft.deleted_jump_host:
+  zh-CN: 请移除已删除的跳板主机
+  en: Remove the deleted jump host
+host.draft.proxy_address:
+  zh-CN: 请输入代理地址
+  en: Enter the proxy address
+host.draft.proxy_port:
+  zh-CN: 代理端口必须是 1 到 65535 之间的数字
+  en: The proxy port must be a number from 1 to 65535
+
+host.credential_kind.password:
+  zh-CN: 密码
+  en: Password
+host.credential_kind.key:
+  zh-CN: 密钥
+  en: Key
+
+host.credential_draft.name:
+  zh-CN: 请输入名称
+  en: Enter a name
+host.credential_draft.key_path:
+  zh-CN: 密钥凭据需要选择私钥文件
+  en: Choose a private key file for a key credential
+
+host.database.newer:
+  zh-CN: 数据库来自更新版本的 ShellRS（结构版本 %{version}，本版本支持到 %{supported}），请安装最新版本
+  en: The database is from a newer version of ShellRS (schema version %{version}; this version supports up to %{supported}). Install the latest version.
+host.database.too_old:
+  zh-CN: 数据库来自 ShellRS 的早期开发版本（结构版本 %{version}），无法升级
+  en: The database is from an early development version of ShellRS (schema version %{version}) and can’t be upgraded.
+
+host.forward_kind.local:
+  zh-CN: 本地转发
+  en: Local
+host.forward_kind.remote:
+  zh-CN: 远程转发
+  en: Remote
+host.forward_kind.dynamic:
+  zh-CN: 动态转发
+  en: Dynamic
+
+host.forward_draft.bind_host:
+  zh-CN: 请输入监听地址，地址中不能有空格
+  en: Enter a listening address without spaces
+host.forward_draft.bind_port:
+  zh-CN: 监听端口应为 1–65535 的数字
+  en: The listening port must be a number from 1 to 65535
+host.forward_draft.target_host:
+  zh-CN: 请输入目标地址，地址中不能有空格
+  en: Enter a destination address without spaces
+host.forward_draft.target_port:
+  zh-CN: 目标端口应为 1–65535 的数字
+  en: The destination port must be a number from 1 to 65535
+
+host.auth.password:
+  zh-CN: 密码
+  en: Password
+host.auth.credential:
+  zh-CN: 使用凭据
+  en: Credential
+host.auth.no_password:
+  zh-CN: 无密码
+  en: No password
+
+host.route.direct:
+  zh-CN: 直接连接
+  en: Direct
+host.route.jump:
+  zh-CN: SSH 跳板
+  en: Jump hosts
+host.route.proxy:
+  zh-CN: 代理连接
+  en: Proxy
+
+host.dialog.title_new:
+  zh-CN: 新建主机
+  en: New host
+host.dialog.title_edit:
+  zh-CN: 编辑主机
+  en: Edit host
+host.dialog.title_temporary:
+  zh-CN: 临时连接
+  en: Quick connect
+host.dialog.create:
+  zh-CN: 创建
+  en: Create
+host.dialog.connect:
+  zh-CN: 连接
+  en: Connect
+host.dialog.test_connection:
+  zh-CN: 测试连接
+  en: Test connection
+host.dialog.name:
+  zh-CN: 名称
+  en: Name
+host.dialog.name_placeholder:
+  zh-CN: 例如 web-01
+  en: e.g. web-01
+host.dialog.temporary_name_placeholder:
+  zh-CN: 可选，默认用地址
+  en: Optional; the address if left empty
+host.dialog.address:
+  zh-CN: 地址
+  en: Address
+host.dialog.address_placeholder:
+  zh-CN: 主机名或 IP 地址
+  en: Host name or IP address
+host.dialog.port:
+  zh-CN: 端口
+  en: Port
+host.dialog.auth:
+  zh-CN: 认证方式
+  en: Authentication
+host.dialog.no_password_note:
+  zh-CN: 依次尝试服务器免认证、SSH Agent 和 ~/.ssh 中的默认私钥。
+  en: Tries logging in without authentication, then the SSH agent, then the default private keys in ~/.ssh.
+host.dialog.user:
+  zh-CN: 用户名
+  en: Username
+host.dialog.password:
+  zh-CN: 密码
+  en: Password
+host.dialog.credential:
+  zh-CN: 凭据
+  en: Credential
+host.dialog.choose_credential:
+  zh-CN: 请选择凭据
+  en: Choose a credential
+host.dialog.search_credentials:
+  zh-CN: 搜索凭据
+  en: Search credentials
+host.dialog.no_credentials:
+  zh-CN: 还没有凭据
+  en: No credentials yet
+host.dialog.no_credentials_hint:
+  zh-CN: 还没有凭据，可在侧栏的「凭据」中新建
+  en: No credentials yet. Create one in the sidebar’s Credentials list.
+host.dialog.credential_option:
+  zh-CN: "%{name}（%{summary}）"
+  en: "%{name} (%{summary})"
+host.dialog.logs_in_with.password:
+  zh-CN: 以 %{user} 登录，使用凭据保存的密码
+  en: Logs in as %{user} with the password saved in the credential
+host.dialog.logs_in_with.kept_key:
+  zh-CN: 以 %{user} 登录，使用 ShellRS 保存的私钥
+  en: Logs in as %{user} with the private key ShellRS keeps
+host.dialog.logs_in_with.key:
+  zh-CN: 以 %{user} 登录，使用私钥 %{path}
+  en: Logs in as %{user} with the private key %{path}
+host.dialog.logs_in_with.agent:
+  zh-CN: 以 %{user} 登录，使用 SSH Agent 中的密钥
+  en: Logs in as %{user} with the keys in the SSH agent
+host.dialog.enter_user:
+  zh-CN: 请输入用户名
+  en: Enter a username
+host.dialog.group:
+  zh-CN: 分组
+  en: Group
+host.dialog.no_group:
+  zh-CN: （无分组）
+  en: (No group)
+host.dialog.notes:
+  zh-CN: 备注
+  en: Notes
+host.dialog.optional:
+  zh-CN: 可选
+  en: Optional
+host.dialog.keychain_note:
+  zh-CN: 密码保存在系统钥匙串，不会写入 ShellRS 的数据库。
+  en: Passwords are kept in the system keychain, never in ShellRS’s database.
+host.dialog.no_keychain_note:
+  zh-CN: 系统钥匙串不可用，这台机器上无法保存密码，每次连接都会询问。
+  en: The system keychain isn’t available, so passwords can’t be saved on this computer and are asked for at each connection.
+host.dialog.reconnect_note:
+  zh-CN: 保存后连接设置将立即生效并重连。
+  en: Saving applies the connection settings at once and reconnects.
+host.dialog.temporary_note:
+  zh-CN: 仅当前使用的临时会话，不会保存到主机列表。
+  en: For this connection only. It won’t be added to your hosts.
+
+host.dialog.route:
+  zh-CN: 连接方式
+  en: Connection
+host.dialog.jump_note:
+  zh-CN: 依次经过跳板主机连接到当前主机，可添加多台。
+  en: Connects to this host through each jump host in turn. You can add several.
+host.dialog.this_computer:
+  zh-CN: 本机
+  en: This computer
+host.dialog.this_host:
+  zh-CN: 当前主机
+  en: This host
+host.dialog.deleted_host:
+  zh-CN: 已删除的主机
+  en: Deleted host
+host.dialog.jump_host_title:
+  zh-CN: "%{name}（%{address}）"
+  en: "%{name} (%{address})"
+host.dialog.remove_hop:
+  zh-CN: 移除
+  en: Remove
+host.dialog.add_jump_host:
+  zh-CN: 添加跳板主机
+  en: Add jump host
+host.dialog.search_hosts:
+  zh-CN: 搜索主机
+  en: Search hosts
+host.dialog.no_matching_hosts:
+  zh-CN: 没有匹配的主机
+  en: No matching hosts
+host.dialog.no_other_hosts:
+  zh-CN: 还没有其他主机可做跳板
+  en: No other hosts to jump through
+host.dialog.all_hosts_added:
+  zh-CN: 其他主机都已添加
+  en: All other hosts are added
+host.dialog.proxy_kind:
+  zh-CN: 代理类型
+  en: Proxy type
+host.dialog.proxy_address:
+  zh-CN: 代理地址
+  en: Proxy address
+host.dialog.proxy_host_placeholder:
+  zh-CN: 例如 127.0.0.1
+  en: e.g. 127.0.0.1
+host.dialog.proxy_note:
+  zh-CN: 目标地址由代理服务器解析；代理不需要认证时，用户名和密码留空。
+  en: The proxy server resolves the host’s address. Leave the username and password empty if the proxy doesn’t need them.
+host.dialog.proxy_password_needs_user:
+  zh-CN: 填写代理密码时请同时填写用户名
+  en: Enter a username to go with the proxy password
+
+host.dialog.test_start_failed:
+  zh-CN: 无法启动连接测试：%{error}
+  en: "Couldn’t start the connection test: %{error}"
+host.dialog.test_aborted:
+  zh-CN: 连接测试意外中止
+  en: The connection test stopped unexpectedly
+host.test.connected:
+  zh-CN: 连接成功
+  en: Connection succeeded
+host.test.failed:
+  zh-CN: 连接失败
+  en: Couldn’t connect
+
+host.trust.title:
+  zh-CN: 首次连接此主机
+  en: First connection to this host
+host.trust.trust:
+  zh-CN: 信任并继续
+  en: Trust and continue
+
+host.delete.closes_tabs:
+  zh-CN: 会一并关闭该主机已打开的终端和 SFTP 标签。
+  en: Its open terminal and SFTP tabs will close.
+host.delete.transfers.one:
+  en: "%{count} transfer batch will stop, with its progress kept for resuming."
+host.delete.transfers.other:
+  zh-CN: 将停止 %{count} 个传输批次并保留续传进度。
+  en: "%{count} transfer batches will stop, with their progress kept for resuming."
+host.delete.forwards.one:
+  en: "%{count} port forward through this host will also be deleted."
+host.delete.forwards.other:
+  zh-CN: 将同时删除经由该主机的 %{count} 条端口转发。
+  en: "%{count} port forwards through this host will also be deleted."
+host.delete.jump_users.one:
+  en: "%{count} host uses it as a jump host and will need another one to connect."
+host.delete.jump_users.other:
+  zh-CN: 有 %{count} 台主机把它用作跳板主机，删除后要重新选择跳板主机才能连接。
+  en: "%{count} hosts use it as a jump host and will need another one to connect."
+
+host.count.hosts.one:
+  en: "%{count} host"
+host.count.hosts.other:
+  zh-CN: "%{count} 台主机"
+  en: "%{count} hosts"
+host.count.subgroups.one:
+  en: "%{count} subgroup"
+host.count.subgroups.other:
+  zh-CN: "%{count} 个子分组"
+  en: "%{count} subgroups"
+
+host.group_dialog.title_new:
+  zh-CN: 新建分组
+  en: New group
+host.group_dialog.title_rename:
+  zh-CN: 重命名分组
+  en: Rename group
+host.group_dialog.create:
+  zh-CN: 创建
+  en: Create
+host.group_dialog.name:
+  zh-CN: 名称
+  en: Name
+host.group_dialog.name_placeholder:
+  zh-CN: 例如 生产
+  en: e.g. Production
+host.group_dialog.parent:
+  zh-CN: 上级分组
+  en: Parent group
+host.group_dialog.top_level:
+  zh-CN: （顶层）
+  en: (Top level)
+host.group_dialog.enter_name:
+  zh-CN: 请输入分组名称
+  en: Enter a group name
+host.group_dialog.duplicate:
+  zh-CN: 同一层级下已有同名分组
+  en: A group with this name is already at this level
+host.group_dialog.into_itself:
+  zh-CN: 无法把分组移动到它自己的下级
+  en: A group can’t move into one of its own subgroups
+
+host.delete_group.contents:
+  zh-CN: 将同时删除其中的 %{items}。
+  en: This also deletes the group’s %{items}.
+host.delete_group.closes_tabs:
+  zh-CN: 已打开的终端和 SFTP 标签会一并关闭。
+  en: Open terminal and SFTP tabs will close.
+host.delete_group.forwards.one:
+  en: "%{count} port forward through these hosts will also be deleted."
+host.delete_group.forwards.other:
+  zh-CN: 这些主机的 %{count} 条端口转发会一并删除。
+  en: "%{count} port forwards through these hosts will also be deleted."
+host.delete_group.jump_users.one:
+  en: "%{count} host outside the group jumps through these hosts and will need another jump host to connect."
+host.delete_group.jump_users.other:
+  zh-CN: 分组外有 %{count} 台主机经由这些主机跳转，删除后要重新选择跳板主机才能连接。
+  en: "%{count} hosts outside the group jump through these hosts and will need another jump host to connect."
+
+host.panel.title:
+  zh-CN: 主机
+  en: Hosts
+host.panel.search:
+  zh-CN: 搜索主机或分组
+  en: Search hosts or groups
+
+host.menu.connect:
+  zh-CN: 连接
+  en: Connect
+host.menu.open_sftp:
+  zh-CN: 打开 SFTP
+  en: Open SFTP
+host.menu.edit_host:
+  zh-CN: 编辑主机…
+  en: Edit host…
+host.menu.duplicate:
+  zh-CN: 复制
+  en: Duplicate
+host.menu.copy_ip:
+  zh-CN: 复制 IP 地址
+  en: Copy IP address
+host.menu.copy_host_name:
+  zh-CN: 复制主机名
+  en: Copy host name
+host.menu.copy_id:
+  zh-CN: 复制 ID
+  en: Copy ID
+host.menu.new_host:
+  zh-CN: 新建主机…
+  en: New host…
+host.menu.new_group:
+  zh-CN: 新建分组…
+  en: New group…
+host.menu.connect_group:
+  zh-CN: 连接组内主机
+  en: Connect all in group
+host.menu.new_subgroup:
+  zh-CN: 新建子分组…
+  en: New subgroup…
+host.menu.expand_all:
+  zh-CN: 展开全部分组
+  en: Expand all groups
+host.menu.collapse_all:
+  zh-CN: 折叠全部分组
+  en: Collapse all groups
+host.menu.rename_group:
+  zh-CN: 重命名分组…
+  en: Rename group…
+host.menu.delete_group:
+  zh-CN: 删除分组
+  en: Delete group
+
+host.pasted_key.empty:
+  zh-CN: 请粘贴私钥
+  en: Paste a private key
+host.pasted_key.public_key:
+  zh-CN: 这是公钥，请粘贴私钥（以 -----BEGIN 开头的那一段）
+  en: This is a public key. Paste the private key, the part that starts with -----BEGIN.
+host.pasted_key.unreadable:
+  zh-CN: 无法识别这段私钥，支持 OpenSSH、PEM 和 PuTTY 格式
+  en: This private key can’t be read. Use the OpenSSH, PEM or PuTTY format.
+
+host.quick_connect.title:
+  zh-CN: 快速连接
+  en: Find a host
+host.quick_connect.search:
+  zh-CN: 搜索主机名称、地址、用户名、备注或分组
+  en: Search by name, address, username, notes or group
+host.quick_connect.no_hosts:
+  zh-CN: 还没有保存的主机
+  en: No saved hosts yet
+host.quick_connect.no_matches:
+  zh-CN: 没有匹配的主机
+  en: No matching hosts
+host.quick_connect.choose:
+  zh-CN: 选中
+  en: Select
+host.quick_connect.choose_all:
+  zh-CN: 全选
+  en: Select all
+host.quick_connect.connect_chosen:
+  zh-CN: 批量连接
+  en: Connect selected
+
+host.secret_fields.ask_each_time:
+  zh-CN: 留空则每次连接都询问
+  en: Leave empty to be asked at each connection
+host.secret_fields.key_path_placeholder:
+  zh-CN: 选择 OpenSSH 私钥文件
+  en: Choose an OpenSSH private key file
+host.secret_fields.choose_key_prompt:
+  zh-CN: 选择 SSH 私钥
+  en: Choose an SSH private key
+host.secret_fields.choose:
+  zh-CN: 选择…
+  en: Choose…
+
+host.snippet_draft.name:
+  zh-CN: 请输入名称
+  en: Enter a name
+host.snippet_draft.command:
+  zh-CN: 请输入命令
+  en: Enter a command
+
+host.link.missing:
+  zh-CN: 启动参数里没有要连接的地址，应为 ssh://用户@地址[:端口]（打开 SFTP 用 sftp://）。
+  en: The launch arguments have no address to connect to. Use ssh://user@address[:port], or sftp:// to open SFTP.
+host.link.malformed:
+  zh-CN: 链接的格式不对，应为 ssh://用户[:密码]@地址[:端口]（打开 SFTP 用 sftp://）。
+  en: The link isn’t in the right format. Use ssh://user[:password]@address[:port], or sftp:// to open SFTP.
+host.link.invalid_port:
+  zh-CN: 链接里的端口无效。
+  en: The port in the link isn’t valid.
+host.link.no_address:
+  zh-CN: 链接里没有地址。
+  en: The link has no address.
+host.link.unsupported_scheme:
+  zh-CN: 只支持 ssh:// 和 sftp:// 链接，不支持 %{scheme}://。
+  en: Only ssh:// and sftp:// links are supported, not %{scheme}://.
+host.link.no_user:
+  zh-CN: 链接里没有用户名，应为 %{scheme}://用户@地址[:端口]。
+  en: The link has no username. Use %{scheme}://user@address[:port].
+host.link.unreadable:
+  zh-CN: 链接里有无法识别的字符。
+  en: The link has characters that can’t be read.
+
+# 本地数据库: a change that stands in memory but is not on disk.
+host.store.not_saved.new_host:
+  zh-CN: 新建主机未能保存到本地数据库：%{error}
+  en: "Couldn’t save the new host to the local database: %{error}"
+host.store.not_saved.save_host:
+  zh-CN: 保存主机未能保存到本地数据库：%{error}
+  en: "Couldn’t save the host’s changes to the local database: %{error}"
+host.store.not_saved.delete_host:
+  zh-CN: 删除主机未能保存到本地数据库：%{error}
+  en: "Couldn’t delete the host from the local database: %{error}"
+host.store.not_saved.duplicate_host:
+  zh-CN: 复制主机未能保存到本地数据库：%{error}
+  en: "Couldn’t save the host’s copy to the local database: %{error}"
+host.store.not_saved.host_order:
+  zh-CN: 保存主机顺序未能保存到本地数据库：%{error}
+  en: "Couldn’t save the order of the hosts to the local database: %{error}"
+host.store.not_saved.new_group:
+  zh-CN: 新建分组未能保存到本地数据库：%{error}
+  en: "Couldn’t save the new group to the local database: %{error}"
+host.store.not_saved.save_group:
+  zh-CN: 保存分组未能保存到本地数据库：%{error}
+  en: "Couldn’t save the group’s changes to the local database: %{error}"
+host.store.not_saved.add_bookmark:
+  zh-CN: 添加书签未能保存到本地数据库：%{error}
+  en: "Couldn’t save the new bookmark to the local database: %{error}"
+host.store.not_saved.delete_bookmark:
+  zh-CN: 删除书签未能保存到本地数据库：%{error}
+  en: "Couldn’t delete the bookmark from the local database: %{error}"
+host.store.not_saved.bookmark_order:
+  zh-CN: 调整书签顺序未能保存到本地数据库：%{error}
+  en: "Couldn’t save the order of the bookmarks to the local database: %{error}"
+host.store.not_saved.new_forward:
+  zh-CN: 新建端口转发未能保存到本地数据库：%{error}
+  en: "Couldn’t save the new port forward to the local database: %{error}"
+host.store.not_saved.save_forward:
+  zh-CN: 保存端口转发未能保存到本地数据库：%{error}
+  en: "Couldn’t save the port forward’s changes to the local database: %{error}"
+host.store.not_saved.delete_forward:
+  zh-CN: 删除端口转发未能保存到本地数据库：%{error}
+  en: "Couldn’t delete the port forward from the local database: %{error}"
+host.store.not_saved.new_credential:
+  zh-CN: 新建凭据未能保存到本地数据库：%{error}
+  en: "Couldn’t save the new credential to the local database: %{error}"
+host.store.not_saved.save_credential:
+  zh-CN: 保存凭据未能保存到本地数据库：%{error}
+  en: "Couldn’t save the credential’s changes to the local database: %{error}"
+host.store.not_saved.delete_credential:
+  zh-CN: 删除凭据未能保存到本地数据库：%{error}
+  en: "Couldn’t delete the credential from the local database: %{error}"
+host.store.not_saved.group_expanded:
+  zh-CN: 保存分组展开状态未能保存到本地数据库：%{error}
+  en: "Couldn’t save whether the group is expanded to the local database: %{error}"
+host.store.not_saved.all_groups_expanded:
+  zh-CN: 保存所有分组展开状态未能保存到本地数据库：%{error}
+  en: "Couldn’t save whether the groups are expanded to the local database: %{error}"
+host.store.not_saved.move_node:
+  zh-CN: 调整主机顺序未能保存到本地数据库：%{error}
+  en: "Couldn’t save the rearranged host list to the local database: %{error}"
+host.store.not_saved.delete_group:
+  zh-CN: 删除分组未能保存到本地数据库：%{error}
+  en: "Couldn’t delete the group from the local database: %{error}"
+host.store.not_saved.recent:
+  zh-CN: 记录最近连接未能保存到本地数据库：%{error}
+  en: "Couldn’t save the recent connections to the local database: %{error}"
+host.store.not_saved.host_os:
+  zh-CN: 记录主机系统未能保存到本地数据库：%{error}
+  en: "Couldn’t save the host’s operating system to the local database: %{error}"
+host.store.not_saved.new_snippet:
+  zh-CN: 新建命令片段未能保存到本地数据库：%{error}
+  en: "Couldn’t save the new snippet to the local database: %{error}"
+host.store.not_saved.save_snippet:
+  zh-CN: 保存命令片段未能保存到本地数据库：%{error}
+  en: "Couldn’t save the snippet’s changes to the local database: %{error}"
+host.store.not_saved.delete_snippet:
+  zh-CN: 删除命令片段未能保存到本地数据库：%{error}
+  en: "Couldn’t delete the snippet from the local database: %{error}"
+host.store.not_saved.new_snippet_category:
+  zh-CN: 新建片段分类未能保存到本地数据库：%{error}
+  en: "Couldn’t save the new snippet category to the local database: %{error}"
+host.store.not_saved.rename_snippet_category:
+  zh-CN: 重命名片段分类未能保存到本地数据库：%{error}
+  en: "Couldn’t save the renamed snippet category to the local database: %{error}"
+host.store.not_saved.delete_snippet_category:
+  zh-CN: 删除片段分类未能保存到本地数据库：%{error}
+  en: "Couldn’t delete the snippet category from the local database: %{error}"
+
+host.store.copy_name:
+  zh-CN: "%{name} 副本"
+  en: "%{name} copy"
+host.store.no_key_dir:
+  zh-CN: 没有可以保存私钥的目录
+  en: There’s no folder to keep private keys in
+host.store.key_not_deleted:
+  zh-CN: ShellRS 保存的私钥未能删除：%{error}
+  en: "Couldn’t delete a private key ShellRS keeps: %{error}"
+
+host.store.secret.password_write:
+  zh-CN: 密码未能写入系统钥匙串：%{error}
+  en: "Couldn’t save the password to the system keychain: %{error}"
+host.store.secret.password_delete:
+  zh-CN: 密码未能从系统钥匙串删除：%{error}
+  en: "Couldn’t delete the password from the system keychain: %{error}"
+host.store.secret.passphrase_write:
+  zh-CN: 私钥口令未能写入系统钥匙串：%{error}
+  en: "Couldn’t save the private key’s passphrase to the system keychain: %{error}"
+host.store.secret.passphrase_delete:
+  zh-CN: 私钥口令未能从系统钥匙串删除：%{error}
+  en: "Couldn’t delete the private key’s passphrase from the system keychain: %{error}"
+host.store.secret.credential_write:
+  zh-CN: 凭据的密码未能写入系统钥匙串：%{error}
+  en: "Couldn’t save the credential’s password to the system keychain: %{error}"
+host.store.secret.credential_delete:
+  zh-CN: 凭据的密码未能从系统钥匙串删除：%{error}
+  en: "Couldn’t delete the credential’s password from the system keychain: %{error}"
+host.store.secret.proxy_write:
+  zh-CN: 代理的密码未能写入系统钥匙串：%{error}
+  en: "Couldn’t save the proxy’s password to the system keychain: %{error}"
+host.store.secret.proxy_delete:
+  zh-CN: 代理的密码未能从系统钥匙串删除：%{error}
+  en: "Couldn’t delete the proxy’s password from the system keychain: %{error}"
+host.store.secret.temporary:
+  zh-CN: 这次连接的密码未能记下：%{error}
+  en: "Couldn’t keep the password for this connection: %{error}"

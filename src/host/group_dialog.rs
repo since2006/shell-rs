@@ -7,11 +7,10 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 
+use super::host_dialog::join_sentences;
 use super::{DeleteHandler, Dependents, GroupDraft, GroupId, HostStore, group_options};
+use crate::i18n::{join_list, t, tn};
 use crate::shared::{commit_footer, confirm_delete, dismiss_form_error, form_error_notification};
-
-/// The label of the row that stands for "no parent" / "no group".
-pub const ROOT_LABEL: &str = "（顶层）";
 
 /// The body of the new/rename group dialog. Owns the field states and
 /// validates on commit; the store is only touched when validation passes.
@@ -47,7 +46,7 @@ impl GroupForm {
             (draft, group_options(read.groups(), &excluded))
         };
         let mut parent_ids: Vec<Option<GroupId>> = vec![None];
-        let mut labels: Vec<SharedString> = vec![ROOT_LABEL.into()];
+        let mut labels: Vec<SharedString> = vec![t!("host.group_dialog.top_level")];
         for (id, path) in options {
             parent_ids.push(Some(id));
             labels.push(path);
@@ -55,7 +54,7 @@ impl GroupForm {
 
         let name = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("例如 生产")
+                .placeholder(t!("host.group_dialog.name_placeholder"))
                 .default_value(draft.name.clone())
         });
         let parent_ix = parent_ids
@@ -89,9 +88,9 @@ impl GroupForm {
             group.parent == parent && group.name == name.as_str() && Some(group.id) != editing
         });
         let error = if name.is_empty() {
-            Some("请输入分组名称")
+            Some(t!("host.group_dialog.enter_name"))
         } else if duplicate {
-            Some("同一层级下已有同名分组")
+            Some(t!("host.group_dialog.duplicate"))
         } else {
             None
         };
@@ -109,7 +108,10 @@ impl GroupForm {
             }
         });
         if !committed {
-            window.push_notification(form_error_notification("无法把分组移动到它自己的下级"), cx);
+            window.push_notification(
+                form_error_notification(t!("host.group_dialog.into_itself")),
+                cx,
+            );
             return false;
         }
         true
@@ -122,13 +124,13 @@ impl Render for GroupForm {
             Form::new()
                 .child(
                     Field::new()
-                        .label("名称")
+                        .label(t!("host.group_dialog.name"))
                         .required(true)
                         .child(Input::new(&self.name).id("group-name").small()),
                 )
                 .child(
                     Field::new()
-                        .label("上级分组")
+                        .label(t!("host.group_dialog.parent"))
                         .child(Select::new(&self.parent).small()),
                 ),
         )
@@ -144,18 +146,16 @@ pub fn open_group_dialog(
     cx: &mut App,
 ) {
     let form = cx.new(|cx| GroupForm::new(editing, default_parent, store, window, cx));
-    let title: SharedString = if editing.is_some() {
-        "重命名分组"
+    let title = if editing.is_some() {
+        t!("host.group_dialog.title_rename")
     } else {
-        "新建分组"
-    }
-    .into();
-    let commit_label: SharedString = if editing.is_some() {
-        "保存"
+        t!("host.group_dialog.title_new")
+    };
+    let commit_label = if editing.is_some() {
+        t!("common.save")
     } else {
-        "创建"
-    }
-    .into();
+        t!("host.group_dialog.create")
+    };
 
     window.open_dialog(cx, {
         let form = form.clone();
@@ -194,55 +194,47 @@ pub fn confirm_delete_group(
         jump_users,
     } = dependents;
     let (closes_tabs, uploads) = affected;
-    let mut description = describe_contents(hosts, subgroups, closes_tabs);
+    let mut description = contents_sentences(hosts, subgroups, closes_tabs);
     if uploads > 0 {
-        description = Some(
-            format!(
-                "{}将停止 {uploads} 个传输批次并保留续传进度。",
-                description.unwrap_or_default()
-            )
-            .into(),
-        );
+        description.push(tn!("host.delete.transfers", uploads));
     }
     if forwards > 0 {
-        description = Some(
-            format!(
-                "{}这些主机的 {forwards} 条端口转发会一并删除。",
-                description.unwrap_or_default()
-            )
-            .into(),
-        );
+        description.push(tn!("host.delete_group.forwards", forwards));
     }
     if jump_users > 0 {
-        description = Some(
-            format!(
-                "{}分组外有 {jump_users} 台主机经由这些主机跳转，删除后要重新选择跳板主机才能连接。",
-                description.unwrap_or_default()
-            )
-            .into(),
-        );
+        description.push(tn!("host.delete_group.jump_users", jump_users));
     }
-    confirm_delete(name, description, on_delete, window, cx);
+    confirm_delete(name, join_sentences(description), on_delete, window, cx);
 }
 
 /// What the delete dialog says about everything that goes with the group.
 /// `None` for an empty group with nothing open.
+#[cfg(test)]
 fn describe_contents(hosts: usize, subgroups: usize, closes_tabs: bool) -> Option<SharedString> {
-    let contents = match (hosts, subgroups) {
-        (0, 0) => None,
-        (0, subgroups) => Some(format!("将同时删除其中的 {subgroups} 个子分组。")),
-        (hosts, 0) => Some(format!("将同时删除其中的 {hosts} 台主机。")),
-        (hosts, subgroups) => Some(format!(
-            "将同时删除其中的 {hosts} 台主机和 {subgroups} 个子分组。"
-        )),
-    };
-    let tabs = closes_tabs.then_some("已打开的终端和 SFTP 标签会一并关闭。");
-    match (contents, tabs) {
-        (None, None) => None,
-        (Some(contents), None) => Some(contents.into()),
-        (None, Some(tabs)) => Some(tabs.into()),
-        (Some(contents), Some(tabs)) => Some(format!("{contents}{tabs}").into()),
+    join_sentences(contents_sentences(hosts, subgroups, closes_tabs))
+}
+
+/// What the delete dialog says about everything that goes with the group,
+/// a sentence each.
+fn contents_sentences(hosts: usize, subgroups: usize, closes_tabs: bool) -> Vec<SharedString> {
+    let mut contents = Vec::new();
+    if hosts > 0 {
+        contents.push(tn!("host.count.hosts", hosts));
     }
+    if subgroups > 0 {
+        contents.push(tn!("host.count.subgroups", subgroups));
+    }
+    let mut sentences = Vec::new();
+    if !contents.is_empty() {
+        sentences.push(t!(
+            "host.delete_group.contents",
+            items = join_list(&contents)
+        ));
+    }
+    if closes_tabs {
+        sentences.push(t!("host.delete_group.closes_tabs"));
+    }
+    sentences
 }
 
 #[cfg(test)]
@@ -269,6 +261,23 @@ mod tests {
         assert_eq!(
             describe_contents(0, 0, true).as_deref(),
             Some("已打开的终端和 SFTP 标签会一并关闭。")
+        );
+    }
+
+    #[test]
+    fn the_description_counts_in_english_too() {
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("en");
+        assert_eq!(
+            describe_contents(1, 2, true).as_deref(),
+            Some(
+                "This also deletes the group’s 1 host and 2 subgroups. \
+                 Open terminal and SFTP tabs will close."
+            )
+        );
+        assert_eq!(
+            describe_contents(3, 0, false).as_deref(),
+            Some("This also deletes the group’s 3 hosts.")
         );
     }
 }

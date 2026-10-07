@@ -9,6 +9,7 @@ use super::{ForwardCommand, ForwardEvent, SharedForwardTransportProvider};
 use crate::{
     connection::{ConnectionPrompt, ConnectionPromptReply},
     host::{ForwardId, HostId, HostStore, HostStoreEvent},
+    i18n::{t, tn},
 };
 
 /// How often the workers' events are collected. Worker threads never wake a
@@ -45,16 +46,16 @@ impl ForwardStatus {
     /// The status in words, as the list shows and announces it.
     pub fn label(&self) -> SharedString {
         match self {
-            ForwardStatus::Stopped => "已停止".into(),
-            ForwardStatus::Connecting => "正在连接".into(),
-            ForwardStatus::Running { connections: 0 } => "运行中".into(),
+            ForwardStatus::Stopped => t!("forward.status.stopped"),
+            ForwardStatus::Connecting => t!("forward.status.connecting"),
+            ForwardStatus::Running { connections: 0 } => t!("forward.status.running"),
             ForwardStatus::Running { connections } => {
-                format!("运行中，{connections} 个连接").into()
+                tn!("forward.status.running_with", *connections)
             }
             ForwardStatus::Reconnecting { attempt, of } => {
-                format!("连接中断，正在重连（{attempt}/{of}）").into()
+                t!("forward.status.reconnecting", attempt = attempt, of = of)
             }
-            ForwardStatus::Failed(reason) => format!("已停止：{reason}").into(),
+            ForwardStatus::Failed(reason) => t!("forward.status.failed", reason = reason),
         }
     }
 }
@@ -220,7 +221,7 @@ impl ForwardManager {
             .name("shellrs-forward".into())
             .spawn(move || transport.run(command_receiver, event_sender))
         {
-            self.fail(id, format!("无法启动端口转发：{error}").into(), cx);
+            self.fail(id, t!("forward.error.start_failed", error = error), cx);
             return;
         }
         let generation = self.next_generation;
@@ -355,7 +356,7 @@ impl ForwardManager {
                     Err(TryRecvError::Empty) => break,
                     // The worker is gone without a last word.
                     Err(TryRecvError::Closed) => {
-                        self.finish(id, Some("端口转发意外中止".into()), cx);
+                        self.finish(id, Some(t!("forward.error.ended")), cx);
                         break;
                     }
                 }

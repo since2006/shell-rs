@@ -1,6 +1,7 @@
 use gpui_kit::{Rgba, SharedString, rgb};
 use rand::{Rng as _, distr::Alphanumeric};
 
+use crate::i18n::t;
 use crate::secrets::SecretRef;
 
 use super::CredentialId;
@@ -180,10 +181,10 @@ impl ProxyKind {
     /// Every kind, in the order the form lists them.
     pub const ALL: [ProxyKind; 2] = [ProxyKind::Http, ProxyKind::Socks5];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            ProxyKind::Http => "HTTP 代理",
-            ProxyKind::Socks5 => "SOCKS5 代理",
+            ProxyKind::Http => t!("host.proxy_kind.http"),
+            ProxyKind::Socks5 => t!("host.proxy_kind.socks5"),
         }
     }
 
@@ -375,11 +376,11 @@ pub enum ConnectionState {
 }
 
 impl ConnectionState {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            ConnectionState::Disconnected => "未连接",
-            ConnectionState::Connecting => "连接中",
-            ConnectionState::Connected => "已连接",
+            ConnectionState::Disconnected => t!("host.state.disconnected"),
+            ConnectionState::Connecting => t!("host.state.connecting"),
+            ConnectionState::Connected => t!("host.state.connected"),
         }
     }
 
@@ -645,22 +646,22 @@ pub enum HostDraftError {
 }
 
 impl HostDraftError {
-    pub fn message(self) -> &'static str {
+    pub fn message(self) -> SharedString {
         match self {
-            HostDraftError::Name => "请输入名称",
-            HostDraftError::Address => "请输入地址",
-            HostDraftError::Port => "端口必须是 1 到 65535 之间的数字",
-            HostDraftError::NoJumpHosts => "请添加跳板主机",
-            HostDraftError::DeletedJumpHost => "请移除已删除的跳板主机",
-            HostDraftError::ProxyAddress => "请输入代理地址",
-            HostDraftError::ProxyPort => "代理端口必须是 1 到 65535 之间的数字",
+            HostDraftError::Name => t!("host.draft.name"),
+            HostDraftError::Address => t!("host.draft.address"),
+            HostDraftError::Port => t!("host.draft.port"),
+            HostDraftError::NoJumpHosts => t!("host.draft.no_jump_hosts"),
+            HostDraftError::DeletedJumpHost => t!("host.draft.deleted_jump_host"),
+            HostDraftError::ProxyAddress => t!("host.draft.proxy_address"),
+            HostDraftError::ProxyPort => t!("host.draft.proxy_port"),
         }
     }
 }
 
 impl std::fmt::Display for HostDraftError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.message())
+        formatter.write_str(&self.message())
     }
 }
 

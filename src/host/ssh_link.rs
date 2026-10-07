@@ -10,6 +10,7 @@ use url::{Host as UrlHost, ParseError, Url};
 use zeroize::Zeroizing;
 
 use super::{AuthKind, HostDraft};
+use crate::i18n::t;
 
 /// The port when the link names none.
 const SSH_PORT: u16 = 22;
@@ -43,32 +44,24 @@ impl SshLink {
     pub fn parse(link: &str, tab: Option<&str>) -> Result<Self, String> {
         let link = link.trim();
         if link.is_empty() {
-            return Err(
-                "启动参数里没有要连接的地址，应为 ssh://用户@地址[:端口]（打开 SFTP 用 sftp://）。"
-                    .into(),
-            );
+            return Err(t!("host.link.missing").to_string());
         }
-        let malformed = || {
-            "链接的格式不对，应为 ssh://用户[:密码]@地址[:端口]（打开 SFTP 用 sftp://）。"
-                .to_string()
-        };
+        let malformed = || t!("host.link.malformed").to_string();
         // Without `://`, `user:password@host` would read as the scheme
         // `user`, and the error would show it.
         if !link.contains("://") {
             return Err(malformed());
         }
         let url = Url::parse(link).map_err(|error| match error {
-            ParseError::InvalidPort => "链接里的端口无效。".to_string(),
-            ParseError::EmptyHost => "链接里没有地址。".to_string(),
+            ParseError::InvalidPort => t!("host.link.invalid_port").to_string(),
+            ParseError::EmptyHost => t!("host.link.no_address").to_string(),
             _ => malformed(),
         })?;
         let kind = match url.scheme() {
             "ssh" => LinkKind::Ssh,
             "sftp" => LinkKind::Sftp,
             scheme => {
-                return Err(format!(
-                    "只支持 ssh:// 和 sftp:// 链接，不支持 {scheme}://。"
-                ));
+                return Err(t!("host.link.unsupported_scheme", scheme = scheme).to_string());
             }
         };
         // `ssh` is not one of the schemes the URL standard knows, so an IPv4
@@ -81,19 +74,16 @@ impl SshLink {
             None => String::new(),
         };
         if address.is_empty() {
-            return Err("链接里没有地址。".into());
+            return Err(t!("host.link.no_address").to_string());
         }
         let port = match url.port() {
-            Some(0) => return Err("链接里的端口无效。".into()),
+            Some(0) => return Err(t!("host.link.invalid_port").to_string()),
             Some(port) => port,
             None => SSH_PORT,
         };
         let user = decode(url.username())?;
         if user.is_empty() {
-            return Err(format!(
-                "链接里没有用户名，应为 {}://用户@地址[:端口]。",
-                url.scheme()
-            ));
+            return Err(t!("host.link.no_user", scheme = url.scheme()).to_string());
         }
         let password = match url.password() {
             Some(password) => Some(Zeroizing::new(decode(password)?)),
@@ -146,7 +136,7 @@ fn decode(text: &str) -> Result<String, String> {
     percent_decode_str(text)
         .decode_utf8()
         .map(|text| text.into_owned())
-        .map_err(|_| "链接里有无法识别的字符。".to_string())
+        .map_err(|_| t!("host.link.unreadable").to_string())
 }
 
 #[cfg(test)]

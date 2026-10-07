@@ -1,0 +1,286 @@
+_version: 2
+
+# 端口转发: the forward list, its dialog and the forwards running.
+
+forward.diagram.local:
+  zh-CN: 本机
+  en: This computer
+forward.diagram.server:
+  zh-CN: SSH 服务器
+  en: SSH server
+forward.diagram.target_service:
+  zh-CN: 目标服务
+  en: Service
+forward.diagram.anywhere:
+  zh-CN: 任意地址
+  en: Any address
+forward.diagram.entrance:
+  zh-CN: 隧道入口
+  en: Tunnel entrance
+forward.diagram.exit:
+  zh-CN: 隧道出口
+  en: Tunnel exit
+forward.diagram.target:
+  zh-CN: 目标
+  en: Destination
+forward.diagram.listens:
+  zh-CN: 监听 %{bind}
+  en: Listens on %{bind}
+forward.diagram.connects_onward:
+  zh-CN: 代为连接目标
+  en: Connects onward
+forward.diagram.app_chooses:
+  zh-CN: 由应用指定
+  en: Chosen by the app
+forward.diagram.tunnel:
+  zh-CN: SSH 隧道
+  en: SSH tunnel
+forward.diagram.plain:
+  zh-CN: 普通连接
+  en: Plain TCP
+
+forward.explain.local:
+  zh-CN: 在本机连接 %{bind}，就等于从 SSH 服务器连接 %{target}。
+  en: Connecting to %{bind} on this computer is the same as connecting to %{target} from the SSH server.
+forward.explain.remote:
+  zh-CN: 在 SSH 服务器上连接 %{bind}，就等于从本机连接 %{target}。
+  en: Connecting to %{bind} on the SSH server is the same as connecting to %{target} from this computer.
+forward.explain.dynamic:
+  zh-CN: 把应用的 SOCKS5 代理设为 %{bind}，它的连接都从 SSH 服务器发出。
+  en: Set an app’s SOCKS5 proxy to %{bind}, and its connections go out from the SSH server.
+
+forward.purpose.local:
+  zh-CN: 在本机访问服务器那边的服务
+  en: Reach a service on the server’s side
+forward.purpose.remote:
+  zh-CN: 让服务器那边访问本机的服务
+  en: Let the server’s side reach a service here
+forward.purpose.dynamic:
+  zh-CN: 把服务器当作 SOCKS 代理
+  en: Use the server as a SOCKS proxy
+
+forward.typical_use.local:
+  zh-CN: 常见用途：用本机的客户端连接只对服务器开放的数据库或内网后台。
+  en: "Typical use: connect a client here to a database or internal admin site that only the server can reach."
+forward.typical_use.remote:
+  zh-CN: 常见用途：把本机正在开发的服务给服务器那边访问，或接收 Webhook。
+  en: "Typical use: let the server’s side reach a service you’re developing here, or receive webhooks."
+forward.typical_use.dynamic:
+  zh-CN: 常见用途：让浏览器经由服务器上网，不必为每个地址单独建转发。
+  en: "Typical use: browse through the server without a forward for each address."
+
+forward.dialog.title_new:
+  zh-CN: 新建端口转发
+  en: New port forward
+forward.dialog.title_edit:
+  zh-CN: 编辑端口转发
+  en: Edit port forward
+forward.dialog.create:
+  zh-CN: 创建
+  en: Create
+forward.dialog.kind_card:
+  zh-CN: "%{kind}（%{flag}）"
+  en: "%{kind} (%{flag})"
+forward.dialog.name:
+  zh-CN: 名称
+  en: Name
+forward.dialog.name_placeholder:
+  zh-CN: 可选，留空显示转发摘要
+  en: Optional; shows the forward’s summary if left empty
+forward.dialog.host:
+  zh-CN: 经由主机
+  en: Via host
+forward.dialog.choose_host:
+  zh-CN: 请选择主机
+  en: Choose a host
+forward.dialog.host_option:
+  zh-CN: "%{name}（%{endpoint}）"
+  en: "%{name} (%{endpoint})"
+forward.dialog.bind_local:
+  zh-CN: 本机监听地址
+  en: Listen on this computer
+forward.dialog.bind_server:
+  zh-CN: 服务器监听地址
+  en: Listen on the server
+forward.dialog.bind_socks:
+  zh-CN: 本机监听地址（SOCKS 代理）
+  en: Listen on this computer (SOCKS proxy)
+forward.dialog.target_from_server:
+  zh-CN: 目标地址（从服务器访问）
+  en: Destination (as the server reaches it)
+forward.dialog.target_from_local:
+  zh-CN: 目标地址（从本机访问）
+  en: Destination (as this computer reaches it)
+forward.dialog.port:
+  zh-CN: 端口
+  en: Port
+forward.dialog.target_placeholder:
+  zh-CN: 例如 db.internal 或 127.0.0.1
+  en: e.g. db.internal or 127.0.0.1
+forward.dialog.target_placeholder_remote:
+  zh-CN: 例如 localhost
+  en: e.g. localhost
+forward.dialog.auto_start:
+  zh-CN: 启动 ShellRS 时自动开启
+  en: Start when ShellRS opens
+forward.dialog.gateway_ports_note:
+  zh-CN: 服务器的 sshd_config 需设置 GatewayPorts clientspecified 或 yes，其他机器才连得上；默认是 no，这时转发照常运行，但只监听服务器自己的 127.0.0.1。
+  en: Other machines can connect only if the server’s sshd_config sets GatewayPorts to clientspecified or yes. With the default, no, the forward still runs but listens only on the server’s own 127.0.0.1.
+forward.dialog.not_loopback_note:
+  zh-CN: 监听地址不是本机回环地址，同一网络中的其他设备也能使用这个转发。
+  en: The listening address isn’t a loopback address, so other devices on the same network can use this forward too.
+forward.dialog.privileged_port_remote:
+  zh-CN: 服务器上 1024 以下的端口需要以 root 登录才能监听。
+  en: Listening on a port below 1024 on the server takes logging in as root.
+forward.dialog.privileged_port:
+  zh-CN: 1024 以下的端口通常需要管理员权限才能监听。
+  en: Listening on a port below 1024 usually takes administrator rights.
+forward.dialog.restart_note:
+  zh-CN: 这条转发正在运行，改动监听或目标后会按新设置重新启动。
+  en: This forward is running. Changing where it listens or connects restarts it with the new settings.
+forward.dialog.choose_host_error:
+  zh-CN: 请选择端口转发经由的主机
+  en: Choose the host to forward through
+forward.dialog.host_gone:
+  zh-CN: 所选主机已不存在，请重新选择
+  en: The chosen host no longer exists. Choose another.
+
+forward.panel.title:
+  zh-CN: 端口转发
+  en: Port forwarding
+forward.panel.search:
+  zh-CN: 搜索端口转发
+  en: Search port forwards
+forward.panel.no_matches:
+  zh-CN: 没有匹配的端口转发
+  en: No matching port forwards
+forward.panel.no_hosts:
+  zh-CN: 还没有主机
+  en: No hosts yet
+forward.panel.no_hosts_hint:
+  zh-CN: 端口转发经由一台主机的 SSH 连接，先新建主机。
+  en: A port forward goes through a host’s SSH connection. Create a host first.
+forward.panel.new_host:
+  zh-CN: 新建主机…
+  en: New host…
+forward.panel.empty:
+  zh-CN: 还没有端口转发
+  en: No port forwards yet
+forward.panel.empty_hint:
+  zh-CN: 把本机的端口和服务器那一侧的网络接起来。
+  en: Connect a port on this computer with the network on the server’s side.
+
+forward.menu.new:
+  zh-CN: 新建端口转发…
+  en: New port forward…
+forward.menu.edit:
+  zh-CN: 编辑端口转发…
+  en: Edit port forward…
+forward.menu.start:
+  zh-CN: 启动
+  en: Start
+forward.menu.stop:
+  zh-CN: 停止
+  en: Stop
+
+forward.status.stopped:
+  zh-CN: 已停止
+  en: Stopped
+forward.status.connecting:
+  zh-CN: 正在连接
+  en: Connecting
+forward.status.running:
+  zh-CN: 运行中
+  en: Running
+forward.status.running_with.one:
+  en: Running, %{count} connection
+forward.status.running_with.other:
+  zh-CN: 运行中，%{count} 个连接
+  en: Running, %{count} connections
+forward.status.reconnecting:
+  zh-CN: 连接中断，正在重连（%{attempt}/%{of}）
+  en: Connection lost, reconnecting (%{attempt}/%{of})
+forward.status.failed:
+  zh-CN: 已停止：%{reason}
+  en: "Stopped: %{reason}"
+
+forward.error.start_failed:
+  zh-CN: 无法启动端口转发：%{error}
+  en: "Couldn’t start the port forward: %{error}"
+forward.error.ended:
+  zh-CN: 端口转发意外中止
+  en: The port forward stopped unexpectedly
+forward.error.reconnect_failed:
+  zh-CN: 连接中断，自动重连失败：%{reason}
+  en: "The connection was lost and couldn’t be restored: %{reason}"
+forward.error.connection_lost:
+  zh-CN: 与服务器的连接已中断
+  en: The connection to the server was lost
+forward.error.reconnects_used.one:
+  en: The connection was lost, and %{count} attempt to reconnect failed
+forward.error.reconnects_used.other:
+  zh-CN: 连接中断，重连 %{count} 次均未成功
+  en: The connection was lost, and all %{count} attempts to reconnect failed
+forward.error.remote_listen:
+  zh-CN: 服务器拒绝在 %{bind} 上监听：端口可能已被占用、1024 以下的端口需要 root，或服务器禁用了端口转发（AllowTcpForwarding）
+  en: "The server refused to listen on %{bind}: the port may be in use, a port below 1024 needs root, or the server has port forwarding turned off (AllowTcpForwarding)"
+forward.error.key_changed:
+  zh-CN: 主机密钥与已保存的不一致，已阻止连接。请先核实服务器身份
+  en: The host key doesn’t match the saved one, so the connection was blocked. Verify the server’s identity first.
+forward.error.unknown_key:
+  zh-CN: 尚未信任该主机的密钥，请手动启动以确认
+  en: The host’s key isn’t trusted yet. Start the forward yourself to confirm it.
+forward.error.needs_password:
+  zh-CN: 需要输入密码，请手动启动
+  en: A password is needed. Start the forward yourself to enter it.
+forward.error.needs_passphrase:
+  zh-CN: 需要输入私钥口令，请手动启动
+  en: A passphrase is needed. Start the forward yourself to enter it.
+forward.error.needs_interactive:
+  zh-CN: 服务器要求交互式认证，请手动启动
+  en: The server asks for interactive authentication. Start the forward yourself to answer it.
+forward.error.unresolved_bind:
+  zh-CN: 无法解析监听地址 %{host}
+  en: Couldn’t resolve the listening address %{host}
+forward.error.port_in_use:
+  zh-CN: 本机端口 %{port} 已被占用
+  en: Port %{port} on this computer is already in use
+forward.error.port_denied:
+  zh-CN: 没有权限监听端口 %{port}（1024 以下的端口需要管理员权限）
+  en: No permission to listen on port %{port} (ports below 1024 need administrator rights)
+forward.error.no_such_address:
+  zh-CN: 本机没有地址 %{host}，无法监听
+  en: This computer has no address %{host} to listen on
+forward.error.bind_failed:
+  zh-CN: 无法监听 %{bind}：%{error}
+  en: "Couldn’t listen on %{bind}: %{error}"
+forward.error.not_socks:
+  zh-CN: 收到的不是 SOCKS 请求，请把应用的代理类型设为 SOCKS5
+  en: This isn’t a SOCKS request. Set the app’s proxy type to SOCKS5.
+forward.error.local_refused:
+  zh-CN: 连接被拒绝，该端口上没有服务在监听
+  en: connection refused, as nothing is listening on that port
+forward.error.local_timed_out:
+  zh-CN: 连接超时
+  en: the connection timed out
+forward.error.local_target_failed:
+  zh-CN: 无法连接本机目标 %{target}：%{reason}
+  en: "Couldn’t connect to %{target} on this computer: %{reason}"
+forward.error.server_timed_out:
+  zh-CN: 服务器连接 %{target} 超时
+  en: The server timed out connecting to %{target}
+forward.error.prohibited:
+  zh-CN: 服务器禁止转发到 %{target}（AllowTcpForwarding 或 PermitOpen 限制）
+  en: The server doesn’t allow forwarding to %{target} (AllowTcpForwarding or PermitOpen)
+forward.error.server_connect_failed:
+  zh-CN: 服务器无法连接 %{target}
+  en: The server couldn’t connect to %{target}
+forward.error.unsupported:
+  zh-CN: 服务器不支持端口转发
+  en: The server doesn’t support port forwarding
+forward.error.resource_shortage:
+  zh-CN: 服务器资源不足，无法建立转发连接
+  en: The server is short of resources and couldn’t open the connection
+forward.error.refused:
+  zh-CN: 服务器拒绝了到 %{target} 的连接
+  en: The server refused the connection to %{target}

@@ -13,6 +13,7 @@ use gpui_kit::component::{
 use gpui_kit::*;
 use zeroize::Zeroizing;
 
+use crate::i18n::t;
 use crate::secrets::{SecretRef, SharedSecretStore};
 
 /// What the keychain had for the login being edited.
@@ -51,17 +52,17 @@ impl SecretFields {
         let password = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
-                .placeholder("留空则每次连接都询问")
+                .placeholder(t!("host.secret_fields.ask_each_time"))
         });
         let key_path = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("选择 OpenSSH 私钥文件")
+                .placeholder(t!("host.secret_fields.key_path_placeholder"))
                 .default_value(key_path.unwrap_or_default())
         });
         let passphrase = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
-                .placeholder("留空则每次连接都询问")
+                .placeholder(t!("host.secret_fields.ask_each_time"))
         });
         // A passphrase belongs to a key file, so picking another key makes
         // whatever is in the field meaningless. Clearing it is also the
@@ -175,7 +176,7 @@ impl SecretFields {
     /// What the empty password field says leaving it empty does.
     pub fn set_password_placeholder(
         &mut self,
-        placeholder: &'static str,
+        placeholder: impl Into<SharedString>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -187,7 +188,7 @@ impl SecretFields {
     /// What the empty passphrase field says leaving it empty does.
     pub fn set_passphrase_placeholder(
         &mut self,
-        placeholder: &'static str,
+        placeholder: impl Into<SharedString>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -202,7 +203,7 @@ impl SecretFields {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("选择 SSH 私钥".into()),
+            prompt: Some(t!("host.secret_fields.choose_key_prompt")),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = receiver.await else {
@@ -286,7 +287,7 @@ impl SecretFields {
             .child(Input::new(&key_path).id(id).small().flex_1())
             .child(
                 Button::new(choose_id)
-                    .label("选择…")
+                    .label(t!("host.secret_fields.choose"))
                     .small()
                     .on_click(move |_, window, cx| {
                         fields.update(cx, |fields, cx| fields.choose_key(window, cx))

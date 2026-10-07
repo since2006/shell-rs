@@ -22,7 +22,7 @@ pub use database::{HostDatabase, StoredData};
 pub use forward::*;
 pub use group_dialog::{GroupForm, confirm_delete_group, open_group_dialog};
 pub use host_dialog::{
-    DeleteHandler, Dependents, HostForm, confirm_delete_host, open_host_dialog,
+    DeleteHandler, Dependents, HostForm, confirm_delete_host, join_sentences, open_host_dialog,
     open_temporary_connection_dialog,
 };
 pub use host_panel::{HostPanel, host_menu};

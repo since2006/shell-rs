@@ -3,7 +3,7 @@
 
 use gpui_kit::{Context, SharedString};
 
-use super::HostStore;
+use super::{Change, HostStore};
 use crate::host::{
     Snippet, SnippetCategory, SnippetCategoryId, SnippetDraft, SnippetId, SnippetScope,
 };
@@ -40,7 +40,7 @@ impl HostStore {
     pub fn insert_snippet(&mut self, draft: SnippetDraft, cx: &mut Context<Self>) -> SnippetId {
         let id = self.insert_snippet_unnotified(draft);
         if let Some(snippet) = self.snippet(id) {
-            self.persist("新建命令片段", cx, |db| db.insert_snippet(snippet));
+            self.persist(Change::NewSnippet, cx, |db| db.insert_snippet(snippet));
         }
         cx.notify();
         id
@@ -64,7 +64,7 @@ impl HostStore {
             return false;
         }
         if let Some(snippet) = self.snippet(id) {
-            self.persist("保存命令片段", cx, |db| db.update_snippet(snippet));
+            self.persist(Change::SaveSnippet, cx, |db| db.update_snippet(snippet));
         }
         cx.notify();
         true
@@ -83,7 +83,7 @@ impl HostStore {
         if !self.remove_snippet_unnotified(id) {
             return false;
         }
-        self.persist("删除命令片段", cx, |db| db.remove_snippet(id));
+        self.persist(Change::DeleteSnippet, cx, |db| db.remove_snippet(id));
         cx.notify();
         true
     }
@@ -101,7 +101,7 @@ impl HostStore {
     ) -> SnippetCategoryId {
         let id = self.insert_snippet_category_unnotified(name);
         if let Some(category) = self.snippet_category(id) {
-            self.persist("新建片段分类", cx, |db| {
+            self.persist(Change::NewSnippetCategory, cx, |db| {
                 db.insert_snippet_category(category)
             });
         }
@@ -132,7 +132,7 @@ impl HostStore {
             return false;
         }
         if let Some(category) = self.snippet_category(id) {
-            self.persist("重命名片段分类", cx, |db| {
+            self.persist(Change::RenameSnippetCategory, cx, |db| {
                 db.update_snippet_category(category)
             });
         }
@@ -166,7 +166,7 @@ impl HostStore {
             return false;
         }
         // The database takes the snippets through `ON DELETE CASCADE`.
-        self.persist("删除片段分类", cx, |db| {
+        self.persist(Change::DeleteSnippetCategory, cx, |db| {
             db.remove_snippet_category(id)
         });
         cx.notify();

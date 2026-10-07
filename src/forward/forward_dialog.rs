@@ -17,7 +17,9 @@ use super::{
 };
 use crate::host::{
     DEFAULT_BIND_HOST, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, HostId, HostStore,
+    join_sentences,
 };
+use crate::i18n::t;
 use crate::shared::{commit_footer, dismiss_form_error, form_error_notification, parse_port};
 
 /// The dialog's width in rems: room for the three stops of the diagram side
@@ -81,7 +83,13 @@ impl ForwardForm {
                 hosts.iter().map(|host| host.id).collect::<Vec<_>>(),
                 hosts
                     .iter()
-                    .map(|host| SharedString::from(format!("{}（{}）", host.name, host.endpoint())))
+                    .map(|host| {
+                        t!(
+                            "forward.dialog.host_option",
+                            name = host.name,
+                            endpoint = host.endpoint()
+                        )
+                    })
                     .collect::<Vec<_>>(),
             )
         };
@@ -97,7 +105,7 @@ impl ForwardForm {
 
         let name = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("可选，留空显示转发摘要")
+                .placeholder(t!("forward.dialog.name_placeholder"))
                 .default_value(draft.as_ref().map(|d| d.name.clone()).unwrap_or_default())
         });
         let host = cx.new(|cx| {
@@ -226,8 +234,10 @@ impl ForwardForm {
     /// Validate and write to the store. Returns whether the dialog may close.
     pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let draft = match self.draft(cx) {
-            Some(draft) => draft.validated().map_err(|error| error.to_string()),
-            None => Err("请选择端口转发经由的主机".to_string()),
+            Some(draft) => draft
+                .validated()
+                .map_err(|error| SharedString::from(error.to_string())),
+            None => Err(t!("forward.dialog.choose_host_error")),
         };
         let draft = match draft {
             Ok(draft) => draft,
@@ -243,7 +253,7 @@ impl ForwardForm {
         });
         if !saved {
             // The host, or the rule itself, was deleted meanwhile.
-            window.push_notification(form_error_notification("所选主机已不存在，请重新选择"), cx);
+            window.push_notification(form_error_notification(t!("forward.dialog.host_gone")), cx);
             return false;
         }
         true
@@ -280,7 +290,11 @@ impl ForwardForm {
                     .map(|(kind_ix, kind)| {
                         let checked = kind == self.kind;
                         Radio::new(kind.as_str())
-                            .label(format!("{}（{}）", kind.label(), ssh_flag(kind)))
+                            .label(t!(
+                                "forward.dialog.kind_card",
+                                kind = kind.label(),
+                                flag = ssh_flag(kind)
+                            ))
                             .small()
                             // Three cards sharing one row, equally wide and equally
                             // tall; the chosen one keeps its outline, so the choice
@@ -327,7 +341,7 @@ impl ForwardForm {
         let theme = cx.theme();
         let bind = Self::endpoint_text(&self.bind_host, &self.bind_port, cx);
         let target = Self::endpoint_text(&self.target_host, &self.target_port, cx);
-        let sentence: SharedString = explain(self.kind, &bind, &target).into();
+        let sentence = explain(self.kind, &bind, &target);
         v_flex()
             .gap_3()
             .p_3()
@@ -356,27 +370,33 @@ impl ForwardForm {
 
     fn render_fields(&self) -> impl IntoElement {
         let (bind_label, target_label) = match self.kind {
-            ForwardKind::Local => ("本机监听地址", "目标地址（从服务器访问）"),
-            ForwardKind::Remote => ("服务器监听地址", "目标地址（从本机访问）"),
-            ForwardKind::Dynamic => ("本机监听地址（SOCKS 代理）", ""),
+            ForwardKind::Local => (
+                t!("forward.dialog.bind_local"),
+                t!("forward.dialog.target_from_server"),
+            ),
+            ForwardKind::Remote => (
+                t!("forward.dialog.bind_server"),
+                t!("forward.dialog.target_from_local"),
+            ),
+            ForwardKind::Dynamic => (t!("forward.dialog.bind_socks"), SharedString::default()),
         };
         Form::new()
             .columns(4)
             .child(
                 Field::new()
-                    .label("名称")
+                    .label(t!("forward.dialog.name"))
                     .col_span(4)
                     .child(Input::new(&self.name).id("forward-name").small()),
             )
             .child(
                 Field::new()
-                    .label("经由主机")
+                    .label(t!("forward.dialog.host"))
                     .required(true)
                     .col_span(4)
                     .child(
                         Select::new(&self.host)
                             .id("forward-host")
-                            .placeholder("请选择主机")
+                            .placeholder(t!("forward.dialog.choose_host"))
                             .small(),
                     ),
             )
@@ -389,7 +409,7 @@ impl ForwardForm {
             )
             .child(
                 Field::new()
-                    .label("端口")
+                    .label(t!("forward.dialog.port"))
                     .required(true)
                     .child(Input::new(&self.bind_port).id("forward-bind-port").small()),
             )
@@ -406,11 +426,14 @@ impl ForwardForm {
                         ),
                 )
                 .child(
-                    Field::new().label("端口").required(true).child(
-                        Input::new(&self.target_port)
-                            .id("forward-target-port")
-                            .small(),
-                    ),
+                    Field::new()
+                        .label(t!("forward.dialog.port"))
+                        .required(true)
+                        .child(
+                            Input::new(&self.target_port)
+                                .id("forward-target-port")
+                                .small(),
+                        ),
                 )
             })
     }
@@ -424,10 +447,10 @@ fn bind_port_placeholder(kind: ForwardKind) -> &'static str {
     }
 }
 
-fn target_host_placeholder(kind: ForwardKind) -> &'static str {
+fn target_host_placeholder(kind: ForwardKind) -> SharedString {
     match kind {
-        ForwardKind::Local | ForwardKind::Dynamic => "例如 db.internal 或 127.0.0.1",
-        ForwardKind::Remote => "例如 localhost",
+        ForwardKind::Local | ForwardKind::Dynamic => t!("forward.dialog.target_placeholder"),
+        ForwardKind::Remote => t!("forward.dialog.target_placeholder_remote"),
     }
 }
 
@@ -440,26 +463,19 @@ fn target_port_placeholder(kind: ForwardKind) -> &'static str {
 
 /// What the user should know about the listening end before saving: who
 /// else can reach it, and what it takes to listen there.
-fn bind_notes(kind: ForwardKind, host: &str, port: Option<u16>) -> Vec<&'static str> {
+fn bind_notes(kind: ForwardKind, host: &str, port: Option<u16>) -> Vec<SharedString> {
     let mut notes = Vec::new();
     let bind = ForwardEndpoint::new(host.trim().to_string(), port.unwrap_or(0));
     if !host.trim().is_empty() && !bind.is_loopback() {
         notes.push(match kind {
-            ForwardKind::Remote => {
-                "服务器的 sshd_config 需设置 GatewayPorts clientspecified 或 yes，其他机器才连得上；\
-                 默认是 no，这时转发照常运行，但只监听服务器自己的 127.0.0.1。"
-            }
-            ForwardKind::Local | ForwardKind::Dynamic => {
-                "监听地址不是本机回环地址，同一网络中的其他设备也能使用这个转发。"
-            }
+            ForwardKind::Remote => t!("forward.dialog.gateway_ports_note"),
+            ForwardKind::Local | ForwardKind::Dynamic => t!("forward.dialog.not_loopback_note"),
         });
     }
     if port.is_some_and(|port| port < 1024) {
         notes.push(match kind {
-            ForwardKind::Remote => "服务器上 1024 以下的端口需要以 root 登录才能监听。",
-            ForwardKind::Local | ForwardKind::Dynamic => {
-                "1024 以下的端口通常需要管理员权限才能监听。"
-            }
+            ForwardKind::Remote => t!("forward.dialog.privileged_port_remote"),
+            ForwardKind::Local | ForwardKind::Dynamic => t!("forward.dialog.privileged_port"),
         });
     }
     notes
@@ -473,7 +489,7 @@ impl Render for ForwardForm {
             parse_port(&self.bind_port.read(cx).value()),
         );
         if self.editing_active {
-            notes.push("这条转发正在运行，改动监听或目标后会按新设置重新启动。");
+            notes.push(t!("forward.dialog.restart_note"));
         }
         let muted = cx.theme().muted_foreground;
         v_flex()
@@ -484,7 +500,7 @@ impl Render for ForwardForm {
             .child(self.render_fields())
             .child(
                 Checkbox::new("forward-auto-start")
-                    .label("启动 ShellRS 时自动开启")
+                    .label(t!("forward.dialog.auto_start"))
                     .checked(self.auto_start)
                     .small()
                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -497,11 +513,11 @@ impl Render for ForwardForm {
                     v_flex()
                         .id("forward-notes")
                         .test_support()
-                        .aria_label(notes.join(""))
+                        .aria_label(join_sentences(notes.clone()).unwrap_or_default())
                         .gap_1()
                         .text_sm()
                         .text_color(muted)
-                        .children(notes.iter().map(|note| div().child(*note))),
+                        .children(notes.into_iter().map(|note| div().child(note))),
                 )
             })
     }
@@ -517,18 +533,16 @@ pub fn open_forward_dialog(
     cx: &mut App,
 ) {
     let form = cx.new(|cx| ForwardForm::new(editing, editing_active, store, window, cx));
-    let title: SharedString = if editing.is_some() {
-        "编辑端口转发"
+    let title = if editing.is_some() {
+        t!("forward.dialog.title_edit")
     } else {
-        "新建端口转发"
-    }
-    .into();
-    let commit_label: SharedString = if editing.is_some() {
-        "保存"
+        t!("forward.dialog.title_new")
+    };
+    let commit_label = if editing.is_some() {
+        t!("common.save")
     } else {
-        "创建"
-    }
-    .into();
+        t!("forward.dialog.create")
+    };
 
     window.open_dialog(cx, {
         let form = form.clone();

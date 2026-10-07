@@ -8,6 +8,7 @@ use std::cmp::Ordering;
 use gpui_kit::SharedString;
 
 use super::{GroupId, HostId};
+use crate::i18n::t;
 
 /// Stable identity of a snippet. Never reused within a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -69,14 +70,14 @@ impl SnippetDraft {
         name: &str,
         command: &str,
         category: Option<SnippetCategoryId>,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, SharedString> {
         let name = name.trim();
         if name.is_empty() {
-            return Err("请输入名称");
+            return Err(t!("host.snippet_draft.name"));
         }
         let command = command.trim_end().trim_start_matches(['\n', '\r']);
         if command.trim().is_empty() {
-            return Err("请输入命令");
+            return Err(t!("host.snippet_draft.command"));
         }
         Ok(Self::new(name.to_owned(), command.to_owned(), category))
     }
@@ -149,10 +150,13 @@ mod tests {
 
     #[test]
     fn a_snippet_needs_a_name_and_a_command() {
-        assert_eq!(SnippetDraft::validated("  ", "ls", None), Err("请输入名称"));
+        assert_eq!(
+            SnippetDraft::validated("  ", "ls", None),
+            Err("请输入名称".into())
+        );
         assert_eq!(
             SnippetDraft::validated("列表", " \n \n", None),
-            Err("请输入命令")
+            Err("请输入命令".into())
         );
         let draft = SnippetDraft::validated(
             " 清理日志 ",

@@ -27,6 +27,7 @@ use super::{
 use crate::{
     connection::{ConnectionPrompt, ConnectionPromptKind},
     host::{ForwardEndpoint, ForwardKind, ForwardRule, HostLogin},
+    i18n::{t, tn},
     ssh::{
         ForwardedTcpip, MissingCredential, SshConnectionConfig, SshConnector, SshHandle,
         SshPrompts, describe_login_error, is_network_error,
@@ -107,8 +108,9 @@ impl ForwardTransport for SshForwardTransport {
         {
             Ok(runtime) => runtime,
             Err(error) => {
-                let _ = events
-                    .send_blocking(ForwardEvent::Failed(format!("无法启动端口转发：{error}")));
+                let _ = events.send_blocking(ForwardEvent::Failed(
+                    t!("forward.error.start_failed", error = error).to_string(),
+                ));
                 return;
             }
         };
@@ -287,16 +289,18 @@ impl SshForwardTransport {
                         StartError::RemoteListen => true,
                     };
                     if !retry {
-                        return Err(format!("连接中断，自动重连失败：{reason}"));
+                        return Err(
+                            t!("forward.error.reconnect_failed", reason = reason).to_string()
+                        );
                     }
                 }
             }
 
             let Some(delay) = next_reconnect(attempt, &self.reconnect_delays) else {
                 return Err(if self.reconnect_delays.is_empty() {
-                    "与服务器的连接已中断".to_string()
+                    t!("forward.error.connection_lost").to_string()
                 } else {
-                    format!("连接中断，重连 {} 次均未成功", self.reconnect_delays.len())
+                    tn!("forward.error.reconnects_used", self.reconnect_delays.len()).to_string()
                 });
             };
             attempt += 1;
@@ -440,11 +444,9 @@ impl SshForwardTransport {
 
     fn describe_start_error(&self, error: &StartError, trust: HostTrust) -> String {
         match error {
-            StartError::RemoteListen => format!(
-                "服务器拒绝在 {} 上监听：端口可能已被占用、1024 以下的端口需要 root，\
-                 或服务器禁用了端口转发（AllowTcpForwarding）",
-                self.bind
-            ),
+            StartError::RemoteListen => {
+                t!("forward.error.remote_listen", bind = self.bind).to_string()
+            }
             StartError::Login(error) => describe_login_failure(error, trust),
         }
     }
@@ -453,10 +455,10 @@ impl SshForwardTransport {
 /// Why logging in failed, in the words the list shows.
 fn describe_login_failure(error: &anyhow::Error, trust: HostTrust) -> String {
     if trust.key_changed {
-        return "主机密钥与已保存的不一致，已阻止连接。请先核实服务器身份".into();
+        return t!("forward.error.key_changed").to_string();
     }
     if trust.unknown {
-        return "尚未信任该主机的密钥，请手动启动以确认".into();
+        return t!("forward.error.unknown_key").to_string();
     }
     // Only an unattended login fails this way; an attended one asks.
     if let Some(need) = error
@@ -464,11 +466,11 @@ fn describe_login_failure(error: &anyhow::Error, trust: HostTrust) -> String {
         .find_map(|cause| cause.downcast_ref::<MissingCredential>())
     {
         return match need {
-            MissingCredential::Password { .. } => "需要输入密码，请手动启动",
-            MissingCredential::Passphrase { .. } => "需要输入私钥口令，请手动启动",
-            MissingCredential::KeyboardInteractive => "服务器要求交互式认证，请手动启动",
+            MissingCredential::Password { .. } => t!("forward.error.needs_password"),
+            MissingCredential::Passphrase { .. } => t!("forward.error.needs_passphrase"),
+            MissingCredential::KeyboardInteractive => t!("forward.error.needs_interactive"),
         }
-        .into();
+        .to_string();
     }
     describe_login_error(error)
 }
@@ -488,7 +490,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 async fn bind_listeners(bind: &ForwardEndpoint) -> Result<Vec<TcpListener>, String> {
     let addresses = tokio::net::lookup_host((bind.bare_host(), bind.port))
         .await
-        .map_err(|_| format!("无法解析监听地址 {}", bind.host))?;
+        .map_err(|_| t!("forward.error.unresolved_bind", host = bind.host).to_string())?;
     let mut listeners = Vec::new();
     let mut failure = None;
     for address in addresses {
@@ -500,21 +502,19 @@ async fn bind_listeners(bind: &ForwardEndpoint) -> Result<Vec<TcpListener>, Stri
     match (listeners.is_empty(), failure) {
         (false, _) => Ok(listeners),
         (true, Some(error)) => Err(describe_bind_error(&error, bind)),
-        (true, None) => Err(format!("无法解析监听地址 {}", bind.host)),
+        (true, None) => Err(t!("forward.error.unresolved_bind", host = bind.host).to_string()),
     }
 }
 
 fn describe_bind_error(error: &std::io::Error, bind: &ForwardEndpoint) -> String {
     use std::io::ErrorKind;
     match error.kind() {
-        ErrorKind::AddrInUse => format!("本机端口 {} 已被占用", bind.port),
-        ErrorKind::PermissionDenied => format!(
-            "没有权限监听端口 {}（1024 以下的端口需要管理员权限）",
-            bind.port
-        ),
-        ErrorKind::AddrNotAvailable => format!("本机没有地址 {}，无法监听", bind.host),
-        _ => format!("无法监听 {bind}：{error}"),
+        ErrorKind::AddrInUse => t!("forward.error.port_in_use", port = bind.port),
+        ErrorKind::PermissionDenied => t!("forward.error.port_denied", port = bind.port),
+        ErrorKind::AddrNotAvailable => t!("forward.error.no_such_address", host = bind.host),
+        _ => t!("forward.error.bind_failed", bind = bind, error = error),
     }
+    .to_string()
 }
 
 /// Hand every accepted connection to the run, for as long as it lasts.
@@ -586,7 +586,7 @@ async fn carry_dynamic(
         // Not SOCKS is worth saying: something is pointed at this port that
         // should not be. A client that gives up or is refused is not.
         Ok(Err(SocksError::Version)) => {
-            return Some("收到的不是 SOCKS 请求，请把应用的代理类型设为 SOCKS5".into());
+            return Some(t!("forward.error.not_socks").to_string());
         }
         Ok(Err(_)) | Err(_) => return None,
     };
@@ -638,12 +638,19 @@ async fn carry_remote(open: ForwardedTcpip, target: ForwardEndpoint) -> Option<S
             open.reply.reject(ChannelOpenFailure::ConnectFailed).await;
             let reason = match failed {
                 Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
-                    "连接被拒绝，该端口上没有服务在监听".to_string()
+                    t!("forward.error.local_refused").to_string()
                 }
                 Ok(Err(error)) => error.to_string(),
-                _ => "连接超时".to_string(),
+                _ => t!("forward.error.local_timed_out").to_string(),
             };
-            return Some(format!("无法连接本机目标 {target}：{reason}"));
+            return Some(
+                t!(
+                    "forward.error.local_target_failed",
+                    target = target,
+                    reason = reason
+                )
+                .to_string(),
+            );
         }
     };
     open.reply.accept().await;
@@ -677,19 +684,22 @@ async fn open_channel(
 /// the target or the server's rules. `None` when the SSH connection itself
 /// is failing: that is reported once for the forward, not per connection.
 fn describe_open_error(error: Option<&russh::Error>, target: &str) -> Option<String> {
-    match error {
-        None => Some(format!("服务器连接 {target} 超时")),
-        Some(russh::Error::ChannelOpenFailure(reason)) => Some(match reason {
+    let reason = match error {
+        None => t!("forward.error.server_timed_out", target = target),
+        Some(russh::Error::ChannelOpenFailure(reason)) => match reason {
             ChannelOpenFailure::AdministrativelyProhibited => {
-                format!("服务器禁止转发到 {target}（AllowTcpForwarding 或 PermitOpen 限制）")
+                t!("forward.error.prohibited", target = target)
             }
-            ChannelOpenFailure::ConnectFailed => format!("服务器无法连接 {target}"),
-            ChannelOpenFailure::UnknownChannelType => "服务器不支持端口转发".to_string(),
-            ChannelOpenFailure::ResourceShortage => "服务器资源不足，无法建立转发连接".to_string(),
-            ChannelOpenFailure::Other { .. } => format!("服务器拒绝了到 {target} 的连接"),
-        }),
-        Some(_) => None,
-    }
+            ChannelOpenFailure::ConnectFailed => {
+                t!("forward.error.server_connect_failed", target = target)
+            }
+            ChannelOpenFailure::UnknownChannelType => t!("forward.error.unsupported"),
+            ChannelOpenFailure::ResourceShortage => t!("forward.error.resource_shortage"),
+            ChannelOpenFailure::Other { .. } => t!("forward.error.refused", target = target),
+        },
+        Some(_) => return None,
+    };
+    Some(reason.to_string())
 }
 
 #[cfg(test)]

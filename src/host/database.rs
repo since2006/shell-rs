@@ -12,6 +12,8 @@ use std::{
 
 use rusqlite::{Connection, params};
 
+use crate::i18n::t;
+
 use super::{
     AuthKind, BookmarkSide, Credential, CredentialDraft, CredentialId, CredentialKind,
     ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft, GroupId, Host,
@@ -986,16 +988,20 @@ fn migrate(connection: &Connection) -> rusqlite::Result<()> {
         ));
     }
     if version > SCHEMA_VERSION {
-        return Err(refusal(format!(
-            "数据库来自更新版本的 ShellRS（结构版本 {version}，本版本支持到 \
-             {SCHEMA_VERSION}），请安装最新版本"
-        )));
+        return Err(refusal(
+            t!(
+                "host.database.newer",
+                version = version,
+                supported = SCHEMA_VERSION
+            )
+            .to_string(),
+        ));
     }
     let oldest = STEPS.first().map_or(SCHEMA_VERSION, |(from, _)| *from);
     if version < oldest {
-        return Err(refusal(format!(
-            "数据库来自 ShellRS 的早期开发版本（结构版本 {version}），无法升级"
-        )));
+        return Err(refusal(
+            t!("host.database.too_old", version = version).to_string(),
+        ));
     }
     if version < SCHEMA_VERSION {
         back_up(connection, version);
@@ -1041,7 +1047,7 @@ fn back_up(connection: &Connection, version: i64) {
     let backup = format!("{path}.v{version}.bak");
     let _ = std::fs::remove_file(&backup);
     if let Err(error) = connection.execute("VACUUM INTO ?1", [&backup]) {
-        eprintln!("shellrs: 迁移前无法备份数据库：{error}");
+        eprintln!("shellrs: cannot back up the database before migrating it: {error}");
     }
 }
 

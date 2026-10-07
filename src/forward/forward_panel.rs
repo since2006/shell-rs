@@ -20,6 +20,7 @@ use crate::app::{
     SelectNextForward, SelectPreviousForward, StartForward, StopForward, ToggleSelectedForward,
 };
 use crate::host::{ForwardId, ForwardKind, HostStore, matches_forward_query};
+use crate::i18n::{UiLocale, t};
 use crate::shared::{RowTooltip, RowTooltips};
 
 /// The port-forwarding list the left dock shows in place of the hosts:
@@ -74,7 +75,7 @@ impl ForwardPanel {
     ) -> Self {
         let search = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("搜索端口转发")
+                .placeholder(t!("forward.panel.search"))
                 .clean_on_escape()
         });
         let known = store
@@ -86,6 +87,11 @@ impl ForwardPanel {
         let subscriptions = vec![
             cx.observe(&store, |this, _, cx| this.on_store_changed(cx)),
             cx.observe(&manager, |_, _, cx| cx.notify()),
+            cx.observe_global_in::<UiLocale>(window, |this, window, cx| {
+                this.search.update(cx, |search, cx| {
+                    search.set_placeholder(t!("forward.panel.search"), window, cx)
+                });
+            }),
             cx.subscribe(&search, |this, state, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.query = state.read(cx).value().to_string();
@@ -143,7 +149,7 @@ impl ForwardPanel {
         h_flex()
             .gap_1()
             .child(Icon::new(CatalogIcon::ArrowLeftRight).small())
-            .child("端口转发")
+            .child(t!("forward.panel.title"))
     }
 
     /// The dock's toolbar while this list is up.
@@ -152,8 +158,8 @@ impl ForwardPanel {
         vec![
             Button::new("new-forward")
                 .icon(IconName::Plus)
-                .tooltip("新建端口转发…")
-                .accessibility_label("新建端口转发…")
+                .tooltip(t!("forward.menu.new"))
+                .accessibility_label(t!("forward.menu.new"))
                 .on_click(move |_, window, cx| target.dispatch_action(&NewForward, window, cx)),
         ]
     }
@@ -239,16 +245,16 @@ impl ForwardPanel {
         let store = self.store.read(cx);
         let target = self.target.clone();
         let (title, hint, button) = if !store.forwards().is_empty() {
-            ("没有匹配的端口转发", None, None)
+            (t!("forward.panel.no_matches"), None, None)
         } else if store.hosts().is_empty() {
             (
-                "还没有主机",
-                Some("端口转发经由一台主机的 SSH 连接，先新建主机。"),
+                t!("forward.panel.no_hosts"),
+                Some(t!("forward.panel.no_hosts_hint")),
                 Some(
                     Button::new("forward-empty-new-host")
                         .small()
                         .icon(IconName::Plus)
-                        .label("新建主机…")
+                        .label(t!("forward.panel.new_host"))
                         .on_click(move |_, window, cx| {
                             target.dispatch_action(&NewHost, window, cx)
                         }),
@@ -256,13 +262,13 @@ impl ForwardPanel {
             )
         } else {
             (
-                "还没有端口转发",
-                Some("把本机的端口和服务器那一侧的网络接起来。"),
+                t!("forward.panel.empty"),
+                Some(t!("forward.panel.empty_hint")),
                 Some(
                     Button::new("forward-empty-new")
                         .small()
                         .icon(IconName::Plus)
-                        .label("新建端口转发…")
+                        .label(t!("forward.menu.new"))
                         .on_click(move |_, window, cx| {
                             target.dispatch_action(&NewForward, window, cx)
                         }),
@@ -272,7 +278,7 @@ impl ForwardPanel {
         v_flex()
             .id("forward-empty")
             .test_support()
-            .aria_label(title)
+            .aria_label(title.clone())
             .items_center()
             .gap_2()
             .px_4()
@@ -311,6 +317,11 @@ impl ForwardPanel {
         let toggle_tooltip = tooltip.clone();
         let status = row.status.clone();
         let target = self.target.clone();
+        let toggle_label = if active {
+            t!("forward.menu.stop")
+        } else {
+            t!("forward.menu.start")
+        };
 
         let item = ListItem::new(("forward-row", id.0))
             .w_full()
@@ -374,8 +385,8 @@ impl ForwardPanel {
                                     } else {
                                         CatalogIcon::Play
                                     })
-                                    .tooltip(if active { "停止" } else { "启动" })
-                                    .accessibility_label(if active { "停止" } else { "启动" })
+                                    .tooltip(toggle_label.clone())
+                                    .accessibility_label(toggle_label.clone())
                                     .on_click(move |_, window, cx| {
                                         // The row's own click must not see this one:
                                         // a double click here is two toggles, not a
@@ -486,33 +497,33 @@ fn build_context_menu(
 ) -> PopupMenu {
     let Some(id) = hit else {
         return menu.menu_with_icon(
-            "新建端口转发…",
+            t!("forward.menu.new"),
             Icon::new(IconName::Plus),
             Box::new(NewForward),
         );
     };
     let menu = if manager.is_active(id) {
         menu.menu_with_icon(
-            "停止",
+            t!("forward.menu.stop"),
             Icon::new(CatalogIcon::Square),
             Box::new(StopForward(id)),
         )
     } else {
         menu.menu_with_icon(
-            "启动",
+            t!("forward.menu.start"),
             Icon::new(CatalogIcon::Play),
             Box::new(StartForward(id)),
         )
     };
     menu.separator()
         .menu_with_icon(
-            "编辑端口转发…",
+            t!("forward.menu.edit"),
             Icon::new(CatalogIcon::Pencil),
             Box::new(EditForward(id)),
         )
         .separator()
         .menu_with_icon(
-            "删除",
+            t!("common.delete"),
             Icon::new(CatalogIcon::Trash),
             Box::new(DeleteForward(id)),
         )

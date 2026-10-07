@@ -16,6 +16,7 @@ use gpui_kit::*;
 
 use crate::app::CatalogIcon;
 use crate::host::ForwardKind;
+use crate::i18n::t;
 
 /// One round of the dot: across the tunnel, on to the target, then a rest
 /// before it sets out again. The rounds go on for as long as the picture is
@@ -47,20 +48,27 @@ pub(super) enum Machine {
 /// One stop: the tunnel's entrance, its exit, or what it reaches.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Stop {
-    pub role: &'static str,
+    pub role: SharedString,
     pub machine: Machine,
     pub name: SharedString,
     /// The address at this stop, or a word on what it does.
     pub detail: SharedString,
 }
 
-/// What the picture calls this computer and the server the rule goes
-/// through; [`explain`] says the same words. They name the part each plays,
+/// What the picture calls each machine, this computer and the server the
+/// rule goes through among them; [`explain`] says the same words. They name
+/// the part each plays,
 /// not the saved host: its name is whatever the user typed and need not read
 /// as a machine, and the field under the picture already says which host it
 /// is.
-const LOCAL: &str = "本机";
-const SERVER: &str = "SSH 服务器";
+fn machine_name(machine: Machine) -> SharedString {
+    match machine {
+        Machine::Local => t!("forward.diagram.local"),
+        Machine::Server => t!("forward.diagram.server"),
+        Machine::Target => t!("forward.diagram.target_service"),
+        Machine::Anywhere => t!("forward.diagram.anywhere"),
+    }
+}
 
 /// The three stops of a forward, in the order a connection passes them.
 ///
@@ -69,66 +77,61 @@ const SERVER: &str = "SSH 服务器";
 /// and a remote forward differ in which machine is the entrance and which
 /// the exit; a dynamic forward differs in the target.
 pub(super) fn stops(kind: ForwardKind, bind: &SharedString, target: &SharedString) -> [Stop; 3] {
-    let (local, server) = ((Machine::Local, LOCAL), (Machine::Server, SERVER));
     let (entrance, exit) = match kind {
-        ForwardKind::Local | ForwardKind::Dynamic => (local, server),
-        ForwardKind::Remote => (server, local),
+        ForwardKind::Local | ForwardKind::Dynamic => (Machine::Local, Machine::Server),
+        ForwardKind::Remote => (Machine::Server, Machine::Local),
     };
     let reached = match kind {
         ForwardKind::Dynamic => Stop {
-            role: "目标",
+            role: t!("forward.diagram.target"),
             machine: Machine::Anywhere,
-            name: "任意地址".into(),
-            detail: "由应用指定".into(),
+            name: machine_name(Machine::Anywhere),
+            detail: t!("forward.diagram.app_chooses"),
         },
         ForwardKind::Local | ForwardKind::Remote => Stop {
-            role: "目标",
+            role: t!("forward.diagram.target"),
             machine: Machine::Target,
-            name: "目标服务".into(),
+            name: machine_name(Machine::Target),
             detail: target.clone(),
         },
     };
     [
         Stop {
-            role: "隧道入口",
-            machine: entrance.0,
-            name: entrance.1.into(),
+            role: t!("forward.diagram.entrance"),
+            machine: entrance,
+            name: machine_name(entrance),
             detail: match kind {
                 ForwardKind::Dynamic => format!("SOCKS {bind}").into(),
-                ForwardKind::Local | ForwardKind::Remote => format!("监听 {bind}").into(),
+                ForwardKind::Local | ForwardKind::Remote => {
+                    t!("forward.diagram.listens", bind = bind)
+                }
             },
         },
         Stop {
-            role: "隧道出口",
-            machine: exit.0,
-            name: exit.1.into(),
-            detail: "代为连接目标".into(),
+            role: t!("forward.diagram.exit"),
+            machine: exit,
+            name: machine_name(exit),
+            detail: t!("forward.diagram.connects_onward"),
         },
         reached,
     ]
 }
 
 /// What the rule does, as one sentence with the form's own addresses.
-pub(super) fn explain(kind: ForwardKind, bind: &str, target: &str) -> String {
+pub(super) fn explain(kind: ForwardKind, bind: &str, target: &str) -> SharedString {
     match kind {
-        ForwardKind::Local => {
-            format!("在本机连接 {bind}，就等于从 SSH 服务器连接 {target}。")
-        }
-        ForwardKind::Remote => {
-            format!("在 SSH 服务器上连接 {bind}，就等于从本机连接 {target}。")
-        }
-        ForwardKind::Dynamic => {
-            format!("把应用的 SOCKS5 代理设为 {bind}，它的连接都从 SSH 服务器发出。")
-        }
+        ForwardKind::Local => t!("forward.explain.local", bind = bind, target = target),
+        ForwardKind::Remote => t!("forward.explain.remote", bind = bind, target = target),
+        ForwardKind::Dynamic => t!("forward.explain.dynamic", bind = bind),
     }
 }
 
 /// What the kind is for, on its card: the line people choose by.
-pub(super) fn purpose(kind: ForwardKind) -> &'static str {
+pub(super) fn purpose(kind: ForwardKind) -> SharedString {
     match kind {
-        ForwardKind::Local => "在本机访问服务器那边的服务",
-        ForwardKind::Remote => "让服务器那边访问本机的服务",
-        ForwardKind::Dynamic => "把服务器当作 SOCKS 代理",
+        ForwardKind::Local => t!("forward.purpose.local"),
+        ForwardKind::Remote => t!("forward.purpose.remote"),
+        ForwardKind::Dynamic => t!("forward.purpose.dynamic"),
     }
 }
 
@@ -142,11 +145,11 @@ pub(super) fn ssh_flag(kind: ForwardKind) -> &'static str {
 }
 
 /// A situation each kind is typically the answer to.
-pub(super) fn typical_use(kind: ForwardKind) -> &'static str {
+pub(super) fn typical_use(kind: ForwardKind) -> SharedString {
     match kind {
-        ForwardKind::Local => "常见用途：用本机的客户端连接只对服务器开放的数据库或内网后台。",
-        ForwardKind::Remote => "常见用途：把本机正在开发的服务给服务器那边访问，或接收 Webhook。",
-        ForwardKind::Dynamic => "常见用途：让浏览器经由服务器上网，不必为每个地址单独建转发。",
+        ForwardKind::Local => t!("forward.typical_use.local"),
+        ForwardKind::Remote => t!("forward.typical_use.remote"),
+        ForwardKind::Dynamic => t!("forward.typical_use.dynamic"),
     }
 }
 
@@ -237,7 +240,11 @@ impl RenderOnce for ForwardDiagram {
             .items_stretch()
             .gap_2()
             .child(render_stop(entrance, cx))
-            .child(render_hop(Some("SSH 隧道"), tunnel_dot, cx))
+            .child(render_hop(
+                Some(t!("forward.diagram.tunnel")),
+                tunnel_dot,
+                cx,
+            ))
             .child(render_stop(exit, cx))
             .child(render_hop(None, plain_dot, cx))
             .child(render_stop(reached, cx))
@@ -304,7 +311,7 @@ fn render_stop(stop: Stop, cx: &App) -> impl IntoElement {
 /// The link between two stops: a line with an arrow at its end, and the dot
 /// on it while it crosses this hop. The SSH hop is labelled and drawn
 /// heavier; the hop from the exit to the target is an ordinary connection.
-fn render_hop(label: Option<&'static str>, dot: Option<Dot>, cx: &App) -> impl IntoElement {
+fn render_hop(label: Option<SharedString>, dot: Option<Dot>, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let tunnel = label.is_some();
     let color = if tunnel {
@@ -328,7 +335,7 @@ fn render_hop(label: Option<&'static str>, dot: Option<Dot>, cx: &App) -> impl I
                     row.child(Icon::new(CatalogIcon::Lock).xsmall())
                         .child(label)
                 })
-                .when(!tunnel, |row| row.child("普通连接")),
+                .when(!tunnel, |row| row.child(t!("forward.diagram.plain"))),
         )
         .child(
             h_flex()

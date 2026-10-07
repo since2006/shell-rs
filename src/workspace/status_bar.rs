@@ -109,7 +109,7 @@ impl RenderOnce for WorkspaceStatus {
                     )
                 }
                 None => (
-                    t!("workspace.status.not_connected"),
+                    ConnectionState::Disconnected.label(),
                     Icon::new(CatalogIcon::Unplug).text_color(muted),
                     None,
                     terminal,

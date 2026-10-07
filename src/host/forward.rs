@@ -7,6 +7,7 @@ use std::fmt;
 use gpui_kit::SharedString;
 
 use super::HostId;
+use crate::i18n::t;
 
 /// Stable identity of a forwarding rule. Never reused within a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -33,11 +34,11 @@ impl ForwardKind {
         ForwardKind::Dynamic,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            ForwardKind::Local => "本地转发",
-            ForwardKind::Remote => "远程转发",
-            ForwardKind::Dynamic => "动态转发",
+            ForwardKind::Local => t!("host.forward_kind.local"),
+            ForwardKind::Remote => t!("host.forward_kind.remote"),
+            ForwardKind::Dynamic => t!("host.forward_kind.dynamic"),
         }
     }
 
@@ -132,11 +133,11 @@ pub enum ForwardDraftError {
 
 impl fmt::Display for ForwardDraftError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            ForwardDraftError::BindHost => "请输入监听地址，地址中不能有空格",
-            ForwardDraftError::BindPort => "监听端口应为 1–65535 的数字",
-            ForwardDraftError::TargetHost => "请输入目标地址，地址中不能有空格",
-            ForwardDraftError::TargetPort => "目标端口应为 1–65535 的数字",
+        formatter.write_str(&match self {
+            ForwardDraftError::BindHost => t!("host.forward_draft.bind_host"),
+            ForwardDraftError::BindPort => t!("host.forward_draft.bind_port"),
+            ForwardDraftError::TargetHost => t!("host.forward_draft.target_host"),
+            ForwardDraftError::TargetPort => t!("host.forward_draft.target_port"),
         })
     }
 }

@@ -3,6 +3,7 @@ use keyring::{Entry, Error};
 use zeroize::Zeroizing;
 
 use super::{SERVICE, SecretRef, SecretStore};
+use crate::i18n::{t, tn};
 
 /// 真正的系统钥匙串。
 ///
@@ -22,7 +23,7 @@ impl KeychainSecretStore {
     }
 
     fn entry(&self, secret: &SecretRef) -> Result<Entry> {
-        Entry::new(SERVICE, &secret.account()).map_err(|error| describe("打开", error))
+        Entry::new(SERVICE, &secret.account()).map_err(|error| describe(Action::Open, error))
     }
 }
 
@@ -37,20 +38,20 @@ impl SecretStore for KeychainSecretStore {
         match self.entry(secret)?.get_password() {
             Ok(value) => Ok(Some(Zeroizing::new(value))),
             Err(Error::NoEntry) => Ok(None),
-            Err(error) => Err(describe("读取", error)),
+            Err(error) => Err(describe(Action::Read, error)),
         }
     }
 
     fn set(&self, secret: &SecretRef, value: &str) -> Result<()> {
         self.entry(secret)?
             .set_password(value)
-            .map_err(|error| describe("写入", error))
+            .map_err(|error| describe(Action::Write, error))
     }
 
     fn delete(&self, secret: &SecretRef) -> Result<()> {
         match self.entry(secret)?.delete_credential() {
             Ok(()) | Err(Error::NoEntry) => Ok(()),
-            Err(error) => Err(describe("删除", error)),
+            Err(error) => Err(describe(Action::Delete, error)),
         }
     }
 
@@ -59,18 +60,32 @@ impl SecretStore for KeychainSecretStore {
     }
 }
 
-/// 把钥匙串错误翻成中文。`keyring` 的 `Display` 从不打印秘密本身，但仍然只在
+/// 把钥匙串错误说成界面语言的话。`keyring` 的 `Display` 从不打印秘密本身，但仍然只在
 /// 兜底分支里用它，免得将来上游改了实现把明文带出来。
-fn describe(action: &str, error: Error) -> anyhow::Error {
+fn describe(action: Action, error: Error) -> anyhow::Error {
     let reason = match error {
-        Error::NoDefaultStore => "系统钥匙串不可用".to_string(),
-        Error::NoStorageAccess(_) => "系统钥匙串被锁定或拒绝访问".to_string(),
-        Error::BadEncoding(_) => "已保存的内容不是有效的 UTF-8 文本".to_string(),
-        Error::Ambiguous(items) => format!("钥匙串里有 {} 条同名条目", items.len()),
-        Error::TooLong(_, limit) => format!("超过系统钥匙串 {limit} 个字符的长度上限"),
-        other => other.to_string(),
+        Error::NoDefaultStore => t!("secrets.keychain.no_store"),
+        Error::NoStorageAccess(_) => t!("secrets.keychain.no_access"),
+        Error::BadEncoding(_) => t!("secrets.keychain.bad_encoding"),
+        Error::Ambiguous(items) => tn!("secrets.keychain.ambiguous", items.len()),
+        Error::TooLong(_, limit) => t!("secrets.keychain.too_long", limit = limit),
+        other => other.to_string().into(),
     };
-    anyhow!("{action}系统钥匙串条目失败：{reason}")
+    anyhow!(match action {
+        Action::Open => t!("secrets.keychain.open_failed", reason = reason),
+        Action::Read => t!("secrets.keychain.read_failed", reason = reason),
+        Action::Write => t!("secrets.keychain.write_failed", reason = reason),
+        Action::Delete => t!("secrets.keychain.delete_failed", reason = reason),
+    })
+}
+
+/// What was done to a keychain entry, for the error that says it failed.
+#[derive(Clone, Copy)]
+enum Action {
+    Open,
+    Read,
+    Write,
+    Delete,
 }
 
 #[cfg(test)]

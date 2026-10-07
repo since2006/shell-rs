@@ -7,6 +7,7 @@ use std::sync::Arc;
 use gpui_kit::{Context, EventEmitter, SharedString, Task};
 use zeroize::Zeroizing;
 
+use crate::i18n::t;
 use crate::secrets::{NoSecretStore, SecretRef, SharedSecretStore, TemporarySecretStore};
 
 use super::database::now_seconds;
@@ -96,6 +97,121 @@ pub struct HostStore {
 
 /// How many hosts the start page lists as recently connected.
 const MAX_RECENT: usize = 10;
+
+/// A change the store writes through to the database, to say which one
+/// could not be saved.
+#[derive(Clone, Copy, Debug)]
+enum Change {
+    NewHost,
+    SaveHost,
+    DeleteHost,
+    DuplicateHost,
+    HostOrder,
+    NewGroup,
+    SaveGroup,
+    AddBookmark,
+    DeleteBookmark,
+    BookmarkOrder,
+    NewForward,
+    SaveForward,
+    DeleteForward,
+    NewCredential,
+    SaveCredential,
+    DeleteCredential,
+    GroupExpanded,
+    AllGroupsExpanded,
+    MoveHostNode,
+    DeleteGroup,
+    Recent,
+    HostOs,
+    NewSnippet,
+    SaveSnippet,
+    DeleteSnippet,
+    NewSnippetCategory,
+    RenameSnippetCategory,
+    DeleteSnippetCategory,
+}
+
+impl Change {
+    /// That the change is not in the database, and the database's `error`.
+    fn not_saved(self, error: &rusqlite::Error) -> SharedString {
+        match self {
+            Change::NewHost => t!("host.store.not_saved.new_host", error = error),
+            Change::SaveHost => t!("host.store.not_saved.save_host", error = error),
+            Change::DeleteHost => t!("host.store.not_saved.delete_host", error = error),
+            Change::DuplicateHost => t!("host.store.not_saved.duplicate_host", error = error),
+            Change::HostOrder => t!("host.store.not_saved.host_order", error = error),
+            Change::NewGroup => t!("host.store.not_saved.new_group", error = error),
+            Change::SaveGroup => t!("host.store.not_saved.save_group", error = error),
+            Change::AddBookmark => t!("host.store.not_saved.add_bookmark", error = error),
+            Change::DeleteBookmark => t!("host.store.not_saved.delete_bookmark", error = error),
+            Change::BookmarkOrder => t!("host.store.not_saved.bookmark_order", error = error),
+            Change::NewForward => t!("host.store.not_saved.new_forward", error = error),
+            Change::SaveForward => t!("host.store.not_saved.save_forward", error = error),
+            Change::DeleteForward => t!("host.store.not_saved.delete_forward", error = error),
+            Change::NewCredential => t!("host.store.not_saved.new_credential", error = error),
+            Change::SaveCredential => t!("host.store.not_saved.save_credential", error = error),
+            Change::DeleteCredential => t!("host.store.not_saved.delete_credential", error = error),
+            Change::GroupExpanded => t!("host.store.not_saved.group_expanded", error = error),
+            Change::AllGroupsExpanded => {
+                t!("host.store.not_saved.all_groups_expanded", error = error)
+            }
+            Change::MoveHostNode => t!("host.store.not_saved.move_node", error = error),
+            Change::DeleteGroup => t!("host.store.not_saved.delete_group", error = error),
+            Change::Recent => t!("host.store.not_saved.recent", error = error),
+            Change::HostOs => t!("host.store.not_saved.host_os", error = error),
+            Change::NewSnippet => t!("host.store.not_saved.new_snippet", error = error),
+            Change::SaveSnippet => t!("host.store.not_saved.save_snippet", error = error),
+            Change::DeleteSnippet => t!("host.store.not_saved.delete_snippet", error = error),
+            Change::NewSnippetCategory => {
+                t!("host.store.not_saved.new_snippet_category", error = error)
+            }
+            Change::RenameSnippetCategory => t!(
+                "host.store.not_saved.rename_snippet_category",
+                error = error
+            ),
+            Change::DeleteSnippetCategory => t!(
+                "host.store.not_saved.delete_snippet_category",
+                error = error
+            ),
+        }
+    }
+}
+
+/// What a failed keychain write of `secret` says, given the keychain's
+/// error: writing it when `writing`, deleting it otherwise.
+fn secret_failure(secret: &SecretRef, writing: bool) -> fn(&str) -> SharedString {
+    match (secret, writing) {
+        (SecretRef::Password { .. }, true) => {
+            |error| t!("host.store.secret.password_write", error = error)
+        }
+        (SecretRef::Password { .. }, false) => {
+            |error| t!("host.store.secret.password_delete", error = error)
+        }
+        (SecretRef::Passphrase { .. }, true) => {
+            |error| t!("host.store.secret.passphrase_write", error = error)
+        }
+        (SecretRef::Passphrase { .. }, false) => {
+            |error| t!("host.store.secret.passphrase_delete", error = error)
+        }
+        (SecretRef::Credential { .. }, true) => {
+            |error| t!("host.store.secret.credential_write", error = error)
+        }
+        (SecretRef::Credential { .. }, false) => {
+            |error| t!("host.store.secret.credential_delete", error = error)
+        }
+        (SecretRef::Proxy { .. }, true) => {
+            |error| t!("host.store.secret.proxy_write", error = error)
+        }
+        (SecretRef::Proxy { .. }, false) => {
+            |error| t!("host.store.secret.proxy_delete", error = error)
+        }
+        // Kept in memory, which does not fail.
+        (SecretRef::Temporary { .. }, _) => {
+            |error| t!("host.store.secret.temporary", error = error)
+        }
+    }
+}
 
 /// What the store tells the workspace about, beyond plain change notification.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -216,9 +332,10 @@ impl HostStore {
     /// on the exact shape (ids 1..=6 in the order listed here).
     pub fn seed() -> Self {
         let mut store = Self::empty();
-        let production = store.insert_group_unnotified(GroupDraft::new("生产", None));
-        let staging = store.insert_group_unnotified(GroupDraft::new("测试", None));
-        let development = store.insert_group_unnotified(GroupDraft::new("开发", None));
+        // Test data in Chinese, as the UI tests look for it.
+        let [production, staging, development] =
+            ["生产", "测试", "开发"] // i18n: keep
+                .map(|name| store.insert_group_unnotified(GroupDraft::new(name, None)));
         let drafts = [
             HostDraft::new(
                 "web-01",
@@ -478,7 +595,7 @@ impl HostStore {
     pub fn insert(&mut self, draft: HostDraft, cx: &mut Context<Self>) -> HostId {
         let id = self.insert_unnotified(draft);
         if let Some(host) = self.host(id) {
-            self.persist("新建主机", cx, |db| db.insert_host(host));
+            self.persist(Change::NewHost, cx, |db| db.insert_host(host));
         }
         cx.notify();
         id
@@ -516,7 +633,7 @@ impl HostStore {
         let updated = self.update_unnotified(id, draft);
         if updated {
             if let Some(host) = self.host(id) {
-                self.persist("保存主机", cx, |db| db.update_host(host));
+                self.persist(Change::SaveHost, cx, |db| db.update_host(host));
             }
             if let Some(previous) = previous {
                 // The host no longer reads the password it did, say
@@ -563,7 +680,7 @@ impl HostStore {
         let login = self.login(id);
         let removed = self.remove_unnotified(id);
         if removed {
-            self.persist("删除主机", cx, |db| db.remove_host(id));
+            self.persist(Change::DeleteHost, cx, |db| db.remove_host(id));
             if let Some(login) = login {
                 self.forget_passwords_of(&login, cx);
             }
@@ -595,12 +712,14 @@ impl HostStore {
         self.hosts.len() != before
     }
 
-    /// Copy a host as `<name> 副本`, placed right after the original.
+    /// Copy a host as `<name> 副本` (`<name> copy`), placed right after the
+    /// original. The name is the copy's own from then on, in the language it
+    /// was made in.
     pub fn duplicate(&mut self, id: HostId, cx: &mut Context<Self>) -> Option<HostId> {
         let copy = self.duplicate_unnotified(id)?;
         if let Some(host) = self.host(copy) {
-            self.persist("复制主机", cx, |db| db.insert_host(host));
-            self.persist("保存主机顺序", cx, |db| {
+            self.persist(Change::DuplicateHost, cx, |db| db.insert_host(host));
+            self.persist(Change::HostOrder, cx, |db| {
                 db.save_tree_order(&self.groups, &self.hosts)
             });
         }
@@ -611,7 +730,7 @@ impl HostStore {
     pub fn duplicate_unnotified(&mut self, id: HostId) -> Option<HostId> {
         let ix = self.hosts.iter().position(|s| s.id == id)?;
         let mut draft = self.hosts[ix].draft();
-        draft.name = format!("{} 副本", draft.name).into();
+        draft.name = t!("host.store.copy_name", name = draft.name);
         // Same host, so the copy already knows what it will find there.
         let os = self.hosts[ix].os;
         let copy_id = HostId(self.next_host_id);
@@ -633,7 +752,7 @@ impl HostStore {
     pub fn insert_group(&mut self, draft: GroupDraft, cx: &mut Context<Self>) -> GroupId {
         let id = self.insert_group_unnotified(draft);
         if let Some(group) = self.group(id) {
-            self.persist("新建分组", cx, |db| db.insert_group(group));
+            self.persist(Change::NewGroup, cx, |db| db.insert_group(group));
         }
         cx.notify();
         id
@@ -654,7 +773,7 @@ impl HostStore {
         let updated = self.update_group_unnotified(id, draft);
         if updated {
             if let Some(group) = self.group(id) {
-                self.persist("保存分组", cx, |db| db.update_group(group));
+                self.persist(Change::SaveGroup, cx, |db| db.update_group(group));
             }
             cx.notify();
         }
@@ -711,7 +830,9 @@ impl HostStore {
         // A link's host is not in the database: its bookmarks live as long
         // as it does.
         if !self.is_temporary(id) {
-            self.persist("添加书签", cx, |db| db.insert_bookmark(id, side, path));
+            self.persist(Change::AddBookmark, cx, |db| {
+                db.insert_bookmark(id, side, path)
+            });
         }
         cx.notify();
         true
@@ -740,7 +861,9 @@ impl HostStore {
             return false;
         }
         if !self.is_temporary(id) {
-            self.persist("删除书签", cx, |db| db.remove_bookmark(id, side, path));
+            self.persist(Change::DeleteBookmark, cx, |db| {
+                db.remove_bookmark(id, side, path)
+            });
         }
         cx.notify();
         true
@@ -774,7 +897,7 @@ impl HostStore {
             return false;
         }
         if !self.is_temporary(id) {
-            self.persist("调整书签顺序", cx, |db| {
+            self.persist(Change::BookmarkOrder, cx, |db| {
                 db.set_bookmark_order(id, side, self.bookmarks(id, side))
             });
         }
@@ -827,7 +950,7 @@ impl HostStore {
     ) -> Option<ForwardId> {
         let id = self.insert_forward_unnotified(draft)?;
         if let Some(rule) = self.forward(id) {
-            self.persist("新建端口转发", cx, |db| db.insert_forward(rule));
+            self.persist(Change::NewForward, cx, |db| db.insert_forward(rule));
         }
         cx.notify();
         Some(id)
@@ -864,7 +987,7 @@ impl HostStore {
             return false;
         }
         if let Some(rule) = self.forward(id) {
-            self.persist("保存端口转发", cx, |db| db.update_forward(rule));
+            self.persist(Change::SaveForward, cx, |db| db.update_forward(rule));
         }
         if needs_restart {
             cx.emit(HostStoreEvent::ForwardSettingsChanged(id));
@@ -890,7 +1013,7 @@ impl HostStore {
         if !self.remove_forward_unnotified(id) {
             return false;
         }
-        self.persist("删除端口转发", cx, |db| db.remove_forward(id));
+        self.persist(Change::DeleteForward, cx, |db| db.remove_forward(id));
         cx.notify();
         true
     }
@@ -1004,7 +1127,9 @@ impl HostStore {
     ) -> CredentialId {
         let id = self.insert_credential_unnotified(draft);
         if let Some(credential) = self.credential(id) {
-            self.persist("新建凭据", cx, |db| db.insert_credential(credential));
+            self.persist(Change::NewCredential, cx, |db| {
+                db.insert_credential(credential)
+            });
         }
         cx.notify();
         id
@@ -1047,7 +1172,9 @@ impl HostStore {
             return false;
         }
         if let Some(credential) = self.credential(id) {
-            self.persist("保存凭据", cx, |db| db.update_credential(credential));
+            self.persist(Change::SaveCredential, cx, |db| {
+                db.update_credential(credential)
+            });
         }
         if previous.kind == CredentialKind::Password
             && self
@@ -1108,7 +1235,9 @@ impl HostStore {
         };
         let released = self.remove_credential_unnotified(id);
         let auth = credential.kind.without_credential();
-        self.persist("删除凭据", cx, |db| db.remove_credential(id, auth));
+        self.persist(Change::DeleteCredential, cx, |db| {
+            db.remove_credential(id, auth)
+        });
         if credential.kind == CredentialKind::Password {
             self.save_secret(credential.password_secret(), None, cx);
         }
@@ -1155,7 +1284,7 @@ impl HostStore {
             return false;
         }
         group.expanded = expanded;
-        self.persist("保存分组展开状态", cx, |db| {
+        self.persist(Change::GroupExpanded, cx, |db| {
             db.set_group_expanded(id, expanded)
         });
         cx.notify();
@@ -1170,7 +1299,7 @@ impl HostStore {
         for group in &mut self.groups {
             group.expanded = expanded;
         }
-        self.persist("保存所有分组展开状态", cx, |db| {
+        self.persist(Change::AllGroupsExpanded, cx, |db| {
             db.set_all_groups_expanded(expanded)
         });
         cx.notify();
@@ -1183,7 +1312,7 @@ impl HostStore {
         if !self.move_node_unnotified(source, drop) {
             return false;
         }
-        self.persist("调整主机顺序", cx, |db| {
+        self.persist(Change::MoveHostNode, cx, |db| {
             db.save_tree_order(&self.groups, &self.hosts)
         });
         cx.notify();
@@ -1287,7 +1416,7 @@ impl HostStore {
         let passwords = self.passwords_of(&self.hosts_under(id));
         let removed = self.remove_group_unnotified(id);
         // One delete mirrors the whole subtree: both foreign keys cascade.
-        self.persist("删除分组", cx, |db| db.remove_group(id));
+        self.persist(Change::DeleteGroup, cx, |db| db.remove_group(id));
         for password in passwords {
             self.forget_password(password, cx);
         }
@@ -1319,7 +1448,7 @@ impl HostStore {
             return;
         }
         if state.is_connected() && !self.is_temporary(id) {
-            self.persist("记录最近连接", cx, |db| {
+            self.persist(Change::Recent, cx, |db| {
                 db.touch_connected(id, now_seconds())
             });
         }
@@ -1353,7 +1482,7 @@ impl HostStore {
             return;
         }
         if !self.is_temporary(id) {
-            self.persist("记录主机系统", cx, |db| db.set_host_os(id, os));
+            self.persist(Change::HostOs, cx, |db| db.set_host_os(id, os));
         }
         cx.notify();
     }
@@ -1406,7 +1535,7 @@ impl HostStore {
         let dir = self
             .key_dir
             .as_deref()
-            .ok_or_else(|| io::Error::other("没有可以保存私钥的目录"))?;
+            .ok_or_else(|| io::Error::other(t!("host.store.no_key_dir").to_string()))?;
         let replace = credential
             .and_then(|id| self.credential(id))
             .and_then(|credential| credential.key_path.as_deref())
@@ -1442,7 +1571,7 @@ impl HostStore {
         if let Err(error) = std::fs::remove_file(path)
             && error.kind() != io::ErrorKind::NotFound
         {
-            self.report_failure(format!("ShellRS 保存的私钥未能删除：{error}").into(), cx);
+            self.report_failure(t!("host.store.key_not_deleted", error = error), cx);
         }
         self.save_secret(SecretRef::passphrase(path), None, cx);
     }
@@ -1472,18 +1601,7 @@ impl HostStore {
         cx: &mut Context<Self>,
     ) -> Task<Result<(), SharedString>> {
         let secrets = self.secrets();
-        let failure = match (&secret, value.is_some()) {
-            (SecretRef::Password { .. }, true) => "密码未能写入系统钥匙串",
-            (SecretRef::Password { .. }, false) => "密码未能从系统钥匙串删除",
-            (SecretRef::Passphrase { .. }, true) => "私钥口令未能写入系统钥匙串",
-            (SecretRef::Passphrase { .. }, false) => "私钥口令未能从系统钥匙串删除",
-            (SecretRef::Credential { .. }, true) => "凭据的密码未能写入系统钥匙串",
-            (SecretRef::Credential { .. }, false) => "凭据的密码未能从系统钥匙串删除",
-            (SecretRef::Proxy { .. }, true) => "代理的密码未能写入系统钥匙串",
-            (SecretRef::Proxy { .. }, false) => "代理的密码未能从系统钥匙串删除",
-            // Kept in memory, which does not fail.
-            (SecretRef::Temporary { .. }, _) => "这次连接的密码未能记下",
-        };
+        let failure = secret_failure(&secret, value.is_some());
         cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
@@ -1495,7 +1613,7 @@ impl HostStore {
                 })
                 .await;
             result.map_err(|error| {
-                let message = SharedString::from(format!("{failure}：{error}"));
+                let message = failure(&error.to_string());
                 this.update(cx, |_, cx| {
                     cx.emit(HostStoreEvent::PersistFailed(message.clone()));
                 })
@@ -1556,14 +1674,14 @@ impl HostStore {
     /// write becomes an event; the in-memory change stands.
     fn persist(
         &self,
-        action: &str,
+        change: Change,
         cx: &mut Context<Self>,
         write: impl FnOnce(&HostDatabase) -> rusqlite::Result<()>,
     ) {
         if let Some(database) = &self.database
             && let Err(error) = write(database)
         {
-            self.report_failure(format!("{action}未能保存到本地数据库：{error}").into(), cx);
+            self.report_failure(change.not_saved(&error), cx);
         }
     }
 

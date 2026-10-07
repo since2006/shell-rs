@@ -19,6 +19,7 @@ use crate::app::{
     SelectNextCredential, SelectPreviousCredential,
 };
 use crate::host::{CredentialId, CredentialKind, HostStore, matches_credential_query};
+use crate::i18n::{UiLocale, t, tn};
 use crate::shared::{RowTooltip, RowTooltips};
 
 /// The credential list the left dock shows in place of the hosts: every
@@ -69,7 +70,7 @@ impl CredentialPanel {
     ) -> Self {
         let search = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("搜索凭据")
+                .placeholder(t!("credential.panel.search"))
                 .clean_on_escape()
         });
         let known = store
@@ -80,6 +81,11 @@ impl CredentialPanel {
             .collect();
         let subscriptions = vec![
             cx.observe(&store, |this, _, cx| this.on_store_changed(cx)),
+            cx.observe_global_in::<UiLocale>(window, |this, window, cx| {
+                this.search.update(cx, |search, cx| {
+                    search.set_placeholder(t!("credential.panel.search"), window, cx)
+                });
+            }),
             cx.subscribe(&search, |this, state, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.query = state.read(cx).value().to_string();
@@ -136,7 +142,7 @@ impl CredentialPanel {
         h_flex()
             .gap_1()
             .child(Icon::new(CatalogIcon::KeyRound).small())
-            .child("凭据")
+            .child(t!("credential.panel.title"))
     }
 
     /// The dock's toolbar while this list is up.
@@ -145,8 +151,8 @@ impl CredentialPanel {
         vec![
             Button::new("new-credential")
                 .icon(IconName::Plus)
-                .tooltip("新建凭据…")
-                .accessibility_label("新建凭据…")
+                .tooltip(t!("credential.menu.new"))
+                .accessibility_label(t!("credential.menu.new"))
                 .on_click(move |_, window, cx| target.dispatch_action(&NewCredential, window, cx)),
         ]
     }
@@ -162,14 +168,14 @@ impl CredentialPanel {
                 let hosts = store.hosts_using(credential.id).count();
                 let summary = credential.summary(store.key_dir());
                 let detail = match hosts {
-                    0 => summary,
-                    hosts => format!("{summary} · {hosts} 台主机"),
+                    0 => summary.into(),
+                    hosts => tn!("credential.panel.detail", hosts, summary = summary),
                 };
                 CredentialRow {
                     id: credential.id,
                     kind: credential.kind,
                     name: credential.name.clone(),
-                    detail: detail.into(),
+                    detail,
                     key_path: credential.key_path.clone(),
                 }
             })
@@ -226,12 +232,12 @@ impl CredentialPanel {
         let muted = cx.theme().muted_foreground;
         let target = self.target.clone();
         let (title, hint, buttons) = if !self.store.read(cx).credentials().is_empty() {
-            ("没有匹配的凭据", None, None)
+            (t!("credential.panel.no_matches"), None, None)
         } else {
             let generate = target.clone();
             (
-                "还没有凭据",
-                Some("保存一套用户名和密码、私钥或 SSH Agent，让多台主机共用。"),
+                t!("credential.panel.empty"),
+                Some(t!("credential.panel.empty_hint")),
                 Some(
                     h_flex()
                         .gap_2()
@@ -241,7 +247,7 @@ impl CredentialPanel {
                             Button::new("credential-empty-new")
                                 .small()
                                 .icon(IconName::Plus)
-                                .label("新建凭据…")
+                                .label(t!("credential.menu.new"))
                                 .on_click(move |_, window, cx| {
                                     target.dispatch_action(&NewCredential, window, cx)
                                 }),
@@ -250,7 +256,7 @@ impl CredentialPanel {
                             Button::new("credential-empty-generate")
                                 .small()
                                 .icon(CatalogIcon::KeyRound)
-                                .label("生成密钥…")
+                                .label(t!("credential.menu.generate"))
                                 .on_click(move |_, window, cx| {
                                     generate.dispatch_action(&GenerateCredentialKey, window, cx)
                                 }),
@@ -261,7 +267,7 @@ impl CredentialPanel {
         v_flex()
             .id("credential-empty")
             .test_support()
-            .aria_label(title)
+            .aria_label(title.clone())
             .items_center()
             .gap_2()
             .px_4()
@@ -374,31 +380,31 @@ fn build_context_menu(hit: Option<(CredentialId, CredentialKind)>, menu: PopupMe
     let Some((id, kind)) = hit else {
         return menu
             .menu_with_icon(
-                "新建凭据…",
+                t!("credential.menu.new"),
                 Icon::new(IconName::Plus),
                 Box::new(NewCredential),
             )
             .menu_with_icon(
-                "生成密钥…",
+                t!("credential.menu.generate"),
                 Icon::new(CatalogIcon::KeyRound),
                 Box::new(GenerateCredentialKey),
             );
     };
     menu.menu_with_icon(
-        "编辑凭据…",
+        t!("credential.menu.edit"),
         Icon::new(CatalogIcon::Pencil),
         Box::new(EditCredential(id)),
     )
     .when(kind == CredentialKind::Key, |menu| {
         menu.menu_with_icon(
-            "复制公钥",
+            t!("credential.menu.copy_public_key"),
             Icon::new(CatalogIcon::ClipboardCopy),
             Box::new(CopyCredentialPublicKey(id)),
         )
     })
     .separator()
     .menu_with_icon(
-        "删除",
+        t!("common.delete"),
         Icon::new(CatalogIcon::Trash),
         Box::new(DeleteCredential(id)),
     )

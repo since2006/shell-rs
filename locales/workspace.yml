@@ -55,9 +55,6 @@ workspace.status.connecting_to:
 workspace.status.disconnected_from:
   zh-CN: 未连接 %{name}
   en: Not connected to %{name}
-workspace.status.not_connected:
-  zh-CN: 未连接
-  en: Not connected
 # How the connection stands, then what went wrong.
 workspace.status.problem:
   zh-CN: "%{state}：%{problem}"

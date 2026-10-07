@@ -24,6 +24,7 @@ use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
 
 use crate::app::ConnectHost;
+use crate::i18n::t;
 use crate::shared::HostMark;
 
 use super::{HostId, HostOs, HostStore};
@@ -335,14 +336,14 @@ impl ListDelegate for QuickConnectList {
         cx: &mut Context<ListState<Self>>,
     ) -> impl IntoElement {
         let text = if !self.choice.has_hosts() {
-            "还没有保存的主机"
+            t!("host.quick_connect.no_hosts")
         } else {
-            "没有匹配的主机"
+            t!("host.quick_connect.no_matches")
         };
         h_flex()
             .id("quick-connect-empty")
             .test_support()
-            .aria_label(text)
+            .aria_label(text.clone())
             .size_full()
             .justify_center()
             .text_sm()
@@ -352,7 +353,7 @@ impl ListDelegate for QuickConnectList {
 }
 
 /// One key and what it does, for the footer.
-fn key_hint(keys: &str, label: &'static str) -> impl IntoElement {
+fn key_hint(keys: &str, label: SharedString) -> impl IntoElement {
     h_flex()
         .gap_1p5()
         .children(Keystroke::parse(keys).ok().map(Kbd::new))
@@ -385,7 +386,7 @@ pub fn open_quick_connect_dialog(
         move |dialog, _, cx| {
             let theme = cx.theme();
             dialog
-                .title("快速连接")
+                .title(t!("host.quick_connect.title"))
                 .overlay_closable(false)
                 .child(
                     div()
@@ -435,8 +436,7 @@ pub fn open_quick_connect_dialog(
                                 })
                         })
                         .child(
-                            List::new(&list)
-                                .search_placeholder("搜索主机名称、地址、用户名、备注或分组"),
+                            List::new(&list).search_placeholder(t!("host.quick_connect.search")),
                         ),
                 )
                 .when(MULTIPLE, |dialog| {
@@ -447,9 +447,12 @@ pub fn open_quick_connect_dialog(
                             .gap_4()
                             .text_sm()
                             .text_color(theme.muted_foreground)
-                            .child(key_hint("tab", "选中"))
-                            .child(key_hint(select_all, "全选"))
-                            .child(key_hint("shift-enter", "批量连接")),
+                            .child(key_hint("tab", t!("host.quick_connect.choose")))
+                            .child(key_hint(select_all, t!("host.quick_connect.choose_all")))
+                            .child(key_hint(
+                                "shift-enter",
+                                t!("host.quick_connect.connect_chosen"),
+                            )),
                     )
                 })
         }

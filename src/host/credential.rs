@@ -8,6 +8,7 @@ use std::path::Path;
 
 use gpui_kit::SharedString;
 
+use crate::i18n::t;
 use crate::secrets::SecretRef;
 
 use super::private_key::is_kept_in;
@@ -41,11 +42,11 @@ impl CredentialKind {
         CredentialKind::Agent,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            CredentialKind::Password => "密码",
-            CredentialKind::Key => "密钥",
-            CredentialKind::Agent => "SSH Agent",
+            CredentialKind::Password => t!("host.credential_kind.password"),
+            CredentialKind::Key => t!("host.credential_kind.key"),
+            CredentialKind::Agent => "SSH Agent".into(),
         }
     }
 
@@ -89,9 +90,9 @@ pub enum CredentialDraftError {
 
 impl fmt::Display for CredentialDraftError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            CredentialDraftError::Name => "请输入名称",
-            CredentialDraftError::KeyPath => "密钥凭据需要选择私钥文件",
+        formatter.write_str(&match self {
+            CredentialDraftError::Name => t!("host.credential_draft.name"),
+            CredentialDraftError::KeyPath => t!("host.credential_draft.key_path"),
         })
     }
 }
@@ -249,10 +250,11 @@ pub fn matches_credential_query(credential: &Credential, query: &str) -> bool {
     if query.is_empty() {
         return true;
     }
+    let kind = credential.kind.label();
     [
         Some(credential.name.as_ref()),
         Some(credential.user.as_ref()),
-        Some(credential.kind.label()),
+        Some(kind.as_ref()),
         credential.key_path.as_deref(),
     ]
     .into_iter()

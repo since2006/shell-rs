@@ -27,6 +27,7 @@ use crate::app::{
     OpenExplorer, RenameGroup,
 };
 
+use crate::i18n::{UiLocale, t, tn};
 use crate::shared::{HostMark, RowTooltip, RowTooltips};
 
 use super::{
@@ -83,12 +84,17 @@ impl HostPanel {
         let tree_state = cx.new(|cx| TreeState::new(cx).items(items));
         let search = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("搜索主机或分组")
+                .placeholder(t!("host.panel.search"))
                 .clean_on_escape()
         });
 
         let subscriptions = vec![
             cx.observe(&store, |this, _, cx| this.on_store_changed(cx)),
+            cx.observe_global_in::<UiLocale>(window, |this, window, cx| {
+                this.search.update(cx, |search, cx| {
+                    search.set_placeholder(t!("host.panel.search"), window, cx)
+                });
+            }),
             cx.subscribe_in(
                 &search,
                 window,
@@ -339,7 +345,7 @@ impl Panel for HostPanel {
         h_flex()
             .gap_1()
             .child(Icon::new(CatalogIcon::Server).small())
-            .child("主机")
+            .child(t!("host.panel.title"))
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
@@ -347,11 +353,11 @@ impl Panel for HostPanel {
         Some(vec![
             Button::new("new-host-panel")
                 .icon(IconName::Plus)
-                .tooltip("新建主机…")
+                .tooltip(t!("host.menu.new_host"))
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(NewHost), cx)),
             Button::new("new-group")
                 .icon(Icon::new(CatalogIcon::FolderPlus))
-                .tooltip("新建分组…")
+                .tooltip(t!("host.menu.new_group"))
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(NewGroup), cx)),
         ])
     }
@@ -618,7 +624,7 @@ fn render_row(
                 div()
                     .id(("group-count", id.0))
                     .test_support()
-                    .aria_label(format!("{count} 台主机"))
+                    .aria_label(tn!("host.count.hosts", count))
                     .flex_shrink_0()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground.opacity(0.7))
@@ -785,28 +791,28 @@ pub fn host_menu(menu: PopupMenu, host: &Host) -> PopupMenu {
     let id = host.id;
     // Named after what the address is, as in the tabs' menus.
     let copy_address = if host.address_is_ip() {
-        "复制 IP 地址"
+        t!("host.menu.copy_ip")
     } else {
-        "复制主机名"
+        t!("host.menu.copy_host_name")
     };
     menu.menu_with_icon(
-        "连接",
+        t!("host.menu.connect"),
         Icon::new(CatalogIcon::Plug),
         Box::new(ConnectHost(id)),
     )
     .menu_with_icon(
-        "打开 SFTP",
+        t!("host.menu.open_sftp"),
         Icon::new(CatalogIcon::FolderTree),
         Box::new(OpenExplorer(id)),
     )
     .separator()
     .menu_with_icon(
-        "编辑主机…",
+        t!("host.menu.edit_host"),
         Icon::new(CatalogIcon::Pencil),
         Box::new(EditHost(id)),
     )
     .menu_with_icon(
-        "复制",
+        t!("host.menu.duplicate"),
         Icon::new(IconName::Copy),
         Box::new(DuplicateHost(id)),
     )
@@ -817,13 +823,13 @@ pub fn host_menu(menu: PopupMenu, host: &Host) -> PopupMenu {
         Box::new(CopyHostAddress(id)),
     )
     .menu_with_icon(
-        "复制 ID",
+        t!("host.menu.copy_id"),
         Icon::new(CatalogIcon::ClipboardCopy),
         Box::new(CopyHostId(id)),
     )
     .separator()
     .menu_with_icon(
-        "删除",
+        t!("common.delete"),
         Icon::new(CatalogIcon::Trash),
         Box::new(DeleteHost(id)),
     )
@@ -837,48 +843,52 @@ fn build_context_menu(node: Option<HostNode>, store: &HostStore, menu: PopupMenu
         },
         Some(HostNode::Group(id)) => menu
             .menu_with_icon(
-                "连接组内主机",
+                t!("host.menu.connect_group"),
                 Icon::new(CatalogIcon::Plug),
                 Box::new(ConnectGroup(id)),
             )
             .separator()
             .menu_with_icon(
-                "新建主机…",
+                t!("host.menu.new_host"),
                 Icon::new(IconName::Plus),
                 Box::new(NewHostInGroup(id)),
             )
             .menu_with_icon(
-                "新建子分组…",
+                t!("host.menu.new_subgroup"),
                 Icon::new(CatalogIcon::FolderPlus),
                 Box::new(NewChildGroup(id)),
             )
             .separator()
             .menu_with_icon(
-                "展开全部分组",
+                t!("host.menu.expand_all"),
                 Icon::new(IconName::FolderOpen),
                 Box::new(ExpandAllGroups),
             )
             .menu_with_icon(
-                "折叠全部分组",
+                t!("host.menu.collapse_all"),
                 Icon::new(IconName::Folder),
                 Box::new(CollapseAllGroups),
             )
             .separator()
             .menu_with_icon(
-                "重命名分组…",
+                t!("host.menu.rename_group"),
                 Icon::new(CatalogIcon::Pencil),
                 Box::new(RenameGroup(id)),
             )
             .separator()
             .menu_with_icon(
-                "删除分组",
+                t!("host.menu.delete_group"),
                 Icon::new(CatalogIcon::Trash),
                 Box::new(DeleteGroup(id)),
             ),
         None => menu
-            .menu_with_icon("新建主机…", Icon::new(IconName::Plus), Box::new(NewHost))
             .menu_with_icon(
-                "新建分组…",
+                t!("host.menu.new_host"),
+                Icon::new(IconName::Plus),
+                Box::new(NewHost),
+            )
+            .menu_with_icon(
+                t!("host.menu.new_group"),
                 Icon::new(CatalogIcon::FolderPlus),
                 Box::new(NewGroup),
             ),

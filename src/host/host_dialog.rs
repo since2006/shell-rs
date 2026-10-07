@@ -21,6 +21,7 @@ use zeroize::Zeroizing;
 
 use crate::app::ConnectHost;
 use crate::connection::{LoginTest, SharedConnectionTester, TrustCallback, UnknownHostPrompt};
+use crate::i18n::{t, tn};
 
 use super::secret_fields::SecretFields;
 use super::{
@@ -32,9 +33,6 @@ use crate::shared::{
     Segment, SegmentedControl, confirm_delete, dismiss_form_error, form_error_notification,
     parse_port,
 };
-
-/// The label of the row that puts a host at the root of the tree.
-pub const NO_GROUP_LABEL: &str = "（无分组）";
 
 /// Where the dialog's top sits and how tall it may grow, as fractions of
 /// the window's height.
@@ -61,11 +59,11 @@ impl AuthSource {
         AuthSource::NoPassword,
     ];
 
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            AuthSource::Password => "密码",
-            AuthSource::Credential => "使用凭据",
-            AuthSource::NoPassword => "无密码",
+            AuthSource::Password => t!("host.auth.password"),
+            AuthSource::Credential => t!("host.auth.credential"),
+            AuthSource::NoPassword => t!("host.auth.no_password"),
         }
     }
 
@@ -80,12 +78,6 @@ impl AuthSource {
     }
 }
 
-/// What a 临时连接's dialog says under its fields.
-const TEMPORARY_NOTE: &str = "仅当前使用的临时会话，不会保存到主机列表。";
-
-/// What 「无密码」 tries, under the choice.
-const NO_PASSWORD_NOTE: &str = "依次尝试服务器免认证、SSH Agent 和 ~/.ssh 中的默认私钥。";
-
 /// How a host is reached, as the form's 「连接方式」 offers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RouteChoice {
@@ -98,11 +90,11 @@ impl RouteChoice {
     /// Every way, in the order the form lists them.
     const ALL: [RouteChoice; 3] = [RouteChoice::Direct, RouteChoice::Jump, RouteChoice::Proxy];
 
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            RouteChoice::Direct => "直接连接",
-            RouteChoice::Jump => "SSH 跳板",
-            RouteChoice::Proxy => "代理连接",
+            RouteChoice::Direct => t!("host.route.direct"),
+            RouteChoice::Jump => t!("host.route.jump"),
+            RouteChoice::Proxy => t!("host.route.proxy"),
         }
     }
 
@@ -114,12 +106,6 @@ impl RouteChoice {
         }
     }
 }
-
-/// What the jump-host box says above the chain.
-const JUMP_NOTE: &str = "依次经过跳板主机连接到当前主机，可添加多台。";
-
-/// What the proxy box says under its fields.
-const PROXY_NOTE: &str = "目标地址由代理服务器解析；代理不需要认证时，用户名和密码留空。";
 
 /// A host the form offers as a jump host, as it was when the form opened.
 #[derive(Clone)]
@@ -145,7 +131,11 @@ impl SearchableListItem for JumpHost {
 
     /// The name and the address, both of which the search looks in.
     fn title(&self) -> SharedString {
-        format!("{}（{}）", self.name, self.address).into()
+        t!(
+            "host.dialog.jump_host_title",
+            name = self.name,
+            address = self.address
+        )
     }
 
     fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -245,7 +235,7 @@ impl HostForm {
         // A host with no group sits at the root of the tree, which is where
         // every host starts when the database is still empty.
         let mut group_ids: Vec<Option<GroupId>> = vec![None];
-        let mut group_names: Vec<SharedString> = vec![NO_GROUP_LABEL.into()];
+        let mut group_names: Vec<SharedString> = vec![t!("host.dialog.no_group")];
         for (id, path) in options {
             group_ids.push(Some(id));
             group_names.push(path);
@@ -263,12 +253,12 @@ impl HostForm {
 
         let name = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("例如 web-01")
+                .placeholder(t!("host.dialog.name_placeholder"))
                 .default_value(draft.name.clone())
         });
         let address = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("主机名或 IP 地址")
+                .placeholder(t!("host.dialog.address_placeholder"))
                 .default_value(draft.address.clone())
         });
         let port = cx.new(|cx| {
@@ -331,7 +321,7 @@ impl HostForm {
             SelectState::new(
                 ProxyKind::ALL
                     .iter()
-                    .map(|kind| SharedString::from(kind.label()))
+                    .map(|kind| kind.label())
                     .collect::<Vec<_>>(),
                 Some(IndexPath::new(proxy_kind_ix)),
                 window,
@@ -340,7 +330,7 @@ impl HostForm {
         });
         let proxy_host = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("例如 127.0.0.1")
+                .placeholder(t!("host.dialog.proxy_host_placeholder"))
                 .default_value(
                     proxy
                         .as_ref()
@@ -358,7 +348,7 @@ impl HostForm {
         });
         let proxy_user = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("可选")
+                .placeholder(t!("host.dialog.optional"))
                 .default_value(
                     proxy
                         .as_ref()
@@ -368,7 +358,7 @@ impl HostForm {
         });
         let proxy_secret = cx.new(|cx| {
             let mut fields = SecretFields::new(secrets, None, window, cx);
-            fields.set_password_placeholder("可选", window, cx);
+            fields.set_password_placeholder(t!("host.dialog.optional"), window, cx);
             fields
         });
         if let Some(secret) = proxy.as_ref().and_then(ProxySettings::password_secret) {
@@ -451,7 +441,7 @@ impl HostForm {
         let mut form = Self::new(None, None, store, tester, window, cx);
         form.temporary = true;
         form.name.update(cx, |input, cx| {
-            input.set_placeholder("可选，默认用地址", window, cx)
+            input.set_placeholder(t!("host.dialog.temporary_name_placeholder"), window, cx)
         });
         form
     }
@@ -501,7 +491,7 @@ impl HostForm {
     }
 
     /// The route the form describes, or what is missing from it.
-    fn committed_route(&self, cx: &App) -> Result<Route, &'static str> {
+    fn committed_route(&self, cx: &App) -> Result<Route, SharedString> {
         match self.route {
             RouteChoice::Direct => Ok(Route::Direct),
             RouteChoice::Jump if self.hops.is_empty() => Err(HostDraftError::NoJumpHosts.message()),
@@ -518,7 +508,7 @@ impl HostForm {
                     .ok_or(HostDraftError::ProxyPort.message())?;
                 let user = self.proxy_user.read(cx).value().trim().to_string();
                 if user.is_empty() && !self.proxy_secret.read(cx).password(cx).is_empty() {
-                    return Err("填写代理密码时请同时填写用户名");
+                    return Err(t!("host.dialog.proxy_password_needs_user"));
                 }
                 let kind = self
                     .proxy_kind
@@ -542,7 +532,7 @@ impl HostForm {
     }
 
     /// The address and port, or why they will not do.
-    fn endpoint(&self, cx: &App) -> Result<(String, u16), &'static str> {
+    fn endpoint(&self, cx: &App) -> Result<(String, u16), SharedString> {
         let address = self.address.read(cx).value().trim().to_string();
         let port = parse_port(self.port.read(cx).value().trim());
         match (address.is_empty(), port) {
@@ -554,13 +544,15 @@ impl HostForm {
 
     /// The login the form's current values describe, saved or not, or why
     /// there is nothing to test yet.
-    fn login_test(&self, cx: &App) -> Result<LoginTest, &'static str> {
+    fn login_test(&self, cx: &App) -> Result<LoginTest, SharedString> {
         let (host, port) = self.endpoint(cx)?;
         let route = self.committed_route(cx)?;
         let route_login = self.store.read(cx).route_login(&route);
         let request = match self.source.auth() {
             None => {
-                let credential = self.selected_credential(cx).ok_or("请选择凭据")?;
+                let credential = self
+                    .selected_credential(cx)
+                    .ok_or_else(|| t!("host.dialog.choose_credential"))?;
                 LoginTest::saved(
                     HostLogin::with_credential(host, port, credential).with_route(route_login),
                 )
@@ -568,7 +560,7 @@ impl HostForm {
             Some(auth) => {
                 let user = self.user.read(cx).value().trim().to_string();
                 if user.is_empty() {
-                    return Err("请输入用户名");
+                    return Err(t!("host.dialog.enter_user"));
                 }
                 let mut request = LoginTest::typed(
                     HostLogin::manual(host, port, user, auth).with_route(route_login),
@@ -618,7 +610,11 @@ impl HostForm {
             });
         if let Err(error) = spawned {
             window.push_notification(
-                connection_test_notification(Err(format!("无法启动连接测试：{error}"))),
+                connection_test_notification(Err(t!(
+                    "host.dialog.test_start_failed",
+                    error = error
+                )
+                .into())),
                 cx,
             );
             return;
@@ -649,7 +645,7 @@ impl HostForm {
                         continue;
                     }
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                        Err("连接测试意外中止".to_string())
+                        Err(t!("host.dialog.test_aborted").to_string())
                     }
                 };
                 this.update_in(cx, |this, window, cx| {
@@ -665,7 +661,7 @@ impl HostForm {
     }
 
     /// How the form says the host logs in, or what is missing.
-    fn committed_login(&self, cx: &App) -> Result<CommittedLogin, &'static str> {
+    fn committed_login(&self, cx: &App) -> Result<CommittedLogin, SharedString> {
         match self.source.auth() {
             Some(auth) => Ok(CommittedLogin::Own(auth)),
             None => self
@@ -674,7 +670,7 @@ impl HostForm {
                     credential: credential.id,
                     user: credential.user.clone(),
                 })
-                .ok_or("请选择凭据"),
+                .ok_or_else(|| t!("host.dialog.choose_credential")),
         }
     }
 
@@ -821,14 +817,14 @@ impl HostForm {
     fn own_fields(&self, form: Form, auth: AuthKind, cx: &App) -> Form {
         form.child(
             Field::new()
-                .label("用户名")
+                .label(t!("host.dialog.user"))
                 .col_span(4)
                 .child(Input::new(&self.user).id("host-user").small()),
         )
         .when(auth == AuthKind::Password, |form| {
             form.child(
                 Field::new()
-                    .label("密码")
+                    .label(t!("host.dialog.password"))
                     .col_span(4)
                     .child(self.fields.read(cx).password_input("host-password")),
             )
@@ -839,27 +835,25 @@ impl HostForm {
     fn credential_field(&self, cx: &App) -> Field {
         let summary = match self.selected_credential(cx) {
             Some(credential) => Some(credential_summary(credential, self.key_dir.as_deref())),
-            None if self.credentials.is_empty() => {
-                Some("还没有凭据，可在侧栏的「凭据」中新建".into())
-            }
+            None if self.credentials.is_empty() => Some(t!("host.dialog.no_credentials_hint")),
             None => None,
         };
         Field::new()
-            .label("凭据")
+            .label(t!("host.dialog.credential"))
             .required(true)
             .col_span(4)
             .child(
                 Select::new(&self.credential)
                     .id("host-credential")
-                    .placeholder("请选择凭据")
-                    .search_placeholder("搜索凭据")
+                    .placeholder(t!("host.dialog.choose_credential"))
+                    .search_placeholder(t!("host.dialog.search_credentials"))
                     .empty(|_, cx| {
                         div()
                             .py_4()
                             .text_sm()
                             .text_center()
                             .text_color(cx.theme().muted_foreground)
-                            .child("还没有凭据")
+                            .child(t!("host.dialog.no_credentials"))
                     })
                     .small(),
             )
@@ -892,23 +886,26 @@ impl HostForm {
             RouteChoice::Jump => Some(self.jump_box(cx).into_any_element()),
             RouteChoice::Proxy => Some(self.proxy_box(cx).into_any_element()),
         };
-        Field::new().label("连接方式").col_span(4).child(
-            v_flex()
-                .w_full()
-                .gap_2()
-                .child(choice)
-                .when_some(details, |field, details| {
-                    field.child(
-                        div()
-                            .w_full()
-                            .p_3()
-                            .rounded(cx.theme().radius)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .child(details),
-                    )
-                }),
-        )
+        Field::new()
+            .label(t!("host.dialog.route"))
+            .col_span(4)
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(choice)
+                    .when_some(details, |field, details| {
+                        field.child(
+                            div()
+                                .w_full()
+                                .p_3()
+                                .rounded(cx.theme().radius)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .child(details),
+                        )
+                    }),
+            )
     }
 
     /// The jump hosts: the way through them, one row each, and a picker to
@@ -921,13 +918,14 @@ impl HostForm {
         };
 
         // 本机 → 阿里云99 → 禅道 → 当前主机
+        let this_computer = t!("host.dialog.this_computer");
         let mut stops: Vec<(SharedString, Tag)> = vec![(
-            "本机".into(),
+            this_computer.clone(),
             Tag::secondary()
                 .outline()
                 .rounded_full()
                 .small()
-                .child("本机"),
+                .child(this_computer),
         )];
         for hop in &self.hops {
             stops.push(match name_of(hop) {
@@ -939,18 +937,22 @@ impl HostForm {
                         .child(host.name.clone()),
                 ),
                 None => (
-                    DELETED_HOST.into(),
-                    Tag::danger().rounded_full().small().child(DELETED_HOST),
+                    t!("host.dialog.deleted_host"),
+                    Tag::danger()
+                        .rounded_full()
+                        .small()
+                        .child(t!("host.dialog.deleted_host")),
                 ),
             });
         }
+        let this_host = t!("host.dialog.this_host");
         stops.push((
-            "当前主机".into(),
+            this_host.clone(),
             Tag::secondary()
                 .outline()
                 .rounded_full()
                 .small()
-                .child("当前主机"),
+                .child(this_host),
         ));
         let chain_label = stops
             .iter()
@@ -984,7 +986,7 @@ impl HostForm {
                     ),
                     None => (
                         ("jump-hop-deleted", position).into(),
-                        DELETED_HOST.into(),
+                        t!("host.dialog.deleted_host"),
                         None,
                     ),
                 };
@@ -1028,7 +1030,7 @@ impl HostForm {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
-                        .tooltip("移除")
+                        .tooltip(t!("host.dialog.remove_hop"))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.remove_hop(position, window, cx)
                         })),
@@ -1037,22 +1039,22 @@ impl HostForm {
 
         let all_added = available_jump_hosts(&self.jump_hosts, &self.hops).is_empty();
         let empty_note = if self.jump_hosts.is_empty() {
-            "还没有其他主机可做跳板"
+            t!("host.dialog.no_other_hosts")
         } else {
-            "其他主机都已添加"
+            t!("host.dialog.all_hosts_added")
         };
         let picker = div().id("jump-add").w_full().child(
             Combobox::new(&self.jump_picker)
                 .small()
                 .disabled(all_added)
-                .search_placeholder("搜索主机")
+                .search_placeholder(t!("host.dialog.search_hosts"))
                 .empty(move |_, cx| {
                     div()
                         .py_4()
                         .text_sm()
                         .text_center()
                         .text_color(cx.theme().muted_foreground)
-                        .child("没有匹配的主机")
+                        .child(t!("host.dialog.no_matching_hosts"))
                 })
                 .render_trigger(move |_, _, _| {
                     h_flex()
@@ -1063,9 +1065,9 @@ impl HostForm {
                         .gap_1()
                         .child(Icon::new(IconName::Plus).xsmall())
                         .child(if all_added {
-                            empty_note
+                            empty_note.clone()
                         } else {
-                            "添加跳板主机"
+                            t!("host.dialog.add_jump_host")
                         })
                 }),
         );
@@ -1077,10 +1079,10 @@ impl HostForm {
                 div()
                     .id("host-route-note")
                     .test_support()
-                    .aria_label(JUMP_NOTE)
+                    .aria_label(t!("host.dialog.jump_note"))
                     .text_sm()
                     .text_color(muted)
-                    .child(JUMP_NOTE),
+                    .child(t!("host.dialog.jump_note")),
             )
             .child(chain)
             .children(rows)
@@ -1098,32 +1100,32 @@ impl HostForm {
                     .columns(4)
                     .child(
                         Field::new()
-                            .label("代理类型")
+                            .label(t!("host.dialog.proxy_kind"))
                             .col_span(4)
                             .child(Select::new(&self.proxy_kind).id("host-proxy-kind").small()),
                     )
                     .child(
                         Field::new()
-                            .label("代理地址")
+                            .label(t!("host.dialog.proxy_address"))
                             .required(true)
                             .col_span(3)
                             .child(Input::new(&self.proxy_host).id("host-proxy-host").small()),
                     )
                     .child(
                         Field::new()
-                            .label("端口")
+                            .label(t!("host.dialog.port"))
                             .required(true)
                             .child(Input::new(&self.proxy_port).id("host-proxy-port").small()),
                     )
                     .child(
                         Field::new()
-                            .label("用户名")
+                            .label(t!("host.dialog.user"))
                             .col_span(2)
                             .child(Input::new(&self.proxy_user).id("host-proxy-user").small()),
                     )
                     .child(
                         Field::new()
-                            .label("密码")
+                            .label(t!("host.dialog.password"))
                             .col_span(2)
                             .child(password.password_input("host-proxy-password")),
                     ),
@@ -1132,16 +1134,13 @@ impl HostForm {
                 div()
                     .id("host-route-note")
                     .test_support()
-                    .aria_label(PROXY_NOTE)
+                    .aria_label(t!("host.dialog.proxy_note"))
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child(PROXY_NOTE),
+                    .child(t!("host.dialog.proxy_note")),
             )
     }
 }
-
-/// What a jump host that has been deleted is called in the form.
-const DELETED_HOST: &str = "已删除的主机";
 
 /// The hosts that can still be added as a jump host: those not in `hops`.
 fn available_jump_hosts(hosts: &[JumpHost], hops: &[Option<HostId>]) -> Vec<JumpHost> {
@@ -1157,9 +1156,9 @@ impl Render for HostForm {
         let source = self.source;
         let keychain = self.fields.read(cx).keychain_available();
         let secret_note = if keychain {
-            "密码保存在系统钥匙串，不会写入 ShellRS 的数据库。"
+            t!("host.dialog.keychain_note")
         } else {
-            "系统钥匙串不可用，这台机器上无法保存密码，每次连接都会询问。"
+            t!("host.dialog.no_keychain_note")
         };
         // Four columns so the address and its port share a row, as they are
         // written (`host:port`); every other field takes a row of its own.
@@ -1167,26 +1166,26 @@ impl Render for HostForm {
             .columns(4)
             .child(
                 Field::new()
-                    .label("名称")
+                    .label(t!("host.dialog.name"))
                     .required(!self.temporary)
                     .col_span(4)
                     .child(Input::new(&self.name).id("host-name").small()),
             )
             .child(
                 Field::new()
-                    .label("地址")
+                    .label(t!("host.dialog.address"))
                     .required(true)
                     .col_span(3)
                     .child(Input::new(&self.address).id("host-address").small()),
             )
             .child(
                 Field::new()
-                    .label("端口")
+                    .label(t!("host.dialog.port"))
                     .child(Input::new(&self.port).id("host-port").small()),
             )
             .child(
                 Field::new()
-                    .label("认证方式")
+                    .label(t!("host.dialog.auth"))
                     .col_span(4)
                     .child(
                         SegmentedControl::new("host-auth-source")
@@ -1203,8 +1202,8 @@ impl Render for HostForm {
                             div()
                                 .id("host-no-password-note")
                                 .test_support()
-                                .aria_label(NO_PASSWORD_NOTE)
-                                .child(NO_PASSWORD_NOTE)
+                                .aria_label(t!("host.dialog.no_password_note"))
+                                .child(t!("host.dialog.no_password_note"))
                         })
                     }),
             );
@@ -1218,19 +1217,22 @@ impl Render for HostForm {
         } else {
             form.child(
                 Field::new()
-                    .label("分组")
+                    .label(t!("host.dialog.group"))
                     .col_span(4)
                     .child(Select::new(&self.group).small()),
             )
             .child(self.route_field(cx))
             .child(
-                Field::new().label("备注").col_span(4).child(
-                    div()
-                        .id("host-notes")
-                        .test_support()
-                        .w_full()
-                        .child(Textarea::new(&self.notes).text_sm()),
-                ),
+                Field::new()
+                    .label(t!("host.dialog.notes"))
+                    .col_span(4)
+                    .child(
+                        div()
+                            .id("host-notes")
+                            .test_support()
+                            .w_full()
+                            .child(Textarea::new(&self.notes).text_sm()),
+                    ),
             )
         };
         v_flex()
@@ -1242,10 +1244,10 @@ impl Render for HostForm {
                     div()
                         .id("temporary-note")
                         .test_support()
-                        .aria_label(TEMPORARY_NOTE)
+                        .aria_label(t!("host.dialog.temporary_note"))
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child(TEMPORARY_NOTE),
+                        .child(t!("host.dialog.temporary_note")),
                 )
             })
             .when(!self.temporary && source == AuthSource::Password, |form| {
@@ -1261,7 +1263,7 @@ impl Render for HostForm {
                     div()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child("保存后连接设置将立即生效并重连。"),
+                        .child(t!("host.dialog.reconnect_note")),
                 )
             })
     }
@@ -1279,23 +1281,28 @@ enum CommittedLogin {
 
 /// A credential as the host form's select lists it: `运维（root · 密码）`.
 fn credential_option(credential: &Credential, key_dir: Option<&Path>) -> SharedString {
-    format!("{}（{}）", credential.name, credential.summary(key_dir)).into()
+    t!(
+        "host.dialog.credential_option",
+        name = credential.name,
+        summary = credential.summary(key_dir)
+    )
 }
 
 /// What a host using `credential` logs in as and with.
 fn credential_summary(credential: &Credential, key_dir: Option<&Path>) -> SharedString {
-    let with = match credential.kind {
-        CredentialKind::Password => "使用凭据保存的密码".to_string(),
+    let user = &credential.user;
+    match credential.kind {
+        CredentialKind::Password => t!("host.dialog.logs_in_with.password", user = user),
         CredentialKind::Key if credential.keeps_key_in(key_dir) => {
-            "使用 ShellRS 保存的私钥".to_string()
+            t!("host.dialog.logs_in_with.kept_key", user = user)
         }
-        CredentialKind::Key => format!(
-            "使用私钥 {}",
-            credential.key_path.as_deref().unwrap_or_default()
+        CredentialKind::Key => t!(
+            "host.dialog.logs_in_with.key",
+            user = user,
+            path = credential.key_path.as_deref().unwrap_or_default()
         ),
-        CredentialKind::Agent => "使用 SSH Agent 中的密钥".to_string(),
-    };
-    format!("以 {} 登录，{with}", credential.user).into()
+        CredentialKind::Agent => t!("host.dialog.logs_in_with.agent", user = user),
+    }
 }
 
 /// A trust question from the test's worker, with where to send the answer.
@@ -1319,12 +1326,12 @@ fn ask_to_trust(
         };
         let (trust, decline, dismiss) = (answer(true), answer(false), answer(false));
         alert
-            .title("首次连接此主机")
+            .title(t!("host.trust.title"))
             .description(description.clone())
             .button_props(
                 DialogButtonProps::default()
-                    .ok_text("信任并继续")
-                    .cancel_text("取消"),
+                    .ok_text(t!("host.trust.trust"))
+                    .cancel_text(t!("common.cancel")),
             )
             .show_cancel(true)
             .on_ok(move |_, _, _| {
@@ -1343,8 +1350,8 @@ fn ask_to_trust(
 /// message says why.
 fn connection_test_notification(result: Result<(), String>) -> Notification {
     match result {
-        Ok(()) => Notification::success("连接成功"),
-        Err(reason) => Notification::error(reason).title("连接失败"),
+        Ok(()) => Notification::success(t!("host.test.connected")),
+        Err(reason) => Notification::error(reason).title(t!("host.test.failed")),
     }
 }
 
@@ -1363,18 +1370,16 @@ pub fn open_host_dialog(
     cx: &mut App,
 ) {
     let form = cx.new(|cx| HostForm::new(editing, preselect_group, store, tester, window, cx));
-    let title: SharedString = if editing.is_some() {
-        "编辑主机"
+    let title = if editing.is_some() {
+        t!("host.dialog.title_edit")
     } else {
-        "新建主机"
-    }
-    .into();
-    let commit_label: SharedString = if editing.is_some() {
-        "保存"
+        t!("host.dialog.title_new")
+    };
+    let commit_label = if editing.is_some() {
+        t!("common.save")
     } else {
-        "创建"
-    }
-    .into();
+        t!("host.dialog.create")
+    };
 
     window.open_dialog(cx, {
         let form = form.clone();
@@ -1408,7 +1413,7 @@ fn form_footer(form: &Entity<HostForm>, commit_label: SharedString, cx: &App) ->
         .justify_between()
         .child(
             Button::new("test-connection")
-                .label("测试连接")
+                .label(t!("host.dialog.test_connection"))
                 .icon(crate::app::CatalogIcon::Plug)
                 .small()
                 .loading(form.read(cx).testing_connection)
@@ -1424,7 +1429,7 @@ fn form_footer(form: &Entity<HostForm>, commit_label: SharedString, cx: &App) ->
                 .gap_2()
                 .child(
                     Button::new("cancel")
-                        .label("取消")
+                        .label(t!("common.cancel"))
                         .small()
                         .on_click(|_, window, cx| {
                             window.dispatch_action(Box::new(Cancel), cx);
@@ -1458,12 +1463,12 @@ pub fn open_temporary_connection_dialog(
         let form = form.clone();
         move |dialog, window, cx| {
             dialog
-                .title("临时连接")
+                .title(t!("host.dialog.title_temporary"))
                 .margin_top(window.viewport_size().height * DIALOG_TOP)
                 .max_h(window.viewport_size().height * DIALOG_MAX_HEIGHT)
                 .overlay_closable(false)
                 .child(form.clone())
-                .footer(form_footer(&form, "连接".into(), cx))
+                .footer(form_footer(&form, t!("host.dialog.connect"), cx))
                 .on_ok({
                     let form = form.clone();
                     let dispatch = dispatch.clone();
@@ -1525,11 +1530,11 @@ fn describe_host_delete(
     uploads: usize,
     dependents: Dependents,
 ) -> Option<SharedString> {
-    let mut description = String::new();
+    let mut description = Vec::new();
     if closes_tabs {
-        description.push_str("会一并关闭该主机已打开的终端和 SFTP 标签。");
+        description.push(t!("host.delete.closes_tabs"));
         if uploads > 0 {
-            description.push_str(&format!("将停止 {uploads} 个传输批次并保留续传进度。"));
+            description.push(tn!("host.delete.transfers", uploads));
         }
     }
     let Dependents {
@@ -1537,14 +1542,26 @@ fn describe_host_delete(
         jump_users,
     } = dependents;
     if forwards > 0 {
-        description.push_str(&format!("将同时删除经由该主机的 {forwards} 条端口转发。"));
+        description.push(tn!("host.delete.forwards", forwards));
     }
     if jump_users > 0 {
-        description.push_str(&format!(
-            "有 {jump_users} 台主机把它用作跳板主机，删除后要重新选择跳板主机才能连接。"
-        ));
+        description.push(tn!("host.delete.jump_users", jump_users));
     }
-    (!description.is_empty()).then(|| description.into())
+    join_sentences(description)
+}
+
+/// Sentences one after another, as a description says them: Chinese ones
+/// end in 。 and follow straight on, English ones take a space between.
+/// `None` for no sentences.
+pub fn join_sentences(sentences: Vec<SharedString>) -> Option<SharedString> {
+    let mut text = String::new();
+    for sentence in sentences {
+        if text.ends_with(|c: char| c.is_ascii()) {
+            text.push(' ');
+        }
+        text.push_str(&sentence);
+    }
+    (!text.is_empty()).then(|| text.into())
 }
 
 #[cfg(test)]
@@ -1576,6 +1593,20 @@ mod tests {
         assert_eq!(
             describe_host_delete(true, 0, forwards(1)).as_deref(),
             Some("会一并关闭该主机已打开的终端和 SFTP 标签。将同时删除经由该主机的 1 条端口转发。")
+        );
+    }
+
+    #[test]
+    fn the_sentences_of_an_english_description_are_spaced() {
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("en");
+        assert_eq!(
+            describe_host_delete(true, 1, forwards(2)).as_deref(),
+            Some(
+                "Its open terminal and SFTP tabs will close. \
+                 1 transfer batch will stop, with its progress kept for resuming. \
+                 2 port forwards through this host will also be deleted."
+            )
         );
     }
 

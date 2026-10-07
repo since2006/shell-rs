@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use zeroize::Zeroizing;
 
+use crate::i18n::t;
+
 /// One field requested by an SSH keyboard-interactive challenge.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectionPromptField {
@@ -72,22 +74,28 @@ impl UnknownHostPrompt {
 
     /// What the trust dialog tells the user about the key.
     pub fn description(&self) -> String {
-        format!(
-            "{}主机：{}:{}\n算法：{}\nSHA-256 指纹：{}\n\n请先确认该指纹来自可信渠道。",
-            jump_host_line(self.jump_host.as_deref()),
-            self.host,
-            self.port,
-            self.algorithm,
-            self.fingerprint,
-        )
+        let (host, port, algorithm, fingerprint) =
+            (&self.host, self.port, &self.algorithm, &self.fingerprint);
+        match &self.jump_host {
+            // A line above the rest names the jump host.
+            Some(jump_host) => t!(
+                "connection.unknown_host.jump_host_description",
+                jump_host = jump_host,
+                host = host,
+                port = port,
+                algorithm = algorithm,
+                fingerprint = fingerprint
+            ),
+            None => t!(
+                "connection.unknown_host.description",
+                host = host,
+                port = port,
+                algorithm = algorithm,
+                fingerprint = fingerprint
+            ),
+        }
+        .to_string()
     }
-}
-
-/// The line that opens a question about a jump host, naming it.
-fn jump_host_line(jump_host: Option<&str>) -> String {
-    jump_host
-        .map(|name| format!("跳板主机：{name}\n"))
-        .unwrap_or_default()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,10 +211,15 @@ impl ConnectionPromptKind {
             Self::HostKeyChanged(prompt) => prompt.jump_host = Some(name.to_string()),
             Self::Authentication(prompt) => {
                 prompt.instructions = if prompt.instructions.trim().is_empty() {
-                    format!("跳板主机「{name}」")
+                    t!("connection.jump_host.instructions", name = name)
                 } else {
-                    format!("跳板主机「{name}」：{}", prompt.instructions)
-                };
+                    t!(
+                        "connection.jump_host.with_instructions",
+                        name = name,
+                        instructions = prompt.instructions
+                    )
+                }
+                .to_string();
             }
         }
         self
@@ -230,7 +243,7 @@ impl ConnectionSecret {
 
 impl std::fmt::Debug for ConnectionSecret {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("ConnectionSecret([已隐藏])")
+        formatter.write_str("ConnectionSecret(<redacted>)")
     }
 }
 
@@ -248,7 +261,7 @@ impl std::fmt::Debug for ConnectionPromptReply {
             Self::TrustAndSave => formatter.write_str("TrustAndSave"),
             Self::Answers(answers) => formatter
                 .debug_tuple("Answers")
-                .field(&format_args!("{} 个已隐藏答案", answers.len()))
+                .field(&format_args!("{} redacted", answers.len()))
                 .finish(),
             Self::Cancel => formatter.write_str("Cancel"),
         }
@@ -418,7 +431,7 @@ impl Latency {
     pub fn label(self) -> String {
         match self {
             Latency::Measured(rtt) => format!("{} ms", rtt.as_millis()),
-            Latency::TimedOut => "超时".into(),
+            Latency::TimedOut => t!("connection.latency.timed_out").to_string(),
         }
     }
 }
@@ -449,5 +462,35 @@ mod latency_tests {
             "32 ms"
         );
         assert_eq!(Latency::TimedOut.label(), "超时");
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::ConnectionPromptKind;
+
+    fn description(jump_host: Option<&str>) -> String {
+        match ConnectionPromptKind::unknown_host("10.0.0.5", 22, "ssh-ed25519", "SHA256:abc")
+            .at_jump_host(jump_host)
+        {
+            ConnectionPromptKind::UnknownHost(prompt) => prompt.description(),
+            _ => unreachable!("an unknown host stays one"),
+        }
+    }
+
+    #[test]
+    fn a_new_host_key_is_described_line_by_line() {
+        assert_eq!(
+            description(Some("堡垒机")),
+            "跳板主机：堡垒机\n主机：10.0.0.5:22\n算法：ssh-ed25519\n\
+             SHA-256 指纹：SHA256:abc\n\n请先确认该指纹来自可信渠道。"
+        );
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("en");
+        assert_eq!(
+            description(None),
+            "Host: 10.0.0.5:22\nAlgorithm: ssh-ed25519\nSHA-256 fingerprint: SHA256:abc\n\n\
+             Make sure the fingerprint matches one from a source you trust."
+        );
     }
 }

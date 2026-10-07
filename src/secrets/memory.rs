@@ -5,6 +5,7 @@ use anyhow::{Result, bail};
 use zeroize::Zeroizing;
 
 use super::{SecretRef, SecretStore};
+use crate::i18n::t;
 
 /// 进程内的秘密存储，给测试用：行为和真钥匙串一致，但什么都不落地。
 #[derive(Default)]
@@ -60,7 +61,7 @@ impl SecretStore for NoSecretStore {
     }
 
     fn set(&self, _: &SecretRef, _: &str) -> Result<()> {
-        bail!("系统钥匙串不可用，密码无法保存")
+        bail!(t!("secrets.unavailable"))
     }
 
     fn delete(&self, _: &SecretRef) -> Result<()> {

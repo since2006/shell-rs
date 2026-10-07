@@ -1835,7 +1835,7 @@ mod tests {
         let reply = ConnectionPromptReply::Answers(vec![ConnectionSecret::new("super-secret")]);
         let debug = format!("{reply:?}");
         assert!(!debug.contains("super-secret"));
-        assert!(debug.contains("已隐藏"));
+        assert!(debug.contains("redacted"));
     }
 
     #[test]

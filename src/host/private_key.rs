@@ -16,6 +16,7 @@ use russh::keys::{Algorithm, PrivateKey, PublicKey};
 use zeroize::Zeroizing;
 
 use super::PublicId;
+use crate::i18n::t;
 
 /// The kinds of key the credential form generates.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -120,10 +121,10 @@ pub enum PastedKeyError {
 
 impl fmt::Display for PastedKeyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            PastedKeyError::Empty => "请粘贴私钥",
-            PastedKeyError::PublicKey => "这是公钥，请粘贴私钥（以 -----BEGIN 开头的那一段）",
-            PastedKeyError::Unreadable => "无法识别这段私钥，支持 OpenSSH、PEM 和 PuTTY 格式",
+        formatter.write_str(&match self {
+            PastedKeyError::Empty => t!("host.pasted_key.empty"),
+            PastedKeyError::PublicKey => t!("host.pasted_key.public_key"),
+            PastedKeyError::Unreadable => t!("host.pasted_key.unreadable"),
         })
     }
 }
