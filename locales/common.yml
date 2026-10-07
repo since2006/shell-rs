@@ -1,0 +1,28 @@
+_version: 2
+
+# 多语言: one key per text, its Chinese and English side by side. Keys
+# name what the text is for; see `src/i18n.rs`.
+
+# `join_list`: 「A、B 和 C」, "A, B and C".
+common.list.separator:
+  zh-CN: 、
+  en: ", "
+common.list.and:
+  zh-CN: 和
+  en: " and "
+
+common.cancel:
+  zh-CN: 取消
+  en: Cancel
+common.close:
+  zh-CN: 关闭
+  en: Close
+common.save:
+  zh-CN: 保存
+  en: Save
+common.delete:
+  zh-CN: 删除
+  en: Delete
+common.delete_title:
+  zh-CN: 删除“%{name}”？
+  en: Delete “%{name}”?

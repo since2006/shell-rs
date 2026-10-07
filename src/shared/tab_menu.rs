@@ -8,6 +8,7 @@ use crate::app::{
     CenterTab, CloseEditor, CloseExplorer, CloseLocalTerminal, CloseScope, CloseSettings,
     CloseTabs, CloseTerminal,
 };
+use crate::i18n::t;
 
 /// The close commands every center tab's context menu ends with: this tab,
 /// and the ones to its left, to its right, the others and all of them.
@@ -33,23 +34,23 @@ pub fn close_tab_items(
         |scope: CloseScope| position.is_none_or(|(len, ix)| scope.targets(len, ix).is_empty());
     let batch = |scope| Box::new(CloseTabs { tab, scope });
 
-    menu.menu("关闭", close_action(tab))
+    menu.menu(t!("common.close"), close_action(tab))
         .menu_with_disabled(
-            "关闭左侧",
+            t!("shared.tab_menu.close_left"),
             batch(CloseScope::Left),
             is_empty(CloseScope::Left),
         )
         .menu_with_disabled(
-            "关闭右侧",
+            t!("shared.tab_menu.close_right"),
             batch(CloseScope::Right),
             is_empty(CloseScope::Right),
         )
         .menu_with_disabled(
-            "关闭其他",
+            t!("shared.tab_menu.close_others"),
             batch(CloseScope::Others),
             is_empty(CloseScope::Others),
         )
-        .menu("关闭全部", batch(CloseScope::All))
+        .menu(t!("shared.tab_menu.close_all"), batch(CloseScope::All))
 }
 
 fn close_action(tab: CenterTab) -> Box<dyn Action> {

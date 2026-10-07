@@ -19,7 +19,7 @@ use super::{Segment, SegmentedControl};
 /// place: `within(id).click(1usize)`.
 pub fn count_tabs(
     id: &'static str,
-    tabs: impl IntoIterator<Item = (&'static str, usize)>,
+    tabs: impl IntoIterator<Item = (impl Into<SharedString>, usize)>,
     selected: usize,
     on_click: impl Fn(&usize, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {

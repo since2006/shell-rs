@@ -277,6 +277,11 @@ enum CredentialsCommand {
 /// The command line entry: `args` without the program name. Returns the
 /// process exit code.
 pub fn main(args: Vec<OsString>) -> i32 {
+    // In the language the app's window is in, as what the app sends back.
+    if let Ok(path) = crate::app::settings_path() {
+        let (settings, _) = crate::settings::SettingsStore::load(path);
+        crate::i18n::set_locale(settings.settings().language.resolved());
+    }
     let cli = match Cli::try_parse_from(std::iter::once(OsString::from("shellrs")).chain(args)) {
         Ok(cli) => cli,
         Err(error) => {

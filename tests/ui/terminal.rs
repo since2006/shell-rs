@@ -7,7 +7,7 @@ fn open_workspace_with_factory(
     cx: &mut TestAppContext,
     factory: Arc<FakeTerminalFactory>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
-    cx.update(shellrs::init);
+    init_app(cx);
     // Dialogs still, as in every fixture: see `open_workspace_with_tester`.
     cx.update(|cx| cx.set_reduce_motion(true));
     let mut workspace = None;
@@ -19,7 +19,7 @@ fn open_workspace_with_factory(
         let view = cx.new(|cx| {
             Workspace::new_with_services(
                 store,
-                cx.new(|_| SettingsStore::in_memory()),
+                cx.new(|_| settings_store()),
                 remote,
                 factory.clone(),
                 Arc::new(FakeSftpProvider::default()),

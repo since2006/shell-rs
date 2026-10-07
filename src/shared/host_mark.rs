@@ -5,6 +5,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::host::HostOs;
+use crate::i18n::t;
 
 /// The mark that stands for a host: the operating system found on its host,
 /// drawn on a badge in that project's own colour, or the first character of
@@ -95,7 +96,7 @@ impl RenderOnce for HostMark {
                             .unwrap_or_default(),
                     )
                     .into_any_element(),
-                SharedString::from("未探测到系统"),
+                t!("shared.host_mark.unknown_os"),
             ),
         };
         let tooltip = description.clone();

@@ -10,6 +10,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::ToggleHostPanel;
+use crate::i18n::t;
 
 type MenuBuilder = Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
 
@@ -92,7 +93,7 @@ impl RenderOnce for ClosableTabTitle {
                     div()
                         .id("modified")
                         .test_support()
-                        .aria_label("未保存")
+                        .aria_label(t!("shared.tab.unsaved"))
                         .size_1p5()
                         .rounded_full()
                         .bg(cx.theme().muted_foreground),
@@ -104,7 +105,7 @@ impl RenderOnce for ClosableTabTitle {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
-                        .tooltip("关闭")
+                        .tooltip(t!("common.close"))
                         .on_click(move |_, window, cx| {
                             // Closing must not also select or drag the tab.
                             cx.stop_propagation();

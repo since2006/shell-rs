@@ -10,6 +10,7 @@ use gpui_kit::component::{
 use gpui_kit::*;
 
 use super::commit_footer;
+use crate::i18n::t;
 
 /// A tab whose label can be replaced by a title of its own.
 pub trait RenamableTab: Sized + 'static {
@@ -42,8 +43,8 @@ impl<T: RenamableTab> Render for RenameTabForm<T> {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         Form::new().child(
             Field::new()
-                .label("标签名称")
-                .description(format!("留空则使用「{}」。", self.default))
+                .label(t!("shared.rename_tab.name"))
+                .description(t!("shared.rename_tab.default", title = self.default))
                 .child(Input::new(&self.title).id("tab-name").small()),
         )
     }
@@ -70,11 +71,11 @@ pub fn open_rename_tab_dialog<T: RenamableTab>(
     });
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .title("重命名标签")
+            .title(t!("shared.rename_tab.title"))
             // Closed by its buttons or Escape, not by a click beside it.
             .overlay_closable(false)
             .child(form.clone())
-            .footer(commit_footer("commit", "保存"))
+            .footer(commit_footer("commit", t!("common.save")))
             .on_ok({
                 let form = form.clone();
                 move |_, _, cx| {

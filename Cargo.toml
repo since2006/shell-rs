@@ -59,6 +59,9 @@ rand = "0.9"
 # search, whose DFA cannot build `\b` and loses `^` after the first line.
 regex = "1"
 russh = "0.63"
+# 多语言: the same crate gpui-kit translates its own text with, so one
+# locale switches both.
+rust-i18n = "4.2"
 russh-sftp = "=3.0.0"
 serde_json = "1"
 sys-locale = "0.3"

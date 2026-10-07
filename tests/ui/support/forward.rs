@@ -142,7 +142,7 @@ pub fn open_sized_workspace_with_forwards(
     provider: Arc<FakeForwardProvider>,
     window_size: gpui_kit::Size<gpui_kit::Pixels>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
-    cx.update(shellrs::init);
+    init_app(cx);
     // The forward dialog's diagram plays a flow over real time, and dialogs
     // slide in: both would move targets between locating and clicking them.
     cx.update(|cx| cx.set_reduce_motion(true));
@@ -155,7 +155,7 @@ pub fn open_sized_workspace_with_forwards(
         let view = cx.new(|cx| {
             Workspace::new_with_services(
                 store,
-                cx.new(|_| SettingsStore::in_memory()),
+                cx.new(|_| settings_store()),
                 remote,
                 Arc::new(FakeTerminalFactory::default()),
                 Arc::new(FakeSftpProvider::default()),

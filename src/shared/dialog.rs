@@ -11,10 +11,12 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::i18n::t;
+
 /// A form dialog's footer: 取消, and the button that commits the form.
 pub fn commit_footer(id: &'static str, label: impl Into<SharedString>) -> DialogFooter {
     DialogFooter::new()
-        .child(DialogClose::new().trigger(|button| button.label("取消")))
+        .child(DialogClose::new().trigger(|button| button.label(t!("common.cancel"))))
         .child(DialogAction::new().child(Button::new(id).primary().label(label)))
 }
 
@@ -69,9 +71,9 @@ pub fn confirm_delete(
     cx: &mut App,
 ) {
     confirm_danger(
-        format!("删除“{name}”？").into(),
+        t!("common.delete_title", name = name),
         description,
-        "删除",
+        t!("common.delete"),
         on_delete,
         window,
         cx,
@@ -83,11 +85,12 @@ pub fn confirm_delete(
 pub fn confirm_danger(
     title: SharedString,
     description: Option<SharedString>,
-    verb: &'static str,
+    verb: impl Into<SharedString>,
     on_ok: DeleteHandler,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let verb = verb.into();
     window.open_alert_dialog(cx, move |alert, _, _| {
         alert
             .title(title.clone())
@@ -96,9 +99,9 @@ pub fn confirm_danger(
             })
             .button_props(
                 DialogButtonProps::default()
-                    .ok_text(verb)
+                    .ok_text(verb.clone())
                     .ok_variant(ButtonVariant::Danger)
-                    .cancel_text("取消"),
+                    .cancel_text(t!("common.cancel")),
             )
             .show_cancel(true)
             .on_ok({

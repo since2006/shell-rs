@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use crate::i18n::tn;
+
 const UNITS: [&str; 5] = ["KB", "MB", "GB", "TB", "PB"];
 
 /// 「421.02 MB」, in units of 1024.
@@ -35,7 +37,7 @@ pub fn format_duration(duration: Duration) -> String {
         seconds % 60
     );
     if days > 0 {
-        format!("{days} 天 {clock}")
+        tn!("shared.duration.days", days, clock = clock).to_string()
     } else {
         clock
     }

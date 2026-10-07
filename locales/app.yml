@@ -1,0 +1,5 @@
+_version: 2
+
+app.database_unavailable:
+  zh-CN: 无法打开本地数据库，本次运行的改动不会被保存：%{error}
+  en: "Couldn’t open the local database, so changes last only until ShellRS quits: %{error}"

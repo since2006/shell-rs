@@ -2,6 +2,7 @@ use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
 use gpui_kit::*;
 
 use crate::explorer::{FileSizeFormat, ShowHiddenFiles};
+use crate::i18n::UiLocale;
 use crate::terminal::{TerminalColors, TerminalFont, TerminalHighlights, is_font_installed};
 
 use super::AppSettings;
@@ -37,11 +38,13 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
         window.refresh();
     }
 
-    let locale = settings
-        .language
-        .locale(sys_locale::get_locale().as_deref());
-    if *gpui_kit::component::locale() != *locale {
-        gpui_kit::component::set_locale(locale);
+    // Text is translated where it is drawn, so a redraw has it in the new
+    // language; entities that hand text to gpui-kit to keep observe
+    // `UiLocale` and give it again.
+    let locale = settings.language.resolved();
+    if cx.try_global::<UiLocale>() != Some(&UiLocale(locale)) {
+        crate::i18n::set_locale(locale);
+        cx.set_global(UiLocale(locale));
         window.refresh();
     }
 

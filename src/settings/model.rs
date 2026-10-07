@@ -1,9 +1,10 @@
-use gpui_kit::WindowAppearance;
 use gpui_kit::component::ThemeMode;
+use gpui_kit::{SharedString, WindowAppearance};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::app::ShortcutOverrides;
 use crate::explorer::{FileSizeFormat, ShowHiddenFiles};
+use crate::i18n::t;
 use crate::terminal::{
     DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, HighlightRule, LINE_HEIGHT_RANGE,
     TerminalTheme, default_rules,
@@ -236,10 +237,10 @@ impl Choice for Channel {
         Channel::key(self)
     }
 
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            Self::Stable => "稳定版",
-            Self::Beta => "Beta",
+            Self::Stable => t!("settings.channel.stable"),
+            Self::Beta => "Beta".into(),
         }
     }
 }
@@ -302,22 +303,22 @@ pub trait Choice: Copy + PartialEq + 'static {
     const ALL: &'static [Self];
     /// How the value is written in the settings file.
     fn key(self) -> &'static str;
-    fn label(self) -> &'static str;
+    fn label(self) -> SharedString;
 
     fn from_key(key: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|choice| choice.key() == key)
     }
 }
 
-/// 界面语言. Only gpui-kit's own strings follow it for now; ShellRS's copy is
-/// still Chinese until it is translated.
+/// 界面语言, for ShellRS's text and gpui-kit's own. It changes the window
+/// at once.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InterfaceLanguage {
+    // A settings file written before there was English says `zh-CN`, as
+    // the default was then, and stays Chinese.
+    #[default]
     #[serde(rename = "system")]
     System,
-    // The default until the English copy exists: following an English
-    // system would only mix a few English words into a Chinese window.
-    #[default]
     #[serde(rename = "zh-CN")]
     SimplifiedChinese,
     #[serde(rename = "en")]
@@ -335,13 +336,13 @@ impl Choice for InterfaceLanguage {
         }
     }
 
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            Self::System => "跟随系统",
-            Self::SimplifiedChinese => "简体中文",
+            Self::System => t!("settings.choice.system"),
             // A language is named in itself, so it can be found by someone
             // who cannot read the rest of the menu.
-            Self::English => "English",
+            Self::SimplifiedChinese => "简体中文".into(), // i18n: keep
+            Self::English => "English".into(),
         }
     }
 }
@@ -368,6 +369,11 @@ impl InterfaceLanguage {
             },
         }
     }
+
+    /// `locale` with the operating system's preferred language.
+    pub fn resolved(self) -> &'static str {
+        self.locale(sys_locale::get_locale().as_deref())
+    }
 }
 
 /// 应用外观.
@@ -393,11 +399,11 @@ impl Choice for Appearance {
         }
     }
 
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            Self::Dark => "深色",
-            Self::Light => "浅色",
-            Self::System => "跟随系统",
+            Self::Dark => t!("settings.appearance.dark"),
+            Self::Light => t!("settings.appearance.light"),
+            Self::System => t!("settings.choice.system"),
         }
     }
 }

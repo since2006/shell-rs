@@ -16,4 +16,4 @@ pub use model::{
     UpdateSettings, WindowSettings,
 };
 pub use settings_panel::{SettingsPanel, SettingsPanelEvent};
-pub use store::{SettingsStore, SettingsStoreEvent};
+pub use store::{SettingsProblem, SettingsStore, SettingsStoreEvent};

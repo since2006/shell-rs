@@ -7767,6 +7767,7 @@ dependencies = [
  "rusqlite",
  "russh",
  "russh-sftp",
+ "rust-i18n",
  "semver",
  "serde",
  "serde_json",

@@ -109,6 +109,23 @@ pub fn one_host_store(auth: AuthKind) -> (HostStore, HostId) {
     (store, id)
 }
 
+/// What every fixture starts with: ShellRS's globals, in Chinese, the
+/// language the assertions are written in. The test's interface language is
+/// its own, so one that switches to English switches no other test.
+pub fn init_app(cx: &mut TestAppContext) {
+    shellrs::i18n::isolate_thread();
+    shellrs::i18n::set_locale("zh-CN");
+    cx.update(shellrs::init);
+}
+
+/// Settings kept in memory, in Chinese: by default the interface follows the
+/// system, and CI's is English.
+pub fn settings_store() -> SettingsStore {
+    let mut store = SettingsStore::in_memory();
+    store.update_unnotified(|settings| settings.language = InterfaceLanguage::SimplifiedChinese);
+    store
+}
+
 pub fn appearance_dropdown(window: &mut gpui_kit::Window, item: usize) -> Option<String> {
     window
         .within("settings")

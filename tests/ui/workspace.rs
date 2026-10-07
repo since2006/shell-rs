@@ -797,7 +797,7 @@ async fn a_dialog_says_what_is_wrong_in_a_notification_that_goes_with_it(cx: &mu
 /// crashed the app at launch.
 #[gpui_kit::test]
 fn a_problem_found_while_the_window_is_built_is_shown_once_it_is_open(cx: &mut TestAppContext) {
-    cx.update(shellrs::init);
+    init_app(cx);
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
         let store = cx.new(|_| HostStore::empty());
         let remote = Arc::new(FixedRemoteTerminalTransportProvider::new(Arc::new(
@@ -806,7 +806,7 @@ fn a_problem_found_while_the_window_is_built_is_shown_once_it_is_open(cx: &mut T
         let view = cx.new(|cx| {
             Workspace::new_with_services(
                 store,
-                cx.new(|_| SettingsStore::in_memory()),
+                cx.new(|_| settings_store()),
                 remote,
                 Arc::new(FakeTerminalFactory::default()),
                 Arc::new(FakeSftpProvider::default()),

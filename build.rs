@@ -4,6 +4,9 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    // The text `rust_i18n::i18n!` reads while compiling, which the macro
+    // does not tell Cargo about.
+    println!("cargo:rerun-if-changed=locales");
     println!("cargo:rerun-if-changed=assets/logo/shellrs.ico");
     #[cfg(windows)]
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {

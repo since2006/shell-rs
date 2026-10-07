@@ -6,11 +6,32 @@ use std::{
 use gpui_kit::*;
 
 use super::AppSettings;
+use crate::i18n::t;
 
 #[derive(Clone, Debug)]
 pub enum SettingsStoreEvent {
     /// A change stayed in memory but could not be written.
     PersistFailed(SharedString),
+}
+
+/// Why the settings file is not in use. Told once the window is open, by
+/// when the settings have chosen the interface language to tell it in.
+#[derive(Clone, Debug)]
+pub enum SettingsProblem {
+    /// The file cannot be read: this run has the defaults.
+    Unreadable(String),
+    /// There is no data directory to keep the file in: changes last only
+    /// this run.
+    Unsaved(String),
+}
+
+impl SettingsProblem {
+    pub fn message(&self) -> SharedString {
+        match self {
+            Self::Unreadable(error) => t!("settings.store.unreadable", error = error),
+            Self::Unsaved(error) => t!("settings.store.unsaved", error = error),
+        }
+    }
 }
 
 /// The settings, shared by the settings page and the workspace that applies
@@ -36,9 +57,9 @@ impl SettingsStore {
     }
 
     /// Read the settings saved at `path`. A missing file means the defaults.
-    /// An unreadable one also gives the defaults, together with the message
-    /// to show; the file stays as it is until the next change replaces it.
-    pub fn load(path: PathBuf) -> (Self, Option<SharedString>) {
+    /// An unreadable one also gives the defaults, together with the problem
+    /// to tell; the file stays as it is until the next change replaces it.
+    pub fn load(path: PathBuf) -> (Self, Option<SettingsProblem>) {
         let loaded = match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(AppSettings::default()),
@@ -48,7 +69,7 @@ impl SettingsStore {
             Ok(settings) => (AppSettings::normalized(settings), None),
             Err(error) => (
                 AppSettings::default(),
-                Some(format!("无法读取设置，本次使用默认设置：{error}").into()),
+                Some(SettingsProblem::Unreadable(error)),
             ),
         };
         (
@@ -71,9 +92,10 @@ impl SettingsStore {
         };
         cx.notify();
         if let Err(error) = written {
-            cx.emit(SettingsStoreEvent::PersistFailed(
-                format!("无法保存设置：{error}").into(),
-            ));
+            cx.emit(SettingsStoreEvent::PersistFailed(t!(
+                "settings.store.save_failed",
+                error = error
+            )));
         }
     }
 
@@ -114,7 +136,7 @@ mod tests {
     // Not `super::*`: it brings in `gpui_kit::*`, whose `test` shadows `#[test]`.
     use std::fs;
 
-    use super::SettingsStore;
+    use super::{SettingsProblem, SettingsStore};
     use crate::settings::{AppSettings, Appearance, InterfaceLanguage};
 
     #[test]
@@ -160,7 +182,8 @@ mod tests {
         fs::write(&path, "{ not json").unwrap();
         let (store, problem) = SettingsStore::load(path.clone());
         assert_eq!(store.settings(), AppSettings::default());
-        assert!(problem.unwrap().starts_with("无法读取设置"));
+        assert!(matches!(problem, Some(SettingsProblem::Unreadable(_))));
+        assert!(problem.unwrap().message().starts_with("无法读取设置"));
         // Left alone until the user changes something.
         assert_eq!(fs::read_to_string(&path).unwrap(), "{ not json");
     }

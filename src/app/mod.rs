@@ -25,6 +25,8 @@ pub use window_hiding::{bring_forward, hide_when_closed};
 use gpui_kit::component::Theme;
 use gpui_kit::*;
 
+use crate::i18n::t;
+
 /// Key context of the host panel, for bindings that only apply there.
 pub const HOST_PANEL_CONTEXT: &str = "HostPanel";
 pub const RECENT_HOSTS_CONTEXT: &str = "RecentHosts";
@@ -40,13 +42,21 @@ pub const IMAGE_PREVIEW_CONTEXT: &str = "ImagePreview";
 pub const LOCAL_FILE_LIST_CONTEXT: &str = "LocalFileList";
 pub const REMOTE_FILE_LIST_CONTEXT: &str = "RemoteFileList";
 
+/// What the window says when the local database cannot be opened: the run
+/// goes on, keeping its changes in memory only.
+pub fn database_unavailable(error: &anyhow::Error) -> SharedString {
+    t!("app.database_unavailable", error = error)
+}
+
 /// Initialize GPUI Kit and everything global to the application.
 pub fn init(cx: &mut App) {
     gpui_kit::init(cx);
     // Before ours: rebuilding the keymap starts from gpui-kit's own.
     shortcuts::keep_kit_bindings(cx);
     deepen_list_hover(cx);
-    gpui_kit::component::set_locale("zh-CN");
+    // gpui-kit's own text in the language ShellRS's is in: the saved one,
+    // which `main` set before anything was built.
+    crate::i18n::set_locale(crate::i18n::locale());
     // The defaults; the settings bring the user's changes once read.
     apply_shortcuts(&ShortcutOverrides::default(), cx);
     cx.on_action(|_: &Quit, cx: &mut App| quit::quit(cx));

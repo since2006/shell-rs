@@ -1,0 +1,36 @@
+_version: 2
+
+shared.tab.unsaved:
+  zh-CN: 未保存
+  en: Unsaved changes
+shared.host_mark.unknown_os:
+  zh-CN: 未探测到系统
+  en: System not detected
+shared.duration.days.one:
+  en: "%{count} day %{clock}"
+shared.duration.days.other:
+  zh-CN: "%{count} 天 %{clock}"
+  en: "%{count} days %{clock}"
+
+shared.rename_tab.title:
+  zh-CN: 重命名标签
+  en: Rename tab
+shared.rename_tab.name:
+  zh-CN: 标签名称
+  en: Tab name
+shared.rename_tab.default:
+  zh-CN: 留空则使用「%{title}」。
+  en: Leave empty to use “%{title}”.
+
+shared.tab_menu.close_left:
+  zh-CN: 关闭左侧
+  en: Close to the left
+shared.tab_menu.close_right:
+  zh-CN: 关闭右侧
+  en: Close to the right
+shared.tab_menu.close_others:
+  zh-CN: 关闭其他
+  en: Close others
+shared.tab_menu.close_all:
+  zh-CN: 关闭全部
+  en: Close all

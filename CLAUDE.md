@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目是什么
 
-ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH 主机管理工具，基于 `gpui-kit` 0.6.1（GPUI + gpui-base + gpui-component）。界面文案用中文，标识符用英文。功能说明见 `docs/manual.md`（`README.md` / `README.en.md` 是开源首页，截图在 `docs/screenshots/`）。
+ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH 主机管理工具，基于 `gpui-kit` 0.6.1（GPUI + gpui-base + gpui-component）。界面文案有简体中文和英文两种（中文是源语言，见「多语言」），标识符用英文。功能说明见 `docs/manual.md`（`README.md` / `README.en.md` 是开源首页，截图在 `docs/screenshots/`）。
 
-- **术语。** 保存的一项叫「主机」（量词「台」），代码和库里叫 host（`Host`、`HostId`、`HostStore`、`hosts` 表）。它以前叫「会话」/ `Session`，已全部改掉，新代码和文案别再用。填 IP / 域名的字段叫「地址」（`Host.address`）。SSH 协议层的 session（「SSH 会话通道」、russh 的 `Session`、SFTP 会话）照旧。
+- **术语。** 保存的一项叫「主机」（量词「台」），代码和库里叫 host（`Host`、`HostId`、`HostStore`、`hosts` 表）。它以前叫「会话」/ `Session`，已全部改掉，新代码和文案别再用。填 IP / 域名的字段叫「地址」（`Host.address`）。SSH 协议层的 session（「SSH 会话通道」、russh 的 `Session`、SFTP 会话）照旧。英文用词见「多语言」的用词表。
 - **两种不保存的连接。** 「外部连接」：堡垒机像调 Xshell（`ssh://`、`-url`）或 WinSCP（`sftp://`）一样拉起 ShellRS，只开一个终端或 SFTP 标签（`HostStore::is_external`）。「临时连接」：标题栏「临时连接…」打开，功能齐全。两者共同的「不保存」在代码里叫 temporary（`HostInfo::temporary`）。
 - **全是真的。** SQLite（`~/Library/Application Support/shellrs/shellrs.db`，`SHELLRS_DATA_DIR` 可覆盖目录）、本地终端（`portable-pty` + `alacritty_terminal`）、SSH（`russh`）、SFTP（双栏、传输队列、断点续传）、端口转发（`-L` / `-R` / `-D`）、凭据、连接方式（直连、多级跳板、HTTP / SOCKS5 代理）、右侧栏七个工具、内置编辑器和预览、外部 CLI、在线升级、匿名使用统计（Aptabase）。密码和口令只进系统钥匙串（`keyring`），**数据库里永远不出现秘密**。
 
@@ -16,6 +16,7 @@ ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH �
 
 用户定过的事，不要改回去。细节以 `docs/manual.md` 和代码为准。
 
+- **界面语言**：「设置 › 外观 › 界面语言」有跟随系统（默认：中文系统用简体中文，其余用英文，系统没说时用中文）、简体中文、English。改了立刻生效，不用重启。老用户的 settings.json 里已存着 `zh-CN`，不迁移。框架用 gpui-kit 自带的 `rust-i18n`，不另引 Fluent 之类。
 - **SFTP**：Dock 标签，每次「打开 SFTP」新开一个、各自连接。操作对标 WinSCP Commander：两行工具栏、路径标签、WinSCP 的列、高亮多选、「名称」格才是项目、框选。本地侧与远程侧对称，本地删除进废纸篓；书签按主机、按侧持久化。传输进行中还能再发起，新批次在标签底部的传输队列里排队，不做前台进度对话框。大小列默认整 KB，右键列标题可切换。「显示隐藏文件」（`.` 开头的）本地、远程各一个开关、互不影响，每侧对所有标签生效，存进设置，默认不显示；工具栏用睁眼 / 闭眼两个图标表示状态，不用选中效果；显示时隐藏文件的文字浅一些。SFTP 标签暂不做目录同步（外部 CLI 有 `shellrs sync`）、过滤、查找、目录树和 Dock 布局持久化。
 - **主机树**：搜索匹配主机（名称、地址、用户）和分组名；分组名匹配时列出整个分组，回车只连本身匹配的第一台主机（按树的顺序）。首次启动是空库；分组可任意嵌套，主机可以不属于分组；删除分组连同子分组和主机，确认框写明数量。
 - **主机对话框**：
@@ -167,6 +168,45 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
   - macOS 的 `window_bounds()` 从不报最大化，靠 `is_maximized()`（大小等于屏幕可见区）判断，恢复时给可见区大小的普通窗口；别的平台用 `WindowBounds::Maximized`。
 - **一个数据目录只跑一个 ShellRS。** 起图形界面之前先连外部 CLI 的套接字：连得上就发 `Request::Activate`（带启动链接）然后退出。为兼容已装的 CLI，不升 `PROTOCOL_VERSION`，新请求只加变体。
 - **临时主机在 `HostStore` 的 `temporary` 里**：`host()` / `login()` 找得到，`hosts()` 看不到，也不写库。会写外键的检查用 `saved_host`。最后一个标签关掉就 `remove_temporary`。
+
+### 多语言
+
+- **文案都在 `locales/<模块>.yml`**（rust-i18n 的 `_version: 2`）：最外层直接写键的全名（`host.dialog.title_new:`），下面 `zh-CN`、`en` 并排。代码用 `crate::i18n::t!`（返回 `SharedString`）和 `tn!`（带数量，填 `%{count}`：英文数量为 1 取 `.one`，否则 `.other`；中文只写 `.other`）。不用 rust-i18n / gpui-kit 自己的 `t!`、`set_locale`。
+- **键说用途**（`host.dialog.title_new`），不拿中文句子当键。一句话一个键，不拼片段：`format!("无法{}{}", 动词, 对象)` 改成每种情况一个整句。插值写 `%{name}`；列表用 `i18n::join_list`（「A、B 和 C」/ "A, B and C"）。以 `%`、`{` 开头的值、含 `: ` 的值和 `true`、纯数字这类值要加引号，否则 YAML 不当它是字符串，那条文案就悄悄没了。
+- **中文是源语言**：改中文时同一个键的英文一起改。转换旧代码时中文输出要和原来逐字相同。
+- **实时切换**：语言变了，`settings::apply` 调 `i18n::set_locale`、设全局量 `UiLocale`、`refresh`。文案在 render 时翻译，实体里不存翻译好的字符串，存键、枚举或原始数据。gpui-kit 要预先存下的（`InputState` 的占位、表格的列）用 `cx.observe_global_in::<UiLocale>` 重设。终端回滚里已写下的提示、已弹出的通知、已存成 `String` 的报错留在旧语言，可以接受。
+- **启动**：`main` 读完设置、建任何东西之前先 `set_locale`；外部 CLI 的客户端按 settings.json 设，与应用一致。
+- **标签和静态表**：返回文案的函数返回 `SharedString`，不是 `&'static str`。`static` 表里存键，显示时 `t!(key)`；键要以完整的字面量出现在源码里，守卫测试靠它找没人用的文案。
+- **英文文风**按 Design Guides：sentence case；省略号用单字符 `…`；按钮写结果（Delete，不写 Confirm deletion）；不写 Please、successfully、Are you sure；引号用 “ ” 和 ’。语言名用各自的语言写（「简体中文」「English」），这样的中文字面量所在行加 `// i18n: keep`。
+- **守卫测试**在 `src/i18n.rs`：两种语言都齐、占位一致、英文里没有中文和 `...`、代码里的键都有文案且文案都被用到、`TRANSLATED` 列出的目录没有中文字面量（`SHELLRS_I18N_CHECK=src/host,src/forward` 可临时追加目录）。
+- **测试**：单元测试默认就是中文。UI 夹具经 `support::init_app` 和 `settings_store()`：本线程的语言与别的线程隔开（`i18n::isolate_thread`），并固定中文；切到英文的测试不影响并行的其他测试，也碰不到 gpui-kit 的全局语言。
+
+用词表（新文案照此，改要整体改）：
+
+| 中文 | English |
+|---|---|
+| 主机（台） | host（1 host / 3 hosts） |
+| 分组 / 地址 / 用户名 | group / address / username |
+| 凭据 | credential |
+| 密码 / 密钥 / 私钥 / 公钥 / 口令 | password / key / private key / public key / passphrase |
+| 认证：密码 / 使用凭据 / 无密码 | Password / Credential / No password |
+| 连接方式：直接连接 / SSH 跳板 / 代理连接 | Direct / Jump hosts / Proxy |
+| 跳板主机 | jump host |
+| 测试连接 | Test connection |
+| 端口转发：本地 / 远程 / 动态；经由主机 | port forwarding: Local / Remote / Dynamic; via host |
+| 临时连接… | Quick connect… |
+| 开始页「快速连接」 | Find a host |
+| 外部连接 | external connection |
+| 最近连接 | Recent |
+| 本地终端 / 远程终端 | local terminal / remote terminal |
+| 传输队列 / 书签 | Transfers / Bookmarks |
+| 显示隐藏文件 | Show hidden files |
+| 废纸篓 | macOS 写 Trash，Windows 写 Recycle Bin |
+| 右侧栏七个工具 | Snippets / History / Docker / Services / Processes / Network / Monitor |
+| 设置七类（外观、终端、关键字高亮、键盘快捷键、外部 CLI、应用、关于） | Appearance / Terminal / Highlighting / Keyboard shortcuts / External CLI / General / About |
+| 应用更新 / 稳定版 / 重启并安装 / 查看更新内容 | Updates / Stable / Restart to update / What’s new |
+| 连接 / 断开连接 / 重新连接 | Connect / Disconnect / Reconnect |
+| 已连接 / 未连接 / 连接中 | Connected / Not connected / Connecting |
 
 ### GPUI / gpui-kit
 

@@ -1,0 +1,24 @@
+_version: 2
+
+settings.choice.system:
+  zh-CN: 跟随系统
+  en: System
+settings.appearance.dark:
+  zh-CN: 深色
+  en: Dark
+settings.appearance.light:
+  zh-CN: 浅色
+  en: Light
+settings.channel.stable:
+  zh-CN: 稳定版
+  en: Stable
+
+settings.store.unreadable:
+  zh-CN: 无法读取设置，本次使用默认设置：%{error}
+  en: "Couldn’t read the settings, so this session uses the defaults: %{error}"
+settings.store.unsaved:
+  zh-CN: 无法保存设置，本次运行的改动不会被保存：%{error}
+  en: "Settings can’t be saved, so changes last only until ShellRS quits: %{error}"
+settings.store.save_failed:
+  zh-CN: 无法保存设置：%{error}
+  en: "Couldn’t save the settings: %{error}"

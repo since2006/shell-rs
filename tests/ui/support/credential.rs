@@ -11,7 +11,7 @@ pub fn open_workspace_with_credentials(
     remote: Arc<RecordingRemoteProvider>,
     tester: Arc<FakeConnectionTester>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
-    cx.update(shellrs::init);
+    init_app(cx);
     cx.update(|cx| cx.set_reduce_motion(true));
     let mut workspace = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
@@ -19,7 +19,7 @@ pub fn open_workspace_with_credentials(
         let view = cx.new(|cx| {
             Workspace::new_with_services(
                 store,
-                cx.new(|_| SettingsStore::in_memory()),
+                cx.new(|_| settings_store()),
                 remote,
                 Arc::new(FakeTerminalFactory::default()),
                 Arc::new(FakeSftpProvider::default()),

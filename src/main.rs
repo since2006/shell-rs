@@ -6,7 +6,7 @@ use gpui_kit::component::{Root, notification::Notification};
 use gpui_kit::*;
 
 use shellrs::host::{HostDatabase, HostStore};
-use shellrs::settings::SettingsStore;
+use shellrs::settings::{SettingsProblem, SettingsStore};
 
 fn main() {
     let args = shellrs::cli::command_line_arguments().unwrap_or_default();
@@ -39,12 +39,14 @@ fn main() {
         }
     });
     app.run(|cx| {
+        // Read before anything is built: the settings choose the language
+        // every text is in, and 应用 › 窗口 where the window opens.
+        let (settings, settings_problem) = open_settings();
+        shellrs::i18n::set_locale(settings.settings().language.resolved());
         shellrs::init(cx);
         shellrs::app::show_logo_when_unbundled(cx);
         cx.activate(true);
 
-        // Read before the window opens: 应用 › 窗口 decides where.
-        let (settings, settings_problem) = open_settings();
         let saved = shellrs::workspace::WindowState::load(&shellrs::app::window_state_path());
         let options =
             shellrs::workspace::window_options(saved.as_ref(), settings.settings().window, cx);
@@ -59,6 +61,7 @@ fn main() {
                 let workspace =
                     cx.new(|cx| shellrs::workspace::Workspace::new(store, settings, window, cx));
                 // Not pushed here: the window has no `Root` to show it yet.
+                let settings_problem = settings_problem.map(|problem| problem.message());
                 for problem in [problem, settings_problem].into_iter().flatten() {
                     shellrs::workspace::notify_once_open(Notification::error(problem), window, cx);
                 }
@@ -96,23 +99,23 @@ fn open_store() -> (HostStore, Option<SharedString>) {
             None,
         ),
         Err(error) => {
-            eprintln!("shellrs: 无法打开本地数据库：{error}");
+            eprintln!("shellrs: cannot open the local database: {error}");
             (
                 HostStore::empty().with_secrets(secrets),
-                Some(format!("无法打开本地数据库，本次运行的改动不会被保存：{error}").into()),
+                Some(shellrs::app::database_unavailable(&error)),
             )
         }
     }
 }
 
 /// Load the settings file. Without a data directory the settings still
-/// work, only for this run; the returned message says so.
-fn open_settings() -> (SettingsStore, Option<SharedString>) {
+/// work, only for this run; the returned problem says so.
+fn open_settings() -> (SettingsStore, Option<SettingsProblem>) {
     match shellrs::app::settings_path() {
         Ok(path) => SettingsStore::load(path),
         Err(error) => (
             SettingsStore::in_memory(),
-            Some(format!("无法保存设置，本次运行的改动不会被保存：{error}").into()),
+            Some(SettingsProblem::Unsaved(error.to_string())),
         ),
     }
 }

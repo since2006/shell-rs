@@ -204,7 +204,7 @@ pub fn open_workspace_with_remote_factory(
     store: HostStore,
     factory: Arc<dyn TerminalTransportFactory>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
-    cx.update(shellrs::init);
+    init_app(cx);
     // Dialogs still, as in every fixture: see `open_workspace_with_tester`.
     cx.update(|cx| cx.set_reduce_motion(true));
     let mut workspace = None;
@@ -214,7 +214,7 @@ pub fn open_workspace_with_remote_factory(
         let view = cx.new(|cx| {
             Workspace::new_with_services(
                 store,
-                cx.new(|_| SettingsStore::in_memory()),
+                cx.new(|_| settings_store()),
                 remote,
                 Arc::new(FakeTerminalFactory::default()),
                 Arc::new(FakeSftpProvider::default()),

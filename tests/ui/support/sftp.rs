@@ -435,7 +435,7 @@ pub fn open_workspace_with_services(
     provider: Arc<FakeSftpProvider>,
     local: FakeLocalDirectory,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
-    cx.update(shellrs::init);
+    init_app(cx);
     // Dialogs slide in over real time; small targets such as checkboxes
     // would move between the frame that locates them and the click.
     cx.update(|cx| cx.set_reduce_motion(true));
@@ -448,7 +448,7 @@ pub fn open_workspace_with_services(
         let view = cx.new(|cx| {
             Workspace::new_with_services(
                 store,
-                cx.new(|_| SettingsStore::in_memory()),
+                cx.new(|_| settings_store()),
                 remote,
                 Arc::new(FakeTerminalFactory::default()),
                 provider,

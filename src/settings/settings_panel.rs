@@ -302,8 +302,7 @@ fn appearance_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
                     |settings| settings.language,
                     |settings, language| settings.language = language,
                 ),
-            )
-            .description("英文界面尚在翻译中，目前只有部分文字会切换。"),
+            ),
             SettingItem::new(
                 "应用外观",
                 choice_field(
@@ -1156,7 +1155,7 @@ fn choice_field<T: Choice>(
 ) -> SettingField<SharedString> {
     let options = T::ALL
         .iter()
-        .map(|choice| (choice.key().into(), choice.label().into()))
+        .map(|choice| (choice.key().into(), choice.label()))
         .collect();
     let (reader, writer) = (store.clone(), store.clone());
     SettingField::dropdown(
