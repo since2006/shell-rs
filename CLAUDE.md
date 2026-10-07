@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目是什么
 
-ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH 主机管理工具，基于 `gpui-kit` 0.6.1（GPUI + gpui-base + gpui-component）。界面文案有简体中文和英文两种（中文是源语言，见「多语言」），标识符用英文。功能说明见 `docs/manual.md`（`README.md` / `README.en.md` 是开源首页，截图在 `docs/screenshots/`）。
+ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH 主机管理工具，基于 `gpui-kit` 0.6.1（GPUI + gpui-base + gpui-component）。界面文案有简体中文和英文两种（中文是源语言，见「多语言」），标识符用英文。功能说明见 `docs/manual.md`（开源首页 `README.md` 是英文、默认显示，中文版是 `README.zh-CN.md`；截图在 `docs/screenshots/`，英文界面的在 `docs/screenshots/en/`）。
 
 - **术语。** 保存的一项叫「主机」（量词「台」），代码和库里叫 host（`Host`、`HostId`、`HostStore`、`hosts` 表）。它以前叫「会话」/ `Session`，已全部改掉，新代码和文案别再用。填 IP / 域名的字段叫「地址」（`Host.address`）。SSH 协议层的 session（「SSH 会话通道」、russh 的 `Session`、SFTP 会话）照旧。英文用词见「多语言」的用词表。
 - **两种不保存的连接。** 「外部连接」：堡垒机像调 Xshell（`ssh://`、`-url`）或 WinSCP（`sftp://`）一样拉起 ShellRS，只开一个终端或 SFTP 标签（`HostStore::is_external`）。「临时连接」：标题栏「临时连接…」打开，功能齐全。两者共同的「不保存」在代码里叫 temporary（`HostInfo::temporary`）。

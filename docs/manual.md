@@ -1,6 +1,6 @@
 # ShellRS 使用手册
 
-[返回 README](../README.md)
+[返回 README](../README.zh-CN.md)
 
 基于 GPUI Kit 的中文 SSH 主机管理工具，提供持久化的主机与分组、可在多台主机间共用的登录凭据、本地终端、SSH 多终端、对标 WinSCP 的 SFTP 双栏浏览器和 SSH 端口转发。
 

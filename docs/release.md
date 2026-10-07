@@ -1,6 +1,6 @@
 # 发布
 
-[返回 README](../README.md)
+[返回 README](../README.zh-CN.md)
 
 在 `CHANGELOG.md` 里写好 `## [x.y.z]` 一节，把 `Cargo.toml` 的版本改成 `x.y.z`，提交后推送 tag `vx.y.z`。`.github/workflows/release.yml` 依次：
 

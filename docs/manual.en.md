@@ -1,6 +1,6 @@
 # ShellRS user manual
 
-[Back to README](../README.en.md)
+[Back to README](../README.md)
 
 An SSH host manager built on GPUI Kit, with saved hosts and groups, login credentials that several hosts can share, local terminals, multiple SSH terminals, a WinSCP-style dual-pane SFTP browser and SSH port forwarding.
 
