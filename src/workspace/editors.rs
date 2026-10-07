@@ -12,6 +12,7 @@ use crate::analytics::Counter;
 use crate::app::{CenterTab, CloseEditor, EditorAction, EditorCommand, EditorShortcut};
 use crate::editor::{EditorId, EditorKey, EditorPanel, EditorPanelEvent, EditorSource};
 use crate::explorer::{ExplorerId, FileLocation};
+use crate::i18n::{t, tn};
 use crate::sftp::TextFile;
 use crate::shared::confirm_danger;
 
@@ -255,9 +256,12 @@ impl Workspace {
         // A hidden window (closed on macOS) would ask where nobody sees it.
         crate::app::bring_forward(window, cx);
         confirm_danger(
-            "退出 ShellRS？".into(),
-            Some(format!("{}有未保存的修改，退出后会丢失。", describe_files(&unsaved)).into()),
-            "放弃修改并退出",
+            t!("workspace.unsaved.quit_title"),
+            Some(t!(
+                "workspace.unsaved.quit",
+                files = describe_files(&unsaved)
+            )),
+            t!("workspace.unsaved.discard_and_quit"),
             Rc::new(|_, cx| cx.quit()),
             window,
             cx,
@@ -291,9 +295,12 @@ impl Workspace {
         }
         let this = cx.weak_entity();
         confirm_danger(
-            format!("关闭 {} 个标签？", tabs.len()).into(),
-            Some(format!("{}有未保存的修改，关闭后会丢失。", describe_files(&unsaved)).into()),
-            "放弃修改并关闭",
+            tn!("workspace.unsaved.close_tabs_title", tabs.len()),
+            Some(t!(
+                "workspace.unsaved.close_tabs",
+                files = describe_files(&unsaved)
+            )),
+            t!("workspace.unsaved.discard_and_close"),
             Rc::new(move |window, cx| {
                 let tabs = tabs.clone();
                 let _ = this.update(cx, |this, cx| {
@@ -317,9 +324,9 @@ impl Workspace {
 pub(super) fn describe_files(names: &[String]) -> String {
     match names {
         [] => String::new(),
-        [one] => format!("“{one}”"),
-        [one, two] => format!("“{one}”和“{two}”"),
-        [one, ..] => format!("“{one}”等 {} 个文件", names.len()),
+        [one] => t!("workspace.files.single", name = one).to_string(),
+        [one, two] => t!("workspace.files.pair", first = one, second = two).to_string(),
+        [one, ..] => t!("workspace.files.several", first = one, count = names.len()).to_string(),
     }
 }
 

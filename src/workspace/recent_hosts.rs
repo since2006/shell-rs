@@ -16,6 +16,7 @@ use crate::app::{
     CatalogIcon, ConnectHost, ConnectSelected, NewHost, QuickConnect, RECENT_HOSTS_CONTEXT,
 };
 use crate::host::{HostId, HostOs, HostStore, host_menu};
+use crate::i18n::t;
 use crate::shared::HostMark;
 
 /// The center's empty state: shown in place of the tabs while none is open.
@@ -100,13 +101,13 @@ impl RecentHosts {
                         div()
                             .text_lg()
                             .font_weight(FontWeight::MEDIUM)
-                            .child("最近连接"),
+                            .child(t!("workspace.recent.title")),
                     )
                     .child(
                         div()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child("双击主机连接，或新建一台主机"),
+                            .child(t!("workspace.recent.hint")),
                     ),
             )
             .child(
@@ -117,7 +118,7 @@ impl RecentHosts {
                             .primary()
                             .small()
                             .icon(IconName::Search)
-                            .label("快速连接")
+                            .label(t!("workspace.recent.find_host"))
                             .on_click({
                                 let target = target.clone();
                                 move |_, window, cx| {
@@ -129,7 +130,7 @@ impl RecentHosts {
                         Button::new("recent-new-host")
                             .small()
                             .icon(IconName::Plus)
-                            .label("新建主机…")
+                            .label(t!("workspace.recent.new_host"))
                             .on_click(move |_, window, cx| {
                                 target.dispatch_action(&NewHost, window, cx)
                             }),
@@ -145,7 +146,7 @@ impl RecentHosts {
             .py_8()
             .text_color(muted)
             .child(Icon::new(CatalogIcon::Server).large())
-            .child(div().text_sm().child("还没有连接过的主机"))
+            .child(div().text_sm().child(t!("workspace.recent.empty")))
     }
 
     fn on_connect_selected(
@@ -233,7 +234,7 @@ impl RecentHosts {
                                 .xsmall()
                                 .text_color(cx.theme().success),
                         )
-                        .child("已连接")
+                        .child(t!("workspace.recent.connected"))
                 })
             })
             // A right click selects the row, as in Finder and Explorer, so

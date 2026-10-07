@@ -14,8 +14,10 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::i18n::t;
 use crate::terminal::{TerminalFont, TerminalTheme};
 
+use super::settings_panel::keywords;
 use super::{SettingsStore, TerminalThemeSettings};
 
 /// How tall each column's list is, in rems: about three cards, the third
@@ -54,9 +56,9 @@ pub(super) fn terminal_theme_item(store: &Entity<SettingsStore>) -> SettingItem 
             .child(column(ThemeMode::Dark, &chosen, &reader, cx))
     })
     .keywords(
-        ["主题", "终端主题", "配色", "颜色", "浅色", "深色"]
+        keywords(t!("settings.theme.keywords"))
             .into_iter()
-            .chain(TerminalTheme::all().iter().map(TerminalTheme::name)),
+            .chain(TerminalTheme::all().iter().map(|theme| theme.name().into())),
     )
     .on_reset(
         move |cx| !dirty.read(cx).settings().terminal_theme.is_default_choice(),
@@ -73,7 +75,7 @@ pub(super) fn terminal_theme_item(store: &Entity<SettingsStore>) -> SettingItem 
 pub(super) fn app_follows_item(store: &Entity<SettingsStore>) -> SettingItem {
     let (reader, writer) = (store.clone(), store.clone());
     SettingItem::new(
-        "界面跟随主题",
+        t!("settings.theme.app_follows"),
         SettingField::switch(
             move |cx| reader.read(cx).settings().terminal_theme.app_follows,
             move |on, cx| {
@@ -84,7 +86,7 @@ pub(super) fn app_follows_item(store: &Entity<SettingsStore>) -> SettingItem {
         )
         .default_value(false),
     )
-    .description("关闭时界面用中性的黑白灰，只有终端按所选主题配色。")
+    .description(t!("settings.theme.app_follows_description"))
 }
 
 /// One appearance's themes under its name, scrolling on their own.
@@ -95,8 +97,8 @@ fn column(
     cx: &App,
 ) -> impl IntoElement {
     let title = match mode {
-        ThemeMode::Light => "浅色",
-        ThemeMode::Dark => "深色",
+        ThemeMode::Light => t!("settings.appearance.light"),
+        ThemeMode::Dark => t!("settings.appearance.dark"),
     };
     let chosen = chosen.theme(mode);
     let themes: Vec<_> = TerminalTheme::for_mode(mode).collect();

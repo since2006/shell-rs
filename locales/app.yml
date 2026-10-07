@@ -3,3 +3,112 @@ _version: 2
 app.database_unavailable:
   zh-CN: 无法打开本地数据库，本次运行的改动不会被保存：%{error}
   en: "Couldn’t open the local database, so changes last only until ShellRS quits: %{error}"
+
+# 设置 › 键盘快捷键: each shortcut by its id, in the order the page lists them.
+app.shortcut.new_host:
+  zh-CN: 新建主机
+  en: New host
+app.shortcut.new_group:
+  zh-CN: 新建分组
+  en: New group
+app.shortcut.open_settings:
+  zh-CN: 打开设置
+  en: Open settings
+app.shortcut.toggle_sidebar:
+  zh-CN: 显示或隐藏侧栏
+  en: Show or hide sidebar
+app.shortcut.toggle_tool_sidebar:
+  zh-CN: 显示或隐藏右侧栏
+  en: Show or hide right sidebar
+app.shortcut.focus_search:
+  zh-CN: 聚焦搜索
+  en: Focus search
+app.shortcut.zoom_in:
+  zh-CN: 放大界面
+  en: Zoom in
+app.shortcut.zoom_out:
+  zh-CN: 缩小界面
+  en: Zoom out
+app.shortcut.zoom_reset:
+  zh-CN: 界面实际大小
+  en: Actual size
+app.shortcut.quit:
+  zh-CN: 退出
+  en: Quit
+app.shortcut.new_local_terminal:
+  zh-CN: 新建本地终端
+  en: New local terminal
+app.shortcut.close_tab:
+  zh-CN: 关闭标签
+  en: Close tab
+app.shortcut.next_tab:
+  zh-CN: 下一个标签
+  en: Next tab
+app.shortcut.previous_tab:
+  zh-CN: 上一个标签
+  en: Previous tab
+app.shortcut.terminal_copy:
+  zh-CN: 复制
+  en: Copy
+app.shortcut.terminal_paste:
+  zh-CN: 粘贴
+  en: Paste
+app.shortcut.terminal_find:
+  zh-CN: 查找
+  en: Find
+app.shortcut.terminal_find_next:
+  zh-CN: 查找下一个
+  en: Find next
+app.shortcut.terminal_find_previous:
+  zh-CN: 查找上一个
+  en: Find previous
+app.shortcut.terminal_clear:
+  zh-CN: 清屏
+  en: Clear
+app.shortcut.terminal_zoom_in:
+  zh-CN: 放大字号
+  en: Bigger text
+app.shortcut.terminal_zoom_out:
+  zh-CN: 缩小字号
+  en: Smaller text
+app.shortcut.terminal_zoom_reset:
+  zh-CN: 默认字号
+  en: Default text size
+app.shortcut.editor_save:
+  zh-CN: 保存
+  en: Save
+app.shortcut.switch_to_tab:
+  zh-CN: 切换到标签 1…9
+  en: Switch to tab 1…9
+
+app.shortcut_group.general:
+  zh-CN: 通用
+  en: General
+app.shortcut_group.tabs:
+  zh-CN: 标签
+  en: Tabs
+app.shortcut_group.terminal:
+  zh-CN: 终端
+  en: Terminal
+app.shortcut_group.editor:
+  zh-CN: 编辑器
+  en: Editor
+
+app.shortcut_refusal.needs_modifier_mac:
+  zh-CN: 快捷键要带 ⌘、⌥ 或 ⌃，或者使用 F1–F12。
+  en: A shortcut needs ⌘, ⌥ or ⌃, or one of F1–F12.
+app.shortcut_refusal.needs_modifier:
+  zh-CN: 快捷键要带 Ctrl 或 Alt，或者使用 F1–F12。
+  en: A shortcut needs Ctrl or Alt, or one of F1–F12.
+app.shortcut_refusal.needs_digit_mac:
+  zh-CN: 这一项要按带修饰键的数字 1，例如 ⌘1。
+  en: Press the digit 1 with a modifier, such as ⌘1.
+app.shortcut_refusal.needs_digit:
+  zh-CN: 这一项要按带修饰键的数字 1，例如 Alt+1。
+  en: Press the digit 1 with a modifier, such as Alt+1.
+app.shortcut_refusal.used_by:
+  zh-CN: "%{keys} 已用于「%{label}」。"
+  en: "%{keys} is already used by “%{label}”."
+app.shortcut_refusal.reserved:
+  zh-CN: "%{keys} 已被输入框等内置功能使用。"
+  en: "%{keys} is used by text fields and other built-in features."

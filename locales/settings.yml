@@ -22,3 +22,341 @@ settings.store.unsaved:
 settings.store.save_failed:
   zh-CN: 无法保存设置：%{error}
   en: "Couldn’t save the settings: %{error}"
+
+settings.tab.title:
+  zh-CN: 设置
+  en: Settings
+settings.preview:
+  zh-CN: 预览
+  en: Preview
+# A choice that is what ShellRS uses unless told otherwise: 「13（默认）」.
+settings.default_option:
+  zh-CN: "%{value}（默认）"
+  en: "%{value} (default)"
+
+settings.category.appearance:
+  zh-CN: 外观
+  en: Appearance
+settings.category.terminal:
+  zh-CN: 终端
+  en: Terminal
+settings.category.highlight:
+  zh-CN: 关键字高亮
+  en: Highlighting
+settings.category.shortcuts:
+  zh-CN: 键盘快捷键
+  en: Keyboard shortcuts
+settings.category.external_cli:
+  zh-CN: 外部 CLI
+  en: External CLI
+settings.category.application:
+  zh-CN: 应用
+  en: General
+settings.category.about:
+  zh-CN: 关于
+  en: About
+
+settings.appearance.interface:
+  zh-CN: 常规
+  en: Interface
+settings.appearance.language:
+  zh-CN: 界面语言
+  en: Language
+settings.appearance.mode:
+  zh-CN: 应用外观
+  en: Appearance
+settings.appearance.theme:
+  zh-CN: 主题
+  en: Theme
+settings.appearance.theme_description:
+  zh-CN: 浅色外观时用左栏选中的主题，深色外观时用右栏的。
+  en: The light appearance uses the theme chosen on the left, the dark appearance the one on the right.
+
+settings.terminal.font:
+  zh-CN: 字体配置
+  en: Font
+settings.terminal.family:
+  zh-CN: 字体
+  en: Font family
+settings.terminal.family_description:
+  zh-CN: 只列出等宽字体。
+  en: Only monospaced fonts are listed.
+settings.terminal.size:
+  zh-CN: 字号
+  en: Font size
+settings.terminal.size_description:
+  zh-CN: 以像素计。
+  en: In pixels.
+settings.terminal.line_height:
+  zh-CN: 行高
+  en: Line height
+settings.terminal.line_height_description:
+  zh-CN: 字号的倍数。
+  en: A multiple of the font size.
+settings.terminal.preview_keywords:
+  zh-CN: 预览,字体,字号,行高
+  en: preview,font,size,line height
+
+settings.notifications.title:
+  zh-CN: 通知
+  en: Notifications
+settings.notifications.description:
+  zh-CN: ShellRS 不在前台时发系统通知；在前台但终端在别的标签时，在窗口右上角提示，点一下切过去。
+  en: When ShellRS is in the background, you get a system notification. When it’s in front but the terminal is in another tab, a notice appears at the top right of the window; click it to go there.
+settings.notifications.programs:
+  zh-CN: 程序发送的通知
+  en: Notifications from programs
+settings.notifications.programs_description:
+  zh-CN: 远程或本地程序用 OSC 9 / 777 请求的通知，例如 printf '\e]9;完成\a'。
+  en: Notifications that remote or local programs ask for with OSC 9 / 777, for example printf '\e]9;Done\a'.
+settings.notifications.bell:
+  zh-CN: 响铃时通知
+  en: Notify on bell
+settings.notifications.bell_description:
+  zh-CN: 终端就在当前标签时不提示。
+  en: Not when the terminal is the current tab.
+
+settings.highlight.options:
+  zh-CN: 常规
+  en: Options
+settings.highlight.enabled:
+  zh-CN: 启用关键字高亮
+  en: Highlight keywords
+settings.highlight.enabled_description:
+  zh-CN: 全屏程序（vim、less、tmux 等）里不高亮。
+  en: Not in full-screen programs such as vim, less and tmux.
+settings.highlight.preview_description:
+  zh-CN: 使用当前终端主题
+  en: In the current terminal theme
+settings.highlight.preview_keywords:
+  zh-CN: 预览,高亮
+  en: preview,highlight
+settings.highlight.rules:
+  zh-CN: 规则（%{count}）
+  en: Rules (%{count})
+settings.highlight.rules_description:
+  zh-CN: 规则按从上到下应用，勾选「通知」的规则在看不到终端时弹出提醒。
+  en: Rules apply from top to bottom. A rule with Notify checked alerts you when its terminal isn’t in view.
+settings.highlight.rules_keywords:
+  zh-CN: 规则,正则,关键字,高亮,颜色,备注,通知,排序
+  en: rule,regex,keyword,highlight,color,note,notify,order
+
+settings.window.title:
+  zh-CN: 窗口
+  en: Window
+settings.window.remember_size:
+  zh-CN: 记住窗口大小
+  en: Remember window size
+settings.window.remember_size_description:
+  zh-CN: 下次启动时恢复上次关闭时的窗口大小和最大化状态。
+  en: The next launch restores the window’s size, maximized or not, as it was when it closed.
+settings.window.remember_position:
+  zh-CN: 记住窗口位置
+  en: Remember window position
+settings.window.remember_position_description:
+  zh-CN: 下次启动时把窗口放回上次所在的屏幕和位置；那块屏幕不在时放在主屏幕中间。
+  en: The next launch puts the window back on the same screen and in the same place. If that screen is gone, it opens in the middle of the main screen.
+
+settings.cli.access:
+  zh-CN: 访问控制
+  en: Access
+settings.cli.enabled:
+  zh-CN: 启用外部 CLI
+  en: Enable external CLI
+settings.cli.enabled_description:
+  zh-CN: 开启后，本机当前用户下的程序（如 AI Agent）可以通过 shellrs 命令，在已保存的主机上执行命令、传输和同步文件，并查看、新建、修改和删除主机与凭据，无需知道密码。
+  en: When on, programs running as you on this computer, such as AI agents, can use the shellrs command to run commands and transfer and sync files on saved hosts, and to view, create, change and delete hosts and credentials, without knowing any password.
+settings.cli.binary:
+  zh-CN: CLI 二进制
+  en: Command
+settings.cli.binary_description:
+  zh-CN: 把 shellrs 命令加入 PATH，方便在终端和 Agent 中直接调用。
+  en: Puts the shellrs command on the PATH so terminals and agents can call it directly.
+settings.cli.binary_description_windows:
+  zh-CN: 把 shellrs 命令加入当前用户的 PATH，方便在终端和 Agent 中直接调用。重新打开的终端和 Agent 才能找到它。
+  en: Puts the shellrs command on your user PATH so terminals and agents can call it directly. Terminals and agents find it once reopened.
+settings.cli.skills_description:
+  zh-CN: 安装 shellrs skill，让外部 Agent 在连接服务器、执行远程命令和传输文件时使用 shellrs CLI。可安装到通用目录或指定 Agent 的专用目录。
+  en: Install the shellrs skill so agents use the shellrs CLI to connect to servers, run remote commands and transfer files. Install it to the shared folder or to a particular agent’s own folder.
+settings.cli.status:
+  zh-CN: 状态：
+  en: "Status:"
+settings.cli.checking:
+  zh-CN: 正在检查…
+  en: Checking…
+settings.cli.binary_unsupported:
+  zh-CN: 此系统暂不支持安装 shellrs 命令
+  en: The shellrs command can’t be installed on this system yet
+settings.cli.skill_unsupported:
+  zh-CN: 此系统暂不支持安装
+  en: Can’t be installed on this system yet
+settings.cli.missing:
+  zh-CN: 未安装（%{path}）
+  en: Not installed (%{path})
+settings.cli.outdated:
+  zh-CN: 已安装旧版本（%{path}）
+  en: An older version is installed (%{path})
+settings.cli.binary_stale:
+  zh-CN: "%{path} 指向 %{target}，已失效或不是这个 ShellRS"
+  en: "%{path} points to %{target}, which is gone or isn’t this ShellRS"
+settings.cli.binary_occupied_by:
+  zh-CN: "%{path} 已被其他程序占用（指向 %{target}）"
+  en: "%{path} is taken by another program (it points to %{target})"
+settings.cli.binary_occupied:
+  zh-CN: "%{path} 已被其他程序占用"
+  en: "%{path} is taken by another program"
+settings.cli.binary_not_on_path:
+  zh-CN: "%{path} 所在的文件夹不在 PATH 中"
+  en: The folder of %{path} isn’t on the PATH
+settings.cli.binary_unavailable:
+  zh-CN: 找不到 shellrs-cli.exe：它应在 ShellRS 程序旁边（开发时请先 cargo build）
+  en: Can’t find shellrs-cli.exe. It belongs next to the ShellRS program (in development, run cargo build first).
+settings.cli.installed_at:
+  zh-CN: 已安装于
+  en: Installed at
+settings.cli.installed_at_path:
+  zh-CN: 已安装于 %{path}
+  en: Installed at %{path}
+settings.cli.install:
+  zh-CN: 安装
+  en: Install
+settings.cli.reinstall:
+  zh-CN: 重新安装
+  en: Reinstall
+settings.cli.update:
+  zh-CN: 更新
+  en: Update
+settings.cli.remove:
+  zh-CN: 移除
+  en: Remove
+settings.cli.binary_keywords:
+  zh-CN: CLI,PATH,shellrs,命令,安装
+  en: CLI,PATH,shellrs,command,install
+settings.cli.check:
+  zh-CN: 检查状态
+  en: Check status
+settings.cli.copy_skills:
+  zh-CN: 复制 skills
+  en: Copy skills
+settings.cli.skills_keywords:
+  zh-CN: skill,Agent,检查,复制
+  en: skill,agent,check,copy
+
+settings.about.updates:
+  zh-CN: 应用更新
+  en: Updates
+settings.about.version:
+  zh-CN: 当前版本
+  en: Current version
+settings.about.version_keywords:
+  zh-CN: 当前版本,检查更新,更新,升级,版本,下载
+  en: current version,check for updates,update,upgrade,version,download
+settings.about.check:
+  zh-CN: 检查更新
+  en: Check for updates
+settings.about.restart:
+  zh-CN: 重启并安装…
+  en: Restart to update…
+settings.about.download_page:
+  zh-CN: 前往下载页
+  en: Go to downloads
+settings.about.retry_download:
+  zh-CN: 重试下载
+  en: Retry download
+settings.about.download:
+  zh-CN: 下载更新
+  en: Download update
+settings.about.local_build:
+  zh-CN: 本机构建
+  en: Local build
+# The version's tooltip: the build, then the system it is for.
+settings.about.build:
+  zh-CN: "%{build}（%{platform}）"
+  en: "%{build} (%{platform})"
+settings.about.channel:
+  zh-CN: 更新渠道
+  en: Update channel
+settings.about.channel_description:
+  zh-CN: 稳定版适合日常使用，Beta 可提前接收测试版本。
+  en: Stable is for everyday use. Beta gets test versions early.
+settings.about.automatic:
+  zh-CN: 自动升级
+  en: Automatic updates
+settings.about.automatic_description:
+  zh-CN: 检测到新版本后自动下载，下载完成后点击「重启并安装」完成更新。
+  en: A new version downloads by itself. Once it’s ready, click Restart to update.
+settings.about.privacy:
+  zh-CN: 隐私
+  en: Privacy
+settings.about.analytics:
+  zh-CN: 发送匿名使用统计
+  en: Send anonymous usage statistics
+settings.about.analytics_description:
+  zh-CN: 发送应用版本、操作系统/架构，用于评估安装量、版本分布，用于改进 ShellRS。不会发送任何主机、凭据、命令或会话内容。
+  en: Sends the app version, operating system and architecture, to count installs and versions and to improve ShellRS. No host, credential, command or session content is ever sent.
+settings.about.website:
+  zh-CN: 官网
+  en: Website
+settings.about.website_description:
+  zh-CN: 功能介绍、下载和更新内容。
+  en: Features, downloads and what’s new.
+
+settings.highlight.pattern_placeholder:
+  zh-CN: 例如：ERROR|WARN 或 failed\s+\d+
+  en: For example ERROR|WARN or failed\s+\d+
+settings.highlight.note_placeholder:
+  zh-CN: 例如：错误告警
+  en: For example Error alert
+settings.highlight.add_rule:
+  zh-CN: 添加规则
+  en: Add rule
+settings.highlight.column_enabled:
+  zh-CN: 启用
+  en: "On"
+settings.highlight.column_pattern:
+  zh-CN: 正则表达式
+  en: Regular expression
+settings.highlight.column_note:
+  zh-CN: 备注
+  en: Note
+settings.highlight.column_color:
+  zh-CN: 颜色
+  en: Color
+settings.highlight.column_notify:
+  zh-CN: 通知
+  en: Notify
+settings.highlight.drag:
+  zh-CN: 拖动调整顺序
+  en: Drag to reorder
+settings.highlight.empty:
+  zh-CN: 还没有规则
+  en: No rules yet
+
+settings.shortcuts.recording:
+  zh-CN: 按下组合键
+  en: Press a key combination
+settings.shortcuts.none:
+  zh-CN: 无
+  en: None
+settings.shortcuts.change:
+  zh-CN: 修改快捷键
+  en: Change shortcut
+settings.shortcuts.enable:
+  zh-CN: 启用
+  en: Enable
+settings.shortcuts.disable:
+  zh-CN: 禁用
+  en: Disable
+settings.shortcuts.reset:
+  zh-CN: 恢复默认
+  en: Restore default
+
+settings.theme.keywords:
+  zh-CN: 主题,终端主题,配色,颜色,浅色,深色
+  en: theme,terminal theme,color scheme,color,light,dark
+settings.theme.app_follows:
+  zh-CN: 界面跟随主题
+  en: Match interface to theme
+settings.theme.app_follows_description:
+  zh-CN: 关闭时界面用中性的黑白灰，只有终端按所选主题配色。
+  en: When off, the interface stays neutral black, white and gray, and only terminals take the theme’s colors.

@@ -42,7 +42,16 @@ fn main() {
         // Read before anything is built: the settings choose the language
         // every text is in, and 应用 › 窗口 where the window opens.
         let (settings, settings_problem) = open_settings();
-        shellrs::i18n::set_locale(settings.settings().language.resolved());
+        let locale = settings.settings().language.resolved();
+        shellrs::i18n::set_locale(locale);
+        // Defaults that become the user's own, the example highlight rules
+        // a first start fills in, are made while reading: read again, now
+        // in the language just chosen.
+        let (settings, settings_problem) = if locale == shellrs::i18n::LOCALES[0] {
+            (settings, settings_problem)
+        } else {
+            open_settings()
+        };
         shellrs::init(cx);
         shellrs::app::show_logo_when_unbundled(cx);
         cx.activate(true);

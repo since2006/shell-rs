@@ -10,6 +10,7 @@ use crate::app::{
     CatalogIcon, NewLocalTerminal, NewTemporaryConnection, ShowCredentials, ShowForwards,
     ShowHosts, ShowUpdate, ToggleHostPanel, ToggleTheme,
 };
+use crate::i18n::t;
 use crate::shared::tinted;
 use crate::update::UpdateBadge;
 
@@ -62,31 +63,34 @@ pub fn render_title_bar(
                             .child(
                                 Button::new("show-hosts")
                                     .icon(CatalogIcon::Server)
-                                    .tooltip("主机")
-                                    .accessibility_label("主机")
+                                    .tooltip(t!("workspace.title_bar.hosts"))
+                                    .accessibility_label(t!("workspace.title_bar.hosts"))
                                     .selected(sidebar == Some(SidebarMode::Hosts)),
                             )
                             .child(
                                 Button::new("show-forwards")
                                     .icon(CatalogIcon::ArrowLeftRight)
-                                    .tooltip("端口转发")
+                                    .tooltip(t!("workspace.title_bar.forwards"))
                                     .selected(sidebar == Some(SidebarMode::Forwards))
                                     // Forwards run whether or not their list
                                     // is showing, so the count is said here.
                                     .map(|button| match forwards {
-                                        0 => button.accessibility_label("端口转发"),
-                                        running => {
-                                            button.label(running.to_string()).accessibility_label(
-                                                format!("端口转发，{running} 条运行中"),
-                                            )
-                                        }
+                                        0 => button.accessibility_label(t!(
+                                            "workspace.title_bar.forwards"
+                                        )),
+                                        running => button
+                                            .label(running.to_string())
+                                            .accessibility_label(t!(
+                                                "workspace.title_bar.forwards_running",
+                                                count = running
+                                            )),
                                     }),
                             )
                             .child(
                                 Button::new("show-credentials")
                                     .icon(CatalogIcon::KeyRound)
-                                    .tooltip("凭据")
-                                    .accessibility_label("凭据")
+                                    .tooltip(t!("workspace.title_bar.credentials"))
+                                    .accessibility_label(t!("workspace.title_bar.credentials"))
                                     .selected(sidebar == Some(SidebarMode::Credentials)),
                             )
                             .on_click(move |picked: &Vec<usize>, window, cx| {
@@ -112,9 +116,9 @@ pub fn render_title_bar(
                         .small()
                         .icon(IconName::PanelLeft)
                         .tooltip(if sidebar.is_some() {
-                            "隐藏侧栏"
+                            t!("workspace.title_bar.hide_sidebar")
                         } else {
-                            "显示侧栏"
+                            t!("workspace.title_bar.show_sidebar")
                         })
                         .on_click(move |_, window, cx| {
                             toggle.dispatch_action(&ToggleHostPanel, window, cx)
@@ -127,8 +131,8 @@ pub fn render_title_bar(
                         .ghost()
                         .small()
                         .icon(CatalogIcon::Plug)
-                        .label("临时连接…")
-                        .tooltip("连接一台主机，不保存")
+                        .label(t!("workspace.title_bar.quick_connect"))
+                        .tooltip(t!("workspace.title_bar.quick_connect_tooltip"))
                         .on_click(move |_, window, cx| {
                             temporary.dispatch_action(&NewTemporaryConnection, window, cx)
                         }),
@@ -138,8 +142,12 @@ pub fn render_title_bar(
                         .ghost()
                         .small()
                         .icon(CatalogIcon::Terminal)
-                        .label("本地终端")
-                        .tooltip_with_action("新建本地终端", &NewLocalTerminal, None)
+                        .label(t!("workspace.title_bar.local_terminal"))
+                        .tooltip_with_action(
+                            t!("workspace.title_bar.new_local_terminal"),
+                            &NewLocalTerminal,
+                            None,
+                        )
                         .on_click(move |_, window, cx| {
                             new_local.dispatch_action(&NewLocalTerminal, window, cx)
                         }),
@@ -170,9 +178,9 @@ pub fn render_title_bar(
                         .small()
                         .icon(if dark { IconName::Sun } else { IconName::Moon })
                         .tooltip(if dark {
-                            "切换为浅色"
+                            t!("workspace.title_bar.to_light")
                         } else {
-                            "切换为深色"
+                            t!("workspace.title_bar.to_dark")
                         })
                         .on_click(move |_, window, cx| {
                             theme.dispatch_action(&ToggleTheme, window, cx)

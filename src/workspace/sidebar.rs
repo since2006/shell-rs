@@ -10,6 +10,7 @@ use crate::app::{CatalogIcon, OpenSettings};
 use crate::credential::CredentialPanel;
 use crate::forward::ForwardPanel;
 use crate::host::HostPanel;
+use crate::i18n::t;
 
 /// Which list the left dock is showing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -164,8 +165,12 @@ impl Render for Sidebar {
                             .ghost()
                             .small()
                             .icon(Icon::new(CatalogIcon::Settings))
-                            .label("设置")
-                            .tooltip_with_action("打开设置", &OpenSettings, None)
+                            .label(t!("workspace.sidebar.settings"))
+                            .tooltip_with_action(
+                                t!("workspace.sidebar.open_settings"),
+                                &OpenSettings,
+                                None,
+                            )
                             .on_click(|_, window, cx| {
                                 window.dispatch_action(Box::new(OpenSettings), cx)
                             }),

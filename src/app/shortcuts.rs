@@ -14,6 +14,7 @@ use gpui_kit::*;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use super::*;
+use crate::i18n::t;
 use crate::terminal::{TERMINAL_FIND_KEY_CONTEXT, TERMINAL_KEY_CONTEXT, terminal_key_bindings};
 
 /// The groups of 设置 › 键盘快捷键, in the order the page shows them.
@@ -28,12 +29,12 @@ pub enum ShortcutGroup {
 impl ShortcutGroup {
     pub const ALL: [Self; 4] = [Self::General, Self::Tabs, Self::Terminal, Self::Editor];
 
-    pub fn title(self) -> &'static str {
+    pub fn title(self) -> SharedString {
         match self {
-            Self::General => "通用",
-            Self::Tabs => "标签",
-            Self::Terminal => "终端",
-            Self::Editor => "编辑器",
+            Self::General => t!("app.shortcut_group.general"),
+            Self::Tabs => t!("app.shortcut_group.tabs"),
+            Self::Terminal => t!("app.shortcut_group.terminal"),
+            Self::Editor => t!("app.shortcut_group.editor"),
         }
     }
 }
@@ -42,6 +43,7 @@ impl ShortcutGroup {
 pub struct Shortcut {
     /// What the settings file stores. Never changes once released.
     id: &'static str,
+    /// The key of what it is called.
     label: &'static str,
     group: ShortcutGroup,
     /// Where it works: anywhere, or in these key contexts.
@@ -82,7 +84,7 @@ macro_rules! shortcut {
 pub static SHORTCUTS: [Shortcut; 25] = [
     shortcut!(
         "new-host",
-        "新建主机",
+        "app.shortcut.new_host",
         General,
         &[],
         "cmd-n",
@@ -91,7 +93,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "new-group",
-        "新建分组",
+        "app.shortcut.new_group",
         General,
         &[],
         "cmd-shift-n",
@@ -100,7 +102,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "open-settings",
-        "打开设置",
+        "app.shortcut.open_settings",
         General,
         &[],
         "cmd-,",
@@ -109,7 +111,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "toggle-sidebar",
-        "显示或隐藏侧栏",
+        "app.shortcut.toggle_sidebar",
         General,
         &[],
         "cmd-b",
@@ -118,7 +120,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "toggle-tool-sidebar",
-        "显示或隐藏右侧栏",
+        "app.shortcut.toggle_tool_sidebar",
         General,
         &[],
         "cmd-alt-b",
@@ -128,7 +130,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     // In a terminal ⌘K clears instead, as in other macOS terminals.
     shortcut!(
         "focus-search",
-        "聚焦搜索",
+        "app.shortcut.focus_search",
         General,
         &[],
         "cmd-k",
@@ -138,7 +140,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     // In a terminal the same keys size its text instead, as terminals do.
     shortcut!(
         "zoom-in",
-        "放大界面",
+        "app.shortcut.zoom_in",
         General,
         &[],
         "cmd-=",
@@ -147,7 +149,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "zoom-out",
-        "缩小界面",
+        "app.shortcut.zoom_out",
         General,
         &[],
         "cmd--",
@@ -156,17 +158,25 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "zoom-reset",
-        "界面实际大小",
+        "app.shortcut.zoom_reset",
         General,
         &[],
         "cmd-0",
         "ctrl-0",
         ZoomReset
     ),
-    shortcut!("quit", "退出", General, &[], "cmd-q", "ctrl-q", Quit),
+    shortcut!(
+        "quit",
+        "app.shortcut.quit",
+        General,
+        &[],
+        "cmd-q",
+        "ctrl-q",
+        Quit
+    ),
     shortcut!(
         "new-local-terminal",
-        "新建本地终端",
+        "app.shortcut.new_local_terminal",
         Tabs,
         &[],
         "cmd-t",
@@ -175,7 +185,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "close-tab",
-        "关闭标签",
+        "app.shortcut.close_tab",
         Tabs,
         &[],
         "cmd-w",
@@ -185,7 +195,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     // macOS reports ⌘⇧] as ⌘}, as Safari and Terminal take it.
     shortcut!(
         "next-tab",
-        "下一个标签",
+        "app.shortcut.next_tab",
         Tabs,
         &[],
         "cmd-}",
@@ -194,7 +204,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "previous-tab",
-        "上一个标签",
+        "app.shortcut.previous_tab",
         Tabs,
         &[],
         "cmd-{",
@@ -203,7 +213,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     Shortcut {
         id: "switch-to-tab",
-        label: "切换到标签 1…9",
+        label: "app.shortcut.switch_to_tab",
         group: ShortcutGroup::Tabs,
         contexts: &[],
         mac: "cmd-1",
@@ -213,7 +223,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     },
     shortcut!(
         "terminal-copy",
-        "复制",
+        "app.shortcut.terminal_copy",
         Terminal,
         TERMINAL,
         "cmd-c",
@@ -222,7 +232,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "terminal-paste",
-        "粘贴",
+        "app.shortcut.terminal_paste",
         Terminal,
         TERMINAL,
         "cmd-v",
@@ -231,7 +241,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "terminal-find",
-        "查找",
+        "app.shortcut.terminal_find",
         Terminal,
         TERMINAL_AND_FIND,
         "cmd-f",
@@ -240,7 +250,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "terminal-find-next",
-        "查找下一个",
+        "app.shortcut.terminal_find_next",
         Terminal,
         TERMINAL_AND_FIND,
         "cmd-g",
@@ -249,7 +259,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "terminal-find-previous",
-        "查找上一个",
+        "app.shortcut.terminal_find_previous",
         Terminal,
         TERMINAL_AND_FIND,
         "cmd-shift-g",
@@ -258,7 +268,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "terminal-clear",
-        "清屏",
+        "app.shortcut.terminal_clear",
         Terminal,
         TERMINAL,
         "cmd-k",
@@ -269,7 +279,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     // iTerm2 and Windows Terminal.
     shortcut!(
         "terminal-zoom-in",
-        "放大字号",
+        "app.shortcut.terminal_zoom_in",
         Terminal,
         TERMINAL_AND_FIND,
         "cmd-=",
@@ -278,7 +288,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "terminal-zoom-out",
-        "缩小字号",
+        "app.shortcut.terminal_zoom_out",
         Terminal,
         TERMINAL_AND_FIND,
         "cmd--",
@@ -287,7 +297,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "terminal-zoom-reset",
-        "默认字号",
+        "app.shortcut.terminal_zoom_reset",
         Terminal,
         TERMINAL_AND_FIND,
         "cmd-0",
@@ -296,7 +306,7 @@ pub static SHORTCUTS: [Shortcut; 25] = [
     ),
     shortcut!(
         "editor-save",
-        "保存",
+        "app.shortcut.editor_save",
         Editor,
         EDITOR,
         "cmd-s",
@@ -320,8 +330,8 @@ impl Shortcut {
         self.id
     }
 
-    pub fn label(&self) -> &'static str {
-        self.label
+    pub fn label(&self) -> SharedString {
+        t!(self.label)
     }
 
     pub fn is_numbered(&self) -> bool {
@@ -481,7 +491,7 @@ pub enum Refusal {
     NeedsModifier,
     /// 切换到标签 1…9 takes a modifier with a digit.
     NeedsDigit,
-    /// Another shortcut has it where this one works.
+    /// Another shortcut, this id's, has it where this one works.
     UsedBy(&'static str),
     /// A text field, list or dialog has it.
     Reserved,
@@ -492,15 +502,20 @@ impl Refusal {
     pub fn message(&self, keys: &str) -> String {
         match self {
             Self::NeedsModifier if cfg!(target_os = "macos") => {
-                "快捷键要带 ⌘、⌥ 或 ⌃，或者使用 F1–F12。".into()
+                t!("app.shortcut_refusal.needs_modifier_mac").to_string()
             }
-            Self::NeedsModifier => "快捷键要带 Ctrl 或 Alt，或者使用 F1–F12。".into(),
+            Self::NeedsModifier => t!("app.shortcut_refusal.needs_modifier").to_string(),
             Self::NeedsDigit if cfg!(target_os = "macos") => {
-                "这一项要按带修饰键的数字 1，例如 ⌘1。".into()
+                t!("app.shortcut_refusal.needs_digit_mac").to_string()
             }
-            Self::NeedsDigit => "这一项要按带修饰键的数字 1，例如 Alt+1。".into(),
-            Self::UsedBy(label) => format!("{keys} 已用于「{label}」。"),
-            Self::Reserved => format!("{keys} 已被输入框等内置功能使用。"),
+            Self::NeedsDigit => t!("app.shortcut_refusal.needs_digit").to_string(),
+            Self::UsedBy(id) => t!(
+                "app.shortcut_refusal.used_by",
+                keys = keys,
+                label = Shortcut::find(id).map(Shortcut::label).unwrap_or_default()
+            )
+            .to_string(),
+            Self::Reserved => t!("app.shortcut_refusal.reserved", keys = keys).to_string(),
         }
     }
 }
@@ -547,7 +562,7 @@ pub fn check(
                 .iter()
                 .any(|(taken, _)| same_keystroke(pressed, taken))
         }) {
-            return Err(Refusal::UsedBy(other.label));
+            return Err(Refusal::UsedBy(other.id));
         }
     }
     // One that works anywhere would win over a text field's or a list's
@@ -1032,7 +1047,7 @@ mod tests {
         let terminal = shortcut("new-local-terminal");
         assert_eq!(
             check(new_host, terminal.default_keys()),
-            Err(Refusal::UsedBy("新建本地终端"))
+            Err(Refusal::UsedBy("new-local-terminal"))
         );
         // A text field's key.
         assert_eq!(check(new_host, &primary("z")), Err(Refusal::Reserved));
@@ -1047,7 +1062,7 @@ mod tests {
         let clear = shortcut("terminal-clear");
         assert_eq!(
             check(shortcut("terminal-copy"), clear.default_keys()),
-            Err(Refusal::UsedBy("清屏"))
+            Err(Refusal::UsedBy("terminal-clear"))
         );
 
         // 切换到标签 1…9 takes any digit for all nine, and holds them all.
@@ -1057,7 +1072,7 @@ mod tests {
         assert_eq!(check(tabs, "ctrl-alt-5"), Ok("ctrl-alt-1".into()));
         assert_eq!(
             check(new_host, &tabs.default_keys().replace('1', "4")),
-            Err(Refusal::UsedBy("切换到标签 1…9"))
+            Err(Refusal::UsedBy("switch-to-tab"))
         );
     }
 

@@ -24,6 +24,11 @@ chmod 755 "$app/Contents/MacOS/shellrs"
 sed -e "s/@VERSION@/$version/g" -e "s/@BUILD@/$build/g" \
     "$here/Info.plist.in" > "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
+# The Info.plist descriptions in each language of the interface.
+for lproj in "$here"/*.lproj; do
+    cp -R "$lproj" "$app/Contents/Resources/"
+    plutil -lint "$app/Contents/Resources/$(basename "$lproj")/InfoPlist.strings" >/dev/null
+done
 
 icns="$root/assets/logo/shellrs.icns"
 icon="$root/assets/logo/shellrs.png"

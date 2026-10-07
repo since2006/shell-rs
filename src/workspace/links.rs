@@ -8,6 +8,7 @@ use gpui_kit::*;
 
 use crate::cli::OpenLink;
 use crate::host::{HostId, LinkKind, SshLink};
+use crate::i18n::t;
 
 use super::workspace_view::Workspace;
 
@@ -34,9 +35,10 @@ impl Workspace {
                     });
                 }
             }
-            Err(problem) => {
-                window.push_notification(Notification::error(problem).title("无法打开链接"), cx)
-            }
+            Err(problem) => window.push_notification(
+                Notification::error(problem).title(t!("workspace.link.open_failed")),
+                cx,
+            ),
         }
     }
 

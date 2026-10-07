@@ -13,6 +13,7 @@ use crate::app::{
 };
 use crate::credential::{CredentialDialog, open_credential_dialog};
 use crate::host::{AuthKind, CredentialKind, read_public_key};
+use crate::i18n::{t, tn};
 use crate::shared::confirm_delete;
 
 use super::{sidebar::SidebarMode, workspace_view::Workspace};
@@ -91,10 +92,18 @@ impl Workspace {
             cx.update(|window, cx| match line {
                 Some(line) => {
                     cx.write_to_clipboard(ClipboardItem::new_string(line));
-                    window.push_notification(Notification::success("已复制公钥"), cx);
+                    window.push_notification(
+                        Notification::success(t!("workspace.credential.public_key_copied")),
+                        cx,
+                    );
                 }
-                None => window
-                    .push_notification(Notification::error(format!("无法从 {path} 读出公钥")), cx),
+                None => window.push_notification(
+                    Notification::error(t!(
+                        "workspace.credential.public_key_unreadable",
+                        path = path
+                    )),
+                    cx,
+                ),
             })
             .ok();
         })
@@ -136,12 +145,10 @@ impl Workspace {
 /// What the delete dialog says happens to the hosts using the credential.
 /// `None` when no host uses it.
 fn describe_credential_delete(hosts: usize, kind: CredentialKind) -> Option<SharedString> {
-    let after = match kind.without_credential() {
-        AuthKind::Password => "改为「密码」，连接时询问密码",
-        AuthKind::NoPassword => "改为「无密码」，用 SSH Agent 和 ~/.ssh 中的私钥登录",
-    };
-    (hosts > 0)
-        .then(|| format!("有 {hosts} 台主机正在使用此凭据。删除后它们{after}，用户名不变。").into())
+    (hosts > 0).then(|| match kind.without_credential() {
+        AuthKind::Password => tn!("workspace.credential.in_use_then_password", hosts),
+        AuthKind::NoPassword => tn!("workspace.credential.in_use_then_no_password", hosts),
+    })
 }
 
 #[cfg(test)]

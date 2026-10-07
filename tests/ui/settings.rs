@@ -657,3 +657,56 @@ async fn highlight_rules_are_edited_in_place_on_their_page(cx: &mut TestAppConte
         );
     });
 }
+
+/// 界面语言 changes the window at once, to the language just chosen and
+/// back. The fixture keeps this test's language to itself.
+#[gpui_kit::test]
+fn the_interface_language_changes_the_window_at_once(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-settings", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("settings").click("0-0", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("settings-tab").label(), Some("设置"));
+        assert_eq!(window.find("show-hosts").label(), Some("主机"));
+        assert_eq!(appearance_dropdown(window, 1).as_deref(), Some("跟随系统"));
+    })
+    .unwrap();
+
+    let choose = |language, cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            settings.update(cx, |settings, cx| {
+                settings.update(|settings| settings.language = language, cx)
+            })
+        });
+        cx.run_until_parked();
+    };
+    choose(InterfaceLanguage::English, cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("settings-tab").label(), Some("Settings"));
+        assert_eq!(window.find("show-hosts").label(), Some("Hosts"));
+        assert_eq!(appearance_dropdown(window, 0).as_deref(), Some("English"));
+        assert_eq!(appearance_dropdown(window, 1).as_deref(), Some("System"));
+    })
+    .unwrap();
+
+    choose(InterfaceLanguage::SimplifiedChinese, cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("settings-tab").label(), Some("设置"));
+        assert_eq!(appearance_dropdown(window, 1).as_deref(), Some("跟随系统"));
+    })
+    .unwrap();
+}

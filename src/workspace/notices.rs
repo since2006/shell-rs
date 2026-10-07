@@ -11,6 +11,7 @@ use gpui_kit::*;
 use super::Workspace;
 use crate::analytics::Counter;
 use crate::app::CenterTab;
+use crate::i18n::t;
 use crate::settings::NotificationSettings;
 use crate::shared::RenamableTab as _;
 use crate::terminal::{LocalTerminalId, RemoteTerminalId, TerminalNotice};
@@ -66,10 +67,19 @@ pub(super) fn notice_text(tab: &str, notice: &TerminalNotice) -> (String, String
         TerminalNotice::Program {
             title: Some(title),
             body,
-        } => (format!("{tab}：{title}"), body.clone()),
+        } => (
+            t!("workspace.notice.titled", tab = tab, title = title).to_string(),
+            body.clone(),
+        ),
         TerminalNotice::Program { title: None, body } => (tab.to_string(), body.clone()),
-        TerminalNotice::Bell { line } => (format!("{tab}：响铃"), line.clone()),
-        TerminalNotice::Keyword { rule, line } => (format!("{tab}：{rule}"), line.clone()),
+        TerminalNotice::Bell { line } => (
+            t!("workspace.notice.bell", tab = tab).to_string(),
+            line.clone(),
+        ),
+        TerminalNotice::Keyword { rule, line } => (
+            t!("workspace.notice.titled", tab = tab, title = rule).to_string(),
+            line.clone(),
+        ),
     }
 }
 

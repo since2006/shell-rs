@@ -1,0 +1,2 @@
+/* ShellRS 第一次访问本地网络时，macOS 显示的说明。 */
+NSLocalNetworkUsageDescription = "ShellRS 需要访问本地网络，才能连接局域网中的主机。";

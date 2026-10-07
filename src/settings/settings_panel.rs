@@ -26,6 +26,7 @@ use crate::app::{
     RemoveAgentSkill, RemoveCliCommand, ShowUpdate,
 };
 use crate::cli::{AgentKind, BinaryStatus, CliIntegration, IntegrationStatus, SkillStatus};
+use crate::i18n::t;
 use crate::shared::{ClosableTabTitle, close_tab_items};
 use crate::terminal::{
     FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalColors, TerminalFont, TerminalFontPreview,
@@ -172,7 +173,7 @@ impl Panel for SettingsPanel {
         ClosableTabTitle::new(
             "settings-tab",
             Icon::new(CatalogIcon::Settings).small(),
-            "设置",
+            t!("settings.tab.title"),
         )
         .closable("close-settings", Box::new(CloseSettings))
         .context_menu(move |menu, _, cx| tab_menu(menu, group.clone(), panel, cx))
@@ -225,6 +226,7 @@ impl Render for SettingsPanel {
 
 /// One category of the left column.
 struct Category {
+    /// The key of the title.
     title: &'static str,
     icon: CatalogIcon,
     /// The category's settings. `Settings` leaves out a page without groups,
@@ -238,37 +240,37 @@ type CategoryGroups = fn(&SettingsPanel, &App) -> Vec<SettingGroup>;
 /// The categories, in the order the left column lists them.
 const CATEGORIES: [Category; 7] = [
     Category {
-        title: "外观",
+        title: "settings.category.appearance",
         icon: CatalogIcon::Palette,
         groups: appearance_groups,
     },
     Category {
-        title: "终端",
+        title: "settings.category.terminal",
         icon: CatalogIcon::Terminal,
         groups: terminal_groups,
     },
     Category {
-        title: "关键字高亮",
+        title: "settings.category.highlight",
         icon: CatalogIcon::Highlighter,
         groups: highlight_groups,
     },
     Category {
-        title: "键盘快捷键",
+        title: "settings.category.shortcuts",
         icon: CatalogIcon::Keyboard,
         groups: shortcuts_groups,
     },
     Category {
-        title: "外部 CLI",
+        title: "settings.category.external_cli",
         icon: CatalogIcon::SquareTerminal,
         groups: external_cli_groups,
     },
     Category {
-        title: "应用",
+        title: "settings.category.application",
         icon: CatalogIcon::AppWindow,
         groups: application_groups,
     },
     Category {
-        title: "关于",
+        title: "settings.category.about",
         icon: CatalogIcon::Info,
         groups: about_groups,
     },
@@ -278,7 +280,7 @@ impl Category {
     /// The page of the category at `ix` in `CATEGORIES`.
     fn page(&self, ix: usize, panel: &SettingsPanel, cx: &App) -> SettingPage {
         let shown = panel.shown_category.clone();
-        SettingPage::new(self.title)
+        SettingPage::new(t!(self.title))
             .icon(Icon::new(self.icon))
             // Drawn only for the page on display: nothing to see, it notes
             // which one that is.
@@ -294,27 +296,29 @@ impl Category {
 fn appearance_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
     let store = &panel.store;
     vec![
-        SettingGroup::new().title("常规").items([
-            SettingItem::new(
-                "界面语言",
-                choice_field(
-                    store,
-                    |settings| settings.language,
-                    |settings, language| settings.language = language,
-                ),
-            ),
-            SettingItem::new(
-                "应用外观",
-                choice_field(
-                    store,
-                    |settings| settings.appearance,
-                    |settings, appearance| settings.appearance = appearance,
-                ),
-            ),
-        ]),
         SettingGroup::new()
-            .title("主题")
-            .description("浅色外观时用左栏选中的主题，深色外观时用右栏的。")
+            .title(t!("settings.appearance.interface"))
+            .items([
+                SettingItem::new(
+                    t!("settings.appearance.language"),
+                    choice_field(
+                        store,
+                        |settings| settings.language,
+                        |settings, language| settings.language = language,
+                    ),
+                ),
+                SettingItem::new(
+                    t!("settings.appearance.mode"),
+                    choice_field(
+                        store,
+                        |settings| settings.appearance,
+                        |settings, appearance| settings.appearance = appearance,
+                    ),
+                ),
+            ]),
+        SettingGroup::new()
+            .title(t!("settings.appearance.theme"))
+            .description(t!("settings.appearance.theme_description"))
             .items([app_follows_item(store), terminal_theme_item(store)]),
     ]
 }
@@ -327,7 +331,7 @@ const PREVIEW_LINES: &[&str] = &[
     "abcdefghijklmnopqrstuvwxyz",
     "0123456789  0O 1lI| ,.;:'\"`",
     "~!@#$%^&*()-_=+[]{}<>/\\?",
-    "中文预览：你好，世界！",
+    "中文预览：你好，世界！", // i18n: keep (shows how two-cell characters look)
     "┌──┬──┐ ░▒▓█ ←↑→↓ ✓",
     "root@web-01:~$ tail -f /var/log/syslog",
 ];
@@ -337,46 +341,50 @@ fn terminal_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     let store = &panel.store;
     let defaults = AppSettings::default().terminal_font;
     vec![
-        SettingGroup::new().title("字体配置").items([
-            SettingItem::new("字体", font_family_field(panel, cx)).description("只列出等宽字体。"),
-            SettingItem::new("字号", font_size_field(store)).description("以像素计。"),
-            SettingItem::new(
-                "行高",
-                number_field(
-                    store,
-                    NumberFieldOptions {
-                        min: *LINE_HEIGHT_RANGE.start() as f64,
-                        max: *LINE_HEIGHT_RANGE.end() as f64,
-                        step: 0.1,
-                    },
-                    |settings| settings.terminal_font.line_height,
-                    |settings, line_height| settings.terminal_font.line_height = line_height,
-                )
-                .default_value(defaults.line_height as f64),
-            )
-            .description("字号的倍数。"),
-            SettingItem::render(|_, _, cx| {
-                v_flex()
-                    .w_full()
-                    .gap_2()
-                    .child(div().text_sm().child("预览"))
-                    .child(
-                        div()
-                            .w_full()
-                            .p_3()
-                            .rounded(cx.theme().radius)
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .bg(TerminalColors::current(cx).background())
-                            .overflow_hidden()
-                            .child(TerminalFontPreview::new(
-                                "terminal-font-preview",
-                                PREVIEW_LINES,
-                            )),
+        SettingGroup::new()
+            .title(t!("settings.terminal.font"))
+            .items([
+                SettingItem::new(t!("settings.terminal.family"), font_family_field(panel, cx))
+                    .description(t!("settings.terminal.family_description")),
+                SettingItem::new(t!("settings.terminal.size"), font_size_field(store))
+                    .description(t!("settings.terminal.size_description")),
+                SettingItem::new(
+                    t!("settings.terminal.line_height"),
+                    number_field(
+                        store,
+                        NumberFieldOptions {
+                            min: *LINE_HEIGHT_RANGE.start() as f64,
+                            max: *LINE_HEIGHT_RANGE.end() as f64,
+                            step: 0.1,
+                        },
+                        |settings| settings.terminal_font.line_height,
+                        |settings, line_height| settings.terminal_font.line_height = line_height,
                     )
-            })
-            .keywords(["预览", "字体", "字号", "行高"]),
-        ]),
+                    .default_value(defaults.line_height as f64),
+                )
+                .description(t!("settings.terminal.line_height_description")),
+                SettingItem::render(|_, _, cx| {
+                    v_flex()
+                        .w_full()
+                        .gap_2()
+                        .child(div().text_sm().child(t!("settings.preview")))
+                        .child(
+                            div()
+                                .w_full()
+                                .p_3()
+                                .rounded(cx.theme().radius)
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .bg(TerminalColors::current(cx).background())
+                                .overflow_hidden()
+                                .child(TerminalFontPreview::new(
+                                    "terminal-font-preview",
+                                    PREVIEW_LINES,
+                                )),
+                        )
+                })
+                .keywords(keywords(t!("settings.terminal.preview_keywords"))),
+            ]),
         notification_group(store),
     ]
 }
@@ -398,24 +406,22 @@ fn notification_group(store: &Entity<SettingsStore>) -> SettingGroup {
         .default_value(true)
     };
     SettingGroup::new()
-        .title("通知")
-        .description(
-            "ShellRS 不在前台时发系统通知；在前台但终端在别的标签时，在窗口右上角提示，点一下切过去。",
-        )
+        .title(t!("settings.notifications.title"))
+        .description(t!("settings.notifications.description"))
         .items([
             SettingItem::new(
-                "程序发送的通知",
+                t!("settings.notifications.programs"),
                 switch(
                     |settings| settings.programs,
                     |settings, on| settings.programs = on,
                 ),
             )
-            .description("远程或本地程序用 OSC 9 / 777 请求的通知，例如 printf '\\e]9;完成\\a'。"),
+            .description(t!("settings.notifications.programs_description")),
             SettingItem::new(
-                "响铃时通知",
+                t!("settings.notifications.bell"),
                 switch(|settings| settings.bell, |settings, on| settings.bell = on),
             )
-            .description("终端就在当前标签时不提示。"),
+            .description(t!("settings.notifications.bell_description")),
         ])
 }
 
@@ -443,38 +449,33 @@ fn highlight_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
         .len();
     let editor = panel.highlight_rules.clone();
     vec![
-        SettingGroup::new().title("常规").items([SettingItem::new(
-            "启用关键字高亮",
-            SettingField::switch(
-                move |cx| reader.read(cx).settings().terminal_highlight.enabled,
-                move |enabled, cx| {
-                    writer.update(cx, |store, cx| {
-                        store.update(|settings| settings.terminal_highlight.enabled = enabled, cx)
-                    });
-                },
-            )
-            .default_value(true),
-        )
-        .description("全屏程序（vim、less、tmux 等）里不高亮。")]),
         SettingGroup::new()
-            .title("预览")
-            .description("使用当前终端主题")
+            .title(t!("settings.highlight.options"))
+            .items([SettingItem::new(
+                t!("settings.highlight.enabled"),
+                SettingField::switch(
+                    move |cx| reader.read(cx).settings().terminal_highlight.enabled,
+                    move |enabled, cx| {
+                        writer.update(cx, |store, cx| {
+                            store.update(
+                                |settings| settings.terminal_highlight.enabled = enabled,
+                                cx,
+                            )
+                        });
+                    },
+                )
+                .default_value(true),
+            )
+            .description(t!("settings.highlight.enabled_description"))]),
+        SettingGroup::new()
+            .title(t!("settings.preview"))
+            .description(t!("settings.highlight.preview_description"))
             .items([highlight_preview_item()]),
         SettingGroup::new()
-            .title(format!("规则（{count}）"))
-            .description("规则按从上到下应用，勾选「通知」的规则在看不到终端时弹出提醒。")
-            .items([
-                SettingItem::render(move |_, _, _| editor.clone()).keywords([
-                    "规则",
-                    "正则",
-                    "关键字",
-                    "高亮",
-                    "颜色",
-                    "备注",
-                    "通知",
-                    "排序",
-                ]),
-            ]),
+            .title(t!("settings.highlight.rules", count = count))
+            .description(t!("settings.highlight.rules_description"))
+            .items([SettingItem::render(move |_, _, _| editor.clone())
+                .keywords(keywords(t!("settings.highlight.rules_keywords")))]),
     ]
 }
 
@@ -513,7 +514,7 @@ fn highlight_preview_item() -> SettingItem {
                     .child(StyledText::new(*line).with_highlights(highlights))
             }))
     })
-    .keywords(["预览", "高亮"])
+    .keywords(keywords(t!("settings.highlight.preview_keywords")))
 }
 
 /// 键盘快捷键.
@@ -537,26 +538,26 @@ fn application_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
         .default_value(true)
     };
     vec![
-        SettingGroup::new().title("窗口").items([
-            SettingItem::new(
-                "记住窗口大小",
-                switch(
-                    |window| window.remember_size,
-                    |window, on| window.remember_size = on,
-                ),
-            )
-            .description("下次启动时恢复上次关闭时的窗口大小和最大化状态。"),
-            SettingItem::new(
-                "记住窗口位置",
-                switch(
-                    |window| window.remember_position,
-                    |window, on| window.remember_position = on,
-                ),
-            )
-            .description(
-                "下次启动时把窗口放回上次所在的屏幕和位置；那块屏幕不在时放在主屏幕中间。",
-            ),
-        ]),
+        SettingGroup::new()
+            .title(t!("settings.window.title"))
+            .items([
+                SettingItem::new(
+                    t!("settings.window.remember_size"),
+                    switch(
+                        |window| window.remember_size,
+                        |window, on| window.remember_size = on,
+                    ),
+                )
+                .description(t!("settings.window.remember_size_description")),
+                SettingItem::new(
+                    t!("settings.window.remember_position"),
+                    switch(
+                        |window| window.remember_position,
+                        |window, on| window.remember_position = on,
+                    ),
+                )
+                .description(t!("settings.window.remember_position_description")),
+            ]),
     ]
 }
 
@@ -577,9 +578,9 @@ fn external_cli_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     };
     vec![
         SettingGroup::new()
-            .title("访问控制")
+            .title(t!("settings.cli.access"))
             .items([SettingItem::new(
-                "启用外部 CLI",
+                t!("settings.cli.enabled"),
                 SettingField::switch(
                     move |cx| reader.read(cx).settings().external_cli.enabled,
                     move |enabled, cx| {
@@ -590,26 +591,18 @@ fn external_cli_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
                 )
                 .default_value(false),
             )
-            .description(
-                "开启后，本机当前用户下的程序（如 AI Agent）可以通过 shellrs 命令，\
-             在已保存的主机上执行命令、传输和同步文件，并查看、新建、修改和删除主机与凭据，\
-             无需知道密码。",
-            )]),
+            .description(t!("settings.cli.enabled_description"))]),
         SettingGroup::new()
-            .title("CLI 二进制")
+            .title(t!("settings.cli.binary"))
             .description(if cfg!(windows) {
-                "把 shellrs 命令加入当前用户的 PATH，方便在终端和 Agent 中直接调用。\
-                 重新打开的终端和 Agent 才能找到它。"
+                t!("settings.cli.binary_description_windows")
             } else {
-                "把 shellrs 命令加入 PATH，方便在终端和 Agent 中直接调用。"
+                t!("settings.cli.binary_description")
             })
             .items([binary_item(bin_link, status.clone())]),
         SettingGroup::new()
             .title("Agent Skills")
-            .description(
-                "安装 shellrs skill，让外部 Agent 在连接服务器、执行远程命令和传输文件时\
-                 使用 shellrs CLI。可安装到通用目录或指定 Agent 的专用目录。",
-            )
+            .description(t!("settings.cli.skills_description"))
             .items([
                 skill_actions_item(installable),
                 skills_item(skill_files, status),
@@ -624,51 +617,52 @@ fn about_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     let (reader, writer) = (panel.store.clone(), panel.store.clone());
     let (analytics_reader, analytics_writer) = (panel.store.clone(), panel.store.clone());
     vec![
-        SettingGroup::new().title("应用更新").items([
-            current_version_item(snapshot),
-            SettingItem::new(
-                "更新渠道",
-                choice_field(
-                    &panel.store,
-                    |settings| settings.update.channel,
-                    |settings, channel| settings.update.channel = channel,
-                ),
-            )
-            .description("稳定版适合日常使用，Beta 可提前接收测试版本。"),
-            SettingItem::new(
-                "自动升级",
+        SettingGroup::new()
+            .title(t!("settings.about.updates"))
+            .items([
+                current_version_item(snapshot),
+                SettingItem::new(
+                    t!("settings.about.channel"),
+                    choice_field(
+                        &panel.store,
+                        |settings| settings.update.channel,
+                        |settings, channel| settings.update.channel = channel,
+                    ),
+                )
+                .description(t!("settings.about.channel_description")),
+                SettingItem::new(
+                    t!("settings.about.automatic"),
+                    SettingField::switch(
+                        move |cx| reader.read(cx).settings().update.automatic,
+                        move |automatic, cx| {
+                            writer.update(cx, |store, cx| {
+                                store.update(|settings| settings.update.automatic = automatic, cx)
+                            });
+                        },
+                    )
+                    .default_value(true),
+                )
+                .description(t!("settings.about.automatic_description")),
+            ]),
+        SettingGroup::new()
+            .title(t!("settings.about.privacy"))
+            .items([SettingItem::new(
+                t!("settings.about.analytics"),
                 SettingField::switch(
-                    move |cx| reader.read(cx).settings().update.automatic,
-                    move |automatic, cx| {
-                        writer.update(cx, |store, cx| {
-                            store.update(|settings| settings.update.automatic = automatic, cx)
+                    move |cx| analytics_reader.read(cx).settings().analytics.enabled,
+                    move |enabled, cx| {
+                        analytics_writer.update(cx, |store, cx| {
+                            store.update(|settings| settings.analytics.enabled = enabled, cx)
                         });
                     },
                 )
                 .default_value(true),
             )
-            .description("检测到新版本后自动下载，下载完成后点击「重启并安装」完成更新。"),
-        ]),
-        SettingGroup::new().title("隐私").items([SettingItem::new(
-            "发送匿名使用统计",
-            SettingField::switch(
-                move |cx| analytics_reader.read(cx).settings().analytics.enabled,
-                move |enabled, cx| {
-                    analytics_writer.update(cx, |store, cx| {
-                        store.update(|settings| settings.analytics.enabled = enabled, cx)
-                    });
-                },
-            )
-            .default_value(true),
-        )
-        .description(
-            "发送应用版本、操作系统/架构，用于评估安装量、版本分布，用于改进 ShellRS。\
-             不会发送任何主机、凭据、命令或会话内容。",
-        )]),
+            .description(t!("settings.about.analytics_description"))]),
         SettingGroup::new()
             .title("ShellRS")
             .items([SettingItem::new(
-                "官网",
+                t!("settings.about.website"),
                 SettingField::render(|options, _, _| {
                     Button::new("open-website")
                         .outline()
@@ -678,7 +672,7 @@ fn about_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
                         .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenWebsite), cx))
                 }),
             )
-            .description("功能介绍、下载和更新内容。")]),
+            .description(t!("settings.about.website_description"))]),
     ]
 }
 
@@ -697,18 +691,22 @@ fn current_version_item(snapshot: UpdateSnapshot) -> SettingItem {
         let build = SharedString::from(build_description());
         let step = snapshot.step().map(|step| -> (_, _, Box<dyn Action>) {
             match step {
-                UpdateStep::Restart => ("show-update", "重启并安装…", Box::new(ShowUpdate)),
+                UpdateStep::Restart => (
+                    "show-update",
+                    t!("settings.about.restart"),
+                    Box::new(ShowUpdate),
+                ),
                 UpdateStep::DownloadPage => (
                     "open-download-page",
-                    "前往下载页",
+                    t!("settings.about.download_page"),
                     Box::new(OpenDownloadPage),
                 ),
                 UpdateStep::Download { retry } => (
                     "download-update",
                     if retry {
-                        "重试下载"
+                        t!("settings.about.retry_download")
                     } else {
-                        "下载更新"
+                        t!("settings.about.download")
                     },
                     Box::new(DownloadUpdate),
                 ),
@@ -729,7 +727,7 @@ fn current_version_item(snapshot: UpdateSnapshot) -> SettingItem {
                     .outline()
                     .with_size(options.size())
                     .icon(Icon::new(CatalogIcon::RefreshCw))
-                    .label("检查更新")
+                    .label(t!("settings.about.check"))
                     .loading(snapshot.phase == Phase::Checking)
                     .disabled(!snapshot.can_check())
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(CheckForUpdates), cx))
@@ -753,7 +751,7 @@ fn current_version_item(snapshot: UpdateSnapshot) -> SettingItem {
                             text.flex_1().max_w_3_5()
                         }
                     })
-                    .child(Label::new("当前版本").text_sm())
+                    .child(Label::new(t!("settings.about.version")).text_sm())
                     .child(
                         div()
                             .id("update-status")
@@ -784,7 +782,7 @@ fn current_version_item(snapshot: UpdateSnapshot) -> SettingItem {
                     .children(button),
             )
     })
-    .keywords(["当前版本", "检查更新", "更新", "升级", "版本", "下载"])
+    .keywords(keywords(t!("settings.about.version_keywords")))
 }
 
 /// The version's tooltip: which build this is, and for which system.
@@ -792,9 +790,14 @@ fn build_description() -> String {
     let build = match (build_info::COMMIT, build_info::BUILD_DATE) {
         (Some(commit), Some(date)) => format!("{} · {date}", commit.get(..7).unwrap_or(commit)),
         (Some(commit), None) => commit.get(..7).unwrap_or(commit).to_string(),
-        _ => "本机构建".into(),
+        _ => t!("settings.about.local_build").to_string(),
     };
-    format!("{build}（{}）", platform::platform_label())
+    t!(
+        "settings.about.build",
+        build = build,
+        platform = platform::platform_label()
+    )
+    .to_string()
 }
 
 /// Where the `shellrs` command stands, with the one thing to do about it.
@@ -803,46 +806,51 @@ fn binary_item(bin_link: Option<String>, status: Option<IntegrationStatus>) -> S
         let binary = status.as_ref().map(|status| &status.binary);
         let (line, action) = match (&bin_link, binary) {
             (None, _) => (
-                RowStatus::Plain("此系统暂不支持安装 shellrs 命令".into()),
+                RowStatus::Plain(t!("settings.cli.binary_unsupported").into()),
                 None,
             ),
-            (Some(_), None) => (RowStatus::Plain("正在检查…".into()), None),
-            (Some(path), Some(BinaryStatus::Installed)) => {
-                (RowStatus::Installed(path.clone()), Some(("移除", false)))
-            }
+            (Some(_), None) => (RowStatus::Plain(t!("settings.cli.checking").into()), None),
+            (Some(path), Some(BinaryStatus::Installed)) => (
+                RowStatus::Installed(path.clone()),
+                Some((t!("settings.cli.remove"), false)),
+            ),
             (Some(path), Some(BinaryStatus::Missing)) => (
-                RowStatus::Plain(format!("未安装（{path}）")),
-                Some(("安装", true)),
+                RowStatus::Plain(t!("settings.cli.missing", path = path).into()),
+                Some((t!("settings.cli.install"), true)),
             ),
             (Some(path), Some(BinaryStatus::Stale { target })) => (
-                RowStatus::Warning(format!(
-                    "{path} 指向 {}，已失效或不是这个 ShellRS",
-                    target.display()
-                )),
-                Some(("重新安装", true)),
+                RowStatus::Warning(
+                    t!(
+                        "settings.cli.binary_stale",
+                        path = path,
+                        target = target.display()
+                    )
+                    .into(),
+                ),
+                Some((t!("settings.cli.reinstall"), true)),
             ),
             (Some(path), Some(BinaryStatus::Occupied { target })) => (
                 RowStatus::Warning(match target {
-                    Some(target) => {
-                        format!("{path} 已被其他程序占用（指向 {}）", target.display())
-                    }
-                    None => format!("{path} 已被其他程序占用"),
+                    Some(target) => t!(
+                        "settings.cli.binary_occupied_by",
+                        path = path,
+                        target = target.display()
+                    )
+                    .into(),
+                    None => t!("settings.cli.binary_occupied", path = path).into(),
                 }),
                 None,
             ),
             (Some(path), Some(BinaryStatus::Outdated)) => (
-                RowStatus::Warning(format!("已安装旧版本（{path}）")),
-                Some(("更新", true)),
+                RowStatus::Warning(t!("settings.cli.outdated", path = path).into()),
+                Some((t!("settings.cli.update"), true)),
             ),
             (Some(path), Some(BinaryStatus::NotOnPath)) => (
-                RowStatus::Warning(format!("{path} 所在的文件夹不在 PATH 中")),
-                Some(("安装", true)),
+                RowStatus::Warning(t!("settings.cli.binary_not_on_path", path = path).into()),
+                Some((t!("settings.cli.install"), true)),
             ),
             (Some(_), Some(BinaryStatus::Unavailable)) => (
-                RowStatus::Warning(
-                    "找不到 shellrs-cli.exe：它应在 ShellRS 程序旁边（开发时请先 cargo build）"
-                        .into(),
-                ),
+                RowStatus::Warning(t!("settings.cli.binary_unavailable").into()),
                 None,
             ),
         };
@@ -855,7 +863,7 @@ fn binary_item(bin_link: Option<String>, status: Option<IntegrationStatus>) -> S
                 v_flex()
                     .gap_1()
                     .min_w_0()
-                    .child(div().text_sm().child("状态："))
+                    .child(div().text_sm().child(t!("settings.cli.status")))
                     .child(line.render("cli-binary-status", cx)),
             )
             .children(action.map(|(label, install)| {
@@ -868,7 +876,7 @@ fn binary_item(bin_link: Option<String>, status: Option<IntegrationStatus>) -> S
                 })
             }))
     })
-    .keywords(["CLI", "PATH", "shellrs", "命令", "安装"])
+    .keywords(keywords(t!("settings.cli.binary_keywords")))
 }
 
 /// 检查状态 and 复制 skills, above the agents.
@@ -881,7 +889,7 @@ fn skill_actions_item(installable: bool) -> SettingItem {
                     .outline()
                     .small()
                     .icon(Icon::new(CatalogIcon::RefreshCw))
-                    .label("检查状态")
+                    .label(t!("settings.cli.check"))
                     .disabled(!installable)
                     .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(RefreshCliIntegration), cx)
@@ -892,11 +900,11 @@ fn skill_actions_item(installable: bool) -> SettingItem {
                     .outline()
                     .small()
                     .icon(Icon::new(IconName::Copy))
-                    .label("复制 skills")
+                    .label(t!("settings.cli.copy_skills"))
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(CopyAgentSkill), cx)),
             )
     })
-    .keywords(["skill", "Agent", "检查", "复制"])
+    .keywords(keywords(t!("settings.cli.skills_keywords")))
 }
 
 /// One row per agent, each with where its skill goes and whether it is
@@ -928,18 +936,22 @@ fn skill_row(
     cx: &App,
 ) -> impl IntoElement {
     let (line, action) = match (&file, status) {
-        (None, _) => (RowStatus::Plain("此系统暂不支持安装".into()), None),
-        (Some(_), None) => (RowStatus::Plain("正在检查…".into()), None),
-        (Some(file), Some(SkillStatus::Installed)) => {
-            (RowStatus::Installed(file.clone()), Some(("移除", false)))
-        }
+        (None, _) => (
+            RowStatus::Plain(t!("settings.cli.skill_unsupported").into()),
+            None,
+        ),
+        (Some(_), None) => (RowStatus::Plain(t!("settings.cli.checking").into()), None),
+        (Some(file), Some(SkillStatus::Installed)) => (
+            RowStatus::Installed(file.clone()),
+            Some((t!("settings.cli.remove"), false)),
+        ),
         (Some(file), Some(SkillStatus::Missing)) => (
-            RowStatus::Plain(format!("未安装（{file}）")),
-            Some(("安装", true)),
+            RowStatus::Plain(t!("settings.cli.missing", path = file).into()),
+            Some((t!("settings.cli.install"), true)),
         ),
         (Some(file), Some(SkillStatus::Outdated)) => (
-            RowStatus::Warning(format!("已安装旧版本（{file}）")),
-            Some(("更新", true)),
+            RowStatus::Warning(t!("settings.cli.outdated", path = file).into()),
+            Some((t!("settings.cli.update"), true)),
         ),
     };
     h_flex()
@@ -981,7 +993,7 @@ fn skill_row(
 
 /// Installing is the step the row asks for, so it is the primary button;
 /// removing is not.
-fn row_button(id: impl Into<ElementId>, label: &'static str, install: bool) -> Button {
+fn row_button(id: impl Into<ElementId>, label: SharedString, install: bool) -> Button {
     let button = Button::new(id).small().label(label);
     if install {
         button.primary()
@@ -1004,13 +1016,13 @@ impl RowStatus {
         let line = div().id(id).test_support().text_sm();
         match self {
             RowStatus::Installed(path) => line
-                .aria_label(format!("已安装于 {path}"))
+                .aria_label(t!("settings.cli.installed_at_path", path = path))
                 .text_color(cx.theme().success)
                 .child(
                     h_flex()
                         .gap_1()
                         .child(Icon::new(IconName::Check).small())
-                        .child("已安装于")
+                        .child(t!("settings.cli.installed_at"))
                         .child(
                             div()
                                 .font_family(cx.theme().mono_font_family.clone())
@@ -1043,7 +1055,7 @@ fn font_family_field(panel: &SettingsPanel, cx: &App) -> SettingField<SharedStri
         .into_iter()
         .map(|family| {
             let label = if family == default_family {
-                format!("{family}（默认）").into()
+                t!("settings.default_option", value = family)
             } else {
                 family.clone()
             };
@@ -1089,7 +1101,7 @@ fn font_size_field(store: &Entity<SettingsStore>) -> SettingField<SharedString> 
         .map(|size| {
             let key = SharedString::from(size.to_string());
             let label = if size as f32 == default {
-                format!("{size}（默认）").into()
+                t!("settings.default_option", value = size)
             } else {
                 key.clone()
             };
@@ -1144,6 +1156,16 @@ fn number_field(
             });
         },
     )
+}
+
+/// A row's search words, from a translation that lists them separated by
+/// commas: they are in the interface language like everything the search
+/// matches.
+pub(super) fn keywords(words: SharedString) -> Vec<SharedString> {
+    words
+        .split(',')
+        .map(|word| SharedString::from(word.trim().to_string()))
+        .collect()
 }
 
 /// A dropdown over one `Choice` of the settings. Its reset goes back to the

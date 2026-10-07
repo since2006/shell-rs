@@ -8,6 +8,7 @@ use gpui_kit::*;
 use crate::app::CatalogIcon;
 use crate::explorer::ExplorerStatus;
 use crate::host::{ConnectionState, Host};
+use crate::i18n::t;
 use crate::terminal::{TerminalLifecycle, TerminalStatus};
 
 /// The active connection/process state on the left and terminal facts on the
@@ -46,6 +47,15 @@ fn state_icon(state: ConnectionState, cx: &App) -> Icon {
     }
 }
 
+/// 「已连接 web-01」: where the connection to `name` stands.
+fn connection_text(state: ConnectionState, name: &str) -> SharedString {
+    match state {
+        ConnectionState::Disconnected => t!("workspace.status.disconnected_from", name = name),
+        ConnectionState::Connecting => t!("workspace.status.connecting_to", name = name),
+        ConnectionState::Connected => t!("workspace.status.connected_to", name = name),
+    }
+}
+
 impl RenderOnce for WorkspaceStatus {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
@@ -74,14 +84,14 @@ impl RenderOnce for WorkspaceStatus {
                             .as_ref()
                             .map_or_else(|| "SFTP".into(), |host| host.name.clone());
                         (
-                            format!("{} {name}", state.label()).into(),
+                            connection_text(state, &name),
                             state_icon(state, cx),
                             host.map(|host| host.endpoint()),
                             None,
                         )
                     }
                     None => (
-                        "本机文件".into(),
+                        t!("workspace.status.local_file"),
                         Icon::new(CatalogIcon::Laptop).text_color(muted),
                         None,
                         None,
@@ -92,14 +102,14 @@ impl RenderOnce for WorkspaceStatus {
                 Some(host) => {
                     alarming = host.state == ConnectionState::Disconnected;
                     (
-                        format!("{} {}", host.state.label(), host.name).into(),
+                        connection_text(host.state, &host.name),
                         state_icon(host.state, cx),
                         Some(host.endpoint()),
                         terminal,
                     )
                 }
                 None => (
-                    ConnectionState::Disconnected.label().into(),
+                    t!("workspace.status.not_connected"),
                     Icon::new(CatalogIcon::Unplug).text_color(muted),
                     None,
                     terminal,
@@ -109,17 +119,20 @@ impl RenderOnce for WorkspaceStatus {
                 let name = host
                     .as_ref()
                     .map_or_else(|| "SFTP".into(), |host| host.name.clone());
-                let state = format!("{} {name}", status.state.label());
+                let state = connection_text(status.state, &name);
                 let (text, icon) = match (status.state, status.problem) {
                     (ConnectionState::Disconnected, Some(problem)) => {
                         alarming = true;
-                        (format!("{state}：{problem}"), state_icon(status.state, cx))
+                        (
+                            t!("workspace.status.problem", state = state, problem = problem),
+                            state_icon(status.state, cx),
+                        )
                     }
                     // Connected, but a directory could not be read.
                     (ConnectionState::Connected, Some(problem)) => {
                         alarming = true;
                         (
-                            problem.to_string(),
+                            problem,
                             Icon::new(IconName::CircleX).text_color(cx.theme().danger),
                         )
                     }
@@ -128,7 +141,7 @@ impl RenderOnce for WorkspaceStatus {
                         (state, state_icon(now, cx))
                     }
                 };
-                (text.into(), icon, host.map(|host| host.endpoint()), None)
+                (text, icon, host.map(|host| host.endpoint()), None)
             }
             WorkspaceStatus::Local(status) => {
                 let lifecycle = status.lifecycle();
@@ -146,7 +159,13 @@ impl RenderOnce for WorkspaceStatus {
                     }
                 };
                 (
-                    format!("{} 本地终端", lifecycle.label()).into(),
+                    match lifecycle {
+                        TerminalLifecycle::Starting => t!("workspace.status.local_starting"),
+                        TerminalLifecycle::Running => t!("workspace.status.local_running"),
+                        TerminalLifecycle::Exited { .. } => t!("workspace.status.local_exited"),
+                        TerminalLifecycle::Failed(_) => t!("workspace.status.local_failed"),
+                        TerminalLifecycle::Closing => t!("workspace.status.local_closing"),
+                    },
                     icon,
                     None,
                     Some(status),
@@ -190,14 +209,18 @@ impl RenderOnce for WorkspaceStatus {
                             .child(format),
                     ),
                 None => bar
-                    .right("编码 UTF-8")
+                    .right(t!("workspace.status.encoding"))
                     .right(Separator::vertical())
-                    .right("终端 xterm-256color"),
+                    .right(t!("workspace.status.terminal_type")),
             })
             .when_some(terminal, |bar, terminal| {
                 let (columns, rows) = (terminal.columns(), terminal.rows());
                 let size = format!("{columns}×{rows}");
-                let explained = format!("终端尺寸：{columns} 列，{rows} 行");
+                let explained = t!(
+                    "workspace.status.terminal_size",
+                    columns = columns,
+                    rows = rows
+                );
                 bar.right(Separator::vertical()).right(
                     div()
                         .id("status-terminal-size")

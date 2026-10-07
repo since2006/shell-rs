@@ -5,11 +5,20 @@
   change: the keychain grants each saved password to them, so a new
   identifier would have macOS ask about every password again.
   bundle.sh fills in @VERSION@ and @BUILD@ (a number that only goes up).
+  The languages are the interface's: the system's own panels (the file
+  picker, the menu bar's standard items) follow whichever of them the user
+  prefers, and the *.lproj folders beside this file translate the
+  descriptions below.
 -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
-	<string>zh_CN</string>
+	<string>en</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>zh-Hans</string>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>ShellRS</string>
 	<key>CFBundleExecutable</key>
@@ -35,7 +44,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>ShellRS 需要访问本地网络，才能连接局域网中的主机。</string>
+	<string>ShellRS needs the local network to connect to hosts on your LAN.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© ShellRS</string>
 </dict>

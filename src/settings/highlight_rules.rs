@@ -16,6 +16,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::CatalogIcon;
+use crate::i18n::{UiLocale, t};
 use crate::terminal::{HighlightColor, HighlightRule};
 
 use super::SettingsStore;
@@ -51,6 +52,7 @@ pub struct HighlightRulesEditor {
     /// row keeps its fields.
     next_id: usize,
     _store_changes: Subscription,
+    _locale: Subscription,
 }
 
 struct RuleRow {
@@ -105,11 +107,24 @@ impl HighlightRulesEditor {
                 cx.notify();
             }
         });
+        // The rows' inputs keep their placeholders; a new language gives
+        // them again.
+        let locale = cx.observe_global_in::<UiLocale>(window, |this, window, cx| {
+            for row in &this.rows {
+                row.pattern.update(cx, |input, cx| {
+                    input.set_placeholder(t!("settings.highlight.pattern_placeholder"), window, cx)
+                });
+                row.note.update(cx, |input, cx| {
+                    input.set_placeholder(t!("settings.highlight.note_placeholder"), window, cx)
+                });
+            }
+        });
         let mut this = Self {
             store: store.clone(),
             rows: Vec::new(),
             next_id: 0,
             _store_changes: store_changes,
+            _locale: locale,
         };
         for rule in store.read(cx).settings().terminal_highlight.rules {
             let row = this.new_row(rule, window, cx);
@@ -132,12 +147,12 @@ impl HighlightRulesEditor {
         self.next_id += 1;
         let pattern = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder(r"例如：ERROR|WARN 或 failed\s+\d+")
+                .placeholder(t!("settings.highlight.pattern_placeholder"))
                 .default_value(rule.pattern.clone())
         });
         let note = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("例如：错误告警")
+                .placeholder(t!("settings.highlight.note_placeholder"))
                 .default_value(rule.note.clone())
         });
         let hex = cx.new(|cx| InputState::new(window, cx).default_value(rule.color.to_hex()));
@@ -280,7 +295,7 @@ impl HighlightRulesEditor {
                 .outline()
                 .small()
                 .icon(Icon::new(IconName::Plus))
-                .label("添加规则")
+                .label(t!("settings.highlight.add_rule"))
                 .on_click(cx.listener(|this, _, window, cx| this.add(window, cx))),
         )
     }
@@ -294,11 +309,36 @@ impl HighlightRulesEditor {
             .text_color(cx.theme().muted_foreground)
             // Over the drag handles.
             .child(div().w_4().flex_shrink_0())
-            .child(div().w_8().flex_shrink_0().child("启用"))
-            .child(div().flex_1().min_w_0().child("正则表达式"))
-            .child(div().w_40().flex_shrink_0().child("备注"))
-            .child(div().w_32().flex_shrink_0().child("颜色"))
-            .child(div().w_8().flex_shrink_0().child("通知"))
+            .child(
+                div()
+                    .w_8()
+                    .flex_shrink_0()
+                    .child(t!("settings.highlight.column_enabled")),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(t!("settings.highlight.column_pattern")),
+            )
+            .child(
+                div()
+                    .w_40()
+                    .flex_shrink_0()
+                    .child(t!("settings.highlight.column_note")),
+            )
+            .child(
+                div()
+                    .w_32()
+                    .flex_shrink_0()
+                    .child(t!("settings.highlight.column_color")),
+            )
+            .child(
+                div()
+                    .w_8()
+                    .flex_shrink_0()
+                    .child(t!("settings.highlight.column_notify")),
+            )
             .child(div().w_6().flex_shrink_0())
     }
 
@@ -336,7 +376,9 @@ impl HighlightRulesEditor {
                     .flex_shrink_0()
                     .cursor_grab()
                     .text_color(cx.theme().muted_foreground)
-                    .tooltip(|window, cx| Tooltip::new("拖动调整顺序").build(window, cx))
+                    .tooltip(|window, cx| {
+                        Tooltip::new(t!("settings.highlight.drag")).build(window, cx)
+                    })
                     .child(Icon::new(CatalogIcon::GripVertical).small())
                     .on_drag(
                         DraggedRule {
@@ -404,7 +446,7 @@ impl HighlightRulesEditor {
                                         FEATURED_COLORS.iter().map(|color| color.hsla()).collect(),
                                     )
                                     .small()
-                                    .accessibility_label("颜色"),
+                                    .accessibility_label(t!("settings.highlight.column_color")),
                             ),
                     )
                     .child(
@@ -433,7 +475,7 @@ impl HighlightRulesEditor {
                         .ghost()
                         .xsmall()
                         .icon(Icon::new(CatalogIcon::Trash))
-                        .tooltip("删除")
+                        .tooltip(t!("common.delete"))
                         .on_click(cx.listener(move |this, _, _, cx| this.remove(id, cx))),
                 ),
             )
@@ -453,7 +495,7 @@ impl Render for HighlightRulesEditor {
             div()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
-                .child("还没有规则")
+                .child(t!("settings.highlight.empty"))
                 .into_any_element()
         } else {
             let rows: Vec<_> = self

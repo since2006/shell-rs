@@ -9,6 +9,7 @@ use crate::app::{
     DeleteSnippet, DeleteSnippetCategory, EditSnippet, NewSnippet, NewSnippetCategory,
     NewSnippetIn, RenameSnippetCategory, ToggleSnippetCategory,
 };
+use crate::i18n::tn;
 use crate::shared::confirm_delete;
 use crate::snippets::{CategoryDialog, SnippetDialog, open_category_dialog, open_snippet_dialog};
 
@@ -124,8 +125,8 @@ impl Workspace {
             return;
         };
         let snippets = store.snippets_in(id);
-        let description = (snippets > 0)
-            .then(|| SharedString::from(format!("分类里的 {snippets} 个片段会一起删除。")));
+        let description =
+            (snippets > 0).then(|| tn!("workspace.snippets.delete_category", snippets));
         let store = self.store.clone();
         confirm_delete(
             &name,

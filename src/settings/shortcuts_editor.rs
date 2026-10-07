@@ -16,6 +16,7 @@ use crate::app::{
     CatalogIcon, Shortcut, ShortcutGroup, ShortcutOverrides, check, fixed_bindings, key_caps,
     key_text,
 };
+use crate::i18n::t;
 
 use super::SettingsStore;
 
@@ -206,7 +207,7 @@ fn render_field(
             .bg(theme.background)
             .text_sm()
             .text_color(theme.muted_foreground)
-            .child("按下组合键")
+            .child(t!("settings.shortcuts.recording"))
             .into_any_element()
     } else {
         let start = editor.clone();
@@ -214,12 +215,12 @@ fn render_field(
         let spoken = keys
             .as_deref()
             .map(|keys| key_text(keys, shortcut.is_numbered()))
-            .unwrap_or_else(|| "无".into());
+            .unwrap_or_else(|| t!("settings.shortcuts.none").to_string());
         Button::new(element_id("keys", shortcut))
             .ghost()
             .with_size(size)
             .accessibility_label(spoken)
-            .tooltip("修改快捷键")
+            .tooltip(t!("settings.shortcuts.change"))
             .child(key_caps_element(
                 keys.as_deref(),
                 shortcut.is_numbered(),
@@ -241,7 +242,11 @@ fn render_field(
                 .with_size(size)
                 .icon(Icon::new(CatalogIcon::Ban))
                 .selected(disabled)
-                .tooltip(if disabled { "启用" } else { "禁用" })
+                .tooltip(if disabled {
+                    t!("settings.shortcuts.enable")
+                } else {
+                    t!("settings.shortcuts.disable")
+                })
                 .on_click(move |_, _, cx| {
                     toggle.update(cx, |editor, cx| {
                         editor.change(
@@ -262,7 +267,7 @@ fn render_field(
                 .ghost()
                 .with_size(size)
                 .icon(Icon::new(CatalogIcon::RotateCcw))
-                .tooltip("恢复默认")
+                .tooltip(t!("settings.shortcuts.reset"))
                 .disabled(is_default)
                 .on_click(move |_, _, cx| {
                     reset.update(cx, |editor, cx| {
@@ -280,7 +285,7 @@ fn key_caps_element(keys: Option<&str>, numbered: bool, cx: &App) -> AnyElement 
         return div()
             .text_sm()
             .text_color(theme.muted_foreground)
-            .child("无")
+            .child(t!("settings.shortcuts.none"))
             .into_any_element();
     };
     let caps = key_caps(keys, numbered);

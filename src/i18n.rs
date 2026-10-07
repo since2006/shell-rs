@@ -177,10 +177,28 @@ mod tests {
     /// every text in them goes through `t!`. Grows as modules are
     /// translated, until it is all of `src`.
     const TRANSLATED: &[&str] = &[
+        "src/app",
         "src/i18n.rs",
-        "src/settings/model.rs",
-        "src/settings/store.rs",
+        "src/main.rs",
+        "src/settings",
         "src/shared",
+        "src/workspace/analytics.rs",
+        "src/workspace/credentials.rs",
+        "src/workspace/dock_skin.rs",
+        "src/workspace/editors.rs",
+        "src/workspace/forwards.rs",
+        "src/workspace/links.rs",
+        "src/workspace/mod.rs",
+        "src/workspace/notices.rs",
+        "src/workspace/recent_hosts.rs",
+        "src/workspace/sidebar.rs",
+        "src/workspace/snippets.rs",
+        "src/workspace/status_bar.rs",
+        "src/workspace/tabs.rs",
+        "src/workspace/title_bar.rs",
+        "src/workspace/updates.rs",
+        "src/workspace/window_state.rs",
+        "src/workspace/workspace_view.rs",
     ];
 
     /// Marks a line whose Chinese literal is meant to stay, such as a

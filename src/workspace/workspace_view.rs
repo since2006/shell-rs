@@ -55,6 +55,7 @@ use crate::host::{
     HostStoreEvent, confirm_delete_group, confirm_delete_host, open_group_dialog, open_host_dialog,
     open_quick_connect_dialog, open_temporary_connection_dialog,
 };
+use crate::i18n::t;
 use crate::settings::{
     Appearance, SettingsPanel, SettingsPanelEvent, SettingsStore, SettingsStoreEvent,
     WindowSettings,
@@ -260,7 +261,7 @@ impl Workspace {
                 this.serve_cli(window, cx);
             }
             Err(error) => notify_once_open(
-                Notification::error(error.to_string()).title("外部 CLI 无法启动"),
+                Notification::error(error.to_string()).title(t!("workspace.cli.start_failed")),
                 window,
                 cx,
             ),
@@ -759,12 +760,12 @@ impl Workspace {
                 let description = introduced(prompt.description());
                 window.open_alert_dialog(cx, move |alert, _, _| {
                     alert
-                        .title("首次连接此主机")
+                        .title(t!("workspace.host_key.unknown_title"))
                         .description(description.clone())
                         .button_props(
                             DialogButtonProps::default()
-                                .ok_text("信任并连接")
-                                .cancel_text("取消"),
+                                .ok_text(t!("workspace.host_key.trust"))
+                                .cancel_text(t!("common.cancel")),
                         )
                         .show_cancel(true)
                         .on_ok({
@@ -788,26 +789,39 @@ impl Workspace {
                 });
             }
             ConnectionPromptKind::HostKeyChanged(prompt) => {
-                let old = prompt.old_fingerprints().join("、");
-                let jump_host = prompt
-                    .jump_host()
-                    .map(|name| format!("跳板主机：{name}\n"))
-                    .unwrap_or_default();
-                let description = introduced(format!(
-                    "{jump_host}主机：{}:{}\n算法：{}\n已保存指纹：{old}\n服务器当前指纹：{}\n\n连接已阻断。请核验服务器身份后手动处理：{}",
-                    prompt.host(),
-                    prompt.port(),
-                    prompt.algorithm(),
-                    prompt.fingerprint(),
-                    prompt.known_hosts_path().display(),
-                ));
+                let old = prompt.old_fingerprints().join(&t!("common.list.separator"));
+                let path = prompt.known_hosts_path().display().to_string();
+                let description = introduced(
+                    match prompt.jump_host() {
+                        Some(jump_host) => t!(
+                            "workspace.host_key.changed_via_jump_host",
+                            jump_host = jump_host,
+                            host = prompt.host(),
+                            port = prompt.port(),
+                            algorithm = prompt.algorithm(),
+                            old = old,
+                            fingerprint = prompt.fingerprint(),
+                            path = path
+                        ),
+                        None => t!(
+                            "workspace.host_key.changed",
+                            host = prompt.host(),
+                            port = prompt.port(),
+                            algorithm = prompt.algorithm(),
+                            old = old,
+                            fingerprint = prompt.fingerprint(),
+                            path = path
+                        ),
+                    }
+                    .to_string(),
+                );
                 window.open_alert_dialog(cx, move |alert, _, _| {
                     alert
-                        .title("服务器主机密钥已变更")
+                        .title(t!("workspace.host_key.changed_title"))
                         .description(description.clone())
                         .button_props(
                             DialogButtonProps::default()
-                                .ok_text("关闭")
+                                .ok_text(t!("common.close"))
                                 .ok_variant(ButtonVariant::Danger),
                         )
                         .on_ok({
@@ -828,7 +842,7 @@ impl Workspace {
                 let instructions = introduced(prompt.instructions().to_string());
                 let fields = prompt.fields().to_vec();
                 let dialog_title: SharedString = if title.trim().is_empty() {
-                    "SSH 认证".into()
+                    t!("workspace.auth.title")
                 } else {
                     title.clone().into()
                 };
@@ -844,7 +858,10 @@ impl Workspace {
                                 })
                                 .child(form.clone()),
                         )
-                        .footer(commit_footer("ssh-auth-submit", "继续"))
+                        .footer(commit_footer(
+                            "ssh-auth-submit",
+                            t!("workspace.auth.continue"),
+                        ))
                         .on_ok({
                             let answer = answer.clone();
                             let form = form.clone();
@@ -1170,7 +1187,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.change_cli_integration(
-            "无法安装 shellrs 命令",
+            t!("workspace.cli.install_command_failed"),
             crate::cli::install_binary,
             window,
             cx,
@@ -1184,7 +1201,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.change_cli_integration(
-            "无法移除 shellrs 命令",
+            t!("workspace.cli.remove_command_failed"),
             crate::cli::remove_binary,
             window,
             cx,
@@ -1199,7 +1216,7 @@ impl Workspace {
     ) {
         let agent = action.0;
         self.change_cli_integration(
-            "无法安装 skill",
+            t!("workspace.cli.install_skill_failed"),
             move |paths| crate::cli::install_skill(paths, agent),
             window,
             cx,
@@ -1214,7 +1231,7 @@ impl Workspace {
     ) {
         let agent = action.0;
         self.change_cli_integration(
-            "无法移除 skill",
+            t!("workspace.cli.remove_skill_failed"),
             move |paths| crate::cli::remove_skill(paths, agent),
             window,
             cx,
@@ -1238,7 +1255,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         cx.write_to_clipboard(ClipboardItem::new_string(crate::cli::SKILL.to_string()));
-        window.push_notification(Notification::success("已复制 shellrs skill"), cx);
+        window.push_notification(Notification::success(t!("workspace.cli.skill_copied")), cx);
     }
 
     /// Install or remove part of the external CLI off the main thread, then
@@ -1246,7 +1263,7 @@ impl Workspace {
     /// system's administrator prompt.
     fn change_cli_integration(
         &mut self,
-        failure: &'static str,
+        failure: SharedString,
         change: impl FnOnce(&IntegrationPaths) -> std::io::Result<()> + Send + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1351,10 +1368,11 @@ impl Workspace {
                 Vec::new()
             };
             let unsaved = (!unsaved.is_empty()).then(|| {
-                format!(
-                    "{}有未保存的修改，关闭 SFTP 标签会一起关掉它们，修改会丢失。",
-                    describe_files(&unsaved)
+                t!(
+                    "workspace.unsaved.close_sftp",
+                    files = describe_files(&unsaved)
                 )
+                .to_string()
             });
             if panel.read(cx).is_transferring() {
                 let direction = panel.read(cx).transfer_direction();
@@ -1370,9 +1388,9 @@ impl Workspace {
             } else if let Some(unsaved) = unsaved {
                 let dispatch = self.focus_handle.clone();
                 confirm_danger(
-                    "关闭 SFTP 标签？".into(),
+                    t!("workspace.unsaved.close_sftp_title"),
                     Some(unsaved.into()),
-                    "放弃修改并关闭",
+                    t!("workspace.unsaved.discard_and_close"),
                     Rc::new(move |window, cx| {
                         dispatch.dispatch_explorer_action(
                             &ExplorerAction::new(id, ExplorerCommand::CloseConfirmed)
@@ -1637,7 +1655,10 @@ impl Workspace {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(host.to_string()));
-        window.push_notification(Notification::success(format!("已复制 {host}")), cx);
+        window.push_notification(
+            Notification::success(t!("workspace.copied", text = host)),
+            cx,
+        );
     }
 
     fn on_copy_host_id(
@@ -1655,7 +1676,10 @@ impl Workspace {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(public_id.to_string()));
-        window.push_notification(Notification::success(format!("已复制 ID {public_id}")), cx);
+        window.push_notification(
+            Notification::success(t!("workspace.copied_id", id = public_id)),
+            cx,
+        );
     }
 
     fn on_restart_local_terminal(

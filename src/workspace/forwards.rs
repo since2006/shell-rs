@@ -11,6 +11,7 @@ use crate::app::{
 };
 use crate::forward::{ForwardManagerEvent, open_forward_dialog};
 use crate::host::ForwardId;
+use crate::i18n::t;
 use crate::shared::confirm_delete;
 
 use super::{
@@ -72,7 +73,7 @@ impl Workspace {
         let store = self.store.read(cx);
         if store.hosts().is_empty() {
             window.push_notification(
-                Notification::warning("端口转发经由一台主机的 SSH 连接，请先新建主机。"),
+                Notification::warning(t!("workspace.forward.needs_host")),
                 cx,
             );
             return;
@@ -108,7 +109,7 @@ impl Workspace {
             .forwards
             .read(cx)
             .is_active(id)
-            .then(|| SharedString::from("这条转发正在运行，会先停止。"));
+            .then(|| t!("workspace.forward.delete_running"));
         let store = self.store.clone();
         confirm_delete(
             &title,
@@ -180,7 +181,8 @@ impl Workspace {
                     .map(|rule| rule.title())
                     .unwrap_or_default();
                 window.push_notification(
-                    Notification::error(reason.clone()).title(format!("端口转发“{title}”已停止")),
+                    Notification::error(reason.clone())
+                        .title(t!("workspace.forward.stopped", title = title)),
                     cx,
                 );
             }
@@ -215,10 +217,13 @@ impl Workspace {
         let store = self.store.read(cx);
         let rule = store.forward(id)?;
         let host = store.host(rule.host)?;
-        Some(format!(
-            "端口转发“{}”正在通过 {} 连接。",
-            rule.title(),
-            host.name
-        ))
+        Some(
+            t!(
+                "workspace.forward.prompt_origin",
+                title = rule.title(),
+                host = host.name
+            )
+            .to_string(),
+        )
     }
 }

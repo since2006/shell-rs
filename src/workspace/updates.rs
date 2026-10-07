@@ -11,6 +11,7 @@ use crate::app::{
     ShowUpdate,
 };
 use crate::host::ConnectionState;
+use crate::i18n::t;
 use crate::terminal::TerminalLifecycle;
 use crate::update::build_info::{CHANGELOG_PAGE, WEBSITE};
 use crate::update::{RestartImpact, UpdaterEvent, open_update_dialog};
@@ -114,14 +115,13 @@ impl Workspace {
                 completed: true,
                 ..
             } => window.push_notification(
-                Notification::success(format!("ShellRS 已更新到 {to}。")).title("更新完成"),
+                Notification::success(t!("workspace.update.done", version = to))
+                    .title(t!("workspace.update.done_title")),
                 cx,
             ),
             UpdaterEvent::Updated { from, to, .. } => window.push_notification(
-                Notification::error(format!(
-                    "没有装上 {to}，ShellRS 仍是 {from}。可以到官网下载安装。"
-                ))
-                .title("更新没有完成"),
+                Notification::error(t!("workspace.update.failed", to = to, from = from))
+                    .title(t!("workspace.update.failed_title")),
                 cx,
             ),
         }
