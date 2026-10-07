@@ -373,7 +373,7 @@ fn terminal_themes_follow_the_appearance_and_a_card_chooses_one(cx: &mut TestApp
     let neutral = |cx: &mut TestAppContext| {
         cx.update(|cx| {
             let name = cx.theme().theme_name().clone();
-            name == "Default Light" || name == "Default Dark"
+            name == "Default Light" || name == "ShellRS Dark"
         })
     };
     assert!(neutral(cx));

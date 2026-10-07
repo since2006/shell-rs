@@ -170,19 +170,19 @@ const SHELLRS_LIGHT: TerminalTheme = TerminalTheme {
     ],
 };
 
-/// The app's dark theme around a terminal: `neutral-950`, `neutral-50`
+/// The app's dark theme around a terminal: its charcoal background and soft
 /// text and cursor, the `selection` over the background, with ANSI colors
-/// light enough to read on it.
+/// light enough to read on it; black is the app's borders.
 const SHELLRS_DARK: TerminalTheme = TerminalTheme {
     key: "shellrs-dark",
     name: "ShellRS Dark",
     mode: ThemeMode::Dark,
-    foreground: 0xfafafa,
-    background: 0x0a0a0a,
-    cursor: 0xfafafa,
-    selection: 0x101e48,
+    foreground: 0xe0e0e4,
+    background: 0x1e1e1f,
+    cursor: 0xe0e0e4,
+    selection: 0x1e2c56,
     ansi: [
-        0x262626, 0xf87171, 0x4ade80, 0xfacc15, 0x60a5fa, 0xe879f9, 0x22d3ee, 0xd4d4d4, 0x737373,
+        0x3b3b3d, 0xf87171, 0x4ade80, 0xfacc15, 0x60a5fa, 0xe879f9, 0x22d3ee, 0xd4d4d4, 0x737373,
         0xfca5a5, 0x86efac, 0xfde047, 0x93c5fd, 0xf0abfc, 0x67e8f9, 0xfafafa,
     ],
 };
@@ -610,7 +610,7 @@ mod tests {
         let dark = TerminalTheme::default_for(ThemeMode::Dark);
         assert_eq!(
             dark.query_color(NamedColor::Background as usize),
-            rgb(0x0a0a0a)
+            rgb(0x1e1e1f)
         );
     }
 }

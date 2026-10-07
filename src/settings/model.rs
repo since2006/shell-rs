@@ -86,7 +86,7 @@ impl Default for TerminalThemeSettings {
 
 impl TerminalThemeSettings {
     /// The theme the app's colors come from for `mode`: the chosen one, or
-    /// the default, which is gpui-kit's own, when the app does not follow.
+    /// the default, ShellRS Light or Dark, when the app does not follow.
     pub fn app_theme(&self, mode: ThemeMode) -> &'static TerminalTheme {
         if self.app_follows {
             self.theme(mode)

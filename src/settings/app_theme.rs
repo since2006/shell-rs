@@ -3,7 +3,8 @@
 //! keeps its place between the default's background and text, now between
 //! the theme's; each color becomes the theme's ANSI color of its hue. What
 //! gpui-kit derives from these (hover, active, tab bar, status bar …)
-//! follows. The theme's own default is gpui-kit's theme unchanged.
+//! follows. ShellRS Light is gpui-kit's light theme unchanged, ShellRS Dark
+//! its dark theme with the grays lifted off black.
 
 use std::rc::Rc;
 
@@ -15,7 +16,7 @@ use crate::terminal::TerminalTheme;
 /// The name the app's theme has while `theme` is chosen, to tell whether it
 /// is already in effect without building it again.
 pub(super) fn ui_theme_name(theme: &'static TerminalTheme, cx: &App) -> SharedString {
-    if is_default(theme) {
+    if is_gpui_kits(theme) {
         default_config(theme.mode(), cx).name.clone()
     } else {
         theme.name().into()
@@ -25,14 +26,78 @@ pub(super) fn ui_theme_name(theme: &'static TerminalTheme, cx: &App) -> SharedSt
 /// The app's theme while `theme` is chosen.
 pub(super) fn ui_theme(theme: &'static TerminalTheme, cx: &App) -> Rc<ThemeConfig> {
     let default = default_config(theme.mode(), cx);
-    if is_default(theme) {
-        return default.clone();
+    if is_gpui_kits(theme) {
+        default.clone()
+    } else if theme == TerminalTheme::default_for(ThemeMode::Dark) {
+        Rc::new(soften(default, theme))
+    } else {
+        Rc::new(recolor(default, theme))
     }
-    Rc::new(recolor(default, theme))
 }
 
-fn is_default(theme: &'static TerminalTheme) -> bool {
-    theme == TerminalTheme::default_for(theme.mode())
+/// ShellRS Light: the app is gpui-kit's light theme as it is.
+fn is_gpui_kits(theme: &'static TerminalTheme) -> bool {
+    theme == TerminalTheme::default_for(ThemeMode::Light)
+}
+
+/// ShellRS Dark's grays, from WeChat's dark mode, which is easy on the eyes
+/// where gpui-kit's near black glares: each of gpui-kit's neutral grays (by
+/// value) and what it becomes. Grays between two are mixed from them.
+const SOFT_DARK: [(u8, u32); 13] = [
+    // Overlays stay black.
+    (0x00, 0x000000),
+    // neutral-950: the background, sidebars, dialogs.
+    (0x0a, 0x1e1e1f),
+    // neutral-900: the title, tab and status bars.
+    (0x17, 0x2f2f30),
+    // neutral-800: borders, hover, selected tabs and rows.
+    (0x26, 0x3b3b3d),
+    (0x40, 0x48484a),
+    // neutral-600: scrollbars.
+    (0x52, 0x626263),
+    // neutral-500: the focus ring.
+    (0x73, 0x7b7b7f),
+    // neutral-400: secondary text, lighter than WeChat's to stay readable.
+    (0xa3, 0x929296),
+    (0xd4, 0xc4c4c8),
+    (0xe5, 0xd2d2d6),
+    (0xf5, 0xdcdce0),
+    // neutral-50: the text.
+    (0xfa, 0xe0e0e4),
+    (0xff, 0xe8e8ec),
+];
+
+/// ShellRS Dark: gpui-kit's dark theme with its grays moved onto
+/// `SOFT_DARK`. Its colors (selection, success, danger …) stay gpui-kit's.
+fn soften(default: &ThemeConfig, theme: &TerminalTheme) -> ThemeConfig {
+    let mut config = serde_json::to_value(default).expect("a theme is plain data");
+    config["name"] = theme.name().into();
+    config["is_default"] = false.into();
+    if let Some(colors) = config["colors"].as_object_mut() {
+        for value in colors.values_mut() {
+            let Some(color) = value.as_str().and_then(|text| try_parse_color(text).ok()) else {
+                continue;
+            };
+            let color = color.to_rgb();
+            if is_gray(color) {
+                *value = hex(soft_gray(color)).into();
+            }
+        }
+    }
+    serde_json::from_value(config).expect("written from a theme")
+}
+
+fn soft_gray(color: Rgba) -> Rgba {
+    let value = gray_value(color) * 255.;
+    let pair = SOFT_DARK
+        .windows(2)
+        .find(|pair| value <= f32::from(pair[1].0))
+        .unwrap_or(&SOFT_DARK[SOFT_DARK.len() - 2..]);
+    let ((from, from_color), (to, to_color)) = (pair[0], pair[1]);
+    let t = (value - f32::from(from)) / f32::from(to - from);
+    let mut soft = mix(rgb(from_color), rgb(to_color), t);
+    soft.a = color.a;
+    soft
 }
 
 fn default_config(mode: ThemeMode, cx: &App) -> &Rc<ThemeConfig> {
@@ -300,24 +365,32 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn the_default_themes_are_gpui_kits_own(cx: &mut TestAppContext) {
+    fn the_light_default_is_gpui_kits_own(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::component::init(cx);
             let white = cx.theme().background;
             apply(&TerminalTheme::all()[1], cx);
             assert_ne!(cx.theme().background, white);
-            for mode in [ThemeMode::Light, ThemeMode::Dark] {
-                apply(TerminalTheme::default_for(mode), cx);
-                assert_eq!(
-                    cx.theme().theme_name().as_ref(),
-                    match mode {
-                        ThemeMode::Light => "Default Light",
-                        ThemeMode::Dark => "Default Dark",
-                    }
-                );
-            }
             apply(TerminalTheme::default_for(ThemeMode::Light), cx);
+            assert_eq!(cx.theme().theme_name().as_ref(), "Default Light");
             assert_eq!(cx.theme().background, white);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_dark_default_is_charcoal_with_gpui_kits_colors(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::init(cx);
+            apply(TerminalTheme::default_for(ThemeMode::Dark), cx);
+            let app = cx.theme();
+            assert_eq!(app.theme_name().as_ref(), "ShellRS Dark");
+            // Bars a step lighter than the background, borders another.
+            assert_close(app.background.to_rgb(), color(0x1e1e1f), "background");
+            assert_close(app.title_bar.to_rgb(), color(0x2f2f30), "title bar");
+            assert_close(app.border.to_rgb(), color(0x3b3b3d), "border");
+            assert_close(app.foreground.to_rgb(), color(0xe0e0e4), "text");
+            assert_close(app.selection.to_rgb(), color(0x1d4ed8), "selection");
+            assert_close(app.danger.to_rgb(), color(0xf87171), "danger");
         });
     }
 }
