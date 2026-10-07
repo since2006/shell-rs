@@ -2140,6 +2140,7 @@ fn a_binary_file_is_read_whole_for_a_preview_within_its_limit() {
 
 /// The external CLI's sync of `local` into `/srv/app`, resolved as the
 /// worker resolves it.
+#[cfg(unix)]
 async fn sync_batch(local: &Path, tmp: &Path, control: &TransferControl) -> UploadBatch {
     let request = UploadRequest::sync(local.into(), remote_path("/srv/app"), false)
         .resolved(remote_path("/srv"), Some("app".into()));
