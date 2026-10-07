@@ -386,7 +386,7 @@ impl CredentialForm {
         // else checks out; until then the draft stands in for it.
         let key_path = if key_from_text {
             // A stand-in, never shown or kept.
-            "（新私钥）".to_string() // i18n: keep
+            "(pasted key)".to_string()
         } else {
             key_file
         };

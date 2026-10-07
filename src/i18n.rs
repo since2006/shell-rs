@@ -178,6 +178,7 @@ mod tests {
     /// translated, until it is all of `src`.
     const TRANSLATED: &[&str] = &[
         "src/app",
+        "src/cli",
         "src/connection.rs",
         "src/credential",
         "src/forward",
@@ -187,7 +188,11 @@ mod tests {
         "src/secrets",
         "src/settings",
         "src/shared",
+        "src/ssh",
+        "src/terminal",
+        "src/update",
         "src/workspace/analytics.rs",
+        "src/workspace/cli_changes.rs",
         "src/workspace/credentials.rs",
         "src/workspace/dock_skin.rs",
         "src/workspace/editors.rs",
