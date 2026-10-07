@@ -28,9 +28,6 @@ ShellRS 把 Xshell 式的主机管理和多标签终端、WinSCP 式的双栏 SF
 
 主机、分组、凭据和转发规则保存在本地的 SQLite 数据库里。密码和私钥口令只存进系统钥匙串（macOS 钥匙串、Windows 凭据管理器、Linux Secret Service），数据库里没有任何秘密。ShellRS 还带一个 `shellrs` 命令，让 Claude Code、Codex 等 AI Agent 用你保存的主机执行命令、传输文件，不用把密码交给它们。
 
-> [!NOTE]
-> 界面有简体中文和英文，默认跟随系统语言，可在「设置 › 外观 › 界面语言」里改，改了立即生效。
-
 ## 功能
 
 **主机管理**
