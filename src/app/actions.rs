@@ -103,6 +103,12 @@ gpui_kit::actions!(
         CollapseAllGroups,
         /// Close the center tab displayed most recently (the one ⌘W acts on).
         CloseActiveTab,
+        /// Show the tab after the current one in its group, the first after
+        /// the last.
+        NextTab,
+        /// Show the tab before the current one in its group, the last before
+        /// the first.
+        PreviousTab,
         /// Open the settings tab, or bring it forward if it is already open.
         OpenSettings,
         /// Close the settings tab.
@@ -113,6 +119,12 @@ gpui_kit::actions!(
         ZoomOut,
         /// Reset the application base font.
         ZoomReset,
+        /// Make the terminals' text one size larger (设置 › 终端 › 字号).
+        ZoomTerminalIn,
+        /// Make the terminals' text one size smaller.
+        ZoomTerminalOut,
+        /// Put the terminals' text back to its default size.
+        ZoomTerminalReset,
         /// Quit the application.
         Quit,
         /// Show the previewed image larger, by one step.
@@ -224,6 +236,9 @@ id_actions! {
     /// Show the dot files of one side of the SFTP tabs, or stop showing
     /// them: that side of every tab, kept in the settings.
     ToggleHiddenFiles(PaneSide);
+    /// Show the tab at a position, from 1, in the current tab's group; 9 is
+    /// the last, as in browsers.
+    SwitchToTab(usize);
 
     /// Show a tool in the right sidebar, or hide the sidebar if it is
     /// already showing that tool.

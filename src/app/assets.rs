@@ -53,6 +53,8 @@ icon_assets!(
         Activity,
         Monitor,
         AppWindow,
+        Keyboard,
+        RotateCcw,
         Network,
         RadioTower,
         ArrowDownLeft,

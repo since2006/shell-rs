@@ -34,6 +34,7 @@ use crate::terminal::{
 use crate::update::{Phase, Tone, UpdateSnapshot, UpdateStep, Updater, build_info, platform};
 
 use super::highlight_rules::HighlightRulesEditor;
+use super::shortcuts_editor::{ShortcutsEditor, shortcut_groups};
 use super::terminal_themes::{app_follows_item, terminal_theme_item};
 use super::{AppSettings, Choice, NotificationSettings, SettingsStore, WindowSettings};
 
@@ -59,6 +60,8 @@ pub struct SettingsPanel {
     /// The rule table of 关键字高亮, whose fields keep their state across
     /// the page's renders.
     highlight_rules: Entity<HighlightRulesEditor>,
+    /// 键盘快捷键, which knows which shortcut is taking new keys.
+    shortcuts: Entity<ShortcutsEditor>,
     /// The monospace families to choose the terminal font from; empty until
     /// the scan in the background comes back.
     font_families: &'static [SharedString],
@@ -68,7 +71,7 @@ pub struct SettingsPanel {
     shown_category: Rc<Cell<usize>>,
     focus_handle: FocusHandle,
     tab_group: Option<WeakEntity<TabGroup>>,
-    _subscriptions: [Subscription; 3],
+    _subscriptions: [Subscription; 4],
     _font_scan: Task<()>,
 }
 
@@ -81,8 +84,10 @@ impl SettingsPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let highlight_rules = cx.new(|cx| HighlightRulesEditor::new(store.clone(), window, cx));
+        let shortcuts = cx.new(|cx| ShortcutsEditor::new(store.clone(), window, cx));
         let subscriptions = [
             cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.observe(&shortcuts, |_, _, cx| cx.notify()),
             cx.observe(&integration, |_, _, cx| cx.notify()),
             cx.observe(&updater, |_, _, cx| cx.notify()),
         ];
@@ -103,6 +108,7 @@ impl SettingsPanel {
             integration,
             updater,
             highlight_rules,
+            shortcuts,
             font_families: &[],
             shown_category: Rc::default(),
             focus_handle: cx.focus_handle(),
@@ -230,7 +236,7 @@ struct Category {
 type CategoryGroups = fn(&SettingsPanel, &App) -> Vec<SettingGroup>;
 
 /// The categories, in the order the left column lists them.
-const CATEGORIES: [Category; 6] = [
+const CATEGORIES: [Category; 7] = [
     Category {
         title: "外观",
         icon: CatalogIcon::Palette,
@@ -245,6 +251,11 @@ const CATEGORIES: [Category; 6] = [
         title: "关键字高亮",
         icon: CatalogIcon::Highlighter,
         groups: highlight_groups,
+    },
+    Category {
+        title: "键盘快捷键",
+        icon: CatalogIcon::Keyboard,
+        groups: shortcuts_groups,
     },
     Category {
         title: "外部 CLI",
@@ -504,6 +515,11 @@ fn highlight_preview_item() -> SettingItem {
             }))
     })
     .keywords(["预览", "高亮"])
+}
+
+/// 键盘快捷键.
+fn shortcuts_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
+    shortcut_groups(&panel.shortcuts)
 }
 
 /// 应用 → 窗口: what the next launch restores of the main window.
@@ -1045,7 +1061,7 @@ fn font_family_field(panel: &SettingsPanel, cx: &App) -> SettingField<SharedStri
 
 /// The terminal font size, a dropdown of whole pixels. Not a number input:
 /// that clamps to its minimum as each digit is typed, so 「14」 would turn
-/// into 8 at its 「1」.
+/// into 10 at its 「1」.
 fn font_size_field(store: &Entity<SettingsStore>) -> SettingField<SharedString> {
     let default = AppSettings::default().terminal_font.size;
     let (start, end) = (

@@ -21,6 +21,7 @@ mod processes;
 mod services;
 mod settings;
 mod sftp;
+mod shortcuts;
 mod snippets;
 mod terminal;
 mod transfer;

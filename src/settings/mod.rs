@@ -5,6 +5,7 @@ mod apply;
 mod highlight_rules;
 mod model;
 mod settings_panel;
+mod shortcuts_editor;
 mod store;
 mod terminal_themes;
 

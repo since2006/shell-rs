@@ -32,7 +32,8 @@ use crate::app::{
     NewTemporaryConnection, OpenExplorer, OpenSettings, PasteTerminal, QuickConnect,
     ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, RenameExplorer,
     RenameGroup, RenameTerminal, RestartLocalTerminal, SetFileSizeFormat, ToggleHiddenFiles,
-    ToggleHostPanel, ToggleTheme, ZoomIn, ZoomOut, ZoomReset,
+    ToggleHostPanel, ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut,
+    ZoomTerminalReset,
 };
 use crate::cli::{CliIntegration, CliServer, CliTarget, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -61,10 +62,10 @@ use crate::sftp::{
 };
 use crate::shared::{commit_footer, confirm_danger, open_rename_tab_dialog};
 use crate::terminal::{
-    LocalPtyTransportFactory, LocalTerminalId, LocalTerminalPanel, LocalTerminalPanelEvent,
-    RemoteTerminalId, SearchDirection, SharedRemoteTerminalTransportProvider,
-    SharedTerminalTransportFactory, TerminalLifecycle, TerminalPanel, TerminalPanelEvent,
-    TerminalView,
+    DEFAULT_FONT_SIZE, LocalPtyTransportFactory, LocalTerminalId, LocalTerminalPanel,
+    LocalTerminalPanelEvent, RemoteTerminalId, SearchDirection,
+    SharedRemoteTerminalTransportProvider, SharedTerminalTransportFactory, TerminalLifecycle,
+    TerminalPanel, TerminalPanelEvent, TerminalView,
 };
 use crate::update::{UpdateServices, Updater, UpdaterEvent};
 
@@ -1518,7 +1519,11 @@ impl Workspace {
     }
 
     /// The tab group holding a center tab, and the tab's panel id in it.
-    fn center_tab_location(&self, tab: CenterTab, cx: &App) -> Option<(Entity<TabGroup>, PanelId)> {
+    pub(super) fn center_tab_location(
+        &self,
+        tab: CenterTab,
+        cx: &App,
+    ) -> Option<(Entity<TabGroup>, PanelId)> {
         let (group, entity) = match tab {
             CenterTab::Terminal(id) => {
                 let panel = self.terminals.get(&id)?;
@@ -2125,6 +2130,39 @@ impl Workspace {
     fn on_zoom_reset(&mut self, _: &ZoomReset, window: &mut Window, cx: &mut Context<Self>) {
         self.set_font_size(FONT_SIZE_DEFAULT, window, cx);
     }
+
+    /// The terminals' text a pixel larger or smaller, through the settings
+    /// (终端 › 字号), which keep it in range and for the next launch.
+    fn change_terminal_font_size(&mut self, size: impl FnOnce(f32) -> f32, cx: &mut App) {
+        self.settings.update(cx, |store, cx| {
+            store.update(
+                |settings| settings.terminal_font.size = size(settings.terminal_font.size),
+                cx,
+            )
+        });
+    }
+
+    fn on_zoom_terminal_in(&mut self, _: &ZoomTerminalIn, _: &mut Window, cx: &mut Context<Self>) {
+        self.change_terminal_font_size(|size| size + 1., cx);
+    }
+
+    fn on_zoom_terminal_out(
+        &mut self,
+        _: &ZoomTerminalOut,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.change_terminal_font_size(|size| size - 1., cx);
+    }
+
+    fn on_zoom_terminal_reset(
+        &mut self,
+        _: &ZoomTerminalReset,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.change_terminal_font_size(|_| DEFAULT_FONT_SIZE, cx);
+    }
 }
 
 fn new_terminal_panel(
@@ -2457,6 +2495,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_copy_agent_skill))
             .on_action(cx.listener(Self::on_close_settings))
             .on_action(cx.listener(Self::on_close_active_tab))
+            .on_action(cx.listener(Self::on_next_tab))
+            .on_action(cx.listener(Self::on_previous_tab))
+            .on_action(cx.listener(Self::on_switch_to_tab))
             .on_action(cx.listener(Self::on_close_tabs))
             .on_action(cx.listener(Self::on_rename_terminal))
             .on_action(cx.listener(Self::on_rename_explorer))
@@ -2516,6 +2557,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_zoom_reset))
+            .on_action(cx.listener(Self::on_zoom_terminal_in))
+            .on_action(cx.listener(Self::on_zoom_terminal_out))
+            .on_action(cx.listener(Self::on_zoom_terminal_reset))
             .relative()
             .size_full()
             .flex()

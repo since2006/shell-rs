@@ -2,6 +2,7 @@ use gpui_kit::WindowAppearance;
 use gpui_kit::component::ThemeMode;
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::app::ShortcutOverrides;
 use crate::explorer::{FileSizeFormat, ShowHiddenFiles};
 use crate::terminal::{
     DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, HighlightRule, LINE_HEIGHT_RANGE,
@@ -34,6 +35,8 @@ pub struct AppSettings {
     pub terminal_highlight: TerminalHighlightSettings,
     /// 应用 → 窗口.
     pub window: WindowSettings,
+    /// 键盘快捷键: what the user changed of them.
+    pub shortcuts: ShortcutOverrides,
 }
 
 /// 应用 → 窗口: what the next launch restores of the main window. Both on

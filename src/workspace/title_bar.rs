@@ -139,11 +139,7 @@ pub fn render_title_bar(
                         .small()
                         .icon(CatalogIcon::Terminal)
                         .label("本地终端")
-                        .tooltip(if cfg!(target_os = "macos") {
-                            "新建本地终端（⌘T）"
-                        } else {
-                            "新建本地终端（Ctrl+T）"
-                        })
+                        .tooltip_with_action("新建本地终端", &NewLocalTerminal, None)
                         .on_click(move |_, window, cx| {
                             new_local.dispatch_action(&NewLocalTerminal, window, cx)
                         }),

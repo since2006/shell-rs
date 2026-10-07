@@ -15,7 +15,7 @@ pub const DEFAULT_FONT_SIZE: f32 = 13.;
 /// The rows of 20 px that terminals had at the default size.
 pub const DEFAULT_LINE_HEIGHT: f32 = 1.54;
 /// Font sizes a terminal accepts, in pixels.
-pub const FONT_SIZE_RANGE: RangeInclusive<f32> = 8.0..=32.0;
+pub const FONT_SIZE_RANGE: RangeInclusive<f32> = 10.0..=28.0;
 /// Line heights a terminal accepts, as multiples of the font size.
 pub const LINE_HEIGHT_RANGE: RangeInclusive<f32> = 1.0..=2.0;
 

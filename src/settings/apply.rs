@@ -9,8 +9,8 @@ use super::app_theme::{ui_theme, ui_theme_name};
 
 /// Bring the window in line with the settings: the theme chosen for the
 /// appearance, in the app and its terminals, the locale, the terminal font
-/// and highlight rules, the SFTP size format and whether SFTP shows hidden
-/// files.
+/// and highlight rules, the keyboard shortcuts, the SFTP size format and
+/// whether SFTP shows hidden files.
 /// Does nothing where they already agree, so it can run on every settings
 /// change and every change of the system appearance.
 pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
@@ -73,6 +73,10 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     if !unchanged {
         cx.set_global(TerminalHighlights::new(highlight.enabled, highlight.rules));
     }
+
+    // Rebuilds the keymap only when the user's changes differ from the
+    // ones it was built with.
+    crate::app::apply_shortcuts(&settings.shortcuts, cx);
 
     if cx.try_global::<FileSizeFormat>() != Some(&settings.file_size_format) {
         cx.set_global(settings.file_size_format);

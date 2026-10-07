@@ -118,7 +118,7 @@ fn settings_open_from_the_host_list_as_one_tab(cx: &mut TestAppContext) {
 
 /// The label of one dropdown in the 外观 page's 常规 group. `Settings` names
 /// its groups, items and dropdown buttons by position.
-/// Open the settings tab on 外部 CLI, the third category.
+/// Open the settings tab on 外部 CLI, the fifth category.
 fn open_external_cli_settings(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -128,7 +128,7 @@ fn open_external_cli_settings(cx: &mut TestAppContext, handle: WindowHandle<Root
     cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.within("settings").click("0-3", cx);
+        window.within("settings").click("0-4", cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -445,7 +445,7 @@ fn the_window_settings_are_on_until_turned_off(cx: &mut TestAppContext) {
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     // 应用 comes right before 关于.
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-4", cx)
+        window.within("settings").click("0-5", cx)
     });
     let switch = |item: usize| {
         move |window: &mut gpui_kit::Window| {

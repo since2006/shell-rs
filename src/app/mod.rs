@@ -5,6 +5,7 @@ mod app_icon;
 mod assets;
 mod paths;
 mod quit;
+mod shortcuts;
 mod window_hiding;
 
 pub use actions::*;
@@ -15,12 +16,14 @@ pub use paths::{
     window_state_path,
 };
 pub use quit::{quit_held_back, set_quit_guard};
+pub use shortcuts::{
+    Refusal, SHORTCUTS, Shortcut, ShortcutGroup, ShortcutOverrides, apply_shortcuts, check,
+    fixed_bindings, key_caps, key_text,
+};
 pub use window_hiding::{bring_forward, hide_when_closed};
 
-use gpui_kit::component::{Theme, dock::ToggleZoom};
+use gpui_kit::component::Theme;
 use gpui_kit::*;
-
-use crate::terminal::{TERMINAL_FIND_KEY_CONTEXT, TERMINAL_KEY_CONTEXT, terminal_key_bindings};
 
 /// Key context of the host panel, for bindings that only apply there.
 pub const HOST_PANEL_CONTEXT: &str = "HostPanel";
@@ -40,9 +43,12 @@ pub const REMOTE_FILE_LIST_CONTEXT: &str = "RemoteFileList";
 /// Initialize GPUI Kit and everything global to the application.
 pub fn init(cx: &mut App) {
     gpui_kit::init(cx);
+    // Before ours: rebuilding the keymap starts from gpui-kit's own.
+    shortcuts::keep_kit_bindings(cx);
     deepen_list_hover(cx);
     gpui_kit::component::set_locale("zh-CN");
-    cx.bind_keys(key_bindings());
+    // The defaults; the settings bring the user's changes once read.
+    apply_shortcuts(&ShortcutOverrides::default(), cx);
     cx.on_action(|_: &Quit, cx: &mut App| quit::quit(cx));
 }
 
@@ -65,250 +71,4 @@ pub(crate) fn host_tree_selection_color(theme: &Theme) -> Hsla {
     let mut selected = hover.alpha(1.0);
     selected.l = (sidebar.l + (hover.l - sidebar.l) * 3.0).clamp(0.0, 1.0);
     selected
-}
-
-fn key_bindings() -> Vec<KeyBinding> {
-    #[cfg(target_os = "macos")]
-    const PRIMARY: &str = "cmd";
-    #[cfg(not(target_os = "macos"))]
-    const PRIMARY: &str = "ctrl";
-
-    let primary = |key: &str| format!("{PRIMARY}-{key}");
-    let mut bindings = vec![
-        KeyBinding::new(&primary("n"), NewHost, None),
-        KeyBinding::new(&primary("shift-n"), NewGroup, None),
-        KeyBinding::new(&primary("b"), ToggleHostPanel, None),
-        KeyBinding::new(&primary("alt-b"), ToggleToolSidebar, None),
-        KeyBinding::new(&primary("k"), FocusSearch, None),
-        KeyBinding::new(&primary("t"), NewLocalTerminal, None),
-        KeyBinding::new(&primary("w"), CloseActiveTab, None),
-        KeyBinding::new(&primary(","), OpenSettings, None),
-        KeyBinding::new(&primary("="), ZoomIn, None),
-        KeyBinding::new(&primary("-"), ZoomOut, None),
-        KeyBinding::new(&primary("0"), ZoomReset, None),
-        KeyBinding::new(&primary("q"), Quit, None),
-        KeyBinding::new(
-            &primary("s"),
-            EditorShortcut(EditorCommand::Save),
-            Some(EDITOR_CONTEXT),
-        ),
-        // Over a previewed image, the interface zoom keys zoom the image;
-        // 0 and 9 as in macOS Preview.
-        KeyBinding::new(&primary("="), ZoomPreviewIn, Some(IMAGE_PREVIEW_CONTEXT)),
-        KeyBinding::new(&primary("-"), ZoomPreviewOut, Some(IMAGE_PREVIEW_CONTEXT)),
-        KeyBinding::new(
-            &primary("0"),
-            ActualSizePreview,
-            Some(IMAGE_PREVIEW_CONTEXT),
-        ),
-        KeyBinding::new(&primary("9"), FitPreview, Some(IMAGE_PREVIEW_CONTEXT)),
-        KeyBinding::new("shift-escape", ToggleZoom, None),
-        KeyBinding::new("enter", ConnectSelected, Some(HOST_PANEL_CONTEXT)),
-        KeyBinding::new("enter", ConnectSelected, Some(RECENT_HOSTS_CONTEXT)),
-        KeyBinding::new("enter", ToggleSelectedForward, Some(FORWARD_PANEL_CONTEXT)),
-        KeyBinding::new("up", SelectPreviousForward, Some(FORWARD_PANEL_CONTEXT)),
-        KeyBinding::new("down", SelectNextForward, Some(FORWARD_PANEL_CONTEXT)),
-        KeyBinding::new(
-            "enter",
-            EditSelectedCredential,
-            Some(CREDENTIAL_PANEL_CONTEXT),
-        ),
-        KeyBinding::new(
-            "up",
-            SelectPreviousCredential,
-            Some(CREDENTIAL_PANEL_CONTEXT),
-        ),
-        KeyBinding::new("down", SelectNextCredential, Some(CREDENTIAL_PANEL_CONTEXT)),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-c", CopyTerminal, Some(TERMINAL_KEY_CONTEXT)),
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-v", PasteTerminal, Some(TERMINAL_KEY_CONTEXT)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-c", CopyTerminal, Some(TERMINAL_KEY_CONTEXT)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-v", PasteTerminal, Some(TERMINAL_KEY_CONTEXT)),
-        // In a terminal ⌘K clears, as in other macOS terminals; everywhere
-        // else it still focuses the host search. Inside a terminal, Ctrl
-        // with a letter belongs to the shell, so other platforms add Shift, as
-        // they do for copy and paste.
-        #[cfg(target_os = "macos")]
-        KeyBinding::new("cmd-k", ClearTerminal, Some(TERMINAL_KEY_CONTEXT)),
-        #[cfg(not(target_os = "macos"))]
-        KeyBinding::new("ctrl-shift-k", ClearTerminal, Some(TERMINAL_KEY_CONTEXT)),
-        KeyBinding::new(
-            "escape",
-            DismissTerminalFind,
-            Some(TERMINAL_FIND_KEY_CONTEXT),
-        ),
-    ];
-    // The find keys work from the terminal and from inside the find bar.
-    #[cfg(target_os = "macos")]
-    let find_keys = ["cmd-f", "cmd-g", "cmd-shift-g"];
-    #[cfg(not(target_os = "macos"))]
-    let find_keys = ["ctrl-shift-f", "f3", "shift-f3"];
-    for context in [TERMINAL_KEY_CONTEXT, TERMINAL_FIND_KEY_CONTEXT] {
-        bindings.extend([
-            KeyBinding::new(find_keys[0], FindInTerminal, Some(context)),
-            KeyBinding::new(find_keys[1], FindNextInTerminal, Some(context)),
-            KeyBinding::new(find_keys[2], FindPreviousInTerminal, Some(context)),
-        ]);
-    }
-    bindings.extend(terminal_key_bindings());
-    bindings.extend(file_list_key_bindings());
-    bindings
-}
-
-/// WinSCP's file-panel keys, bound once per pane with the side baked into the
-/// command. The movement keys are bound one level deeper, at the table, so
-/// they replace `DataTable`'s own single-row selection keys.
-fn file_list_key_bindings() -> Vec<KeyBinding> {
-    use crate::explorer::CursorMotion;
-    #[cfg(target_os = "macos")]
-    const PRIMARY: &str = "cmd";
-    #[cfg(not(target_os = "macos"))]
-    const PRIMARY: &str = "ctrl";
-
-    let mut bindings = Vec::new();
-    for (context, remote) in [
-        (LOCAL_FILE_LIST_CONTEXT, false),
-        (REMOTE_FILE_LIST_CONTEXT, true),
-    ] {
-        let table = format!("{context} > DataTable");
-        let bind = |keys: &str, command: ExplorerCommand, context: &str| {
-            KeyBinding::new(keys, ExplorerShortcut(command), Some(context))
-        };
-        // 显示隐藏文件: Finder's ⌘⇧. (macOS reports it as ⌘>), WinSCP's
-        // Ctrl+Alt+H elsewhere.
-        let side = crate::explorer::PaneSide::from_remote(remote);
-        #[cfg(target_os = "macos")]
-        bindings.push(KeyBinding::new(
-            "cmd->",
-            ToggleHiddenFiles(side),
-            Some(context),
-        ));
-        #[cfg(not(target_os = "macos"))]
-        bindings.push(KeyBinding::new(
-            "ctrl-alt-h",
-            ToggleHiddenFiles(side),
-            Some(context),
-        ));
-        // Several keys per command: the last one registered is the one
-        // tooltips show, so WinSCP's key goes last.
-        #[cfg(target_os = "macos")]
-        bindings.extend([
-            bind("cmd-up", ExplorerCommand::Up { remote }, context),
-            bind("cmd-[", ExplorerCommand::Back { remote }, context),
-            bind("cmd-]", ExplorerCommand::Forward { remote }, context),
-            bind("cmd-backspace", ExplorerCommand::Delete { remote }, context),
-            bind("cmd-i", ExplorerCommand::Properties { remote }, context),
-            // ⌘H hides the app on macOS; Finder's home is ⌘⇧H.
-            bind("cmd-shift-h", ExplorerCommand::Home { remote }, context),
-            // Finder's 前往文件夹.
-            bind(
-                "cmd-shift-g",
-                ExplorerCommand::OpenDirectory { remote },
-                context,
-            ),
-        ]);
-        #[cfg(not(target_os = "macos"))]
-        bindings.push(bind("ctrl-h", ExplorerCommand::Home { remote }, context));
-        bindings.extend([
-            bind("backspace", ExplorerCommand::Up { remote }, context),
-            bind(
-                &format!("{PRIMARY}-\\"),
-                ExplorerCommand::Root { remote },
-                context,
-            ),
-            bind(
-                &format!("{PRIMARY}-r"),
-                ExplorerCommand::Refresh { remote },
-                context,
-            ),
-            bind("alt-left", ExplorerCommand::Back { remote }, context),
-            bind("alt-right", ExplorerCommand::Forward { remote }, context),
-            // WinSCP's Ctrl+B already toggles the host panel here.
-            bind(
-                &format!("{PRIMARY}-d"),
-                ExplorerCommand::AddBookmark { remote, path: None },
-                context,
-            ),
-            bind("f2", ExplorerCommand::Rename { remote }, context),
-            bind(
-                "f7",
-                ExplorerCommand::New {
-                    remote,
-                    kind: crate::explorer::NewEntryKind::Folder,
-                },
-                context,
-            ),
-            bind("delete", ExplorerCommand::Delete { remote }, context),
-            bind("f8", ExplorerCommand::Delete { remote }, context),
-            bind("f9", ExplorerCommand::Properties { remote }, context),
-            // WinSCP's 编辑.
-            bind("f4", ExplorerCommand::Edit { remote, path: None }, context),
-            bind("f5", ExplorerCommand::Transfer { remote }, context),
-            bind(
-                "space",
-                ExplorerCommand::ToggleSelection { remote },
-                context,
-            ),
-            bind(
-                "insert",
-                ExplorerCommand::ToggleSelection { remote },
-                context,
-            ),
-            bind(
-                &format!("{PRIMARY}-a"),
-                ExplorerCommand::SelectAll { remote },
-                context,
-            ),
-            // WinSCP's 打开目录/书签.
-            bind(
-                &format!("{PRIMARY}-o"),
-                ExplorerCommand::OpenDirectory { remote },
-                context,
-            ),
-            bind("enter", ExplorerCommand::Open { remote }, context),
-            #[cfg(target_os = "macos")]
-            bind("cmd-down", ExplorerCommand::Open { remote }, context),
-            bind(
-                "tab",
-                ExplorerCommand::FocusPane { remote: !remote },
-                &table,
-            ),
-            bind(
-                "shift-tab",
-                ExplorerCommand::FocusPane { remote: !remote },
-                &table,
-            ),
-            KeyBinding::new("left", NoAction {}, Some(&table)),
-            KeyBinding::new("right", NoAction {}, Some(&table)),
-        ]);
-        for (key, motion) in [
-            ("up", CursorMotion::Up),
-            ("down", CursorMotion::Down),
-            ("pageup", CursorMotion::PageUp),
-            ("pagedown", CursorMotion::PageDown),
-            ("home", CursorMotion::Home),
-            ("end", CursorMotion::End),
-        ] {
-            for extend in [false, true] {
-                let keys = if extend {
-                    format!("shift-{key}")
-                } else {
-                    key.to_string()
-                };
-                bindings.push(bind(
-                    &keys,
-                    ExplorerCommand::MoveCursor {
-                        remote,
-                        motion,
-                        extend,
-                    },
-                    &table,
-                ));
-            }
-        }
-    }
-    bindings
 }
