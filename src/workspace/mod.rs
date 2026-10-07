@@ -2,6 +2,7 @@
 //! the right sidebar's tools, status bar, and the start page (recent hosts)
 //! the center shows while no tab is open.
 
+mod cli_changes;
 mod credentials;
 mod dock_skin;
 mod editors;

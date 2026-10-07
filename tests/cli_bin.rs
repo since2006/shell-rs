@@ -14,10 +14,11 @@ use std::{
 
 use shellrs::app::cli_endpoint;
 use shellrs::cli::{
-    CliBackend, CliError, CliServer, CliTarget, HostInfo, OpenLink, TransferCounters,
-    TransferSummary,
+    AuthChoice, CliBackend, CliChange, CliError, CliServer, CliTarget, HostDetails, HostInfo,
+    OpenLink, Reply, RouteDetails, TransferCounters, TransferSummary,
 };
-use shellrs::host::{AuthKind, Host, HostDraft, HostId, HostLogin};
+use shellrs::host::{AuthKind, HostDraft, HostStore};
+use shellrs::secrets::SecretRef;
 use shellrs::ssh::ExecStream;
 
 /// More than a pipe's buffer, so the app finishes writing before the
@@ -72,6 +73,31 @@ impl CliBackend for FakeBackend {
     ) -> Result<TransferSummary, CliError> {
         Ok(TransferSummary::default())
     }
+
+    fn sync(
+        &self,
+        _: &CliTarget,
+        source: &Path,
+        destination: &str,
+        delete: bool,
+        _: &mut dyn FnMut(TransferCounters) -> io::Result<()>,
+    ) -> Result<TransferSummary, CliError> {
+        self.commands
+            .lock()
+            .unwrap()
+            .push(format!("sync {} {destination} {delete}", source.display()));
+        Ok(TransferSummary {
+            files: 1,
+            bytes: 10,
+            skipped: 5,
+            deleted: 2,
+            ..TransferSummary::default()
+        })
+    }
+
+    fn is_saved(&self, _: &SecretRef) -> bool {
+        false
+    }
 }
 
 /// Run the command against the app whose data lives in `data_dir`.
@@ -91,7 +117,7 @@ fn shellrs(data_dir: &Path, args: &[&str], stdin: &[u8]) -> Output {
 #[test]
 fn without_the_app_the_command_says_so_and_exits_255() {
     let data_dir = tempfile::tempdir().unwrap();
-    let output = shellrs(data_dir.path(), &["list"], b"");
+    let output = shellrs(data_dir.path(), &["hosts", "list"], b"");
     assert_eq!(output.status.code(), Some(255));
     assert!(
         String::from_utf8(output.stderr)
@@ -105,16 +131,21 @@ fn the_command_finds_the_app_through_its_data_directory() {
     let data_dir = tempfile::tempdir().unwrap();
     let backend = Arc::new(FakeBackend::default());
     let server = CliServer::start(cli_endpoint(data_dir.path()), backend.clone()).unwrap();
-    let web = Host::new(
-        HostId(1),
-        HostDraft::new("web-01", "10.0.1.12", 22, "root", AuthKind::Password, None),
-    );
-    server.set_targets(vec![CliTarget::new(&web, HostLogin::of(&web, None), None)]);
+    let mut store = HostStore::empty();
+    let web = store.insert_unnotified(HostDraft::new(
+        "web-01",
+        "10.0.1.12",
+        22,
+        "root",
+        AuthKind::Password,
+        None,
+    ));
+    server.set_hosts(&store);
     server.set_enabled(true);
-    let id = web.public_id.to_string();
+    let id = store.host(web).unwrap().public_id.to_string();
 
     // A pipe for stdout means JSON.
-    let output = shellrs(data_dir.path(), &["list"], b"");
+    let output = shellrs(data_dir.path(), &["hosts", "list"], b"");
     assert_eq!(output.status.code(), Some(0));
     let hosts: Vec<HostInfo> = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(hosts[0].id, id);
@@ -152,6 +183,31 @@ fn the_command_finds_the_app_through_its_data_directory() {
     let output = shellrs(data_dir.path(), &["exec", &id, "large"], b"");
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(output.stdout.len(), LARGE_OUTPUT);
+
+    // A folder's contents, from where the command runs.
+    let output = shellrs(
+        data_dir.path(),
+        &[
+            "sync",
+            &id,
+            data_dir.path().to_str().unwrap(),
+            "/srv/app",
+            "--delete",
+        ],
+        b"",
+    );
+    assert_eq!(output.status.code(), Some(0));
+    let summary: TransferSummary = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!((summary.skipped, summary.deleted), (5, 2));
+    assert!(
+        backend
+            .commands
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .ends_with(" /srv/app true")
+    );
 
     server.set_enabled(false);
     let output = shellrs(data_dir.path(), &["exec", &id, "true"], b"");
@@ -232,4 +288,71 @@ fn shellrs_opened_with_a_link_hands_it_to_the_running_app() {
             },
         ])
     );
+}
+
+#[test]
+fn a_host_described_on_stdin_reaches_the_app_and_comes_back_saved() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let server = Arc::new(
+        CliServer::start(
+            cli_endpoint(data_dir.path()),
+            Arc::new(FakeBackend::default()),
+        )
+        .unwrap(),
+    );
+    server.set_enabled(true);
+    // The app's side: take the change up and answer with the host saved.
+    let app = std::thread::spawn({
+        let server = server.clone();
+        move || {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            loop {
+                if let Some((change, reply)) = server.take_change() {
+                    let CliChange::CreateHost(fields) = change else {
+                        panic!("not a new host: {change:?}");
+                    };
+                    let password = fields.password.clone().flatten();
+                    reply.send(Ok(Reply::Host(HostDetails {
+                        id: "Jwg5rHvXCxw89paM".into(),
+                        name: fields.name.clone().unwrap_or_default(),
+                        group: fields.group.clone().flatten(),
+                        host: fields.host.clone().unwrap_or_default(),
+                        port: fields.port.unwrap_or(22),
+                        user: "root".into(),
+                        auth: AuthChoice::Password,
+                        credential: None,
+                        password_saved: Some(password.is_some()),
+                        route: RouteDetails::Direct,
+                        notes: String::new(),
+                        os: None,
+                        temporary: false,
+                    })));
+                    return password.map(|password| password.expose().to_string());
+                }
+                assert!(Instant::now() < deadline, "the command sent nothing");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    });
+    // As Windows PowerShell pipes it: a BOM, CRLF, and its escapes.
+    let host = "\u{feff}{\"name\": \"\\u751f\\u4ea7 web\", \"address\": \"10.0.1.12\",\r\n \"group\": \"\u{751f}\u{4ea7}/web\", \"password\": \"s3cret\", \"id\": \"ignored\"}\r\n";
+    let output = shellrs(data_dir.path(), &["hosts", "create"], host.as_bytes());
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let saved: HostDetails = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(saved.name, "生产 web");
+    assert_eq!(saved.group.as_deref(), Some("生产/web"));
+    assert_eq!(saved.password_saved, Some(true));
+    assert_eq!(app.join().unwrap().as_deref(), Some("s3cret"));
+
+    // A field the command does not know is refused before anything is sent.
+    let output = shellrs(
+        data_dir.path(),
+        &["hosts", "create"],
+        br#"{"name": "web", "adress": "10.0.1.12"}"#,
+    );
+    assert_eq!(output.status.code(), Some(255));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.starts_with("shellrs: [bad_request]"), "{stderr}");
+    assert!(stderr.contains("adress"), "{stderr}");
+    assert!(server.take_change().is_none());
 }

@@ -10,6 +10,7 @@ use std::{
 use super::protocol::{CliError, ErrorCode, TransferCounters, TransferSummary};
 use super::server::{CliBackend, CliTarget};
 use crate::connection::{ConnectionPromptKind, ConnectionPromptReply};
+use crate::secrets::{SecretRef, SharedSecretStore};
 use crate::sftp::{
     DownloadRequest, RemotePath, SftpCommand, SftpEvent, SharedSftpTransportProvider,
     TransferAnswer, TransferChoice, TransferPhase, TransferProgress, TransferQuestionKind,
@@ -25,13 +26,24 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(200);
 pub struct SshCliBackend {
     connector: SshConnector,
     sftp: SharedSftpTransportProvider,
+    secrets: SharedSecretStore,
 }
 
 impl SshCliBackend {
     /// The same connector as the terminals, so host trust goes through one
-    /// file and lock, and the same SFTP provider as the SFTP tab.
-    pub fn new(connector: SshConnector, sftp: SharedSftpTransportProvider) -> Self {
-        Self { connector, sftp }
+    /// file and lock, and the same SFTP provider as the SFTP tab. `secrets`
+    /// is the host store's, which holds the passwords of the hosts not
+    /// saved too.
+    pub fn new(
+        connector: SshConnector,
+        sftp: SharedSftpTransportProvider,
+        secrets: SharedSecretStore,
+    ) -> Self {
+        Self {
+            connector,
+            sftp,
+            secrets,
+        }
     }
 
     /// Run one transfer on a connection of its own, answering every
@@ -166,6 +178,28 @@ impl CliBackend for SshCliBackend {
             .map_err(|error| CliError::new(ErrorCode::BadRequest, error.to_string()))?;
         self.transfer(target, SftpCommand::Download(request), progress)
     }
+
+    fn sync(
+        &self,
+        target: &CliTarget,
+        source: &Path,
+        destination: &str,
+        delete: bool,
+        progress: &mut dyn FnMut(TransferCounters) -> io::Result<()>,
+    ) -> Result<TransferSummary, CliError> {
+        if !source.is_dir() {
+            return Err(CliError::new(
+                ErrorCode::BadRequest,
+                format!("本地目录不存在：{}", source.display()),
+            ));
+        }
+        let request = UploadRequest::sync(source.to_path_buf(), remote_path(destination)?, delete);
+        self.transfer(target, SftpCommand::Upload(request), progress)
+    }
+
+    fn is_saved(&self, secret: &SecretRef) -> bool {
+        self.secrets.get(secret).is_ok_and(|value| value.is_some())
+    }
 }
 
 /// What one transfer ran into along the way.
@@ -222,6 +256,7 @@ impl Transfer {
                 bytes: state.completed_bytes(),
                 skipped: state.skipped() as u64,
                 failed: state.failed() as u64,
+                deleted: state.deleted() as u64,
                 failures: std::mem::take(&mut self.failures),
             }),
             _ => Err(self.refused.take().unwrap_or_else(|| {

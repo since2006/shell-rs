@@ -593,7 +593,8 @@ fn external_cli_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
             )
             .description(
                 "开启后，本机当前用户下的程序（如 AI Agent）可以通过 shellrs 命令，\
-             在已保存的主机上执行命令、传输文件，无需知道密码。",
+             在已保存的主机上执行命令、传输和同步文件，并查看、新建、修改和删除主机与凭据，\
+             无需知道密码。",
             )]),
         SettingGroup::new()
             .title("CLI 二进制")

@@ -1,9 +1,10 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui_kit::{Context, EventEmitter, SharedString};
+use gpui_kit::{Context, EventEmitter, SharedString, Task};
 use zeroize::Zeroizing;
 
 use crate::secrets::{NoSecretStore, SecretRef, SharedSecretStore, TemporarySecretStore};
@@ -88,6 +89,9 @@ pub struct HostStore {
     /// form are kept. `None` without a database to remember them, which is
     /// also how most tests run: the form then offers key files only.
     key_dir: Option<PathBuf>,
+    /// Inside [`Self::capture_failures`], the failures reported so far,
+    /// besides the events that report them.
+    capturing: RefCell<Option<Vec<SharedString>>>,
 }
 
 /// How many hosts the start page lists as recently connected.
@@ -133,6 +137,7 @@ impl HostStore {
             database: None,
             secrets: Arc::new(TemporarySecretStore::new(Arc::new(NoSecretStore))),
             key_dir: None,
+            capturing: RefCell::new(None),
         }
     }
 
@@ -202,6 +207,7 @@ impl HostStore {
             database: Some(database),
             secrets: Arc::new(TemporarySecretStore::new(Arc::new(NoSecretStore))),
             key_dir: None,
+            capturing: RefCell::new(None),
         })
     }
 
@@ -290,7 +296,7 @@ impl HostStore {
     }
 
     /// A saved host only: what the database's foreign keys may point at.
-    fn saved_host(&self, id: HostId) -> Option<&Host> {
+    pub(crate) fn saved_host(&self, id: HostId) -> Option<&Host> {
         self.hosts.iter().find(|host| host.id == id)
     }
 
@@ -1436,9 +1442,7 @@ impl HostStore {
         if let Err(error) = std::fs::remove_file(path)
             && error.kind() != io::ErrorKind::NotFound
         {
-            cx.emit(HostStoreEvent::PersistFailed(
-                format!("ShellRS 保存的私钥未能删除：{error}").into(),
-            ));
+            self.report_failure(format!("ShellRS 保存的私钥未能删除：{error}").into(), cx);
         }
         self.save_secret(SecretRef::passphrase(path), None, cx);
     }
@@ -1456,6 +1460,17 @@ impl HostStore {
         value: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        self.write_secret(secret, value, cx).detach();
+    }
+
+    /// [`Self::save_secret`], for a caller that has to know how it went:
+    /// the failure, already reported as `PersistFailed`.
+    pub fn write_secret(
+        &mut self,
+        secret: SecretRef,
+        value: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), SharedString>> {
         let secrets = self.secrets();
         let failure = match (&secret, value.is_some()) {
             (SecretRef::Password { .. }, true) => "密码未能写入系统钥匙串",
@@ -1479,16 +1494,15 @@ impl HostStore {
                     }
                 })
                 .await;
-            if let Err(error) = result {
+            result.map_err(|error| {
+                let message = SharedString::from(format!("{failure}：{error}"));
                 this.update(cx, |_, cx| {
-                    cx.emit(HostStoreEvent::PersistFailed(
-                        format!("{failure}：{error}").into(),
-                    ));
+                    cx.emit(HostStoreEvent::PersistFailed(message.clone()));
                 })
                 .ok();
-            }
+                message
+            })
         })
-        .detach();
     }
 
     /// The distinct password entries these hosts log in with, their
@@ -1549,10 +1563,34 @@ impl HostStore {
         if let Some(database) = &self.database
             && let Err(error) = write(database)
         {
-            cx.emit(HostStoreEvent::PersistFailed(
-                format!("{action}未能保存到本地数据库：{error}").into(),
-            ));
+            self.report_failure(format!("{action}未能保存到本地数据库：{error}").into(), cx);
         }
+    }
+
+    /// Say that a change could not be kept, as `PersistFailed`, and to
+    /// [`Self::capture_failures`] when one is listening.
+    fn report_failure(&self, message: SharedString, cx: &mut Context<Self>) {
+        if let Some(failures) = self.capturing.borrow_mut().as_mut() {
+            failures.push(message.clone());
+        }
+        cx.emit(HostStoreEvent::PersistFailed(message));
+    }
+
+    /// Run `change` and say what of it could not be written to the
+    /// database (or a key file deleted), for a caller that answers someone
+    /// who cannot see the notification: the external CLI. The failures are
+    /// reported as `PersistFailed` all the same, and the change stands in
+    /// memory as it always does. Keychain writes are not among them: they
+    /// finish later, and [`Self::write_secret`] says how.
+    pub fn capture_failures<R>(
+        &mut self,
+        cx: &mut Context<Self>,
+        change: impl FnOnce(&mut Self, &mut Context<Self>) -> R,
+    ) -> (R, Vec<SharedString>) {
+        let outer = self.capturing.replace(Some(Vec::new()));
+        let result = change(self, cx);
+        let failures = self.capturing.replace(outer).unwrap_or_default();
+        (result, failures)
     }
 
     /// The sort order that puts a host last in `group`, among the
@@ -1988,6 +2026,56 @@ mod tests {
     #[test]
     fn without_a_key_directory_no_key_is_saved() {
         assert!(HostStore::empty().save_private_key(None, "one").is_err());
+    }
+
+    #[gpui_kit::test]
+    fn a_change_says_what_could_not_be_kept_and_still_reports_it(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::AppContext as _;
+        use std::{cell::RefCell, rc::Rc};
+
+        let database = HostDatabase::in_memory().unwrap();
+        let store = cx.new(|_| HostStore::load(database).unwrap());
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let _subscription = cx.update(|cx| {
+            let events = events.clone();
+            cx.subscribe(&store, move |_, event: &HostStoreEvent, _| {
+                events.borrow_mut().push(event.clone());
+            })
+        });
+
+        // A group the database has never heard of: the write fails, the
+        // host stands in memory.
+        let ((id, kept), failures) = store.update(cx, |store, cx| {
+            store.capture_failures(cx, |store, cx| {
+                let kept = store.insert(draft("web", None), cx);
+                (store.insert(draft("db", Some(GroupId(99))), cx), kept)
+            })
+        });
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].starts_with("新建主机未能保存到本地数据库"));
+        cx.run_until_parked();
+        assert_eq!(
+            *events.borrow(),
+            [HostStoreEvent::PersistFailed(failures[0].clone())]
+        );
+        store.read_with(cx, |store, _| {
+            assert!(store.host(id).is_some() && store.host(kept).is_some());
+        });
+        // Nothing left listening afterwards.
+        let (_, failures) = store.update(cx, |store, cx| {
+            store.capture_failures(cx, |store, cx| store.remove(kept, cx))
+        });
+        assert!(failures.is_empty());
+
+        // A keychain that keeps nothing: the write says so when it is done.
+        let secret = SecretRef::password("root", "10.0.0.1", 22);
+        let write = store.update(cx, |store, cx| {
+            store.write_secret(secret, Some("hunter2".into()), cx)
+        });
+        let failure = cx.foreground_executor.block_test(write).unwrap_err();
+        assert!(failure.starts_with("密码未能写入系统钥匙串"), "{failure}");
     }
 
     #[gpui_kit::test]

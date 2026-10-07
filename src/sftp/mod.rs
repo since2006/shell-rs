@@ -12,6 +12,7 @@ mod journal;
 mod meter;
 mod operations;
 mod speed;
+mod sync;
 mod upload;
 mod worker;
 pub use worker::SshSftpTransportProvider;

@@ -162,9 +162,21 @@ impl DirectoryListing {
 pub struct UploadRequest {
     sources: Vec<PathBuf>,
     destination: RemotePath,
-    scp: bool,
+    mode: UploadMode,
     target_name: Option<String>,
 }
+
+/// How an upload treats what it is given, and what is already there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UploadMode {
+    /// The SFTP tab's: the sources go into the destination folder.
+    Into,
+    Scp,
+    Sync {
+        delete: bool,
+    },
+}
+
 impl UploadRequest {
     pub fn new(sources: Vec<PathBuf>, destination: RemotePath) -> Result<Self> {
         if sources.is_empty() {
@@ -173,7 +185,7 @@ impl UploadRequest {
         Ok(Self {
             sources,
             destination,
-            scp: false,
+            mode: UploadMode::Into,
             target_name: None,
         })
     }
@@ -184,7 +196,21 @@ impl UploadRequest {
         Self {
             sources: vec![source],
             destination,
-            scp: true,
+            mode: UploadMode::Scp,
+            target_name: None,
+        }
+    }
+    /// What the local folder `source` holds, copied into the folder
+    /// `destination` (made when it is not there) for the external CLI's
+    /// `sync`: files of the same size and modification time, and links to
+    /// the same place, are left alone, and new files keep their permission
+    /// bits as with scp. With `delete`, what is there and not in `source`
+    /// goes first.
+    pub fn sync(source: PathBuf, destination: RemotePath, delete: bool) -> Self {
+        Self {
+            sources: vec![source],
+            destination,
+            mode: UploadMode::Sync { delete },
             target_name: None,
         }
     }
@@ -195,7 +221,19 @@ impl UploadRequest {
         &self.destination
     }
     pub fn is_scp(&self) -> bool {
-        self.scp
+        self.mode == UploadMode::Scp
+    }
+    /// `Some` for a sync, saying whether it deletes.
+    pub fn sync_deletes(&self) -> Option<bool> {
+        match self.mode {
+            UploadMode::Sync { delete } => Some(delete),
+            _ => None,
+        }
+    }
+    /// The source copied from, once a sync has resolved it.
+    pub(crate) fn with_source(mut self, source: PathBuf) -> Self {
+        self.sources = vec![source];
+        self
     }
     /// The name the source is copied under, once an scp destination is
     /// resolved; `None` keeps the source's own.
@@ -327,6 +365,8 @@ pub struct TransferProgress {
     pub(crate) succeeded: usize,
     pub(crate) skipped: usize,
     pub(crate) failed: usize,
+    /// What a sync removed from the host before copying.
+    pub(crate) deleted: usize,
     pub(crate) bytes_per_second: u64,
     pub(crate) details: Vec<TransferDetail>,
     /// The file in flight: where it comes from, and how far it has got.
@@ -463,6 +503,9 @@ impl TransferProgress {
     }
     pub fn skipped(&self) -> usize {
         self.skipped
+    }
+    pub fn deleted(&self) -> usize {
+        self.deleted
     }
     pub fn failed(&self) -> usize {
         self.failed

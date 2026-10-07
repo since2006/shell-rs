@@ -2137,3 +2137,137 @@ fn a_binary_file_is_read_whole_for_a_preview_within_its_limit() {
         );
     });
 }
+
+/// The external CLI's sync of `local` into `/srv/app`, resolved as the
+/// worker resolves it.
+async fn sync_batch(local: &Path, tmp: &Path, control: &TransferControl) -> UploadBatch {
+    let request = UploadRequest::sync(local.into(), remote_path("/srv/app"), false)
+        .resolved(remote_path("/srv"), Some("app".into()));
+    UploadBatch::scan(
+        &request,
+        "test@remote",
+        "host-key",
+        Journal::new(tmp.join("sync-journal")),
+        control,
+    )
+    .await
+    .unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_sync_copies_only_what_changed_since_the_last() {
+    use std::os::unix::fs::PermissionsExt as _;
+    runtime().block_on(async {
+        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(dist.join("assets")).unwrap();
+        std::fs::write(dist.join("index.html"), b"v1").unwrap();
+        std::fs::write(dist.join("run.sh"), b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(dist.join("run.sh"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        std::fs::write(dist.join("assets/logo.png"), b"png").unwrap();
+        std::os::unix::fs::symlink("index.html", dist.join("home.html")).unwrap();
+        let remote = Remote::new(true);
+        remote.dir("/srv", 0o755);
+
+        let answers = Answers::new(vec![]);
+        let mut first = sync_batch(&dist, tmp.path(), &answers.control).await;
+        run(&mut first, &remote, &answers.control).await.unwrap();
+        let progress = &first.meter.progress;
+        assert_eq!((progress.succeeded(), progress.skipped()), (6, 0));
+        assert_eq!(remote.bytes("/srv/app/assets/logo.png"), b"png");
+        // New files keep their permission bits, as with scp.
+        assert_eq!(remote.mode("/srv/app/run.sh"), 0o755);
+
+        // Nothing changed: nothing copied, nothing asked, folders included.
+        let mut second = sync_batch(&dist, tmp.path(), &answers.control).await;
+        run(&mut second, &remote, &answers.control).await.unwrap();
+        let progress = &second.meter.progress;
+        assert_eq!((progress.succeeded(), progress.skipped()), (0, 6));
+        assert!(answers.questions.lock().unwrap().is_empty());
+
+        // One file changed: that one, over what is there.
+        std::fs::write(dist.join("index.html"), b"version 2").unwrap();
+        let answers = Answers::new(vec![TransferChoice::Overwrite]);
+        let mut third = sync_batch(&dist, tmp.path(), &answers.control).await;
+        run(&mut third, &remote, &answers.control).await.unwrap();
+        let progress = &third.meter.progress;
+        assert_eq!((progress.succeeded(), progress.skipped()), (1, 5));
+        assert_eq!(remote.bytes("/srv/app/index.html"), b"version 2");
+        assert_eq!(
+            *answers.questions.lock().unwrap(),
+            [TransferQuestionKind::Conflict]
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn a_sync_with_delete_removes_what_is_not_here_and_nothing_it_cannot_see() {
+    use std::os::unix::fs::PermissionsExt as _;
+    runtime().block_on(async {
+        let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(dist.join("sub")).unwrap();
+        std::fs::create_dir_all(dist.join("locked")).unwrap();
+        std::fs::write(dist.join("keep.txt"), b"k").unwrap();
+        std::fs::write(dist.join("kind"), b"a file here").unwrap();
+        std::fs::set_permissions(dist.join("locked"), std::fs::Permissions::from_mode(0o000))
+            .unwrap();
+
+        let remote = Remote::new(true);
+        remote.dir("/srv/app", 0o755);
+        remote.file("/srv/app/keep.txt", b"k");
+        remote.file("/srv/app/extra.txt", b"x");
+        remote.dir("/srv/app/old", 0o755);
+        remote.file("/srv/app/old/file", b"o");
+        // A folder there where a file is here.
+        remote.dir("/srv/app/kind", 0o755);
+        remote.file("/srv/app/kind/inner", b"i");
+        // What a transfer leaves while it runs.
+        remote.file("/srv/app/keep.txt.filepart", b"partial");
+        remote.file("/srv/app/.shellrs-1234.backup", b"original");
+        // A folder this side cannot read, and one that side cannot.
+        remote.dir("/srv/app/locked", 0o755);
+        remote.file("/srv/app/locked/extra", b"?");
+        remote.dir("/srv/app/sub", 0o755);
+        remote.file("/srv/app/sub/extra", b"?");
+        *remote.denied.borrow_mut() = Some("/srv/app/sub".into());
+
+        let answers = Answers::new(vec![TransferChoice::Skip]);
+        let pruned = super::sync::prune(&remote, &dist, &remote_path("/srv/app"), &answers.control)
+            .await
+            .unwrap();
+        std::fs::set_permissions(dist.join("locked"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        assert_eq!(pruned.deleted, 3);
+        assert_eq!(pruned.failures.len(), 1);
+        let keys: Vec<_> = remote.nodes.borrow().keys().cloned().collect();
+        assert_eq!(
+            keys,
+            [
+                "/srv/app",
+                "/srv/app/.shellrs-1234.backup",
+                "/srv/app/keep.txt",
+                "/srv/app/keep.txt.filepart",
+                "/srv/app/locked",
+                "/srv/app/locked/extra",
+                "/srv/app/sub",
+                "/srv/app/sub/extra",
+            ]
+        );
+        assert_eq!(
+            *answers.questions.lock().unwrap(),
+            [TransferQuestionKind::Error]
+        );
+
+        // Counted with the batch that follows: what went, and what failed.
+        let mut batch = sync_batch(&dist, tmp.path(), &answers.control).await;
+        let total = batch.meter.progress.total();
+        batch.add_pruned(pruned.deleted, pruned.failures);
+        let progress = &batch.meter.progress;
+        assert_eq!((progress.deleted(), progress.failed()), (3, 1));
+        assert_eq!(progress.total(), total + 1);
+    });
+}

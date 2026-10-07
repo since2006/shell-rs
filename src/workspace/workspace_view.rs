@@ -35,7 +35,7 @@ use crate::app::{
     ToggleHostPanel, ToggleTheme, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut,
     ZoomTerminalReset,
 };
-use crate::cli::{CliIntegration, CliServer, CliTarget, IntegrationPaths, SshCliBackend};
+use crate::cli::{CliIntegration, CliServer, IntegrationPaths, SshCliBackend};
 use crate::connection::{
     ConnectionPrompt, ConnectionPromptField, ConnectionPromptKind, ConnectionPromptReply,
     ConnectionSecret, SharedConnectionTester,
@@ -93,10 +93,6 @@ const FONT_SIZE_STEP: f32 = 2.;
 /// hits the backdrop. Just below popups (`POPUP_PRIORITY`) keeps a
 /// notification above any stack of dialogs without covering an open menu.
 const NOTIFICATION_PRIORITY: usize = gpui_kit::base::POPUP_PRIORITY - 1;
-/// How often the window asks whether ShellRS was opened again; see
-/// [`CliServer::take_activation`].
-const ACTIVATION_POLL: Duration = Duration::from_millis(200);
-
 /// Show a notification from code that runs while the window is still being
 /// built: loading what is on disk, starting the services.
 ///
@@ -170,7 +166,7 @@ pub struct Workspace {
     cli_integration: Entity<CliIntegration>,
     /// Answers the `shellrs` command. Production only: UI tests never
     /// listen on the real socket.
-    cli_server: Option<CliServer>,
+    pub(super) cli_server: Option<CliServer>,
     /// Looks for, downloads and installs newer versions. Without services
     /// in UI tests, so it never reaches the network unless a test hands it
     /// fakes.
@@ -248,13 +244,14 @@ impl Workspace {
             integration.set_paths(IntegrationPaths::system(), cx);
             integration.update_outdated(cx);
         });
+        let secrets = this.store.read(cx).secrets();
         match CliServer::start(
             crate::app::cli_socket_path(),
-            Arc::new(SshCliBackend::new(connector, sftp)),
+            Arc::new(SshCliBackend::new(connector, sftp, secrets)),
         ) {
             Ok(server) => {
                 this.cli_server = Some(server);
-                this.come_forward_when_opened_again(window, cx);
+                this.serve_cli(window, cx);
             }
             Err(error) => notify_once_open(
                 Notification::error(error.to_string()).title("外部 CLI 无法启动"),
@@ -272,44 +269,12 @@ impl Workspace {
         this
     }
 
-    /// Bring the window forward whenever ShellRS is opened while it is
-    /// already running. The second copy only passes the word on and exits:
-    /// two of them on one data directory would each keep their own copy of
-    /// the hosts and write over the other's changes.
-    ///
-    /// Asked on a timer, like every other worker: the thread that hears the
-    /// request never wakes the window itself.
-    fn come_forward_when_opened_again(&self, window: &mut Window, cx: &mut Context<Self>) {
-        cx.spawn_in(window, async move |this, cx| {
-            loop {
-                cx.background_executor().timer(ACTIVATION_POLL).await;
-                let open = this.update_in(cx, |this, window, cx| {
-                    let Some(links) = this
-                        .cli_server
-                        .as_ref()
-                        .and_then(|server| server.take_activation())
-                    else {
-                        return;
-                    };
-                    crate::app::bring_forward(window, cx);
-                    for link in links {
-                        this.open_link(link, window, cx);
-                    }
-                });
-                if open.is_err() {
-                    break;
-                }
-            }
-        })
-        .detach();
-    }
-
     /// Tell the CLI server what it may use: whether 启用外部 CLI is on, and
     /// the hosts as they are now.
     fn sync_cli_server(&self, cx: &App) {
         if let Some(server) = &self.cli_server {
             server.set_enabled(self.settings.read(cx).settings().external_cli.enabled);
-            server.set_targets(CliTarget::all(self.store.read(cx)));
+            server.set_hosts(self.store.read(cx));
         }
     }
 
@@ -1919,7 +1884,12 @@ impl Workspace {
     /// Close whatever a host has open in the center, leaving the store
     /// alone. Deleting a host and deleting the group around it both need
     /// this, the latter for every host in the subtree.
-    fn close_host_tabs(&mut self, id: HostId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close_host_tabs(
+        &mut self,
+        id: HostId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.cancel_prompts_for_host(id, window, cx);
         let terminals: Vec<_> = self.terminals_of(id, cx).cloned().collect();
         for terminal in terminals {

@@ -7,6 +7,7 @@
 
 mod support;
 
+mod cli;
 mod connection;
 mod credential;
 mod docker;

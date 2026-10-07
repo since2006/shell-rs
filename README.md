@@ -84,7 +84,7 @@ ShellRS 把 Xshell 式的主机管理和多标签终端、WinSCP 式的双栏 SF
 
 **给 AI Agent 用的 CLI**
 
-- `shellrs list` / `exec` / `upload` / `download`，由正在运行的 ShellRS 代为登录，命令本身不接触密码和私钥。
+- `shellrs hosts` / `credentials` / `exec` / `upload` / `download` / `sync`：管理主机和凭据、执行命令、传输和同步文件。由正在运行的 ShellRS 代为登录，命令本身不读密码和私钥。
 - 在设置页一键把 `shellrs` 放进 PATH，并为 Claude Code、Codex、OpenCode、WorkBuddy 安装 Agent Skill。
 
 **安全与更新**
@@ -141,10 +141,11 @@ ShellRS 把 Xshell 式的主机管理和多标签终端、WinSCP 式的双栏 SF
 在「设置 › 外部 CLI」里打开「启用外部 CLI」，安装 `shellrs` 命令和 Agent Skills。之后 Agent 就能直接用你保存的主机：
 
 ```sh
-shellrs list                                       # 列出主机和它们的 ID
+shellrs hosts list -q web                          # 列出主机和它们的 ID
 shellrs exec <ID> "uptime && df -h"                # 执行命令，退出码就是远程命令的退出码
 shellrs upload <ID> ./dist/app.tar.gz /opt/app/    # 上传
 shellrs download <ID> /var/log/syslog ./logs/      # 下载
+shellrs sync <ID> ./dist /opt/app --delete         # 同步目录，没变的文件跳过
 ```
 
 命令把请求交给正在运行的 ShellRS，由它用保存的配置和钥匙串登录。遇到陌生主机或缺少密码时，命令直接失败、返回稳定的错误码，不会弹框卡住 Agent。详见[使用手册](docs/manual.md#外部-cli)。

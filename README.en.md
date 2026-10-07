@@ -84,7 +84,7 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 
 **A CLI for AI agents**
 
-- `shellrs list` / `exec` / `upload` / `download`. The running ShellRS logs in on the command's behalf, so the command itself never handles a password or private key.
+- `shellrs hosts` / `credentials` / `exec` / `upload` / `download` / `sync`: manage hosts and credentials, run commands, move and sync files. The running ShellRS logs in on the command's behalf, so the command itself never reads a password or private key.
 - Install `shellrs` into your PATH and an Agent Skill for Claude Code, Codex, OpenCode or WorkBuddy from the settings page.
 
 **Security and updates**
@@ -141,10 +141,11 @@ Once installed, ShellRS keeps itself up to date: it checks, downloads and verifi
 In 设置 › 外部 CLI (Settings › External CLI), turn on 启用外部 CLI (Enable external CLI), then install the `shellrs` command and the Agent Skills. Your agent can then use the hosts you have saved:
 
 ```sh
-shellrs list                                       # list hosts and their IDs
+shellrs hosts list -q web                          # list hosts and their IDs
 shellrs exec <ID> "uptime && df -h"                # run a command; the exit code is the remote one
 shellrs upload <ID> ./dist/app.tar.gz /opt/app/    # upload
 shellrs download <ID> /var/log/syslog ./logs/      # download
+shellrs sync <ID> ./dist /opt/app --delete         # sync a folder, skipping unchanged files
 ```
 
 The command hands each request to the running ShellRS, which logs in with the saved settings and keychain. An unknown host or a missing password fails right away with a stable error code instead of a prompt that would hang the agent. See the [user manual](docs/manual.md#外部-cli) (in Chinese) for details.

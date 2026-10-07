@@ -10,6 +10,7 @@ mod install;
 mod install_windows;
 mod integration;
 mod link;
+mod manage;
 #[cfg(windows)]
 mod pipe_windows;
 mod protocol;
@@ -34,20 +35,60 @@ pub use install::{
 };
 pub use integration::{CliIntegration, IntegrationStatus};
 pub use link::{OpenLink, link_arguments};
-pub use protocol::{CliError, ErrorCode, HostInfo, Request, TransferCounters, TransferSummary};
-pub use server::{CliBackend, CliServer, CliTarget};
+pub use manage::CliChange;
+pub(crate) use manage::{
+    CredentialPlan, GroupPlan, SecretChange, credential_details, credential_secrets,
+    find_credential, find_saved_host, host_details, host_info, host_secrets, plan_credential,
+    plan_host, with_saved_credential_secrets, with_saved_passwords,
+};
+pub use protocol::{
+    AuthChoice, CliError, CredentialDeleted, CredentialDetails, CredentialFields,
+    CredentialKindChoice, ErrorCode, HostDeleted, HostDetails, HostFields, HostInfo, ProxyChoice,
+    Reply, Request, RouteDetails, RouteFields, Secret, TransferCounters, TransferSummary,
+};
+pub use server::{ChangeReply, CliBackend, CliServer, CliTarget};
 
 const AFTER_HELP: &str = "\
-Hosts are named by the 16-character ID that `shellrs list` prints (the one ShellRS copies with 复制 ID).
+Hosts are named by the 16-character ID that `shellrs hosts list` prints (the one ShellRS copies with 复制 ID).
 ShellRS must be running, with 设置 → 外部 CLI → 启用外部 CLI turned on.
 
 Exit codes: exec exits with the remote command's code; 1 means a transfer finished with failures;
 255 means shellrs could not do what was asked (the reason is printed as `shellrs: [code] message`).";
 
-/// Run commands and move files on the SSH hosts saved in ShellRS.
+const HOST_FIELDS: &str = "\
+Reads one JSON object from stdin. Every field may be left out; `update` changes only the fields given.
+  name        Required to create.
+  host        The address (IP or host name). Required to create. Also read as `address`.
+  port        Default 22.
+  user        Default root. A host using a credential logs in as the credential's user.
+  group       A group path such as \"生产/数据库\", made when it is not there; null for the top level.
+  auth        \"password\", \"credential\" or \"no_password\".
+  credential  A credential ID from `shellrs credentials list`, for auth \"credential\" (implied).
+  password    The host's own password, saved to the keychain and never printed; null deletes it.
+              Changing host, port or user without it keeps the saved one.
+  route       {\"type\": \"direct\"}
+              {\"type\": \"jump\", \"hosts\": [ID, ...]}   (saved hosts, in order)
+              {\"type\": \"proxy\", \"kind\": \"http\" | \"socks5\", \"host\": ..., \"port\": ...,
+               \"user\": ..., \"password\": ...}
+  notes       Free text.
+What `shellrs hosts show <ID> --json` prints can be edited and passed back as it is.";
+
+const CREDENTIAL_FIELDS: &str = "\
+Reads one JSON object from stdin. Every field may be left out; `update` changes only the fields given.
+  name         Required to create.
+  kind         \"password\" (the default), \"key\" (implied by a key) or \"agent\".
+  user         Default root.
+  password     A password credential's, saved to the keychain and never printed; null deletes it.
+  key_path     A private key file on this machine (relative to the current directory, or ~/...).
+  private_key  The private key's text instead, for ShellRS to keep in a file of its own.
+  passphrase   The key's passphrase, saved to the keychain; null deletes it.
+What `shellrs credentials show <ID> --json` prints can be edited and passed back as it is.";
+
+/// Run commands, move files and manage the SSH hosts saved in ShellRS.
 ///
 /// ShellRS holds the passwords and keys and makes the connections; this
-/// command never sees them.
+/// command never reads them. One given to it to save goes to the keychain
+/// and is never printed back.
 #[derive(Debug, Parser)]
 #[command(name = "shellrs", version, after_help = AFTER_HELP)]
 struct Cli {
@@ -57,14 +98,15 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// List the saved hosts.
-    List {
-        /// Only hosts whose name, host, user, group or ID matches.
-        #[arg(short, long)]
-        query: Option<String>,
-        /// Print JSON. Implied when stdout is not a terminal.
-        #[arg(long)]
-        json: bool,
+    /// Show, create, change or delete saved hosts.
+    Hosts {
+        #[command(subcommand)]
+        command: HostsCommand,
+    },
+    /// Show, create, change or delete saved credentials.
+    Credentials {
+        #[command(subcommand)]
+        command: CredentialsCommand,
     },
     /// Run one command on a saved host and print its output.
     ///
@@ -72,7 +114,7 @@ enum Command {
     /// and closes it. The command gets no stdin. The exit code is the
     /// remote command's.
     Exec {
-        /// Host ID, from `shellrs list`.
+        /// Host ID, from `shellrs hosts list`.
         #[arg(required_unless_present = "json")]
         id: Option<String>,
         /// One complete remote shell command, quoted as one argument.
@@ -97,7 +139,7 @@ enum Command {
     /// copy's path. Folders are copied recursively; existing files are
     /// overwritten.
     Upload {
-        /// Host ID, from `shellrs list`.
+        /// Host ID, from `shellrs hosts list`.
         id: String,
         /// Local file or folder.
         local: PathBuf,
@@ -111,13 +153,122 @@ enum Command {
     ///
     /// Destination rules are scp's, as for `upload`.
     Download {
-        /// Host ID, from `shellrs list`.
+        /// Host ID, from `shellrs hosts list`.
         id: String,
         /// Remote file or folder. `~` is the login directory.
         remote: String,
         /// Local destination.
         local: PathBuf,
         /// Print the summary as JSON. Implied when stdout is not a terminal.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Copy what a local folder holds into a folder on a saved host,
+    /// skipping files that have not changed.
+    ///
+    /// The remote folder is made when it is not there (its parent must
+    /// be). A file of the same size and modification time is left alone;
+    /// any other is copied over. Only this way: nothing comes back.
+    Sync {
+        /// Host ID, from `shellrs hosts list`.
+        id: String,
+        /// Local folder, whose contents are copied.
+        local: PathBuf,
+        /// Remote folder. `~` is the login directory.
+        remote: String,
+        /// First delete what is in the remote folder and not in the local
+        /// one.
+        #[arg(long)]
+        delete: bool,
+        /// Print the summary as JSON. Implied when stdout is not a terminal.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum HostsCommand {
+    /// List the saved hosts, and the ones connected to without saving
+    /// while their tabs are open.
+    List {
+        /// Only hosts whose name, host, user, group or ID matches.
+        #[arg(short, long)]
+        query: Option<String>,
+        /// Print JSON. Implied when stdout is not a terminal.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one host in full. Passwords are never shown, only whether one
+    /// is saved.
+    Show {
+        /// Host ID, from `shellrs hosts list`.
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Save a new host, described by JSON on stdin.
+    #[command(after_help = HOST_FIELDS)]
+    Create {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Change a saved host: the fields of the JSON on stdin.
+    #[command(after_help = HOST_FIELDS)]
+    Update {
+        /// Host ID, from `shellrs hosts list`.
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a saved host, with its port forwarding rules.
+    Delete {
+        /// Host ID, from `shellrs hosts list`.
+        id: String,
+        /// Delete it even with its tabs open in ShellRS, closing them.
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CredentialsCommand {
+    /// List the credentials.
+    List {
+        /// Only credentials whose name, user, kind or ID matches.
+        #[arg(short, long)]
+        query: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one credential. Passwords and keys are never shown, only
+    /// whether they are saved.
+    Show {
+        /// Credential ID, from `shellrs credentials list`.
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Save a new credential, described by JSON on stdin.
+    #[command(after_help = CREDENTIAL_FIELDS)]
+    Create {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Change a credential: the fields of the JSON on stdin.
+    #[command(after_help = CREDENTIAL_FIELDS)]
+    Update {
+        /// Credential ID, from `shellrs credentials list`.
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a credential. The hosts using it log in on their own from
+    /// then on.
+    Delete {
+        /// Credential ID, from `shellrs credentials list`.
+        id: String,
         #[arg(long)]
         json: bool,
     },
@@ -158,10 +309,6 @@ pub fn main(args: Vec<OsString>) -> i32 {
 /// cannot be sent.
 fn request(command: Command, console: &mut Console) -> Result<Request, i32> {
     Ok(match command {
-        Command::List { query, json } => {
-            console.json |= json;
-            Request::List { query }
-        }
         Command::Exec {
             id,
             command,
@@ -210,7 +357,127 @@ fn request(command: Command, console: &mut Console) -> Result<Request, i32> {
                 destination: absolute(local, console)?,
             }
         }
+        Command::Sync {
+            id,
+            local,
+            remote,
+            delete,
+            json,
+        } => {
+            console.json |= json;
+            Request::Sync {
+                host: id,
+                source: absolute(local, console)?,
+                destination: remote,
+                delete,
+            }
+        }
+        Command::Hosts { command } => hosts_request(command, console)?,
+        Command::Credentials { command } => credentials_request(command, console)?,
     })
+}
+
+fn hosts_request(command: HostsCommand, console: &mut Console) -> Result<Request, i32> {
+    Ok(match command {
+        HostsCommand::List { query, json } => {
+            console.json |= json;
+            Request::List { query }
+        }
+        HostsCommand::Show { id, json } => {
+            console.json |= json;
+            Request::ShowHost { host: id }
+        }
+        HostsCommand::Create { json } => {
+            console.json |= json;
+            Request::CreateHost {
+                fields: host_fields(console, "shellrs hosts create < host.json")?,
+            }
+        }
+        HostsCommand::Update { id, json } => {
+            console.json |= json;
+            let example = format!("shellrs hosts update {id} < changes.json");
+            Request::UpdateHost {
+                fields: host_fields(console, &example)?,
+                host: id,
+            }
+        }
+        HostsCommand::Delete { id, force, json } => {
+            console.json |= json;
+            Request::DeleteHost { host: id, force }
+        }
+    })
+}
+
+fn credentials_request(command: CredentialsCommand, console: &mut Console) -> Result<Request, i32> {
+    Ok(match command {
+        CredentialsCommand::List { query, json } => {
+            console.json |= json;
+            Request::ListCredentials { query }
+        }
+        CredentialsCommand::Show { id, json } => {
+            console.json |= json;
+            Request::ShowCredential { credential: id }
+        }
+        CredentialsCommand::Create { json } => {
+            console.json |= json;
+            Request::CreateCredential {
+                fields: credential_fields(console, "shellrs credentials create < credential.json")?,
+            }
+        }
+        CredentialsCommand::Update { id, json } => {
+            console.json |= json;
+            let example = format!("shellrs credentials update {id} < changes.json");
+            Request::UpdateCredential {
+                fields: credential_fields(console, &example)?,
+                credential: id,
+            }
+        }
+        CredentialsCommand::Delete { id, json } => {
+            console.json |= json;
+            Request::DeleteCredential { credential: id }
+        }
+    })
+}
+
+/// The JSON object on stdin. Not from a terminal: nothing would say what
+/// to type, or that it waits for it.
+fn read_json(console: &mut Console, example: &str) -> Result<serde_json::Value, i32> {
+    if io::stdin().is_terminal() {
+        return Err(console.error(
+            ErrorCode::BadRequest,
+            &format!("请从标准输入传入 JSON，例如 {example}"),
+        ));
+    }
+    let text = read_stdin(console)?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    serde_json::from_str(text).map_err(|error| {
+        console.error(
+            ErrorCode::BadRequest,
+            &format!("标准输入不是 JSON：{error}"),
+        )
+    })
+}
+
+fn host_fields(console: &mut Console, example: &str) -> Result<HostFields, i32> {
+    let value = read_json(console, example)?;
+    manage::host_fields(value)
+        .map_err(|error| console.error(ErrorCode::BadRequest, &format!("JSON 有误：{error}")))
+}
+
+/// A key file named relative to here, or to the home directory, is sent
+/// as the absolute path the app can find.
+fn credential_fields(console: &mut Console, example: &str) -> Result<CredentialFields, i32> {
+    let value = read_json(console, example)?;
+    let mut fields = manage::credential_fields(value)
+        .map_err(|error| console.error(ErrorCode::BadRequest, &format!("JSON 有误：{error}")))?;
+    if let Some(path) = fields.key_path.take() {
+        let path = match path.strip_prefix("~") {
+            Ok(rest) => dirs::home_dir().map(|home| home.join(rest)).unwrap_or(path),
+            Err(_) => path,
+        };
+        fields.key_path = Some(absolute(path, console)?);
+    }
+    Ok(fields)
 }
 
 fn read_stdin(console: &mut Console) -> Result<String, i32> {

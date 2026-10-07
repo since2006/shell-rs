@@ -9,7 +9,7 @@ use super::{
     journal::{DownloadJournal, Journal},
     meter::TransferMeter,
     model::{scp_local_target, scp_remote_target},
-    operations,
+    operations, sync,
     upload::UploadBatch,
 };
 use crate::{
@@ -416,7 +416,30 @@ impl SshSftpTransport {
                     events
                         .send(SftpEvent::Progress(TransferProgress::default()))
                         .await?;
-                    let request = if request.is_scp() {
+                    let mut pruned = sync::Pruned::default();
+                    let request = if let Some(delete) = request.sync_deletes() {
+                        // The local folder itself, through any link to it:
+                        // what it holds is what is copied.
+                        let source = &request.sources()[0];
+                        let local = tokio::fs::canonicalize(source)
+                            .await
+                            .ok()
+                            .filter(|path| path.is_dir())
+                            .map(|path| dunce::simplified(&path).to_path_buf())
+                            .ok_or_else(|| anyhow!("本地目录 {} 不存在", source.display()))?;
+                        let target =
+                            sync_target(connected.as_ref(), request.destination(), &control)
+                                .await?;
+                        if delete {
+                            pruned =
+                                sync::prune(connected.as_ref(), &local, &target, &control).await?;
+                        }
+                        // Copied as the folder it goes to, which is there.
+                        request
+                            .clone()
+                            .with_source(local)
+                            .resolved(target.parent(), Some(target.file_name().to_string()))
+                    } else if request.is_scp() {
                         let destination = request.destination();
                         let is_directory = destination.is_root()
                             || control
@@ -445,17 +468,17 @@ impl SshSftpTransport {
                             .await?;
                         super::UploadRequest::new(request.sources().to_vec(), target)?
                     };
-                    batch = Some(TransferBatch::Upload(
-                        control
-                            .run(UploadBatch::scan(
-                                &request,
-                                &self.config.endpoint(),
-                                connected.fingerprint(),
-                                self.journal.clone(),
-                                &control,
-                            ))
-                            .await?,
-                    ));
+                    let mut upload = control
+                        .run(UploadBatch::scan(
+                            &request,
+                            &self.config.endpoint(),
+                            connected.fingerprint(),
+                            self.journal.clone(),
+                            &control,
+                        ))
+                        .await?;
+                    upload.add_pruned(pruned.deleted, pruned.failures);
+                    batch = Some(TransferBatch::Upload(upload));
                 }
                 if let SftpCommand::Download(request) = &operation {
                     batch = None;
@@ -633,6 +656,46 @@ impl SshSftpTransport {
         *client.write().await = None;
         Ok(())
     }
+}
+
+/// The folder a sync copies into: `destination` when it is a folder, links
+/// to it resolved; made when it is not there, in a folder that is, as scp
+/// would. Never the root: a sync with `--delete` would empty the server.
+async fn sync_target(
+    fs: &SftpClient,
+    destination: &RemotePath,
+    control: &TransferControl,
+) -> Result<RemotePath> {
+    let target = match control.run(fs.stat(destination)).await? {
+        Some(metadata) if metadata.kind() == EntryKind::Directory => {
+            control.run(fs.canonicalize(destination)).await?
+        }
+        Some(_) => anyhow::bail!("远程路径 {destination} 不是目录"),
+        None => {
+            let parent = destination.parent();
+            let missing = || anyhow!("远程目录 {parent} 不存在");
+            let parent = control
+                .run(fs.canonicalize(&parent))
+                .await
+                .map_err(|_| missing())?;
+            if !control
+                .run(fs.stat(&parent))
+                .await?
+                .is_some_and(|metadata| metadata.kind() == EntryKind::Directory)
+            {
+                return Err(missing());
+            }
+            let target = parent.join(destination.file_name())?;
+            if !target.is_root() {
+                control.run(fs.mkdir(&target)).await?;
+            }
+            target
+        }
+    };
+    if target.is_root() {
+        anyhow::bail!("不能同步到根目录 /");
+    }
+    Ok(target)
 }
 
 /// Measure the connection in use every [`LATENCY_INTERVAL`], and a new one

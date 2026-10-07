@@ -35,6 +35,9 @@ pub(crate) struct UploadBatch {
     /// A new remote file takes the local file's permission bits, as scp
     /// gives them; otherwise the server's defaults apply.
     preserve_mode: bool,
+    /// The external CLI's sync: what is already there as it is here is
+    /// left alone, folders included, and counted as skipped.
+    sync: bool,
 }
 impl UploadBatch {
     pub async fn scan(
@@ -136,8 +139,19 @@ impl UploadBatch {
             all_conflicts: None,
             approved_resumes: HashSet::new(),
             blocked_directories: Vec::new(),
-            preserve_mode: request.is_scp(),
+            preserve_mode: request.is_scp() || request.sync_deletes().is_some(),
+            sync: request.sync_deletes().is_some(),
         })
+    }
+
+    /// Count what a sync deleted before the batch was scanned, and what it
+    /// failed to delete among the items that failed.
+    pub fn add_pruned(&mut self, deleted: usize, failures: Vec<TransferDetail>) {
+        let progress = &mut self.meter.progress;
+        progress.deleted += deleted;
+        progress.total += failures.len();
+        progress.failed += failures.len();
+        progress.details.extend(failures);
     }
     pub fn verify_host(&self, fingerprint: &str) -> Result<()> {
         if self.host_key != fingerprint {
@@ -305,7 +319,7 @@ impl UploadBatch {
                 self.discard_record(fs, record).await?;
             }
             return match control.run(fs.metadata(&item.target)).await? {
-                Some(metadata) if metadata.kind() == EntryKind::Directory => Ok(true),
+                Some(metadata) if metadata.kind() == EntryKind::Directory => Ok(!self.sync),
                 Some(_) => bail!("目标已存在且不是目录，不会跟随或替换链接"),
                 None => {
                     control.run(fs.mkdir(&item.target)).await?;
@@ -339,6 +353,9 @@ impl UploadBatch {
             record
         } else {
             let original = control.run(fs.metadata(&item.target)).await?;
+            if self.sync && self.unchanged(fs, item, original.as_ref(), control).await? {
+                return Ok(false);
+            }
             if !self
                 .approve(&item.target, &original, false, control)
                 .await?
@@ -430,6 +447,35 @@ impl UploadBatch {
         record.phase = PublishPhase::Ready;
         self.journal.save(&record).await?;
         self.recover_publish(fs, &mut record, control).await
+    }
+    /// For a sync: whether `remote`, what is at the item's target, is
+    /// already what the item is. A file of the same size and modification
+    /// time (an upload gives the copy the local file's), a link to the same
+    /// place. A side that does not say when it was modified has changed.
+    async fn unchanged<F: RemoteFs>(
+        &self,
+        fs: &F,
+        item: &UploadItem,
+        remote: Option<&FileMetadata>,
+        control: &TransferControl,
+    ) -> Result<bool> {
+        let Some(remote) = remote else {
+            return Ok(false);
+        };
+        let local = &item.metadata;
+        Ok(match (local.kind(), remote.kind()) {
+            (EntryKind::File, EntryKind::File) => {
+                local.size() == remote.size()
+                    && local.modified().is_some()
+                    && local.modified() == remote.modified()
+            }
+            (EntryKind::Symlink, EntryKind::Symlink) => {
+                let here = tokio::fs::read_link(&item.source).await?;
+                let there = control.run(fs.readlink(&item.target)).await?;
+                here.to_str() == Some(there.as_str())
+            }
+            _ => false,
+        })
     }
     async fn upload_file<F: RemoteFs>(
         &mut self,

@@ -583,7 +583,88 @@ impl HostDraft {
     pub fn password_secret(&self) -> SecretRef {
         SecretRef::password(self.user.as_ref(), self.address.as_ref(), self.port)
     }
+
+    /// The draft with surrounding blanks removed and an empty user name
+    /// taken as [`super::DEFAULT_USER`], or the first thing wrong with it,
+    /// in the order the host form checks. What the form cannot leave out
+    /// of a draft (a credential to pick, a proxy password without a user)
+    /// is the caller's to check.
+    pub fn validated(mut self) -> Result<Self, HostDraftError> {
+        self.name = self.name.trim().to_string().into();
+        if self.name.is_empty() {
+            return Err(HostDraftError::Name);
+        }
+        self.address = self.address.trim().to_string().into();
+        if self.address.is_empty() {
+            return Err(HostDraftError::Address);
+        }
+        if self.port == 0 {
+            return Err(HostDraftError::Port);
+        }
+        let user = self.user.trim();
+        self.user = if user.is_empty() {
+            super::DEFAULT_USER.into()
+        } else {
+            user.to_string().into()
+        };
+        match &mut self.route {
+            Route::Direct => {}
+            Route::Jump(hops) if hops.is_empty() => return Err(HostDraftError::NoJumpHosts),
+            Route::Jump(hops) if hops.contains(&None) => {
+                return Err(HostDraftError::DeletedJumpHost);
+            }
+            Route::Jump(_) => {}
+            Route::Proxy(proxy) => {
+                proxy.host = proxy.host.trim().to_string().into();
+                if proxy.host.is_empty() {
+                    return Err(HostDraftError::ProxyAddress);
+                }
+                if proxy.port == 0 {
+                    return Err(HostDraftError::ProxyPort);
+                }
+                let user = proxy.user.as_deref().map(str::trim).unwrap_or_default();
+                proxy.user = (!user.is_empty()).then(|| user.to_string().into());
+            }
+        }
+        self.notes = self.notes.trim().to_string().into();
+        Ok(self)
+    }
 }
+
+/// Why a host draft cannot be saved. `Display` is the text the host form
+/// shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostDraftError {
+    Name,
+    Address,
+    Port,
+    NoJumpHosts,
+    DeletedJumpHost,
+    ProxyAddress,
+    ProxyPort,
+}
+
+impl HostDraftError {
+    pub fn message(self) -> &'static str {
+        match self {
+            HostDraftError::Name => "请输入名称",
+            HostDraftError::Address => "请输入地址",
+            HostDraftError::Port => "端口必须是 1 到 65535 之间的数字",
+            HostDraftError::NoJumpHosts => "请添加跳板主机",
+            HostDraftError::DeletedJumpHost => "请移除已删除的跳板主机",
+            HostDraftError::ProxyAddress => "请输入代理地址",
+            HostDraftError::ProxyPort => "代理端口必须是 1 到 65535 之间的数字",
+        }
+    }
+}
+
+impl std::fmt::Display for HostDraftError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message())
+    }
+}
+
+impl std::error::Error for HostDraftError {}
 
 #[cfg(test)]
 mod tests {

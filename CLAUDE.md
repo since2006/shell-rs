@@ -16,7 +16,7 @@ ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH �
 
 用户定过的事，不要改回去。细节以 `docs/manual.md` 和代码为准。
 
-- **SFTP**：Dock 标签，每次「打开 SFTP」新开一个、各自连接。操作对标 WinSCP Commander：两行工具栏、路径标签、WinSCP 的列、高亮多选、「名称」格才是项目、框选。本地侧与远程侧对称，本地删除进废纸篓；书签按主机、按侧持久化。传输进行中还能再发起，新批次在标签底部的传输队列里排队，不做前台进度对话框。大小列默认整 KB，右键列标题可切换。「显示隐藏文件」（`.` 开头的）本地、远程各一个开关、互不影响，每侧对所有标签生效，存进设置，默认不显示；工具栏用睁眼 / 闭眼两个图标表示状态，不用选中效果；显示时隐藏文件的文字浅一些。暂不做目录同步、过滤、查找、目录树和 Dock 布局持久化。
+- **SFTP**：Dock 标签，每次「打开 SFTP」新开一个、各自连接。操作对标 WinSCP Commander：两行工具栏、路径标签、WinSCP 的列、高亮多选、「名称」格才是项目、框选。本地侧与远程侧对称，本地删除进废纸篓；书签按主机、按侧持久化。传输进行中还能再发起，新批次在标签底部的传输队列里排队，不做前台进度对话框。大小列默认整 KB，右键列标题可切换。「显示隐藏文件」（`.` 开头的）本地、远程各一个开关、互不影响，每侧对所有标签生效，存进设置，默认不显示；工具栏用睁眼 / 闭眼两个图标表示状态，不用选中效果；显示时隐藏文件的文字浅一些。SFTP 标签暂不做目录同步（外部 CLI 有 `shellrs sync`）、过滤、查找、目录树和 Dock 布局持久化。
 - **主机树**：搜索匹配主机（名称、地址、用户）和分组名；分组名匹配时列出整个分组，回车只连本身匹配的第一台主机（按树的顺序）。首次启动是空库；分组可任意嵌套，主机可以不属于分组；删除分组连同子分组和主机，确认框写明数量。
 - **主机对话框**：
   - 认证方式三选一：「密码」（留空就每次连接时询问，不悄悄试密钥）、「使用凭据」、「无密码」（依次试服务器免认证、SSH Agent、`~/.ssh` 默认私钥，服务器要密码就报错、不询问）。主机自己没有私钥文件，要用私钥就建密钥凭据。
@@ -35,6 +35,11 @@ ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH �
   - 临时连接的密码只在内存。
   - 外部连接只认命令行参数，不注册系统的 `ssh://` 链接；打开时收起左侧栏。
   - 外部 CLI 照样列出这两种主机，分组写「（未保存）」。
+- **外部 CLI**：`hosts` / `credentials` 的 `list`、`show`、`create`、`update`、`delete`，以及 `exec`、`upload`、`download`、`sync`，写法对齐 termark 的 skill。对象叫 host / host-id，不学 termark 的 asset（ShellRS 只有「主机」一种）。没有顶层的 `shellrs list`（早先的写法，已去掉，不兼容），列主机用 `hosts list`。不做交互式的 `shell`（给人在自己终端里用，Agent 用不上）。
+  - 改主机和凭据跟着「启用外部 CLI」走，不另设开关；校验和文案同对话框。
+  - 秘密只写不读：JSON 里的 `password` / `passphrase` / `private_key` 进钥匙串或 `keys/`，任何输出都没有，`show` 只说有没有保存，ShellRS 保存的私钥连路径也不给。
+  - 删除不确认：`hosts delete` 遇到有打开标签的主机报 `host_in_use`，`--force` 才关标签；删凭据时用它的主机改回自己登录。临时连接和外部连接只能 `show`。
+  - `sync` 只从本机到主机，大小和修改时间都没变的跳过；`--delete` 不删 `.filepart` 和 `.shellrs-….backup`，本地读不了的目录不清理，拒绝同步到 `/`。
 - **开始页**：没有标签时显示「最近连接」。「快速连接」搜索保存的主机、回车连接；多选做好但关着（常量 `MULTIPLE`）。
 - **右侧栏**：窗口最右一列竖排的工具切换。
   - 显示规则：只跟着 SSH 远程终端出现，SFTP、本地终端、设置、开始页都不显示。它是工作区级的一份，开合和所选工具在所有终端间共用。默认收起，宽 320 px，只能往宽里拉。⌘⌥B / Ctrl+Alt+B 切换。
@@ -127,7 +132,7 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 - `monitor/`、`netstat/`、`processes/`、`services/`、`docker/`、`history/`、`snippets/`：右侧栏的七个工具。各自是「命令（`linux.rs` 等）+ 纯解析和模型（`model.rs`）+ 面板」，确认和通知在工作区。
 - `secrets/`：`SecretStore`（钥匙串）、`SecretRef`（条目归属）、`TemporarySecretStore`（不保存的连接的密码只在内存）。
 - `settings/`：`AppSettings`、写 `settings.json` 的 `SettingsStore`、把设置落到窗口上的 `apply`、设置标签。
-- `cli/`：外部 CLI（`shellrs list/exec/upload/download`，给 AI Agent 用）、套接字协议、应用里的服务端、PATH 和 Agent skill 的安装。
+- `cli/`：外部 CLI（`shellrs hosts/credentials/exec/upload/download/sync`，给 AI Agent 用）、套接字协议、应用里的服务端、主机和凭据改动的校验（`manage.rs`）、PATH 和 Agent skill 的安装。
 - `update/`：在线升级，包括清单、验签、下载、各平台安装器和 `Updater`。
 - `workspace/`：窗口壳。持有 store、`DockArea`、各类标签的注册表和**全部动作处理器**，按领域拆成多个文件（`forwards.rs`、`credentials.rs`、`links.rs`、`editors.rs`、`tools.rs`、`updates.rs`…）。另有标题栏、状态栏、左侧栏 `Sidebar`、右侧栏 `ToolSidebar`、开始页。
 - `shared/`：多个功能共用的展示片段（`ClosableTabTitle`、`HostMark`、`SegmentedControl`、`RowTooltips`、`confirm_danger`、`form_error_notification` 等）。
@@ -153,7 +158,7 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
   - 启动时 `main` 先读设置和 `window.json` 再开窗口，`window_options` 按两个开关算 `window_bounds` 和 `display_id`。
   - 屏幕按 `PlatformDisplay::uuid` 认（`DisplayId` 重启会变）。GPUI 的窗口坐标在 macOS 上从所在屏幕左上角算，别处是整个桌面，原样存、原样交回，配上同一个 `display_id` 就能落回原处。
   - macOS 的 `window_bounds()` 从不报最大化，靠 `is_maximized()`（大小等于屏幕可见区）判断，恢复时给可见区大小的普通窗口；别的平台用 `WindowBounds::Maximized`。
-- **一个数据目录只跑一个 ShellRS。** 起图形界面之前先连外部 CLI 的套接字：连得上就发 `Request::Activate`（带启动链接）然后退出。为兼容已装的 CLI，不升 `PROTOCOL_VERSION`。
+- **一个数据目录只跑一个 ShellRS。** 起图形界面之前先连外部 CLI 的套接字：连得上就发 `Request::Activate`（带启动链接）然后退出。为兼容已装的 CLI，不升 `PROTOCOL_VERSION`，新请求只加变体。
 - **临时主机在 `HostStore` 的 `temporary` 里**：`host()` / `login()` 找得到，`hosts()` 看不到，也不写库。会写外键的检查用 `saved_host`。最后一个标签关掉就 `remove_temporary`。
 
 ### GPUI / gpui-kit
@@ -254,6 +259,12 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
   - Unix 套接字 0600，并用 `peer_cred` 核对 uid。
   - Windows 用命名管道：带 DACL 和 `FIRST_PIPE_INSTANCE`；客户端以 `SECURITY_IDENTIFICATION` 打开，并核对属主；用同步的 Win32 管道；关句柄时不 `DisconnectNamedPipe`。
   - exec 和传输都不许挂住：非交互，陌生主机直接答否，问题按固定策略回答。
+  - 读（`list`、`show`）走 UI 线程推过去的快照（`CliServer::set_hosts`）；`password_saved` 只在 show 时经 `CliBackend::is_saved` 查钥匙串。
+  - 改主机和凭据只能在 UI 线程做：请求线程把 `CliChange` 放进服务端的队列后等着，工作区每 100 ms 取一条（`serve_cli`，和「再次打开」共用），经 `apply_cli_change` 做完、快照刷新后再回复，然后才取下一条。超时只算排队的时间：没轮到就在锁里撤回、保证没做；已经开始的一直等，免得 Agent 重试做出两份。服务端 drop 时清空队列。
+  - `cli/manage.rs` 先校验、解析 ID 和分组路径，再交给 store：store 的 `normalized` 会把不存在的凭据、跳板悄悄改掉，CLI 要先拒绝。主机的密码随地址变化搬到新条目时，先在后台读旧值再改 store（store 会删没人用的旧条目）。
+  - 写库失败靠 `HostStore::capture_failures` 收集（照常发 `PersistFailed`），钥匙串写入用 `write_secret` 等结果，都报 `save_failed`。
+  - 凭据对外的 ID 就是 `keychain_id`，发布后不能改。请求里的秘密用 `Secret`，`Debug` 不露明文。
+  - 协议只加变体、不升 `PROTOCOL_VERSION`：旧应用对新请求回 serde 的「unknown variant」，客户端改说成 `version_mismatch`。服务端先读版本再解析请求。
   - `exec --json` 的输入输出都是 JSON，输出只用 ASCII（`ascii_json` 转义其余字符），出错也是 JSON：给 Windows PowerShell 用，绕开引号和代码页。不做 MCP：主流 Agent 都能执行命令，CLI 加 skill 已经够用。
   - UI 测试不监听真实套接字，`CliIntegration` 默认没有路径。
 - **Windows**：

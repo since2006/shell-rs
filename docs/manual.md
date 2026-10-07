@@ -49,7 +49,7 @@ ShellRS 同一时间只运行一个：已经开着时再打开一次，会把已
 - **功能齐全**：在新标签页中连接、打开 SFTP、重新连接和右侧栏的全部工具都能用。连接方式是直接连接。
 - **不保存**：不进主机列表、开始页的最近连接和数据库；它的终端和 SFTP 标签都关掉后就没了。标签的菜单里没有「编辑主机…」。
 - **密码只在内存里**：填的密码不进钥匙串，重新连接时照样用它；没填时服务器要密码就弹框问。选「使用凭据」时用凭据保存的密码或私钥。
-- 外部 CLI 的 `shellrs list` 也列出它（JSON 里 `"temporary": true`，表格的分组一栏写「（未保存）」），标签开着时可以用它的 ID。
+- 外部 CLI 的 `shellrs hosts list` 也列出它（JSON 里 `"temporary": true`，表格的分组一栏写「（未保存）」），标签开着时可以用它的 ID。
 
 要保存的主机在主机列表标题栏的「+」、右键菜单或 ⌘N（其他平台 Ctrl+N）新建。
 
@@ -98,7 +98,7 @@ ShellRS 同一时间只运行一个：已经开着时再打开一次，会把已
 - **删除**：右键「删除」。有主机在用时确认框写明数量和它们之后怎么登录：用密码凭据的主机改为「密码」，连接时询问；用密钥或 SSH Agent 凭据的主机改为「无密码」。用户名不变，密码和私钥不会复制过去。已经打开的连接不受影响，凭据的密码随凭据一起从钥匙串删除。
 - **SSH Agent 凭据**连不上 Agent、Agent 里没有密钥或服务器不接受其中任何一把时，会直接说明原因，不会改为询问密码。「无密码」的主机也会尝试同一个 Agent，连不上时静默跳过，接着试默认私钥（Windows 上同样如此）。
 
-**尚未实现：在主机对话框里直接新建凭据、通过外部 CLI 管理凭据、凭据排序、自定义 SSH Agent 的套接字、把公钥自动装到主机上、导出 ShellRS 保存的私钥。**
+**尚未实现：在主机对话框里直接新建凭据、凭据排序、自定义 SSH Agent 的套接字、把公钥自动装到主机上、导出 ShellRS 保存的私钥。**
 
 ## 设置
 
@@ -120,11 +120,11 @@ ShellRS 同一时间只运行一个：已经开着时再打开一次，会把已
 
 ## 外部 CLI
 
-`shellrs` 命令让 Codex、Claude Code、OpenCode 等 AI Agent 在 ShellRS 里已保存的主机上执行远程命令、传输文件。命令本身不接触密码和私钥，也不读数据库：它把请求交给正在运行的 ShellRS，由 ShellRS 用保存的配置和钥匙串去连接。请求走本机的进程间通信：macOS、Linux 上是数据目录下的套接字 `cli.sock`，Windows 上是命名管道 `\\.\pipe\shellrs-cli-<数据目录的散列>`。
+`shellrs` 命令让 Codex、Claude Code、OpenCode 等 AI Agent 在 ShellRS 里已保存的主机上执行远程命令、传输和同步文件，也能查看、新建、修改和删除主机与凭据。命令本身不读密码和私钥，也不读数据库：它把请求交给正在运行的 ShellRS，由 ShellRS 用保存的配置和钥匙串去连接。请求走本机的进程间通信：macOS、Linux 上是数据目录下的套接字 `cli.sock`，Windows 上是命名管道 `\\.\pipe\shellrs-cli-<数据目录的散列>`。
 
 在 设置 → 外部 CLI 中：
 
-- **启用外部 CLI**：默认关闭。关闭时 ShellRS 仍在监听，但拒绝所有请求，命令会提示去这里打开。开启后，本机当前用户下的任何程序都能这样使用已保存的主机。套接字只对当前用户可读写，连接时还会核对对方的用户身份；Windows 的管道同样只允许当前用户、只接受本机连接，命令在发请求之前还会确认管道属于当前用户（或管理员），防止别人抢注同名管道。
+- **启用外部 CLI**：默认关闭。关闭时 ShellRS 仍在监听，但拒绝所有请求，命令会提示去这里打开。开启后，本机当前用户下的任何程序都能这样使用已保存的主机，也能修改主机和凭据（没有另外的开关）。套接字只对当前用户可读写，连接时还会核对对方的用户身份；Windows 的管道同样只允许当前用户、只接受本机连接，命令在发请求之前还会确认管道属于当前用户（或管理员），防止别人抢注同名管道。
 - **CLI 二进制**：把 `shellrs` 放进 PATH。
   - macOS：链接到 `/usr/local/bin/shellrs`，目录不可写时弹系统授权框。
   - Linux：链接到 `~/.local/bin/shellrs`。
@@ -135,17 +135,29 @@ ShellRS 同一时间只运行一个：已经开着时再打开一次，会把已
 命令（`shellrs --help` 查看完整说明）：
 
 ```sh
-shellrs list [--query <关键词>] [--json]       # 列出主机；输出不是终端时自动用 JSON
+shellrs hosts list [-q <关键词>] [--json]      # 列出主机；输出不是终端时自动用 JSON
+shellrs hosts show <ID> [--json]               # 一台主机的全部配置
 shellrs exec <ID> "<命令>"                     # 或 --stdin 从标准输入读命令
 shellrs exec --json                            # 从标准输入读 {"host", "command"}，输出 JSON
 shellrs upload <ID> <本地路径> <远程路径>
 shellrs download <ID> <远程路径> <本地路径>
+shellrs sync <ID> <本地目录> <远程目录> [--delete]
+shellrs hosts create | update <ID> | delete <ID> [--force]
+shellrs credentials list | show <ID> | create | update <ID> | delete <ID>
 ```
 
-- `<ID>` 是 16 位的主机 ID，即 `shellrs list` 的 `id`，也就是主机右键「复制 ID」复制的内容。列表里还有标签开着的临时连接和外部连接（`"temporary": true`），见「临时连接」和「从堡垒机打开（外部连接）」。
+- `<ID>` 是 16 位的主机 ID，即 `shellrs hosts list` 的 `id`，也就是主机右键「复制 ID」复制的内容。列表里还有标签开着的临时连接和外部连接（`"temporary": true`），见「临时连接」和「从堡垒机打开（外部连接）」。
 - `exec` 每次临时建立连接，执行完即断开。远程命令没有标准输入，退出码就是远程命令的退出码；被信号终止时是 128 加信号编号。
 - 上传和下载沿用 SFTP 标签的传输引擎（递归、`.filepart`、断线重连），目标路径按 scp 的规则：目标是已存在的目录就放进去并保留原名，否则目标就是副本自己的路径，其父目录必须存在。已存在的文件直接覆盖；新建的文件保留源文件的可执行权限。`~` 表示登录目录。
-- 失败时在标准错误输出 `shellrs: [错误码] 说明`，退出码 255。错误码有 `not_running`（ShellRS 未运行）、`not_enabled`（未启用外部 CLI）、`host_not_found`、`host_key_unknown`（还没在 ShellRS 里连过这台主机）、`host_key_changed`、`missing_credential`（没有保存密码或口令）、`connect_failed`、`transfer_failed`、`bad_request`、`version_mismatch`。CLI 不弹任何询问：陌生主机、缺少密码都直接失败，请先在 ShellRS 里连接一次。传输完成但有项目失败时退出码为 1。
+- `sync` 只从本机到主机：把本地目录里的内容同步进远程目录。远程目录不存在就新建（父目录必须存在），是文件就报错，不能是根目录 `/`。大小和修改时间都没变的文件、指向不变的链接跳过，摘要里计为「未变」，所以再同步一次只传改过的；其余文件直接覆盖，新文件保留可执行权限。`--delete` 先删掉远程目录里本地没有的、或类型不同的项（不跟随链接），但不删传输进行中留下的 `.filepart` 和 `.shellrs-….backup`，本地读不了的目录也不清理；删不掉的项计为失败。
+- `hosts` 和 `credentials` 管理保存的主机和凭据。`create`、`update` 从标准输入读一个 JSON 对象（`update` 只改给出的字段），字段见 `shellrs hosts create --help` 和 `shellrs credentials create --help`；`show --json` 的输出可以改了直接交回 `update`。校验和对话框一样，报错用对话框的说法：
+  - 主机：`name`、`host`（地址）、`port`（默认 22）、`user`（默认 root）、`group`（分组路径如 `生产/数据库`，不存在就逐级新建；同一路径有不止一个分组时报错）、`auth`（`password` / `credential` / `no_password`）、`credential`（凭据 ID）、`password`、`route`（直接连接、按 ID 列出的跳板主机，或 HTTP / SOCKS5 代理）、`notes`。跳板只能是保存的主机，不能是自己。改了地址、端口或用户而没给密码时，保存的密码跟着搬过去，同对话框。
+  - 凭据：`name`、`kind`（`password` / `key` / `agent`）、`user`、`password`、`key_path`（本机私钥文件）或 `private_key`（私钥全文，同对话框的「粘贴」，存进数据目录的 `keys/`）、`passphrase`。凭据的 ID 是 16 位随机串，`credentials list` 里有。
+  - 密码、口令和私钥只写不读：写进系统钥匙串或 `keys/`，任何命令都不输出，`show` 只说有没有保存；ShellRS 保存的私钥连路径也不显示。
+  - 临时连接和外部连接能 `show`，不能修改或删除。
+  - `hosts delete` 不确认，连同主机的端口转发规则一起删；主机在 ShellRS 里有打开的标签时拒绝（`host_in_use`），加 `--force` 才关掉标签再删。经它跳转的主机，那一跳变成「已删除的主机」。`credentials delete` 也不确认，用它的主机改为自己登录（同界面）。
+  - 改动由 ShellRS 一条一条执行：10 秒内没轮到就撤回、不做；开始执行后会等到完成。
+- 失败时在标准错误输出 `shellrs: [错误码] 说明`，退出码 255。错误码有 `not_running`（ShellRS 未运行）、`not_enabled`（未启用外部 CLI）、`host_not_found`、`credential_not_found`、`host_key_unknown`（还没在 ShellRS 里连过这台主机）、`host_key_changed`、`missing_credential`（没有保存密码或口令）、`connect_failed`、`transfer_failed`、`bad_request`、`host_in_use`、`save_failed`（改动已做，但没能全部写进数据库或钥匙串）、`version_mismatch`（命令和正在运行的 ShellRS 版本不同，或 ShellRS 太旧、不认识这个命令）。CLI 不弹任何询问：陌生主机、缺少密码都直接失败，请先在 ShellRS 里连接一次。传输完成但有项目失败时退出码为 1。
 - `exec --json` 从标准输入读 `{"host": "<ID>", "command": "<命令>"}`，命令结束后输出 `{"exit_code", "stdout", "stderr"}`，出错时输出 `{"error": {"code", "message"}}`，退出码和不加 `--json` 时一样。输出只含 ASCII，中文等字符都转成 `\uXXXX`；不是 UTF-8 的输出换成 U+FFFD。命令不经过本机 shell 的引号处理，控制台的代码页也不会把输出弄乱，适合 Windows PowerShell 和需要分开读标准输出、标准错误的 Agent。
 - 支持 macOS、Linux 和 Windows。Windows 的 PowerShell 里执行命令优先用 `exec --json`（`@{ host = '<ID>'; command = '…' } | ConvertTo-Json -Compress | shellrs exec --json`）；要边执行边看输出时（长时间构建、大量日志），改用 here-string 经 `--stdin` 传入（`@'…'@ | shellrs exec <ID> --stdin`），并和 `list`、`upload`、`download` 一样，先执行 `$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()`，否则中文会变成问号或乱码。命令文本会去掉开头的 BOM、把 CRLF 换成 LF，远程 shell 不会看到多余的回车符。
 
@@ -170,7 +182,7 @@ ShellRS /sessionname=标签名 sftp://用户[:密码]@地址[:端口]
   - Windows：安装目录里的 `shellrs.exe`（默认 `%LOCALAPPDATA%\Programs\ShellRS\shellrs.exe`）。不要用 PATH 里的 `shellrs.exe`：那是外部 CLI 的副本。
   - macOS：`/Applications/ShellRS.app/Contents/MacOS/shellrs`。不要用 `open -a ShellRS --args …`：ShellRS 已在运行时，系统会把参数丢掉。
   - Linux：AppImage 本身。
-- 外部 CLI 的 `shellrs list` 也列出外部连接（JSON 里 `"temporary": true`，表格的分组一栏写「（未保存）」），标签开着时 Agent 可以用它的 ID 执行命令、传输文件，这期间 ID 不变，可以一直用。标签关掉后 ID 失效；堡垒机再拉起一次（即使是同一台资产）是新的外部连接，ID 也是新的。和保存的主机一样，每条命令都用链接里的用户名和密码重新登录一次；堡垒机给的若是只能用一次的令牌，这次登录会被拒绝。
+- 外部 CLI 的 `shellrs hosts list` 也列出外部连接（JSON 里 `"temporary": true`，表格的分组一栏写「（未保存）」），标签开着时 Agent 可以用它的 ID 执行命令、传输文件，这期间 ID 不变，可以一直用。标签关掉后 ID 失效；堡垒机再拉起一次（即使是同一台资产）是新的外部连接，ID 也是新的。和保存的主机一样，每条命令都用链接里的用户名和密码重新登录一次；堡垒机给的若是只能用一次的令牌，这次登录会被拒绝。
 - 命令行参数里的密码在本机的进程列表里看得到，这是堡垒机这样传参本身的问题。
 
 ## 标签页
@@ -384,7 +396,7 @@ bash 在 shell 退出时才把这次执行的命令写进历史文件，所以�
 
 文件名不能准确表示时会明确报错。当前 `russh-sftp 3.0.0` 的远端字符串解码会替换无效 UTF-8，浏览器因此拒绝包含替换字符 `U+FFFD` 的远端名称，避免访问错误路径。符号链接沿用 OpenSSH 的 SFTP v3 参数顺序。
 
-**尚未实现：目录同步、前台传输进度对话框、队列排序、过滤、查找文件、目录树和 Dock 布局持久化。**
+**尚未实现：SFTP 标签里的目录同步（外部 CLI 的 `shellrs sync` 可以同步）、前台传输进度对话框、队列排序、过滤、查找文件、目录树和 Dock 布局持久化。**
 
 ## 下载与更新
 

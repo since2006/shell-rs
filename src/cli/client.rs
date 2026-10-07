@@ -12,8 +12,9 @@ use unicode_width::UnicodeWidthStr as _;
 
 use super::link::OpenLink;
 use super::protocol::{
-    Envelope, ErrorCode, FrameKind, HostInfo, PROTOCOL_VERSION, Reply, Request, TransferCounters,
-    TransferSummary, parse_json, read_frame, write_json,
+    AuthChoice, CredentialDeleted, CredentialDetails, CredentialKindChoice, Envelope, ErrorCode,
+    FrameKind, HostDeleted, HostDetails, HostInfo, PROTOCOL_VERSION, ProxyChoice, Reply, Request,
+    RouteDetails, TransferCounters, TransferSummary, parse_json, read_frame, write_json,
 };
 use crate::host::HostOs;
 
@@ -76,6 +77,33 @@ pub(super) fn ascii_json(value: &impl serde::Serialize) -> String {
     }
     ascii
 }
+
+/// What the request did, for the words its answer is printed with.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Asked {
+    Show,
+    Create,
+    Update,
+    Sync,
+    Other,
+}
+
+impl Asked {
+    fn of(request: &Request) -> Self {
+        match request {
+            Request::ShowHost { .. } | Request::ShowCredential { .. } => Asked::Show,
+            Request::CreateHost { .. } | Request::CreateCredential { .. } => Asked::Create,
+            Request::UpdateHost { .. } | Request::UpdateCredential { .. } => Asked::Update,
+            Request::Sync { .. } => Asked::Sync,
+            _ => Asked::Other,
+        }
+    }
+}
+
+/// What an app from before a request was added says about it: it cannot
+/// read the request, and serde names what it did not know.
+const OLDER_APP: &str =
+    "正在运行的 ShellRS 不认识这个命令：请把 ShellRS 升级到最新版本，然后重新启动它";
 
 /// Send `request` to the app listening at `endpoint` and print the answer;
 /// the exit code.
@@ -196,6 +224,7 @@ fn talk<S>(stream: S, request: Request, console: &mut Console) -> Result<i32, Fa
 where
     S: Copy + io::Read + Write,
 {
+    let asked = Asked::of(&request);
     let mut writer = stream;
     write_json(
         &mut writer,
@@ -239,7 +268,29 @@ where
                         print_hosts(&hosts, console)?;
                         return Ok(0);
                     }
-                    Reply::TransferDone(summary) => return Ok(print_summary(&summary, console)?),
+                    Reply::TransferDone(summary) => {
+                        return Ok(print_summary(&summary, asked == Asked::Sync, console)?);
+                    }
+                    Reply::Host(host) => {
+                        print_host(&host, asked, console)?;
+                        return Ok(0);
+                    }
+                    Reply::HostDeleted(deleted) => {
+                        print_host_deleted(&deleted, console)?;
+                        return Ok(0);
+                    }
+                    Reply::Credentials { credentials } => {
+                        print_credentials(&credentials, console)?;
+                        return Ok(0);
+                    }
+                    Reply::Credential(credential) => {
+                        print_credential(&credential, asked, console)?;
+                        return Ok(0);
+                    }
+                    Reply::CredentialDeleted(deleted) => {
+                        print_credential_deleted(&deleted, console)?;
+                        return Ok(0);
+                    }
                     Reply::Exit { code } if console.exec_json => {
                         let result = ExecResult {
                             exit_code: code,
@@ -251,6 +302,12 @@ where
                     }
                     Reply::Exit { code } => return Ok(code),
                     Reply::Activated => return Ok(0),
+                    Reply::Error {
+                        code: ErrorCode::BadRequest,
+                        message,
+                    } if message.contains("unknown variant") => {
+                        return Ok(console.error(ErrorCode::VersionMismatch, OLDER_APP));
+                    }
                     Reply::Error { code, message } => return Ok(console.error(code, &message)),
                 }
             }
@@ -289,10 +346,268 @@ impl ProgressLine {
     }
 }
 
+fn print_json(value: &impl serde::Serialize, console: &mut Console) -> io::Result<()> {
+    serde_json::to_writer_pretty(&mut *console.stdout, value).map_err(io::Error::other)?;
+    writeln!(console.stdout)
+}
+
+/// Rows lined up in columns, wide characters counted as two.
+fn print_table<const N: usize>(
+    header: [&str; N],
+    rows: &[[String; N]],
+    console: &mut Console,
+) -> io::Result<()> {
+    let header = header.map(String::from);
+    let widths: Vec<usize> = (0..N)
+        .map(|column| {
+            std::iter::once(&header)
+                .chain(rows)
+                .map(|row| row[column].width())
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    for row in std::iter::once(&header).chain(rows) {
+        let line: Vec<String> = row
+            .iter()
+            .zip(&widths)
+            .map(|(cell, width)| format!("{cell}{}", " ".repeat(width - cell.width())))
+            .collect();
+        writeln!(console.stdout, "{}", line.join("  ").trim_end())?;
+    }
+    Ok(())
+}
+
+/// Labelled lines, the labels lined up.
+fn print_fields(fields: &[(&str, String)], console: &mut Console) -> io::Result<()> {
+    let width = fields
+        .iter()
+        .map(|(label, _)| label.width())
+        .max()
+        .unwrap_or(0);
+    for (label, value) in fields {
+        let padding = " ".repeat(width - label.width());
+        writeln!(console.stdout, "{label}{padding}  {value}")?;
+    }
+    Ok(())
+}
+
+fn saved_word(saved: Option<bool>) -> &'static str {
+    match saved {
+        Some(true) => "（已保存）",
+        Some(false) => "（未保存）",
+        None => "",
+    }
+}
+
+fn print_host(host: &HostDetails, asked: Asked, console: &mut Console) -> io::Result<()> {
+    if console.json {
+        return print_json(host, console);
+    }
+    match asked {
+        Asked::Create => {
+            return writeln!(
+                console.stdout,
+                "已创建主机「{}」，ID {}",
+                host.name, host.id
+            );
+        }
+        Asked::Update => {
+            return writeln!(
+                console.stdout,
+                "已保存主机「{}」（ID {}）",
+                host.name, host.id
+            );
+        }
+        _ => {}
+    }
+    let auth = match host.auth {
+        AuthChoice::Password => format!("密码{}", saved_word(host.password_saved)),
+        AuthChoice::Credential => {
+            format!("凭据 {}", host.credential.as_deref().unwrap_or_default())
+        }
+        AuthChoice::NoPassword => "无密码".to_string(),
+    };
+    let route = match &host.route {
+        RouteDetails::Direct => "直接连接".to_string(),
+        RouteDetails::Jump { hosts } => format!(
+            "SSH 跳板 {}",
+            hosts
+                .iter()
+                .map(|hop| hop.as_deref().unwrap_or("（已删除的主机）"))
+                .collect::<Vec<_>>()
+                .join(" → ")
+        ),
+        RouteDetails::Proxy {
+            kind,
+            host,
+            port,
+            user,
+            password_saved,
+        } => format!(
+            "{} {}{host}:{port}{}",
+            match kind {
+                ProxyChoice::Http => "HTTP 代理",
+                ProxyChoice::Socks5 => "SOCKS5 代理",
+            },
+            user.as_deref()
+                .map(|user| format!("{user}@"))
+                .unwrap_or_default(),
+            password_saved
+                .map(|saved| if saved {
+                    "（密码已保存）"
+                } else {
+                    "（密码未保存）"
+                })
+                .unwrap_or_default()
+        ),
+    };
+    let mut fields = vec![
+        ("ID", host.id.clone()),
+        ("名称", host.name.clone()),
+        (
+            "分组",
+            if host.temporary {
+                "（未保存）".to_string()
+            } else {
+                host.group.clone().unwrap_or_default()
+            },
+        ),
+        ("地址", format!("{}@{}:{}", host.user, host.host, host.port)),
+        ("认证", auth),
+        ("连接方式", route),
+    ];
+    if let Some(os) = host.os.as_deref().and_then(HostOs::from_stored) {
+        fields.push(("系统", os.label().to_string()));
+    }
+    if !host.notes.is_empty() {
+        fields.push(("备注", host.notes.clone()));
+    }
+    print_fields(&fields, console)
+}
+
+fn print_host_deleted(deleted: &HostDeleted, console: &mut Console) -> io::Result<()> {
+    if console.json {
+        return print_json(deleted, console);
+    }
+    let mut line = format!("已删除主机「{}」", deleted.host.name);
+    if deleted.forwards > 0 {
+        line.push_str(&format!("，连同它的 {} 条端口转发规则", deleted.forwards));
+    }
+    if deleted.jump_users > 0 {
+        line.push_str(&format!(
+            "；{} 台主机经它跳转，现在那一跳是「已删除的主机」",
+            deleted.jump_users
+        ));
+    }
+    writeln!(console.stdout, "{line}")
+}
+
+fn kind_label(kind: CredentialKindChoice) -> &'static str {
+    match kind {
+        CredentialKindChoice::Password => "密码",
+        CredentialKindChoice::Key => "密钥",
+        CredentialKindChoice::Agent => "SSH Agent",
+    }
+}
+
+fn print_credentials(credentials: &[CredentialDetails], console: &mut Console) -> io::Result<()> {
+    if console.json {
+        return print_json(&credentials, console);
+    }
+    if credentials.is_empty() {
+        return writeln!(console.stderr, "没有匹配的凭据");
+    }
+    let rows: Vec<[String; 5]> = credentials
+        .iter()
+        .map(|credential| {
+            [
+                credential.id.clone(),
+                credential.name.clone(),
+                kind_label(credential.kind).to_string(),
+                credential.user.clone(),
+                credential.hosts.len().to_string(),
+            ]
+        })
+        .collect();
+    print_table(["ID", "名称", "类型", "用户名", "主机数"], &rows, console)
+}
+
+fn print_credential(
+    credential: &CredentialDetails,
+    asked: Asked,
+    console: &mut Console,
+) -> io::Result<()> {
+    if console.json {
+        return print_json(credential, console);
+    }
+    match asked {
+        Asked::Create => {
+            return writeln!(
+                console.stdout,
+                "已创建凭据「{}」，ID {}",
+                credential.name, credential.id
+            );
+        }
+        Asked::Update => {
+            return writeln!(
+                console.stdout,
+                "已保存凭据「{}」（ID {}）",
+                credential.name, credential.id
+            );
+        }
+        _ => {}
+    }
+    let mut fields = vec![
+        ("ID", credential.id.clone()),
+        ("名称", credential.name.clone()),
+        (
+            "类型",
+            format!(
+                "{}{}",
+                kind_label(credential.kind),
+                saved_word(credential.password_saved)
+            ),
+        ),
+        ("用户名", credential.user.clone()),
+    ];
+    if credential.kind == CredentialKindChoice::Key {
+        let key = match (&credential.key_path, credential.kept) {
+            (Some(path), _) => path.clone(),
+            (None, _) => "由 ShellRS 保存".to_string(),
+        };
+        fields.push(("私钥", key));
+        if let Some(saved) = credential.passphrase_saved {
+            fields.push(("口令", if saved { "已保存" } else { "未保存" }.to_string()));
+        }
+    }
+    fields.push(("主机", credential.hosts.join(", ")));
+    print_fields(&fields, console)
+}
+
+fn print_credential_deleted(deleted: &CredentialDeleted, console: &mut Console) -> io::Result<()> {
+    if console.json {
+        return print_json(deleted, console);
+    }
+    let mut line = format!("已删除凭据「{}」", deleted.credential.name);
+    if !deleted.released.is_empty() {
+        let names: Vec<&str> = deleted
+            .released
+            .iter()
+            .map(|host| host.name.as_str())
+            .collect();
+        line.push_str(&format!(
+            "；{} 台主机改为自己登录：{}",
+            names.len(),
+            names.join("、")
+        ));
+    }
+    writeln!(console.stdout, "{line}")
+}
+
 fn print_hosts(hosts: &[HostInfo], console: &mut Console) -> io::Result<()> {
     if console.json {
-        serde_json::to_writer_pretty(&mut *console.stdout, hosts).map_err(io::Error::other)?;
-        return writeln!(console.stdout);
+        return print_json(&hosts, console);
     }
     if hosts.is_empty() {
         return writeln!(console.stderr, "没有匹配的主机");
@@ -319,44 +634,30 @@ fn print_hosts(hosts: &[HostInfo], console: &mut Console) -> io::Result<()> {
             ]
         })
         .collect();
-    let header = ["ID", "名称", "分组", "地址", "系统"].map(String::from);
-    let widths: Vec<usize> = (0..5)
-        .map(|column| {
-            std::iter::once(&header)
-                .chain(&rows)
-                .map(|row| row[column].width())
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
-    for row in std::iter::once(&header).chain(&rows) {
-        let line: Vec<String> = row
-            .iter()
-            .zip(&widths)
-            .map(|(cell, width)| format!("{cell}{}", " ".repeat(width - cell.width())))
-            .collect();
-        writeln!(console.stdout, "{}", line.join("  ").trim_end())?;
-    }
-    Ok(())
+    print_table(["ID", "名称", "分组", "地址", "系统"], &rows, console)
 }
 
-fn print_summary(summary: &TransferSummary, console: &mut Console) -> io::Result<i32> {
+/// A sync's skipped items are the ones that had not changed.
+fn print_summary(summary: &TransferSummary, sync: bool, console: &mut Console) -> io::Result<i32> {
     if console.json {
-        serde_json::to_writer_pretty(&mut *console.stdout, summary).map_err(io::Error::other)?;
-        writeln!(console.stdout)?;
+        print_json(summary, console)?;
     } else {
-        writeln!(
-            console.stdout,
-            "已传输 {} 个文件，共 {}{}",
+        let mut line = format!(
+            "已传输 {} 个文件，共 {}",
             summary.files,
-            format_bytes(summary.bytes),
-            match (summary.skipped, summary.failed) {
-                (0, 0) => String::new(),
-                (skipped, 0) => format!("，跳过 {skipped} 个"),
-                (0, failed) => format!("，失败 {failed} 个"),
-                (skipped, failed) => format!("，跳过 {skipped} 个，失败 {failed} 个"),
-            }
-        )?;
+            format_bytes(summary.bytes)
+        );
+        if summary.skipped > 0 {
+            let word = if sync { "未变" } else { "跳过" };
+            line.push_str(&format!("，{word} {} 个", summary.skipped));
+        }
+        if summary.deleted > 0 {
+            line.push_str(&format!("，删除 {} 个", summary.deleted));
+        }
+        if summary.failed > 0 {
+            line.push_str(&format!("，失败 {} 个", summary.failed));
+        }
+        writeln!(console.stdout, "{line}")?;
         for failure in &summary.failures {
             writeln!(console.stderr, "{failure}")?;
         }

@@ -66,7 +66,7 @@ pub(crate) async fn run<F: RemoteFs>(fs: &F, operation: &RemoteOperation) -> Res
 
 /// Delete a path and, for a directory, everything under it: children before
 /// their directory. A link is removed as a link.
-async fn delete_tree<F: RemoteFs>(fs: &F, root: &RemotePath) -> Result<()> {
+pub(super) async fn delete_tree<F: RemoteFs>(fs: &F, root: &RemotePath) -> Result<()> {
     let mut stack = vec![(root.clone(), false)];
     while let Some((path, emptied)) = stack.pop() {
         if emptied {

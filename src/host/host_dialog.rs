@@ -25,7 +25,7 @@ use crate::connection::{LoginTest, SharedConnectionTester, TrustCallback, Unknow
 use super::secret_fields::SecretFields;
 use super::{
     AuthKind, Credential, CredentialId, CredentialKind, DEFAULT_USER, GroupId, Host, HostDraft,
-    HostId, HostLogin, HostStore, ProxyKind, ProxySettings, Route, group_options,
+    HostDraftError, HostId, HostLogin, HostStore, ProxyKind, ProxySettings, Route, group_options,
 };
 pub use crate::shared::DeleteHandler;
 use crate::shared::{
@@ -504,16 +504,18 @@ impl HostForm {
     fn committed_route(&self, cx: &App) -> Result<Route, &'static str> {
         match self.route {
             RouteChoice::Direct => Ok(Route::Direct),
-            RouteChoice::Jump if self.hops.is_empty() => Err("请添加跳板主机"),
-            RouteChoice::Jump if self.hops.contains(&None) => Err("请移除已删除的跳板主机"),
+            RouteChoice::Jump if self.hops.is_empty() => Err(HostDraftError::NoJumpHosts.message()),
+            RouteChoice::Jump if self.hops.contains(&None) => {
+                Err(HostDraftError::DeletedJumpHost.message())
+            }
             RouteChoice::Jump => Ok(Route::Jump(self.hops.clone())),
             RouteChoice::Proxy => {
                 let host = self.proxy_host.read(cx).value().trim().to_string();
                 if host.is_empty() {
-                    return Err("请输入代理地址");
+                    return Err(HostDraftError::ProxyAddress.message());
                 }
                 let port = parse_port(self.proxy_port.read(cx).value().trim())
-                    .ok_or("代理端口必须是 1 到 65535 之间的数字")?;
+                    .ok_or(HostDraftError::ProxyPort.message())?;
                 let user = self.proxy_user.read(cx).value().trim().to_string();
                 if user.is_empty() && !self.proxy_secret.read(cx).password(cx).is_empty() {
                     return Err("填写代理密码时请同时填写用户名");
@@ -544,8 +546,8 @@ impl HostForm {
         let address = self.address.read(cx).value().trim().to_string();
         let port = parse_port(self.port.read(cx).value().trim());
         match (address.is_empty(), port) {
-            (true, _) => Err("请输入地址"),
-            (_, None) => Err("端口必须是 1 到 65535 之间的数字"),
+            (true, _) => Err(HostDraftError::Address.message()),
+            (_, None) => Err(HostDraftError::Port.message()),
             (_, Some(port)) => Ok((address, port)),
         }
     }
@@ -680,7 +682,7 @@ impl HostForm {
     pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let name = self.name.read(cx).value().trim().to_string();
         let checked = if name.is_empty() {
-            Err("请输入名称")
+            Err(HostDraftError::Name.message())
         } else {
             self.endpoint(cx).and_then(|endpoint| {
                 Ok((

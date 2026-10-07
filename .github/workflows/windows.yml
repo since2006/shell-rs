@@ -24,6 +24,7 @@ on:
       - "src/sftp/download.rs"
       - "src/sftp/model.rs"
       - "src/sftp/upload.rs"
+      - "src/sftp/sync.rs"
       - "src/credential/credential_dialog.rs"
       - "src/settings/settings_panel.rs"
       - "src/app/shortcuts.rs"

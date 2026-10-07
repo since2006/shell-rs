@@ -3,24 +3,34 @@
 //! backend's, so tests can put a fake behind the same server.
 
 use std::{
+    collections::VecDeque,
     io::{self, BufReader},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, RwLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
     },
     thread::JoinHandle,
+    time::Duration,
 };
 
 #[cfg(unix)]
 use tokio::sync::watch;
 
 use super::link::OpenLink;
+use super::manage::{
+    CliChange, CredentialSecrets, HostSecrets, credential_details, credential_matches,
+    credential_secrets, host_details, host_info, host_secrets, with_saved_credential_secrets,
+    with_saved_passwords,
+};
 use super::protocol::{
-    CliError, Envelope, ErrorCode, FrameKind, HostInfo, PROTOCOL_VERSION, Reply, Request,
-    TransferCounters, TransferSummary, parse_json, read_frame, write_frame, write_json,
+    CliError, CredentialDetails, Envelope, ErrorCode, FrameKind, HostDetails, HostInfo,
+    PROTOCOL_VERSION, Reply, Request, TransferCounters, TransferSummary, VersionOnly, parse_json,
+    read_frame, write_frame, write_json,
 };
 use crate::host::{Host, HostLogin, HostStore, matches_query};
+use crate::secrets::SecretRef;
 use crate::ssh::ExecStream;
 
 /// Does what a CLI request asks. Every method blocks: each request has a
@@ -56,6 +66,22 @@ pub trait CliBackend: Send + Sync + 'static {
         destination: &Path,
         progress: &mut dyn FnMut(TransferCounters) -> io::Result<()>,
     ) -> Result<TransferSummary, CliError>;
+
+    /// Bring the folder `destination` on the host in line with the local
+    /// folder `source`: what changed is copied, what did not is left alone,
+    /// and with `delete` what is not in `source` goes.
+    fn sync(
+        &self,
+        target: &CliTarget,
+        source: &Path,
+        destination: &str,
+        delete: bool,
+        progress: &mut dyn FnMut(TransferCounters) -> io::Result<()>,
+    ) -> Result<TransferSummary, CliError>;
+
+    /// Whether the keychain (or, for a host not saved, memory) holds this
+    /// entry. Only asked when one host or credential is shown.
+    fn is_saved(&self, secret: &SecretRef) -> bool;
 }
 
 /// A saved host as the CLI sees it, with the login it connects with
@@ -63,33 +89,21 @@ pub trait CliBackend: Send + Sync + 'static {
 #[derive(Clone, Debug)]
 pub struct CliTarget {
     info: HostInfo,
+    details: HostDetails,
+    secrets: HostSecrets,
     host: Host,
     login: HostLogin,
 }
 
 impl CliTarget {
-    /// `group` is the host's full group path, if it has one.
-    pub fn new(host: &Host, login: HostLogin, group: Option<String>) -> Self {
+    fn of(host: &Host, store: &HostStore) -> Self {
         Self {
-            info: HostInfo {
-                id: host.public_id.to_string(),
-                name: host.name.to_string(),
-                group,
-                user: host.user.to_string(),
-                host: host.address.to_string(),
-                port: host.port,
-                os: host.os.map(|os| os.as_str().to_string()),
-                temporary: false,
-            },
+            info: host_info(host, store),
+            details: host_details(host, store),
+            secrets: host_secrets(host, store),
             host: host.clone(),
-            login,
+            login: store.login_of(host),
         }
-    }
-
-    /// Marked as not saved.
-    fn temporary(mut self) -> Self {
-        self.info.temporary = true;
-        self
     }
 
     pub fn host(&self) -> &Host {
@@ -106,22 +120,12 @@ impl CliTarget {
     /// the password kept in memory; a bastion host may refuse a login it
     /// gave out for one use.
     pub fn all(store: &HostStore) -> Vec<Self> {
-        let saved = store.hosts().iter().map(|host| {
-            let names = host
-                .group
-                .map(|id| store.group_names(id))
-                .unwrap_or_default();
-            Self::new(
-                host,
-                store.login_of(host),
-                (!names.is_empty()).then(|| names.join("/")),
-            )
-        });
-        let temporary = store
-            .temporary_hosts()
+        store
+            .hosts()
             .iter()
-            .map(|host| Self::new(host, store.login_of(host), None).temporary());
-        saved.chain(temporary).collect()
+            .chain(store.temporary_hosts())
+            .map(|host| Self::of(host, store))
+            .collect()
     }
 
     /// The host tree's search, plus the group path and the ID.
@@ -137,15 +141,54 @@ impl CliTarget {
     }
 }
 
+/// A saved credential as the CLI sees it.
+#[derive(Clone, Debug)]
+struct CliCredential {
+    details: CredentialDetails,
+    secrets: CredentialSecrets,
+}
+
+/// How long a change may wait for the app to take it up. Only the wait in
+/// line counts: once taken, the change is being made and its outcome is
+/// waited for however long the keychain takes, or an agent would try
+/// again and make it twice.
+const QUEUE_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_millis(300)
+} else {
+    Duration::from_secs(10)
+};
+
+/// A change waiting for the app, with where its outcome goes.
+struct PendingChange {
+    id: u64,
+    change: CliChange,
+    reply: ChangeReply,
+}
+
+/// Where the app sends the outcome of a change it took up. Dropping it
+/// unsent tells the request it will not come.
+pub struct ChangeReply(mpsc::Sender<Result<Reply, CliError>>);
+
+impl ChangeReply {
+    pub fn send(self, outcome: Result<Reply, CliError>) {
+        let _ = self.0.send(outcome);
+    }
+}
+
 /// What the listener and the request threads share with the app.
 struct Shared {
     enabled: AtomicBool,
     targets: RwLock<Vec<CliTarget>>,
+    credentials: RwLock<Vec<CliCredential>>,
     backend: Arc<dyn CliBackend>,
     /// Set when ShellRS was opened again while this one runs, with the
     /// links it was opened with, until the app has come forward and opened
     /// them.
     activation: Mutex<Option<Vec<OpenLink>>>,
+    /// Changes to hosts and credentials, oldest first, until the app takes
+    /// them up: only the UI thread can change the store.
+    changes: Mutex<VecDeque<PendingChange>>,
+    next_change: AtomicU64,
 }
 
 /// Listens on the CLI socket until dropped. Always listening, even with
@@ -164,8 +207,11 @@ impl CliServer {
         let shared = Arc::new(Shared {
             enabled: AtomicBool::new(false),
             targets: RwLock::new(Vec::new()),
+            credentials: RwLock::new(Vec::new()),
             backend,
             activation: Mutex::new(None),
+            changes: Mutex::new(VecDeque::new()),
+            next_change: AtomicU64::new(0),
         });
         let listener = listen(endpoint, shared.clone())?;
         Ok(Self {
@@ -178,12 +224,38 @@ impl CliServer {
         self.shared.enabled.store(enabled, Ordering::Release);
     }
 
-    pub fn set_targets(&self, targets: Vec<CliTarget>) {
+    /// What the requests see of the hosts and credentials: `store` as it
+    /// is now. Called whenever it changes.
+    pub fn set_hosts(&self, store: &HostStore) {
+        let credentials = store
+            .credentials()
+            .iter()
+            .map(|credential| CliCredential {
+                details: credential_details(credential, store),
+                secrets: credential_secrets(credential),
+            })
+            .collect();
         *self
             .shared
             .targets
             .write()
-            .unwrap_or_else(|error| error.into_inner()) = targets;
+            .unwrap_or_else(|error| error.into_inner()) = CliTarget::all(store);
+        *self
+            .shared
+            .credentials
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = credentials;
+    }
+
+    /// The oldest change waiting, for the app to make and answer. One at a
+    /// time: the next is only taken once this one is answered.
+    pub fn take_change(&self) -> Option<(CliChange, ChangeReply)> {
+        self.shared
+            .changes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pop_front()
+            .map(|pending| (pending.change, pending.reply))
     }
 
     /// Whether ShellRS was opened again since this was last asked, and the
@@ -196,6 +268,18 @@ impl CliServer {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take()
+    }
+}
+
+impl Drop for CliServer {
+    /// The app is going: whatever waits for it to take up a change hears
+    /// that it never will.
+    fn drop(&mut self) {
+        self.shared
+            .changes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
     }
 }
 
@@ -436,11 +520,15 @@ fn respond(
     writer: &mut impl io::Write,
     shared: &Shared,
 ) -> Result<Reply, CliError> {
-    let envelope: Envelope = parse_json(payload)
-        .map_err(|error| CliError::new(ErrorCode::BadRequest, error.to_string()))?;
+    let bad_request = |error: io::Error| CliError::new(ErrorCode::BadRequest, error.to_string());
+    let envelope = parse_json::<Envelope>(payload);
     // Before the checks below: coming forward means the same in every
     // version, and it is ShellRS being opened again, not the external CLI.
-    if let Request::Activate { open } = &envelope.request {
+    if let Ok(Envelope {
+        request: Request::Activate { open },
+        ..
+    }) = &envelope
+    {
         shared
             .activation
             .lock()
@@ -449,13 +537,17 @@ fn respond(
             .extend(open.clone());
         return Ok(Reply::Activated);
     }
-    if envelope.version != PROTOCOL_VERSION {
+    // The version before the request, which another version may spell in
+    // a way this one cannot read.
+    let version = parse_json::<VersionOnly>(payload).map_err(bad_request)?;
+    if version.version != PROTOCOL_VERSION {
         return Err(CliError::new(
             ErrorCode::VersionMismatch,
             "shellrs 命令与正在运行的 ShellRS 版本不同：\
              请重新启动 ShellRS，或在 设置 → 外部 CLI 中更新 CLI",
         ));
     }
+    let envelope = envelope.map_err(bad_request)?;
     if !shared.enabled.load(Ordering::Acquire) {
         return Err(CliError::new(
             ErrorCode::NotEnabled,
@@ -520,9 +612,129 @@ fn respond(
                 })
                 .map(Reply::TransferDone)
         }
+        Request::Sync {
+            host,
+            source,
+            destination,
+            delete,
+        } => {
+            let target = find(shared, &host)?;
+            if !source.is_absolute() {
+                return Err(not_absolute(&source));
+            }
+            shared
+                .backend
+                .sync(&target, &source, &destination, delete, &mut |counters| {
+                    write_json(writer, &Reply::Progress(counters))
+                })
+                .map(Reply::TransferDone)
+        }
+        Request::ShowHost { host } => {
+            let target = find(shared, &host)?;
+            let saved = |secret: &SecretRef| shared.backend.is_saved(secret);
+            Ok(Reply::Host(with_saved_passwords(
+                target.details,
+                &target.secrets,
+                saved,
+            )))
+        }
+        Request::ListCredentials { query } => {
+            let credentials = shared
+                .credentials
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .iter()
+                .filter(|credential| {
+                    query
+                        .as_deref()
+                        .is_none_or(|query| credential_matches(&credential.details, query))
+                })
+                .map(|credential| credential.details.clone())
+                .collect();
+            Ok(Reply::Credentials { credentials })
+        }
+        Request::ShowCredential { credential } => {
+            let found = shared
+                .credentials
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .iter()
+                .find(|known| known.details.id == credential.trim())
+                .cloned()
+                .ok_or_else(|| {
+                    CliError::new(
+                        ErrorCode::CredentialNotFound,
+                        format!(
+                            "没有 ID 为 {credential} 的凭据：请用 shellrs credentials list 查看"
+                        ),
+                    )
+                })?;
+            let saved = |secret: &SecretRef| shared.backend.is_saved(secret);
+            Ok(Reply::Credential(with_saved_credential_secrets(
+                found.details,
+                &found.secrets,
+                saved,
+            )))
+        }
+        Request::CreateHost { fields } => change(shared, CliChange::CreateHost(fields)),
+        Request::UpdateHost { host, fields } => {
+            change(shared, CliChange::UpdateHost { host, fields })
+        }
+        Request::DeleteHost { host, force } => {
+            change(shared, CliChange::DeleteHost { host, force })
+        }
+        Request::CreateCredential { fields } => change(shared, CliChange::CreateCredential(fields)),
+        Request::UpdateCredential { credential, fields } => {
+            change(shared, CliChange::UpdateCredential { credential, fields })
+        }
+        Request::DeleteCredential { credential } => {
+            change(shared, CliChange::DeleteCredential { credential })
+        }
         // Answered above, before anything was checked.
         Request::Activate { .. } => Ok(Reply::Activated),
     }
+}
+
+/// Hand a change to the app and wait for its outcome. Taken back, so
+/// certainly not made, when the app does not take it up in time.
+fn change(shared: &Shared, change: CliChange) -> Result<Reply, CliError> {
+    let gone = || {
+        CliError::new(
+            ErrorCode::ConnectFailed,
+            "ShellRS 在处理改动时关闭了：请重新打开 ShellRS，用 shellrs hosts list 查看改动是否已完成",
+        )
+    };
+    let (sender, outcome) = mpsc::channel();
+    let id = shared.next_change.fetch_add(1, Ordering::Relaxed);
+    shared
+        .changes
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push_back(PendingChange {
+            id,
+            change,
+            reply: ChangeReply(sender),
+        });
+    match outcome.recv_timeout(QUEUE_TIMEOUT) {
+        Ok(outcome) => return outcome,
+        Err(mpsc::RecvTimeoutError::Disconnected) => return Err(gone()),
+        Err(mpsc::RecvTimeoutError::Timeout) => {}
+    }
+    {
+        let mut changes = shared
+            .changes
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(index) = changes.iter().position(|pending| pending.id == id) {
+            changes.remove(index);
+            return Err(CliError::new(
+                ErrorCode::ConnectFailed,
+                "ShellRS 没有及时处理这项改动，改动没有做：请稍后再试",
+            ));
+        }
+    }
+    // Taken up just now: being made.
+    outcome.recv().unwrap_or_else(|_| Err(gone()))
 }
 
 fn find(shared: &Shared, id: &str) -> Result<CliTarget, CliError> {
@@ -536,7 +748,7 @@ fn find(shared: &Shared, id: &str) -> Result<CliTarget, CliError> {
         .ok_or_else(|| {
             CliError::new(
                 ErrorCode::HostNotFound,
-                format!("没有 ID 为 {id} 的主机：请用 shellrs list 查看"),
+                format!("没有 ID 为 {id} 的主机：请用 shellrs hosts list 查看"),
             )
         })
 }
