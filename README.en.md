@@ -18,8 +18,8 @@
 <p align="center"><a href="README.md">简体中文</a> | <b>English</b></p>
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/main-dark.png">
-  <img src="docs/screenshots/main-light.png" alt="ShellRS main window: a grouped host tree on the left, htop running in a remote terminal on the right, connection latency in the tab bar">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/en/main-dark.png">
+  <img src="docs/screenshots/en/main-light.png" alt="ShellRS main window: a grouped host tree on the left, htop running in a remote terminal on the right, connection latency in the tab bar">
 </picture>
 
 ## About
@@ -96,22 +96,22 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 ## Screenshots
 
 <p align="center">
-  <img src="docs/screenshots/split.png" alt="A split view: a remote terminal on top and SFTP for the same host below"><br>
+  <img src="docs/screenshots/en/split.png" alt="A split view: a remote terminal on top and SFTP for the same host below"><br>
   <em>Dock splits: a remote terminal and SFTP stacked in one window</em>
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/tools.png" alt="Five right sidebar tools side by side: system monitor, processes, services, Docker and network connections"><br>
-  <em>Right sidebar tools: system monitor, processes, services, Docker and network connections</em>
+  <img src="docs/screenshots/en/tools.png" alt="Five right sidebar tools side by side: Monitor, Processes, Services, Docker and Network"><br>
+  <em>Right sidebar tools: Monitor, Processes, Services, Docker and Network</em>
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/sftp.png" alt="Dual-pane SFTP: three local items selected on the left, remote /etc on the right, and a transfer queue with one batch uploading and one waiting"><br>
+  <img src="docs/screenshots/en/sftp.png" alt="Dual-pane SFTP: three local items selected on the left, remote /etc on the right, and a transfer queue with one batch uploading and one waiting"><br>
   <em>WinSCP-style SFTP: highlight selection and a transfer queue with progress, speed and time left</em>
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/forward.png" alt="Edit port forward dialog with the diagram and explanation of a local forward, and two running rules in the forward list"><br>
+  <img src="docs/screenshots/en/forward.png" alt="Edit port forward dialog with the diagram and explanation of a local forward, and two running rules in the forward list"><br>
   <em>Port forwarding: the diagram shows where each connection goes</em>
 </p>
 
