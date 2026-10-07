@@ -75,7 +75,7 @@ impl FilePane {
         let bar = h_flex()
             .id(self.side.path_id())
             .test_support()
-            .aria_label(format!("{}路径", self.side.label()))
+            .aria_label(self.side.path_label_name())
             // WinSCP's current pane, which takes focus back when the tab
             // is shown again; nothing marks it on screen.
             .aria_selected(self.current)

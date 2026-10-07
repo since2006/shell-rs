@@ -1,5 +1,6 @@
 use super::{DirectoryEntry, DirectoryListing, EntryKind, FileMetadata, RemotePath};
 use crate::connection::Latency;
+use crate::i18n::t;
 use crate::ssh::{SshConnectionConfig, SshConnector, SshHandle, SshPrompts};
 use anyhow::{Result, anyhow, bail};
 use futures::StreamExt as _;
@@ -76,7 +77,7 @@ impl SftpClient {
             Self::initialize(channel.into_stream(), Some(ssh), fingerprint).await
         })
         .await
-        .map_err(|_| anyhow!("启动 SFTP 超时"))?
+        .map_err(|_| anyhow!(t!("sftp.client.start_timeout")))?
     }
     async fn initialize<S>(stream: S, ssh: Option<SshHandle>, fingerprint: String) -> Result<Self>
     where
@@ -89,7 +90,7 @@ impl SftpClient {
         });
         let version = raw.init().await?;
         if version.version != 3 {
-            bail!("服务器未提供 SFTP v3");
+            bail!(t!("sftp.client.no_v3"));
         }
         let atomic_replace = version
             .extensions
@@ -116,7 +117,7 @@ impl SftpClient {
         let executable = ["/usr/libexec/sftp-server", "/usr/lib/openssh/sftp-server"]
             .into_iter()
             .find(|p| std::path::Path::new(p).exists())
-            .ok_or_else(|| anyhow!("本机没有 OpenSSH sftp-server"))?;
+            .ok_or_else(|| anyhow!("no OpenSSH sftp-server on this machine"))?;
         let mut child = tokio::process::Command::new(executable)
             .current_dir(directory)
             .stdin(std::process::Stdio::piped())
@@ -152,7 +153,7 @@ impl SftpClient {
             &response
                 .files
                 .first()
-                .ok_or_else(|| anyhow!("服务器未返回目录路径"))?
+                .ok_or_else(|| anyhow!(t!("sftp.client.no_path")))?
                 .filename,
         )?)
     }
@@ -332,7 +333,7 @@ impl RemoteFs for SftpClient {
                 .await?
                 .files
                 .first()
-                .ok_or_else(|| anyhow!("无法读取链接目标"))?
+                .ok_or_else(|| anyhow!(t!("sftp.client.no_link_target")))?
                 .filename,
         )
     }
@@ -350,7 +351,7 @@ impl RemoteFs for SftpClient {
             {
                 Packet::Status(status) if status.status_code == StatusCode::Ok => {}
                 Packet::Status(status) => return Err(Error::Status(status).into()),
-                _ => bail!("服务器返回了无效的重命名响应"),
+                _ => bail!(t!("sftp.client.bad_rename_reply")),
             }
         } else {
             self.raw.rename(from.as_str(), to.as_str()).await?;
@@ -521,7 +522,7 @@ pub(crate) fn parse_longname(line: &str) -> Option<(String, String)> {
 // they can become a path for navigation or mutation.
 fn checked_text(value: &str) -> Result<String> {
     if value.contains('\u{fffd}') {
-        bail!("远端名称包含无法可靠表示的字符，已停止操作");
+        bail!(t!("sftp.client.ambiguous_name"));
     }
     Ok(value.to_string())
 }

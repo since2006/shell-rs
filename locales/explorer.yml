@@ -1,0 +1,706 @@
+_version: 2
+
+# The SFTP tab: the two file lists, their toolbars and menus, the dialogs
+# they open, the transfer queue and the preview.
+
+explorer.new.folder_title:
+  zh-CN: 新建文件夹
+  en: New folder
+explorer.new.file_title:
+  zh-CN: 新建文件
+  en: New file
+explorer.new.folder_name:
+  zh-CN: 新建文件夹
+  en: New folder
+explorer.new.file_name:
+  zh-CN: 新建文件.txt
+  en: New file.txt
+
+explorer.kind.folder:
+  zh-CN: 文件夹
+  en: Folder
+explorer.kind.file:
+  zh-CN: 文件
+  en: File
+explorer.kind.link:
+  zh-CN: 链接
+  en: Link
+explorer.kind.parent:
+  zh-CN: 上级目录
+  en: Parent folder
+explorer.kind.extension:
+  zh-CN: "%{ext} 文件"
+  en: "%{ext} file"
+
+explorer.size_format.bytes:
+  zh-CN: 字节
+  en: Bytes
+explorer.size_format.kilobytes:
+  zh-CN: 千字节（KB）
+  en: Kilobytes (KB)
+explorer.size_format.short:
+  zh-CN: 简短格式（B、KB、MB、GB）
+  en: Short (B, KB, MB, GB)
+
+explorer.column.name:
+  zh-CN: 名称
+  en: Name
+explorer.column.size:
+  zh-CN: 大小
+  en: Size
+explorer.column.type:
+  zh-CN: 类型
+  en: Type
+explorer.column.modified:
+  zh-CN: 修改时间
+  en: Modified
+explorer.column.rights:
+  zh-CN: 权限
+  en: Permissions
+explorer.column.owner:
+  zh-CN: 所有者
+  en: Owner
+
+explorer.list.connecting:
+  zh-CN: 正在连接 SFTP…
+  en: Connecting to SFTP…
+explorer.list.reading:
+  zh-CN: 正在读取目录…
+  en: Reading folder…
+explorer.list.only_hidden:
+  zh-CN: 只有隐藏文件
+  en: Only hidden files
+explorer.list.empty:
+  zh-CN: 空目录
+  en: Empty folder
+explorer.list.not_connected:
+  zh-CN: 未连接
+  en: Not connected
+explorer.list.unreadable:
+  zh-CN: 无法读取目录
+  en: Couldn’t read the folder
+explorer.list.read_failed:
+  zh-CN: 无法读取目录：%{error}
+  en: "Couldn’t read the folder: %{error}"
+
+explorer.drag.upload.one:
+  en: Upload %{count} item
+explorer.drag.upload.other:
+  zh-CN: 上传 %{count} 个项目
+  en: Upload %{count} items
+explorer.drag.download.one:
+  en: Download %{count} item
+explorer.drag.download.other:
+  zh-CN: 下载 %{count} 个项目
+  en: Download %{count} items
+
+explorer.status.opening:
+  zh-CN: 正在打开 %{name}…
+  en: Opening %{name}…
+explorer.status.items.one:
+  en: "%{count} item"
+explorer.status.items.other:
+  zh-CN: "%{count} 个项目"
+  en: "%{count} items"
+explorer.status.hidden.other:
+  zh-CN: 隐藏 %{count} 项
+  en: "%{count} hidden"
+explorer.status.selected.other:
+  zh-CN: 已选择 %{count} 项
+  en: "%{count} selected"
+
+explorer.path.local:
+  zh-CN: 本地路径
+  en: Local path
+explorer.path.remote:
+  zh-CN: 远程路径
+  en: Remote path
+explorer.directory_select.local:
+  zh-CN: 本地目录
+  en: Local folder
+explorer.directory_select.remote:
+  zh-CN: 远程目录
+  en: Remote folder
+explorer.directory_select.current:
+  zh-CN: 当前路径
+  en: Current path
+explorer.directory_select.places:
+  zh-CN: 位置
+  en: Places
+
+explorer.command.open_directory:
+  zh-CN: 打开目录/书签…
+  en: Open folder or bookmark…
+explorer.command.up:
+  zh-CN: 上级目录
+  en: Parent folder
+explorer.command.root:
+  zh-CN: 根目录
+  en: Root folder
+explorer.command.home:
+  zh-CN: 主目录
+  en: Home folder
+explorer.command.refresh:
+  zh-CN: 刷新
+  en: Refresh
+explorer.command.back:
+  zh-CN: 后退
+  en: Back
+explorer.command.forward:
+  zh-CN: 前进
+  en: Forward
+explorer.command.show_hidden_files:
+  zh-CN: 显示隐藏文件
+  en: Show hidden files
+explorer.toolbar.hide_hidden_files:
+  zh-CN: 不显示隐藏文件
+  en: Hide hidden files
+explorer.command.upload:
+  zh-CN: 上传…
+  en: Upload…
+explorer.toolbar.upload_tip:
+  zh-CN: 上传所选项目
+  en: Upload the selected items
+explorer.command.download:
+  zh-CN: 下载…
+  en: Download…
+explorer.toolbar.download_tip:
+  zh-CN: 下载所选项目
+  en: Download the selected items
+explorer.toolbar.choose_files:
+  zh-CN: 选择文件上传…
+  en: Choose files to upload…
+explorer.command.rename:
+  zh-CN: 重命名…
+  en: Rename…
+explorer.command.properties:
+  zh-CN: 属性…
+  en: Properties…
+explorer.command.new:
+  zh-CN: 新建
+  en: New
+
+explorer.transfer.upload_title:
+  zh-CN: 上传文件
+  en: Upload
+explorer.transfer.download_title:
+  zh-CN: 下载
+  en: Download
+explorer.transfer.upload:
+  zh-CN: 上传
+  en: Upload
+explorer.transfer.download:
+  zh-CN: 下载
+  en: Download
+explorer.transfer.upload_summary:
+  zh-CN: 上传 %{items}到 %{endpoint}
+  en: Upload %{items} to %{endpoint}
+explorer.transfer.download_summary:
+  zh-CN: 从 %{endpoint} 下载 %{items}
+  en: Download %{items} from %{endpoint}
+explorer.transfer.files.one:
+  en: "%{count} file"
+explorer.transfer.files.other:
+  zh-CN: "%{count} 个文件"
+  en: "%{count} files"
+explorer.transfer.folders.one:
+  en: "%{count} folder"
+explorer.transfer.folders.other:
+  zh-CN: "%{count} 个文件夹"
+  en: "%{count} folders"
+explorer.transfer.items.other:
+  zh-CN: "%{count} 个项目（%{folders}、%{files}）"
+  en: "%{count} items (%{folders}, %{files})"
+explorer.transfer.in_folder:
+  zh-CN: 位于 %{folder}
+  en: In %{folder}
+explorer.transfer.queued_note:
+  zh-CN: 当前有传输在进行，这一批会排在传输队列里，轮到时自动开始。
+  en: Another transfer is running. This one waits in Transfers and starts when its turn comes.
+explorer.transfer.target:
+  zh-CN: 目标目录
+  en: Destination folder
+explorer.transfer.download_to:
+  zh-CN: 下载到
+  en: Download to
+explorer.transfer.choose_download_folder:
+  zh-CN: 选择下载到的目录
+  en: Choose where to download to
+explorer.transfer.target_missing:
+  zh-CN: 请输入目标目录
+  en: Enter a destination folder
+explorer.transfer.local_target_relative:
+  zh-CN: 请输入本机目录的完整路径
+  en: Enter the full path of a folder on this computer
+
+explorer.question.conflict_title:
+  zh-CN: 同名文件已存在
+  en: A file with this name already exists
+explorer.question.overwrite:
+  zh-CN: 覆盖
+  en: Overwrite
+explorer.question.apply_to_all:
+  zh-CN: 应用于本批剩余冲突
+  en: Do the same for the rest of this batch
+explorer.question.resume_upload_title:
+  zh-CN: 发现未完成的上传
+  en: Unfinished upload found
+explorer.question.resume_download_title:
+  zh-CN: 发现未完成的下载
+  en: Unfinished download found
+explorer.question.resume_upload:
+  zh-CN: 继续上传
+  en: Resume upload
+explorer.question.resume_download:
+  zh-CN: 继续下载
+  en: Resume download
+explorer.question.restart_upload:
+  zh-CN: 重新上传
+  en: Upload again
+explorer.question.restart_download:
+  zh-CN: 重新下载
+  en: Download again
+explorer.question.invalid_resume_title:
+  zh-CN: 无法继续此文件
+  en: Can’t resume this file
+explorer.question.upload_failed_title:
+  zh-CN: 无法上传此项目
+  en: Couldn’t upload this item
+explorer.question.download_failed_title:
+  zh-CN: 无法下载此项目
+  en: Couldn’t download this item
+explorer.question.retry:
+  zh-CN: 重试
+  en: Retry
+explorer.question.skip:
+  zh-CN: 跳过
+  en: Skip
+explorer.question.cancel_upload:
+  zh-CN: 取消上传
+  en: Cancel upload
+explorer.question.cancel_download:
+  zh-CN: 取消下载
+  en: Cancel download
+
+explorer.close_transfer.upload_title:
+  zh-CN: 停止上传并关闭？
+  en: Stop the upload and close?
+explorer.close_transfer.download_title:
+  zh-CN: 停止下载并关闭？
+  en: Stop the download and close?
+explorer.close_transfer.upload_kept:
+  zh-CN: 上传进度会保留，下次选择相同来源和目标目录时可以继续上传。
+  en: "Progress is kept: choose the same source and destination folder later to resume the upload."
+explorer.close_transfer.download_kept:
+  zh-CN: 下载进度会保留，下次选择相同来源和目标目录时可以继续下载。
+  en: "Progress is kept: choose the same source and destination folder later to resume the download."
+explorer.close_transfer.two_sentences:
+  zh-CN: "%{first}%{second}"
+  en: "%{first} %{second}"
+explorer.close_transfer.stop_upload:
+  zh-CN: 停止上传并关闭
+  en: Stop and close
+explorer.close_transfer.stop_download:
+  zh-CN: 停止下载并关闭
+  en: Stop and close
+explorer.close_transfer.keep_uploading:
+  zh-CN: 继续上传
+  en: Keep uploading
+explorer.close_transfer.keep_downloading:
+  zh-CN: 继续下载
+  en: Keep downloading
+
+explorer.queue.title:
+  zh-CN: 传输队列
+  en: Transfers
+explorer.queue.title_count:
+  zh-CN: 传输队列 (%{unfinished})
+  en: Transfers (%{unfinished})
+explorer.queue.resume:
+  zh-CN: 继续
+  en: Resume
+explorer.queue.stop:
+  zh-CN: 停止
+  en: Stop
+explorer.queue.remove:
+  zh-CN: 移出队列
+  en: Remove from queue
+explorer.queue.discard:
+  zh-CN: 丢弃续传进度
+  en: Discard partial transfer
+explorer.queue.clear_finished:
+  zh-CN: 清除已完成
+  en: Clear finished
+explorer.queue.column.operation:
+  zh-CN: 操作
+  en: Direction
+explorer.queue.column.source:
+  zh-CN: 来源
+  en: Source
+explorer.queue.column.target:
+  zh-CN: 目标
+  en: Destination
+explorer.queue.column.transferred:
+  zh-CN: 已传输
+  en: Transferred
+explorer.queue.column.time:
+  zh-CN: 时间
+  en: Time
+explorer.queue.column.speed:
+  zh-CN: 速度
+  en: Speed
+explorer.queue.column.progress:
+  zh-CN: 进度
+  en: Progress
+explorer.queue.hide_results:
+  zh-CN: 收起逐项结果
+  en: Hide item results
+explorer.queue.show_results:
+  zh-CN: 展开逐项结果
+  en: Show item results
+explorer.queue.not_started:
+  zh-CN: 还没有开始
+  en: Not started yet
+explorer.queue.nothing_uploaded:
+  zh-CN: 还没有上传完的项目，每完成一项会列在这里
+  en: No items uploaded yet. Each one is listed here when it’s done.
+explorer.queue.nothing_downloaded:
+  zh-CN: 还没有下载完的项目，每完成一项会列在这里
+  en: No items downloaded yet. Each one is listed here when it’s done.
+explorer.queue.outcome.done:
+  zh-CN: 完成
+  en: Done
+explorer.queue.outcome.skipped:
+  zh-CN: 已跳过
+  en: Skipped
+explorer.queue.outcome.failed:
+  zh-CN: 失败
+  en: Failed
+explorer.queue.several_places:
+  zh-CN: 多个位置
+  en: Several places
+explorer.queue.status.pending:
+  zh-CN: 等待中
+  en: Waiting
+explorer.queue.status.scanning:
+  zh-CN: 正在扫描
+  en: Scanning
+explorer.queue.status.waiting:
+  zh-CN: 等待回答
+  en: Waiting for an answer
+explorer.queue.status.reconnecting:
+  zh-CN: 正在重连
+  en: Reconnecting
+explorer.queue.status.stopped:
+  zh-CN: 已停止
+  en: Stopped
+explorer.queue.status.done:
+  zh-CN: 已完成
+  en: Done
+explorer.queue.status.partly_failed.one:
+  en: "%{count} item failed"
+explorer.queue.status.partly_failed.other:
+  zh-CN: 部分失败（%{count} 项）
+  en: "%{count} items failed"
+explorer.queue.status.discarded:
+  zh-CN: 已丢弃续传进度
+  en: Partial transfer discarded
+explorer.queue.status.not_started:
+  zh-CN: 无法开始：%{reason}
+  en: "Couldn’t start: %{reason}"
+explorer.queue.status.removed:
+  zh-CN: 已移出
+  en: Removed
+
+explorer.connection.start_failed:
+  zh-CN: 无法启动 SFTP：%{error}
+  en: "Couldn’t start SFTP: %{error}"
+explorer.connection.server:
+  zh-CN: 服务器
+  en: the server
+explorer.connection.lost:
+  zh-CN: SFTP 已断开
+  en: SFTP disconnected
+explorer.connection.lost_title:
+  zh-CN: 与 %{name} 的 SFTP 连接已断开
+  en: Lost the SFTP connection to %{name}
+explorer.connection.lost_reconnect:
+  zh-CN: "%{reason}。重新连接后再操作远程文件。"
+  en: "%{reason}. Reconnect to work with remote files."
+explorer.connection.lost_stopped_batch:
+  zh-CN: "%{reason}。传输队列里有停止的批次，点它的「继续」会重新连接并接着传输。"
+  en: "%{reason}. A stopped batch is waiting in Transfers; its Resume reconnects and carries on."
+explorer.connection.lost_reconnecting:
+  zh-CN: "%{reason}。正在自动重新连接，请稍候。"
+  en: "%{reason}. Reconnecting automatically."
+explorer.connection.reconnect:
+  zh-CN: 重新连接
+  en: Reconnect
+
+explorer.ok:
+  zh-CN: 知道了
+  en: OK
+explorer.browse:
+  zh-CN: 浏览…
+  en: Browse…
+explorer.choose_upload:
+  zh-CN: 选择要上传的文件或目录
+  en: Choose files or folders to upload
+
+explorer.tab.open_sftp_tip:
+  zh-CN: 打开 SFTP 文件浏览
+  en: Browse files over SFTP
+explorer.tab.rename:
+  zh-CN: 重命名标签…
+  en: Rename tab…
+explorer.tab.open_sftp:
+  zh-CN: 打开 SFTP
+  en: Open SFTP
+explorer.tab.copy_ip:
+  zh-CN: 复制 IP 地址
+  en: Copy IP address
+explorer.tab.copy_host_name:
+  zh-CN: 复制主机名
+  en: Copy host name
+
+explorer.name.empty:
+  zh-CN: 名称不能为空
+  en: The name can’t be empty
+explorer.name.dots:
+  zh-CN: 名称不能是「.」或「..」
+  en: The name can’t be “.” or “..”
+explorer.name.slash:
+  zh-CN: 名称不能包含「/」
+  en: The name can’t contain “/”
+explorer.name.unchanged:
+  zh-CN: 名称未改变
+  en: The name hasn’t changed
+explorer.name.exists:
+  zh-CN: 已有名为「%{name}」的项目
+  en: An item named “%{name}” already exists
+
+explorer.delete.title_one:
+  zh-CN: 删除「%{name}」？
+  en: Delete “%{name}”?
+explorer.delete.title_several.other:
+  zh-CN: 删除 %{count} 个项目？
+  en: Delete %{count} items?
+explorer.delete.remote:
+  zh-CN: 远程文件无法恢复，目录会连同其中全部内容一起删除。
+  en: Remote files can’t be recovered. A folder is deleted with everything in it.
+explorer.delete.trash:
+  zh-CN: 项目会移到废纸篓。
+  en: The items move to the Trash.
+explorer.delete.recycle_bin:
+  zh-CN: 项目会移到废纸篓。
+  en: The items move to the Recycle Bin.
+
+explorer.rename.title:
+  zh-CN: 重命名「%{name}」
+  en: Rename “%{name}”
+explorer.rename.commit:
+  zh-CN: 重命名
+  en: Rename
+explorer.rename.label:
+  zh-CN: 新名称
+  en: New name
+explorer.new.commit:
+  zh-CN: 创建
+  en: Create
+explorer.new.label:
+  zh-CN: 名称
+  en: Name
+
+explorer.file.connection_lost:
+  zh-CN: SFTP 连接已断开
+  en: The SFTP connection was lost
+explorer.file.connecting:
+  zh-CN: 正在连接 SFTP，请稍候再试。
+  en: Connecting to SFTP. Try again in a moment.
+explorer.file.edit_refused:
+  zh-CN: 无法在编辑器中打开“%{name}”
+  en: Can’t open “%{name}” in the editor
+explorer.file.preview_refused:
+  zh-CN: 无法预览“%{name}”
+  en: Can’t preview “%{name}”
+explorer.file.too_large_for_editor:
+  zh-CN: 文件有 %{size}，编辑器只打开 %{limit} 以内的文件。
+  en: The file is %{size}. The editor opens files up to %{limit}.
+explorer.file.too_large_for_preview:
+  zh-CN: 文件有 %{size}，预览只打开 %{limit} 以内的文件。
+  en: The file is %{size}. Preview opens files up to %{limit}.
+explorer.file.not_text:
+  zh-CN: 它不是 UTF-8 编码的文本文件：可能是二进制文件，或用了 GBK 等其他编码。
+  en: "It isn’t a UTF-8 text file: it may be binary, or in another encoding such as GBK."
+explorer.file.not_file:
+  zh-CN: 它不是普通文件。
+  en: It isn’t a regular file.
+explorer.file.open_failed:
+  zh-CN: 无法打开“%{name}”
+  en: Couldn’t open “%{name}”
+explorer.file.download_instead:
+  zh-CN: "%{reason}可以下载到本机，用别的程序打开。"
+  en: "%{reason} You can download it and open it in another app."
+explorer.file.download:
+  zh-CN: 下载…
+  en: Download…
+
+explorer.preview.image_info:
+  zh-CN: "%{width} × %{height} 像素 · %{size}"
+  en: "%{width} × %{height} pixels · %{size}"
+explorer.preview.zoom_out:
+  zh-CN: 缩小
+  en: Zoom out
+explorer.preview.zoom_in:
+  zh-CN: 放大
+  en: Zoom in
+explorer.preview.fit:
+  zh-CN: 适合窗口
+  en: Fit to window
+explorer.preview.actual_size:
+  zh-CN: 原图
+  en: Actual size
+explorer.preview.actual_size_tip:
+  zh-CN: 原图（100%）
+  en: Actual size (100%)
+explorer.preview.undecodable:
+  zh-CN: 无法显示这张图片
+  en: Can’t show this image
+explorer.preview.decoding:
+  zh-CN: 正在显示图片…
+  en: Loading image…
+
+explorer.open_directory.title:
+  zh-CN: 打开目录
+  en: Open folder
+explorer.open_directory.folder:
+  zh-CN: 目录
+  en: Folder
+explorer.open_directory.bookmarks:
+  zh-CN: 书签
+  en: Bookmarks
+explorer.open_directory.add:
+  zh-CN: 添加
+  en: Add
+explorer.open_directory.remove:
+  zh-CN: 删除
+  en: Remove
+explorer.open_directory.up:
+  zh-CN: 上移
+  en: Up
+explorer.open_directory.down:
+  zh-CN: 下移
+  en: Down
+explorer.open_directory.open:
+  zh-CN: 打开
+  en: Open
+explorer.open_directory.missing:
+  zh-CN: 请输入要打开的目录
+  en: Enter a folder to open
+explorer.open_directory.choose:
+  zh-CN: 选择要打开的目录
+  en: Choose a folder to open
+explorer.bookmarks.none:
+  zh-CN: 暂无书签
+  en: No bookmarks
+
+explorer.command.edit:
+  zh-CN: 编辑
+  en: Edit
+explorer.command.preview:
+  zh-CN: 预览
+  en: Preview
+explorer.command.copy_path:
+  zh-CN: 复制路径
+  en: Copy path
+explorer.command.go:
+  zh-CN: 前往
+  en: Go to
+explorer.command.add_bookmark:
+  zh-CN: 添加路径到书签
+  en: Add path to bookmarks
+explorer.command.remove_bookmark:
+  zh-CN: 从书签中移除路径
+  en: Remove path from bookmarks
+explorer.command.size_format:
+  zh-CN: 文件大小显示为
+  en: Show file sizes as
+explorer.command.new_folder:
+  zh-CN: 文件夹…
+  en: Folder…
+explorer.command.new_file:
+  zh-CN: 文件…
+  en: File…
+
+explorer.operation.delete_failed:
+  zh-CN: 删除失败
+  en: Couldn’t delete
+explorer.operation.rename_failed:
+  zh-CN: 重命名失败
+  en: Couldn’t rename
+explorer.operation.create_failed:
+  zh-CN: 新建失败
+  en: Couldn’t create
+explorer.operation.permissions_failed:
+  zh-CN: 修改权限失败
+  en: Couldn’t change permissions
+
+explorer.properties.title_one:
+  zh-CN: 「%{name}」的属性
+  en: Properties of “%{name}”
+explorer.properties.title_several.other:
+  zh-CN: "%{count} 个项目的属性"
+  en: Properties of %{count} items
+explorer.properties.apply:
+  zh-CN: 应用
+  en: Apply
+explorer.properties.location:
+  zh-CN: 位置
+  en: Location
+explorer.properties.group:
+  zh-CN: 组
+  en: Group
+explorer.properties.size.one:
+  en: "%{size} (%{count} byte)"
+explorer.properties.size.other:
+  zh-CN: "%{size}（%{count} 字节）"
+  en: "%{size} (%{count} bytes)"
+explorer.properties.mixed:
+  zh-CN: （不一致）
+  en: (mixed)
+explorer.properties.class_owner:
+  zh-CN: 所有者
+  en: Owner
+explorer.properties.class_group:
+  zh-CN: 组
+  en: Group
+explorer.properties.class_others:
+  zh-CN: 其他
+  en: Others
+explorer.properties.read:
+  zh-CN: 读
+  en: Read
+explorer.properties.write:
+  zh-CN: 写
+  en: Write
+explorer.properties.execute:
+  zh-CN: 执行
+  en: Execute
+explorer.properties.octal:
+  zh-CN: 八进制
+  en: Octal
+explorer.properties.mixed_note:
+  zh-CN: 部分项目权限不同，未改动的位保持原样。
+  en: The items’ permissions differ. Bits you leave alone stay as they are.
+explorer.properties.links:
+  zh-CN: 符号链接没有独立的权限。
+  en: Symbolic links have no permissions of their own.
+explorer.properties.unsupported:
+  zh-CN: 此系统不支持修改权限。
+  en: This system doesn’t support changing permissions.
+explorer.properties.recursive:
+  zh-CN: 同时应用到其中的文件和子目录
+  en: Also apply to the files and subfolders inside
+explorer.properties.dir_x:
+  zh-CN: 为目录添加执行权限（X）
+  en: Add execute permission to folders (X)

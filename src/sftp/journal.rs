@@ -1,5 +1,7 @@
 use super::{EntryKind, FileMetadata, RemotePath};
+use crate::i18n::t;
 use anyhow::{Context as _, Result, bail};
+use gpui_kit::SharedString;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
 use std::{
@@ -17,7 +19,7 @@ impl SourceMetadata {
     pub async fn read(path: &Path) -> Result<Self> {
         let metadata = tokio::fs::symlink_metadata(path).await?;
         if !metadata.is_file() {
-            bail!("本地来源已不再是普通文件");
+            bail!(t!("sftp.journal.source_not_file"));
         }
         Ok(Self {
             size: metadata.len(),
@@ -86,19 +88,19 @@ impl ResumeRecord {
             || self.source != source
             || &self.target != target
         {
-            bail!("续传记录与当前来源或服务器不匹配");
+            bail!(t!("sftp.journal.mismatch"));
         }
         if self.temporary != RemotePath::new(format!("{}.filepart", target.as_str()))?
             || !managed_backup_path(&self.backup, target)
         {
-            bail!("无效的续传临时路径");
+            bail!(t!("sftp.journal.temporary_invalid"));
         }
         if self
             .original
             .as_ref()
             .is_some_and(|m| m.kind() == EntryKind::Directory)
         {
-            bail!("续传记录不能替换目录");
+            bail!(t!("sftp.journal.replaces_folder"));
         }
         Ok(())
     }
@@ -140,7 +142,7 @@ impl Journal {
     ) -> Result<Option<ResumeRecord>> {
         read_record(
             &self.path(endpoint, source, target),
-            "续传记录损坏，原文件和临时文件均已保留",
+            t!("sftp.journal.upload_damaged"),
         )
         .await
     }
@@ -155,11 +157,11 @@ impl Journal {
 
 /// Read a record, if there is one. `damaged` is what to say when the file
 /// is there and cannot be understood.
-async fn read_record<T: DeserializeOwned>(path: &Path, damaged: &'static str) -> Result<Option<T>> {
+async fn read_record<T: DeserializeOwned>(path: &Path, damaged: SharedString) -> Result<Option<T>> {
     match tokio::fs::read(path).await {
         Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes).context(damaged)?)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error).context("无法读取续传记录"),
+        Err(error) => Err(error).context(t!("sftp.journal.unreadable")),
     }
 }
 
@@ -188,7 +190,7 @@ async fn write_atomic(root: &Path, path: &Path, bytes: &[u8]) -> Result<()> {
     drop(file);
     tokio::fs::rename(&temp, path)
         .await
-        .context("无法保存续传进度")?;
+        .context(t!("sftp.journal.unsaved"))?;
     #[cfg(unix)]
     {
         tokio::fs::File::open(root).await?.sync_all().await?;
@@ -250,7 +252,7 @@ impl DownloadRecord {
             || self.target != target
             || self.temporary != partial_path(target)
         {
-            bail!("续传记录与当前来源或服务器不匹配");
+            bail!(t!("sftp.journal.mismatch"));
         }
         Ok(())
     }
@@ -290,7 +292,7 @@ impl DownloadJournal {
     ) -> Result<Option<DownloadRecord>> {
         read_record(
             &self.path(endpoint, source, target),
-            "续传记录损坏，临时文件已保留",
+            t!("sftp.journal.download_damaged"),
         )
         .await
     }

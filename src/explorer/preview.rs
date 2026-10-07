@@ -11,6 +11,7 @@ use gpui_kit::*;
 use super::format_size;
 use super::image_preview::ImagePreview;
 use crate::app::{ExplorerAction, ExplorerDispatch as _};
+use crate::i18n::t;
 
 /// The largest image a preview reads.
 pub const IMAGE_LIMIT: u64 = 20 * 1024 * 1024;
@@ -126,7 +127,7 @@ pub(super) fn open_preview_dialog(preview: Preview, window: &mut Window, cx: &mu
         };
         // A command at the foot closes the preview first: what it opens
         // (the download question, the editor) goes in front.
-        let command = |id: &'static str, label: &'static str, action: ExplorerAction| {
+        let command = |id: &'static str, label: SharedString, action: ExplorerAction| {
             let dispatch = dispatch.clone();
             Button::new(id).label(label).on_click(move |_, window, cx| {
                 window.close_dialog(cx);
@@ -148,14 +149,18 @@ pub(super) fn open_preview_dialog(preview: Preview, window: &mut Window, cx: &mu
             .footer(
                 DialogFooter::new()
                     .when_some(download.clone(), |footer, action| {
-                        footer.child(command("preview-download", "下载…", action))
+                        footer.child(command(
+                            "preview-download",
+                            t!("explorer.file.download"),
+                            action,
+                        ))
                     })
                     .when_some(edit.clone(), |footer, action| {
-                        footer.child(command("preview-edit", "编辑", action))
+                        footer.child(command("preview-edit", t!("explorer.command.edit"), action))
                     })
                     .child(
                         Button::new("preview-close")
-                            .label("关闭")
+                            .label(t!("common.close"))
                             .on_click(|_, window, cx| window.close_dialog(cx)),
                     ),
             )

@@ -1,0 +1,317 @@
+_version: 2
+
+# SFTP connections, transfers and local file operations: mostly errors,
+# which the SFTP tab, the editor and the external CLI show.
+
+sftp.place.home:
+  zh-CN: 主目录
+  en: Home
+sftp.place.desktop:
+  zh-CN: 桌面
+  en: Desktop
+sftp.place.documents:
+  zh-CN: 文稿
+  en: Documents
+sftp.place.downloads:
+  zh-CN: 下载
+  en: Downloads
+
+sftp.error.remote_path_invalid:
+  zh-CN: 远程路径不能为空或包含空字符
+  en: A remote path can’t be empty or contain a null character
+sftp.error.file_name_invalid:
+  zh-CN: 无效的文件名：%{name}
+  en: "Invalid file name: %{name}"
+sftp.error.nothing_to_upload:
+  zh-CN: 请选择要上传的文件或目录
+  en: Choose files or folders to upload
+sftp.error.nothing_to_download:
+  zh-CN: 请选择要下载的文件或目录
+  en: Choose files or folders to download
+sftp.error.download_target_relative:
+  zh-CN: 下载目标必须是绝对路径
+  en: The download destination must be an absolute path
+sftp.error.file_name_not_utf8:
+  zh-CN: 目录包含无法用 UTF-8 表示的文件名
+  en: The folder has a file name that isn’t valid UTF-8
+sftp.error.path_not_utf8:
+  zh-CN: 路径不是有效的 UTF-8
+  en: The path isn’t valid UTF-8
+sftp.error.trash_failed:
+  zh-CN: 无法移到废纸篓：%{error}
+  en: "Couldn’t move to the Trash: %{error}"
+sftp.error.recycle_bin_failed:
+  zh-CN: 无法移到废纸篓：%{error}
+  en: "Couldn’t move to the Recycle Bin: %{error}"
+sftp.error.exists:
+  zh-CN: 已有名为「%{name}」的项目
+  en: An item named “%{name}” already exists
+sftp.error.permission_denied:
+  zh-CN: 没有权限操作「%{name}」
+  en: Permission denied for “%{name}”
+sftp.error.not_found:
+  zh-CN: 「%{name}」不存在
+  en: “%{name}” doesn’t exist
+sftp.error.item:
+  zh-CN: 「%{name}」：%{error}
+  en: "“%{name}”: %{error}"
+sftp.error.permissions_unsupported:
+  zh-CN: 此系统不支持修改权限
+  en: This system doesn’t support changing permissions
+
+sftp.transfer.host_key_changed:
+  zh-CN: 服务器主机指纹已改变，已停止续传
+  en: The server’s host key changed, so resuming stopped
+sftp.transfer.cancelled:
+  zh-CN: 传输已停止，进度已保留
+  en: Transfer stopped. Its progress is kept
+
+sftp.upload.source_name_not_utf8:
+  zh-CN: 来源文件名不是有效的 UTF-8
+  en: The source file name isn’t valid UTF-8
+sftp.upload.target_busy:
+  zh-CN: 另一个传输正在上传同一目标，请稍后继续上传
+  en: Another transfer is uploading to the same destination. Resume this upload later
+sftp.upload.parent_missing:
+  zh-CN: 父目录未创建，无法上传
+  en: Can’t upload because the parent folder wasn’t created
+sftp.upload.failed:
+  zh-CN: 无法上传：%{error}
+  en: "Couldn’t upload: %{error}"
+sftp.upload.folder_in_the_way:
+  zh-CN: 目录与文件类型冲突，不会删除远程目录
+  en: A remote folder has this name, and it won’t be deleted to make way for a file
+sftp.upload.exists.one:
+  en: A remote item with this name exists (%{count} byte, modified %{modified}). Overwriting replaces this file or link.
+sftp.upload.exists.other:
+  zh-CN: 远程项目已存在（%{count} 字节，修改时间 %{modified}）。覆盖会替换这个文件或链接。
+  en: A remote item with this name exists (%{count} bytes, modified %{modified}). Overwriting replaces this file or link.
+sftp.upload.exists_changed.one:
+  en: The destination changed during the upload. A remote item with this name exists (%{count} byte, modified %{modified}). Overwriting replaces this file or link.
+sftp.upload.exists_changed.other:
+  zh-CN: 目标在上传期间发生变化。远程项目已存在（%{count} 字节，修改时间 %{modified}）。覆盖会替换这个文件或链接。
+  en: The destination changed during the upload. A remote item with this name exists (%{count} bytes, modified %{modified}). Overwriting replaces this file or link.
+sftp.upload.target_gone:
+  zh-CN: 原目标在上传期间已被删除或移走。是否继续发布此文件？
+  en: The original destination was deleted or moved during the upload. Put this file in its place anyway?
+sftp.upload.source_now_folder:
+  zh-CN: 来源已变为目录，请丢弃旧文件进度后重新上传，或跳过。
+  en: The source is now a folder. Discard the old file’s progress and upload again, or skip it.
+sftp.upload.target_not_folder:
+  zh-CN: 目标已存在且不是目录，不会跟随或替换链接
+  en: The destination exists and isn’t a folder. Links aren’t followed or replaced
+sftp.upload.special_file:
+  zh-CN: 不支持上传设备、套接字或其他特殊文件
+  en: Devices, sockets and other special files can’t be uploaded
+sftp.upload.resume_found:
+  zh-CN: 发现未完成的 .filepart 文件。续传会按它的现有大小跳过本地文件前缀，请确认本地文件仍是同一版本。
+  en: Found an unfinished .filepart file. Resuming skips as much of the local file as it already holds, so make sure the local file is the same version.
+sftp.upload.link_target_not_utf8:
+  zh-CN: 链接目标不是有效的 UTF-8
+  en: The link target isn’t valid UTF-8
+sftp.upload.record_without_link:
+  zh-CN: 续传记录中缺少链接目标
+  en: The resume record has no link target
+sftp.upload.temporary_link_changed:
+  zh-CN: 临时链接已变化，无法继续上传
+  en: The temporary link changed, so the upload can’t resume
+sftp.upload.record_without_source:
+  zh-CN: 续传记录中缺少来源文件信息
+  en: The resume record has no details of the source file
+sftp.upload.temporary_kind_changed:
+  zh-CN: 远端临时文件类型已变化
+  en: The remote temporary file is no longer a file
+sftp.upload.partial_too_large:
+  zh-CN: 远端续传偏移大于本地文件
+  en: The remote partial file is larger than the local file
+sftp.upload.pipeline_ended:
+  zh-CN: 上传写入流水线意外结束
+  en: The upload stopped writing unexpectedly
+sftp.upload.publish_unconfirmed:
+  zh-CN: 无法确认文件发布结果，已保留恢复文件；请检查远端目录
+  en: Couldn’t confirm the file was put in place. The recovery files are kept; check the remote folder
+sftp.upload.temporary_changed:
+  zh-CN: 临时文件大小或类型已变化，未替换目标
+  en: The temporary file’s size or type changed, so the destination wasn’t replaced
+sftp.upload.target_created:
+  zh-CN: 替换期间目标被其他操作创建，已保留目标、备份和临时文件
+  en: Something else created the destination during the replace. The destination, backup and temporary file are kept
+sftp.upload.backup_changed:
+  zh-CN: 恢复备份已变化，停止替换
+  en: The recovery backup changed, so the replace stopped
+sftp.upload.backup_changed_after_publish:
+  zh-CN: 备份已变化，未清理；上传的目标文件已发布
+  en: The backup changed, so it wasn’t cleaned up. The uploaded file is in place
+sftp.upload.backup_and_target:
+  zh-CN: 存在恢复备份和目标文件，请先检查远端目录；未删除任何文件
+  en: Both a recovery backup and the destination file exist. Check the remote folder first; nothing was deleted
+
+sftp.download.name_invalid:
+  zh-CN: 名称「%{name}」在本机无效
+  en: The name “%{name}” isn’t valid on this computer
+sftp.download.source_missing:
+  zh-CN: 远程项目不存在
+  en: The remote item doesn’t exist
+sftp.download.target_busy:
+  zh-CN: 另一个传输正在下载到同一位置，请稍后继续下载
+  en: Another transfer is downloading to the same place. Resume this download later
+sftp.download.parent_missing:
+  zh-CN: 父目录未创建，无法下载
+  en: Can’t download because the parent folder wasn’t created
+sftp.download.failed:
+  zh-CN: 无法下载：%{error}
+  en: "Couldn’t download: %{error}"
+sftp.download.target_invalid:
+  zh-CN: 无效的下载目标
+  en: Invalid download destination
+sftp.download.folder_in_the_way:
+  zh-CN: 本地已有同名目录，不会删除它
+  en: A local folder has this name, and it won’t be deleted
+sftp.download.exists.one:
+  en: A local item with this name exists (%{count} byte, modified %{modified}). Overwriting replaces it.
+sftp.download.exists.other:
+  zh-CN: 本地已有同名项目（%{count} 字节，修改时间 %{modified}）。覆盖会替换它。
+  en: A local item with this name exists (%{count} bytes, modified %{modified}). Overwriting replaces it.
+sftp.download.exists_changed.one:
+  en: The destination changed during the download. A local item with this name exists (%{count} byte, modified %{modified}). Overwriting replaces it.
+sftp.download.exists_changed.other:
+  zh-CN: 目标在下载期间发生变化。本地已有同名项目（%{count} 字节，修改时间 %{modified}）。覆盖会替换它。
+  en: The destination changed during the download. A local item with this name exists (%{count} bytes, modified %{modified}). Overwriting replaces it.
+sftp.download.file_in_the_way:
+  zh-CN: 本地已有同名文件，不会替换为目录
+  en: A local file has this name, and it won’t be replaced by a folder
+sftp.download.special_file:
+  zh-CN: 不支持下载设备、套接字或其他特殊文件
+  en: Devices, sockets and other special files can’t be downloaded
+sftp.download.partial_not_file:
+  zh-CN: 临时文件 %{path} 不是普通文件
+  en: The temporary file %{path} isn’t a regular file
+sftp.download.partial_too_large:
+  zh-CN: 本地 .filepart 文件比远程文件大，无法续传。
+  en: The local .filepart file is larger than the remote file, so the download can’t resume.
+sftp.download.source_changed:
+  zh-CN: 远程文件在上次下载后已变化，无法续传。
+  en: The remote file changed after the last download, so the download can’t resume.
+sftp.download.resume_found:
+  zh-CN: 发现未完成的 .filepart 文件。续传会按它的现有大小跳过远程文件前缀，请确认远程文件仍是同一版本。
+  en: Found an unfinished .filepart file. Resuming skips as much of the remote file as it already holds, so make sure the remote file is the same version.
+sftp.download.pipeline_ended:
+  zh-CN: 下载读取流水线意外结束
+  en: The download stopped reading unexpectedly
+sftp.download.source_shrank:
+  zh-CN: 远程文件在下载期间变短，已停止
+  en: The remote file got shorter during the download, so it stopped
+sftp.download.links_unsupported:
+  zh-CN: 此系统不支持创建符号链接
+  en: This system can’t create symbolic links
+
+sftp.journal.source_not_file:
+  zh-CN: 本地来源已不再是普通文件
+  en: The local source is no longer a regular file
+sftp.journal.mismatch:
+  zh-CN: 续传记录与当前来源或服务器不匹配
+  en: The resume record doesn’t match this source or server
+sftp.journal.temporary_invalid:
+  zh-CN: 无效的续传临时路径
+  en: Invalid temporary path in the resume record
+sftp.journal.replaces_folder:
+  zh-CN: 续传记录不能替换目录
+  en: A resume record can’t replace a folder
+sftp.journal.upload_damaged:
+  zh-CN: 续传记录损坏，原文件和临时文件均已保留
+  en: The resume record is damaged. The original and temporary files are both kept
+sftp.journal.download_damaged:
+  zh-CN: 续传记录损坏，临时文件已保留
+  en: The resume record is damaged. The temporary file is kept
+sftp.journal.unreadable:
+  zh-CN: 无法读取续传记录
+  en: Couldn’t read the resume record
+sftp.journal.unsaved:
+  zh-CN: 无法保存续传进度
+  en: Couldn’t save the resume progress
+
+sftp.worker.not_connected:
+  zh-CN: SFTP 未连接，请重新连接
+  en: SFTP isn’t connected. Reconnect to continue
+sftp.worker.not_connected_short:
+  zh-CN: SFTP 未连接
+  en: SFTP isn’t connected
+sftp.worker.disconnected:
+  zh-CN: SFTP 已断开
+  en: SFTP disconnected
+sftp.worker.list_failed:
+  zh-CN: 无法读取目录：%{error}
+  en: "Couldn’t read the folder: %{error}"
+sftp.worker.busy:
+  zh-CN: 已有传输批次正在处理
+  en: A transfer batch is already running
+sftp.worker.local_folder_missing:
+  zh-CN: 本地目录 %{path} 不存在
+  en: The local folder %{path} doesn’t exist
+sftp.worker.remote_folder_missing:
+  zh-CN: 远程目录 %{path} 不存在
+  en: The remote folder %{path} doesn’t exist
+sftp.worker.dropped_kept:
+  zh-CN: 连接中断，传输进度已保留
+  en: The connection dropped. Transfer progress is kept
+sftp.worker.reconnect_in.one:
+  en: Reconnecting in %{count} second (%{attempt}/3)
+sftp.worker.reconnect_in.other:
+  zh-CN: 将在 %{count} 秒后重连（%{attempt}/3）
+  en: Reconnecting in %{count} seconds (%{attempt}/3)
+sftp.worker.not_a_folder:
+  zh-CN: 远程路径 %{path} 不是目录
+  en: The remote path %{path} isn’t a folder
+sftp.worker.sync_to_root:
+  zh-CN: 不能同步到根目录 /
+  en: Can’t sync to the root folder /
+sftp.worker.dropped:
+  zh-CN: SFTP 连接中断，请重新连接
+  en: The SFTP connection dropped. Reconnect to continue
+
+sftp.edit.not_file:
+  zh-CN: 不是普通文件
+  en: Not a regular file
+sftp.edit.too_large.one:
+  en: File too large (%{count} byte)
+sftp.edit.too_large.other:
+  zh-CN: 文件太大（%{count} 字节）
+  en: File too large (%{count} bytes)
+sftp.edit.not_text:
+  zh-CN: 不是 UTF-8 文本文件
+  en: Not a UTF-8 text file
+sftp.edit.changed:
+  zh-CN: 文件在打开后已被修改
+  en: The file changed after it was opened
+sftp.edit.missing:
+  zh-CN: 文件不存在
+  en: The file doesn’t exist
+sftp.edit.shrank:
+  zh-CN: 文件在读取时变短了，请重新打开
+  en: The file got shorter while it was read. Open it again
+sftp.edit.gone_after_save:
+  zh-CN: 保存后找不到文件
+  en: The file is gone after saving
+
+sftp.client.start_timeout:
+  zh-CN: 启动 SFTP 超时
+  en: SFTP took too long to start
+sftp.client.no_v3:
+  zh-CN: 服务器未提供 SFTP v3
+  en: The server doesn’t offer SFTP v3
+sftp.client.no_path:
+  zh-CN: 服务器未返回目录路径
+  en: The server didn’t return the folder’s path
+sftp.client.no_link_target:
+  zh-CN: 无法读取链接目标
+  en: Couldn’t read the link target
+sftp.client.bad_rename_reply:
+  zh-CN: 服务器返回了无效的重命名响应
+  en: The server sent an invalid reply to the rename
+sftp.client.ambiguous_name:
+  zh-CN: 远端名称包含无法可靠表示的字符，已停止操作
+  en: A remote name has characters that can’t be shown reliably, so the operation stopped
+
+sftp.sync.delete_failed:
+  zh-CN: 无法删除：%{error}
+  en: "Couldn’t delete: %{error}"

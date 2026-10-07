@@ -14,6 +14,7 @@ use super::{
 };
 use crate::{
     host::HostLogin,
+    i18n::{t, tn},
     ssh::{LATENCY_INTERVAL, SshConnectionConfig, SshConnector, SshPrompts, describe_login_error},
 };
 use anyhow::{Result, anyhow};
@@ -29,7 +30,9 @@ use std::{
 use tokio::sync::{RwLock, watch};
 
 /// The answer to a request that needs the connection while there is none.
-const NOT_CONNECTED: &str = "SFTP 未连接，请重新连接";
+fn not_connected() -> String {
+    t!("sftp.worker.not_connected").into()
+}
 
 /// How often the latency task looks for a connection to measure, and for
 /// the one it is measuring to be dropped.
@@ -183,7 +186,9 @@ impl SshSftpTransport {
                             prompts.cancel_all();
                             *client.write().await = None;
                             let _ = events
-                                .send(SftpEvent::Disconnected("SFTP 已断开".into()))
+                                .send(SftpEvent::Disconnected(
+                                    t!("sftp.worker.disconnected").into(),
+                                ))
                                 .await;
                         }
                         SftpCommand::Shutdown => break,
@@ -197,10 +202,14 @@ impl SshSftpTransport {
                                         Ok(listing) => Ok(listing),
                                         Err(error) => {
                                             drop_broken(&shared, &connected, &events, &error).await;
-                                            Err(format!("无法读取目录：{error:#}"))
+                                            Err(t!(
+                                                "sftp.worker.list_failed",
+                                                error = format!("{error:#}")
+                                            )
+                                            .into())
                                         }
                                     },
-                                    None => Err(NOT_CONNECTED.into()),
+                                    None => Err(not_connected()),
                                 };
                                 let _ = events.send(SftpEvent::Listed { request_id, result }).await;
                             });
@@ -225,7 +234,7 @@ impl SshSftpTransport {
                                             }
                                         }
                                     }
-                                    None => Err(NOT_CONNECTED.into()),
+                                    None => Err(not_connected()),
                                 };
                                 let _ = events
                                     .send(SftpEvent::Operated { request_id, result })
@@ -248,7 +257,7 @@ impl SshSftpTransport {
                                             }
                                         }
                                     }
-                                    None => Err(ReadFailure::Failed(NOT_CONNECTED.into())),
+                                    None => Err(ReadFailure::Failed(not_connected())),
                                 };
                                 let _ = events
                                     .send(SftpEvent::FileRead { request_id, result })
@@ -277,7 +286,7 @@ impl SshSftpTransport {
                                             }
                                         }
                                     }
-                                    None => Err(ReadFailure::Failed(NOT_CONNECTED.into())),
+                                    None => Err(ReadFailure::Failed(not_connected())),
                                 };
                                 let _ = events
                                     .send(SftpEvent::BytesRead { request_id, result })
@@ -309,7 +318,7 @@ impl SshSftpTransport {
                                             Err(SaveFailure::from_error(error))
                                         }
                                     },
-                                    None => Err(SaveFailure::Failed(NOT_CONNECTED.into())),
+                                    None => Err(SaveFailure::Failed(not_connected())),
                                 };
                                 let _ = events
                                     .send(SftpEvent::FileWritten { request_id, result })
@@ -319,7 +328,7 @@ impl SshSftpTransport {
                         command => {
                             if busy.swap(true, Ordering::AcqRel) {
                                 let _ = events
-                                    .send(SftpEvent::Notice("已有传输批次正在处理".into()))
+                                    .send(SftpEvent::Notice(t!("sftp.worker.busy").into()))
                                     .await;
                             } else {
                                 cancel_tx.send_replace(false);
@@ -426,7 +435,12 @@ impl SshSftpTransport {
                             .ok()
                             .filter(|path| path.is_dir())
                             .map(|path| dunce::simplified(&path).to_path_buf())
-                            .ok_or_else(|| anyhow!("本地目录 {} 不存在", source.display()))?;
+                            .ok_or_else(|| {
+                                anyhow!(t!(
+                                    "sftp.worker.local_folder_missing",
+                                    path = source.display()
+                                ))
+                            })?;
                         let target =
                             sync_target(connected.as_ref(), request.destination(), &control)
                                 .await?;
@@ -449,7 +463,8 @@ impl SshSftpTransport {
                         let (directory, name) = scp_remote_target(destination, is_directory);
                         // Some servers resolve a path that is not there, so
                         // ask whether it is a directory too.
-                        let missing = || anyhow!("远程目录 {directory} 不存在");
+                        let missing =
+                            || anyhow!(t!("sftp.worker.remote_folder_missing", path = directory));
                         let resolved = control
                             .run(connected.canonicalize(&directory))
                             .await
@@ -492,7 +507,10 @@ impl SshSftpTransport {
                             .await
                             .is_ok_and(|metadata| metadata.is_dir())
                         {
-                            anyhow::bail!("本地目录 {} 不存在", directory.display());
+                            anyhow::bail!(t!(
+                                "sftp.worker.local_folder_missing",
+                                path = directory.display()
+                            ));
                         }
                         request.clone().resolved(directory, name)
                     } else {
@@ -568,7 +586,7 @@ impl SshSftpTransport {
                             } else {
                                 Err(std::io::Error::new(
                                     std::io::ErrorKind::NotConnected,
-                                    "SFTP 未连接",
+                                    t!("sftp.worker.not_connected_short").to_string(),
                                 )
                                 .into())
                             }
@@ -579,15 +597,20 @@ impl SshSftpTransport {
                         Err(error) if is_network_error(&error) => {
                             *client.write().await = None;
                             events
-                                .send(SftpEvent::Disconnected("连接中断，传输进度已保留".into()))
+                                .send(SftpEvent::Disconnected(
+                                    t!("sftp.worker.dropped_kept").into(),
+                                ))
                                 .await?;
                             let mut recovered = false;
                             while reconnects < 3 {
-                                batch.set_note(format!(
-                                    "将在 {} 秒后重连（{}/3）",
-                                    [1, 3, 10][reconnects],
-                                    reconnects + 1
-                                ));
+                                batch.set_note(
+                                    tn!(
+                                        "sftp.worker.reconnect_in",
+                                        [1, 3, 10][reconnects],
+                                        attempt = reconnects + 1
+                                    )
+                                    .into(),
+                                );
                                 batch.phase(TransferPhase::Reconnecting, &control);
                                 let delay = Duration::from_secs([1, 3, 10][reconnects]);
                                 reconnects += 1;
@@ -670,10 +693,10 @@ async fn sync_target(
         Some(metadata) if metadata.kind() == EntryKind::Directory => {
             control.run(fs.canonicalize(destination)).await?
         }
-        Some(_) => anyhow::bail!("远程路径 {destination} 不是目录"),
+        Some(_) => anyhow::bail!(t!("sftp.worker.not_a_folder", path = destination)),
         None => {
             let parent = destination.parent();
-            let missing = || anyhow!("远程目录 {parent} 不存在");
+            let missing = || anyhow!(t!("sftp.worker.remote_folder_missing", path = parent));
             let parent = control
                 .run(fs.canonicalize(&parent))
                 .await
@@ -693,7 +716,7 @@ async fn sync_target(
         }
     };
     if target.is_root() {
-        anyhow::bail!("不能同步到根目录 /");
+        anyhow::bail!(t!("sftp.worker.sync_to_root"));
     }
     Ok(target)
 }
@@ -766,7 +789,7 @@ async fn forget(
     if current.as_ref().is_some_and(|c| Arc::ptr_eq(c, connected)) {
         *current = None;
         let _ = events
-            .send(SftpEvent::Disconnected("SFTP 连接中断，请重新连接".into()))
+            .send(SftpEvent::Disconnected(t!("sftp.worker.dropped").into()))
             .await;
     }
 }

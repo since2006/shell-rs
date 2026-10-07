@@ -13,6 +13,7 @@ use crate::{
     },
     connection::{ConnectionPrompt, ConnectionPromptReply, Latency},
     host::{BookmarkSide, ConnectionState, HostId, HostStore},
+    i18n::t,
     sftp::{
         DownloadRequest, RemotePath, SftpCommand, SftpEvent, SharedLocalDirectoryProvider,
         SharedSftpTransportProvider, TextFile, TransferDirection, TransferPhase, TransferQuestion,
@@ -119,7 +120,7 @@ impl ExplorerPanel {
         let places = local_provider
             .places()
             .into_iter()
-            .map(|(title, path)| (title.into(), path.to_string_lossy().into_owned()))
+            .map(|(place, path)| (place, path.to_string_lossy().into_owned()))
             .collect();
         let local = cx.new(|cx| {
             FilePane::new(
@@ -162,7 +163,9 @@ impl ExplorerPanel {
                 }
             })
         {
-            let _ = failed.try_send(SftpEvent::Disconnected(format!("无法启动 SFTP：{error}")));
+            let _ = failed.try_send(SftpEvent::Disconnected(
+                t!("explorer.connection.start_failed", error = error).to_string(),
+            ));
         }
         // Poll snapshots as the terminal engine does. Worker threads never wake
         // a foreground-only GPUI task directly.
@@ -296,24 +299,23 @@ impl ExplorerPanel {
         if window.has_active_dialog(cx) {
             return;
         }
-        let name = self
-            .store
-            .read(cx)
-            .host(self.host_id)
-            .map_or_else(|| "服务器".into(), |host| host.name.clone());
+        let name = self.store.read(cx).host(self.host_id).map_or_else(
+            || t!("explorer.connection.server"),
+            |host| host.name.clone(),
+        );
         let reason = self
             .remote
             .read(cx)
             .problem()
-            .unwrap_or("SFTP 已断开")
-            .to_string();
+            .map(SharedString::from)
+            .unwrap_or_else(|| t!("explorer.connection.lost"));
         let can_reconnect = self.can_reconnect();
         let description = if can_reconnect {
-            format!("{reason}。重新连接后再操作远程文件。")
+            t!("explorer.connection.lost_reconnect", reason = reason)
         } else if self.head_stopped() {
-            format!("{reason}。传输队列里有停止的批次，点它的「继续」会重新连接并接着传输。")
+            t!("explorer.connection.lost_stopped_batch", reason = reason)
         } else {
-            format!("{reason}。正在自动重新连接，请稍候。")
+            t!("explorer.connection.lost_reconnecting", reason = reason)
         };
         let sender = self.sender();
         let focus = window.focused(cx);
@@ -328,14 +330,14 @@ impl ExplorerPanel {
                 }
             };
             let dialog = dialog
-                .title(format!("与 {name} 的 SFTP 连接已断开"))
+                .title(t!("explorer.connection.lost_title", name = name))
                 .description(description.clone());
             if can_reconnect {
                 dialog
                     .button_props(
                         DialogButtonProps::default()
-                            .ok_text("重新连接")
-                            .cancel_text("取消"),
+                            .ok_text(t!("explorer.connection.reconnect"))
+                            .cancel_text(t!("common.cancel")),
                     )
                     .show_cancel(true)
                     .on_cancel(restore.clone())
@@ -348,7 +350,7 @@ impl ExplorerPanel {
                     })
             } else {
                 dialog
-                    .button_props(DialogButtonProps::default().ok_text("知道了"))
+                    .button_props(DialogButtonProps::default().ok_text(t!("explorer.ok")))
                     .on_ok(restore)
             }
         });
@@ -417,8 +419,9 @@ impl ExplorerPanel {
     pub fn disconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.send(SftpCommand::Disconnect);
         self.state = ConnectionState::Disconnected;
-        self.remote
-            .update(cx, |pane, cx| pane.disconnected("SFTP 已断开".into(), cx));
+        self.remote.update(cx, |pane, cx| {
+            pane.disconnected(t!("explorer.connection.lost").to_string(), cx)
+        });
         self.close_transfer_dialog(window, cx);
         self.sync_available(cx);
         cx.emit(ExplorerPanelEvent::StateChanged(self.id, self.host_id));
@@ -775,7 +778,7 @@ impl ExplorerPanel {
                     files: true,
                     directories: true,
                     multiple: true,
-                    prompt: Some("选择要上传的文件或目录".into()),
+                    prompt: Some(t!("explorer.choose_upload")),
                 });
                 let target = self.remote.read(cx).path();
                 cx.spawn_in(window, async move |this, cx| {
@@ -935,13 +938,13 @@ impl Panel for ExplorerPanel {
             Button::new(("open-sftp", id.0))
                 .icon(Icon::new(CatalogIcon::FolderTree))
                 .label("SFTP")
-                .tooltip("打开 SFTP 文件浏览")
+                .tooltip(t!("explorer.tab.open_sftp_tip"))
                 .on_click(move |_, window, cx| {
                     window.dispatch_action(Box::new(OpenExplorer(host_id)), cx)
                 }),
             Button::new(("reconnect-sftp", id.0))
                 .icon(Icon::new(CatalogIcon::RefreshCw))
-                .tooltip("重新连接")
+                .tooltip(t!("explorer.connection.reconnect"))
                 .disabled(!self.can_reconnect())
                 .on_click(move |_, window, cx| {
                     window.dispatch_action(
@@ -1068,18 +1071,18 @@ impl TabMenu {
     fn build(&self, menu: PopupMenu, cx: &App) -> PopupMenu {
         let (id, host_id) = (self.id, self.host_id);
         let copy_host = if self.host_is_ip {
-            "复制 IP 地址"
+            t!("explorer.tab.copy_ip")
         } else {
-            "复制主机名"
+            t!("explorer.tab.copy_host_name")
         };
         let menu = menu
             .menu_with_icon(
-                "重命名标签…",
+                t!("explorer.tab.rename"),
                 Icon::new(CatalogIcon::Pencil),
                 Box::new(RenameExplorer(id)),
             )
             .menu_with_icon(
-                "打开 SFTP",
+                t!("explorer.tab.open_sftp"),
                 Icon::new(CatalogIcon::FolderTree),
                 Box::new(OpenExplorer(host_id)),
             )
@@ -1089,7 +1092,7 @@ impl TabMenu {
                 Box::new(CopyHostAddress(host_id)),
             )
             .menu_with_icon_and_disabled(
-                "重新连接",
+                t!("explorer.connection.reconnect"),
                 Icon::new(CatalogIcon::RefreshCw),
                 Box::new(ExplorerAction::new(id, ExplorerCommand::Reconnect)),
                 !self.can_reconnect,

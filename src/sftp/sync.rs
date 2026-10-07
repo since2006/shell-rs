@@ -7,6 +7,8 @@ use std::{collections::HashMap, path::Path};
 
 use anyhow::Result;
 
+use crate::i18n::t;
+
 use super::{
     EntryKind, RemotePath, TransferChoice, TransferDetail, TransferQuestionKind,
     client::{RemoteFs, is_network_error},
@@ -97,7 +99,7 @@ async fn fail(
     error: &anyhow::Error,
     control: &TransferControl,
 ) -> Result<bool> {
-    let message = format!("无法删除：{error:#}");
+    let message = t!("sftp.sync.delete_failed", error = format!("{error:#}"));
     let answer = control
         .ask(TransferQuestionKind::Error, path.as_str(), &message)
         .await?;

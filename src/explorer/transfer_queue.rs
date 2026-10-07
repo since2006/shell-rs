@@ -5,6 +5,7 @@
 
 use std::{collections::HashSet, path::PathBuf};
 
+use crate::i18n::{t, tn};
 use crate::sftp::{TransferDirection, TransferPhase, TransferProgress};
 
 /// Why a batch left the queue before it was done.
@@ -66,7 +67,7 @@ impl TransferJob {
         match (paths.as_slice(), folders.first()) {
             ([one], _) => one.clone(),
             (_, Some(first)) if folders.iter().all(|folder| folder == first) => first.clone(),
-            _ => "多个位置".to_string(),
+            _ => t!("explorer.queue.several_places").to_string(),
         }
     }
 
@@ -141,25 +142,29 @@ impl QueueEntry {
     pub fn status(&self) -> String {
         let progress = self.progress.as_ref();
         match self.state() {
-            QueueState::Pending => "等待中".into(),
+            QueueState::Pending => t!("explorer.queue.status.pending").into(),
             QueueState::Active => match progress.map(TransferProgress::phase) {
-                None | Some(TransferPhase::Scanning) => "正在扫描".into(),
-                Some(TransferPhase::Waiting) => "等待回答".into(),
-                Some(TransferPhase::Reconnecting) => progress
-                    .and_then(TransferProgress::note)
-                    .unwrap_or("正在重连")
-                    .into(),
+                None | Some(TransferPhase::Scanning) => t!("explorer.queue.status.scanning").into(),
+                Some(TransferPhase::Waiting) => t!("explorer.queue.status.waiting").into(),
+                Some(TransferPhase::Reconnecting) => {
+                    match progress.and_then(TransferProgress::note) {
+                        Some(note) => note.into(),
+                        None => t!("explorer.queue.status.reconnecting").into(),
+                    }
+                }
                 Some(_) => percent(progress.map_or(0.0, TransferProgress::fraction)),
             },
-            QueueState::Stopped => "已停止".into(),
+            QueueState::Stopped => t!("explorer.queue.status.stopped").into(),
             QueueState::Done => match progress.map_or(0, TransferProgress::failed) {
-                0 => "已完成".into(),
-                failed => format!("部分失败（{failed} 项）"),
+                0 => t!("explorer.queue.status.done").into(),
+                failed => tn!("explorer.queue.status.partly_failed", failed).into(),
             },
             QueueState::Removed => match &self.removed {
-                Some(Removal::Discarded) => "已丢弃续传进度".into(),
-                Some(Removal::NotStarted(reason)) => format!("无法开始：{reason}"),
-                _ => "已移出".into(),
+                Some(Removal::Discarded) => t!("explorer.queue.status.discarded").into(),
+                Some(Removal::NotStarted(reason)) => {
+                    t!("explorer.queue.status.not_started", reason = reason).into()
+                }
+                _ => t!("explorer.queue.status.removed").into(),
             },
         }
     }

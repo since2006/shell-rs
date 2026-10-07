@@ -22,6 +22,7 @@ use crate::app::{
     ActualSizePreview, CatalogIcon, FitPreview, IMAGE_PREVIEW_CONTEXT, ZoomPreviewIn,
     ZoomPreviewOut,
 };
+use crate::i18n::t;
 
 /// The zoom levels the buttons and keys step through, as a share of the
 /// image's own size (one image pixel to one point at 100%).
@@ -234,15 +235,14 @@ impl Render for ImagePreview {
             .unwrap_or_else(|| size(viewport.width * 0.8 - px(48.), height));
         let scale = pixels.map(|image| self.scale(frame, image));
         let info: SharedString = match pixels {
-            Some(image) => format!(
-                "{} × {} 像素 · {}",
-                f32::from(image.width) as u32,
-                f32::from(image.height) as u32,
-                format_size(self.bytes)
+            Some(image) => t!(
+                "explorer.preview.image_info",
+                width = f32::from(image.width) as u32,
+                height = f32::from(image.height) as u32,
+                size = format_size(self.bytes)
             ),
-            None => format_size(self.bytes),
-        }
-        .into();
+            None => format_size(self.bytes).into(),
+        };
         // Only the scale: whether it fits is the 适合窗口 button's state.
         let zoom_label: SharedString = scale.map(percent).unwrap_or_default().into();
         let focus = self.focus_handle.clone();
@@ -273,8 +273,12 @@ impl Render for ImagePreview {
                     .ghost()
                     .small()
                     .icon(Icon::new(CatalogIcon::ZoomOut))
-                    .accessibility_label("缩小")
-                    .tooltip_with_action("缩小", &ZoomPreviewOut, Some(IMAGE_PREVIEW_CONTEXT))
+                    .accessibility_label(t!("explorer.preview.zoom_out"))
+                    .tooltip_with_action(
+                        t!("explorer.preview.zoom_out"),
+                        &ZoomPreviewOut,
+                        Some(IMAGE_PREVIEW_CONTEXT),
+                    )
                     .on_click(command(Box::new(ZoomPreviewOut))),
             )
             .child(
@@ -293,27 +297,35 @@ impl Render for ImagePreview {
                     .ghost()
                     .small()
                     .icon(Icon::new(CatalogIcon::ZoomIn))
-                    .accessibility_label("放大")
-                    .tooltip_with_action("放大", &ZoomPreviewIn, Some(IMAGE_PREVIEW_CONTEXT))
+                    .accessibility_label(t!("explorer.preview.zoom_in"))
+                    .tooltip_with_action(
+                        t!("explorer.preview.zoom_in"),
+                        &ZoomPreviewIn,
+                        Some(IMAGE_PREVIEW_CONTEXT),
+                    )
                     .on_click(command(Box::new(ZoomPreviewIn))),
             )
             .child(
                 Button::new("preview-fit")
                     .ghost()
                     .small()
-                    .label("适合窗口")
+                    .label(t!("explorer.preview.fit"))
                     .selected(self.zoom == Zoom::Fit)
-                    .tooltip_with_action("适合窗口", &FitPreview, Some(IMAGE_PREVIEW_CONTEXT))
+                    .tooltip_with_action(
+                        t!("explorer.preview.fit"),
+                        &FitPreview,
+                        Some(IMAGE_PREVIEW_CONTEXT),
+                    )
                     .on_click(command(Box::new(FitPreview))),
             )
             .child(
                 Button::new("preview-actual-size")
                     .ghost()
                     .small()
-                    .label("原图")
+                    .label(t!("explorer.preview.actual_size"))
                     .selected(self.zoom == Zoom::Scale(1.0))
                     .tooltip_with_action(
-                        "原图（100%）",
+                        t!("explorer.preview.actual_size_tip"),
                         &ActualSizePreview,
                         Some(IMAGE_PREVIEW_CONTEXT),
                     )
@@ -412,14 +424,14 @@ impl Render for ImagePreview {
                     .children(picture)
                     .when(pixels.is_none(), |scroll| {
                         let note = match &self.decoded {
-                            Some(Err(_)) => "无法显示这张图片",
-                            _ => "正在显示图片…",
+                            Some(Err(_)) => t!("explorer.preview.undecodable"),
+                            _ => t!("explorer.preview.decoding"),
                         };
                         scroll.child(
                             div()
                                 .id("preview-note")
                                 .test_support()
-                                .aria_label(note)
+                                .aria_label(note.clone())
                                 .size_full()
                                 .flex()
                                 .items_center()

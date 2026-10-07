@@ -21,6 +21,7 @@ use crate::app::{
 };
 use crate::explorer::{ExplorerId, ExplorerPanel, FileLocation};
 use crate::host::{HostId, HostStore};
+use crate::i18n::t;
 use crate::sftp::{
     FileStamp, ReadFailure, SaveFailure, SharedLocalDirectoryProvider, TextFile, TextFormat,
     read_local_text, write_local_text,
@@ -221,9 +222,9 @@ impl EditorPanel {
                     let action = EditorAction::new(self.id, EditorCommand::ReloadConfirmed);
                     let dispatch = self.dispatch.clone();
                     confirm_danger(
-                        format!("放弃对“{}”的修改并重新加载？", self.name()).into(),
-                        Some("编辑器里没有保存的修改会丢失。".into()),
-                        "重新加载",
+                        t!("editor.reload.title", name = self.name()),
+                        Some(t!("editor.reload.description")),
+                        t!("editor.command.reload"),
                         std::rc::Rc::new(move |window, cx| send(&dispatch, &action, window, cx)),
                         window,
                         cx,
@@ -326,22 +327,17 @@ impl EditorPanel {
                 }
             }
             Err(SaveFailure::Changed) => {
-                let place = if self.location.is_remote() {
-                    "服务器上的"
+                let description = if self.location.is_remote() {
+                    t!("editor.changed.remote")
                 } else {
-                    "本机上的"
+                    t!("editor.changed.local")
                 };
                 let action = EditorAction::new(self.id, EditorCommand::Overwrite { close });
                 let dispatch = self.dispatch.clone();
                 confirm_danger(
-                    format!("“{name}”在打开后已被修改").into(),
-                    Some(
-                        format!(
-                            "{place}这个文件在你打开或上次保存之后被改过或删除了。覆盖会用编辑器里的内容替换它。"
-                        )
-                        .into(),
-                    ),
-                    "覆盖",
+                    t!("editor.changed.title", name = name),
+                    Some(description),
+                    t!("editor.changed.overwrite"),
                     std::rc::Rc::new(move |window, cx| send(&dispatch, &action, window, cx)),
                     window,
                     cx,
@@ -351,15 +347,13 @@ impl EditorPanel {
                 // What is on disk is neither what was read nor what was meant.
                 self.stamp = None;
                 window.push_notification(
-                    Notification::error(format!(
-                        "{message}。文件可能只写了一部分，请重新连接后再保存一次。"
-                    ))
-                    .title(format!("没有保存完“{name}”")),
+                    Notification::error(t!("editor.save.interrupted", message = message))
+                        .title(t!("editor.save.interrupted_title", name = name)),
                     cx,
                 );
             }
             Err(SaveFailure::Failed(message)) => window.push_notification(
-                Notification::error(message).title(format!("无法保存“{name}”")),
+                Notification::error(message).title(t!("editor.save.failed", name = name)),
                 cx,
             ),
         }
@@ -424,7 +418,7 @@ impl EditorPanel {
             }
             Err(failure) => window.push_notification(
                 Notification::error(failure.to_string())
-                    .title(format!("无法重新加载“{}”", self.name())),
+                    .title(t!("editor.reload.failed", name = self.name())),
                 cx,
             ),
         }
@@ -442,20 +436,20 @@ impl EditorPanel {
         let focus = self.state.read(cx).focus_handle(cx);
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
-                .title(format!("保存对“{name}”的修改？"))
+                .title(t!("editor.close.title", name = name))
                 .overlay_closable(false)
-                .child(div().text_sm().child("不保存的话，这些修改会丢失。"))
+                .child(div().text_sm().child(t!("editor.close.description")))
                 .footer(
                     DialogFooter::new()
                         .child(
                             Button::new("editor-close-cancel")
-                                .label("取消")
+                                .label(t!("common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
                             Button::new("editor-close-discard")
                                 .danger()
-                                .label("放弃修改")
+                                .label(t!("editor.close.discard"))
                                 .on_click({
                                     let (dispatch, discard) = (dispatch.clone(), discard.clone());
                                     move |_, window, cx| {
@@ -465,8 +459,11 @@ impl EditorPanel {
                                 }),
                         )
                         .child(
-                            DialogAction::new()
-                                .child(Button::new("editor-close-save").primary().label("保存")),
+                            DialogAction::new().child(
+                                Button::new("editor-close-save")
+                                    .primary()
+                                    .label(t!("common.save")),
+                            ),
                         ),
                 )
                 .on_ok({
@@ -518,9 +515,9 @@ impl EditorPanel {
                 .into_any_element(),
         };
         let state = match self.phase {
-            Phase::Saving => Some(("正在保存…", cx.theme().muted_foreground)),
-            Phase::Reloading => Some(("正在重新加载…", cx.theme().muted_foreground)),
-            Phase::Idle if self.dirty => Some(("已修改", cx.theme().warning)),
+            Phase::Saving => Some((t!("editor.state.saving"), cx.theme().muted_foreground)),
+            Phase::Reloading => Some((t!("editor.state.reloading"), cx.theme().muted_foreground)),
+            Phase::Idle if self.dirty => Some((t!("editor.state.modified"), cx.theme().warning)),
             Phase::Idle => None,
         };
         let command = |command: EditorCommand| {
@@ -565,7 +562,7 @@ impl EditorPanel {
                     div()
                         .id(("editor-state", id.0))
                         .test_support()
-                        .aria_label(text)
+                        .aria_label(text.clone())
                         .flex_shrink_0()
                         .child(soft_tag(text, color)),
                 )
@@ -575,7 +572,7 @@ impl EditorPanel {
                     .ghost()
                     .small()
                     .icon(Icon::new(CatalogIcon::RefreshCw))
-                    .label("重新加载")
+                    .label(t!("editor.command.reload"))
                     .disabled(self.phase != Phase::Idle)
                     .on_click(command(EditorCommand::Reload)),
             )
@@ -583,10 +580,10 @@ impl EditorPanel {
                 Button::new(("editor-save", id.0))
                     .small()
                     .icon(Icon::new(CatalogIcon::Save))
-                    .label("保存")
+                    .label(t!("common.save"))
                     .disabled(!self.dirty || self.phase != Phase::Idle)
                     .tooltip_with_action(
-                        "保存",
+                        t!("common.save"),
                         &EditorShortcut(EditorCommand::Save),
                         Some(EDITOR_CONTEXT),
                     )
@@ -682,16 +679,19 @@ fn tab_menu(
     let action = |command| Box::new(EditorAction::new(id, command));
     let menu = menu
         .menu_with_icon(
-            "保存",
+            t!("common.save"),
             Icon::new(CatalogIcon::Save),
             action(EditorCommand::Save),
         )
         .menu_with_icon(
-            "重新加载",
+            t!("editor.command.reload"),
             Icon::new(CatalogIcon::RefreshCw),
             action(EditorCommand::Reload),
         )
-        .menu("复制路径", action(EditorCommand::CopyPath))
+        .menu(
+            t!("editor.command.copy_path"),
+            action(EditorCommand::CopyPath),
+        )
         .separator();
     close_tab_items(menu, CenterTab::Editor(id), group, panel, cx)
 }
@@ -717,7 +717,7 @@ impl Render for EditorPanel {
                             .rounded_none()
                             .h_full()
                             .readonly(self.phase == Phase::Reloading)
-                            .aria_label(format!("编辑 {}", self.name())),
+                            .aria_label(t!("editor.text_label", name = self.name())),
                     ),
             )
     }

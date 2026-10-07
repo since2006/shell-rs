@@ -1,5 +1,7 @@
 use crate::app::ExplorerDispatch as _;
 use crate::app::{CatalogIcon, ExplorerAction, ExplorerCommand};
+use crate::i18n::{t, tn};
+use crate::sftp::TransferDirection;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, h_flex,
     table::{Column, ColumnSort, TableDelegate, TableState},
@@ -33,7 +35,32 @@ pub(super) struct ListingContext {
     /// Where the rows are, for the selection rectangle.
     pub geometry: Rc<ListGeometry>,
     /// What the list says while it has no rows.
-    pub placeholder: SharedString,
+    pub placeholder: ListPlaceholder,
+}
+
+/// What the list says while it has no rows, put in words as it is drawn.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum ListPlaceholder {
+    Connecting,
+    #[default]
+    Reading,
+    OnlyHidden,
+    Empty,
+    NotConnected,
+    Unreadable,
+}
+
+impl ListPlaceholder {
+    fn text(self) -> SharedString {
+        match self {
+            Self::Connecting => t!("explorer.list.connecting"),
+            Self::Reading => t!("explorer.list.reading"),
+            Self::OnlyHidden => t!("explorer.list.only_hidden"),
+            Self::Empty => t!("explorer.list.empty"),
+            Self::NotConnected => t!("explorer.list.not_connected"),
+            Self::Unreadable => t!("explorer.list.unreadable"),
+        }
+    }
 }
 
 /// Where the list and its rows are on screen, recorded as they paint, so a
@@ -112,24 +139,38 @@ pub struct FileListing {
 /// WinSCP's columns for each side. Column widths are an API boundary that
 /// takes `Pixels`.
 fn columns(side: PaneSide) -> Vec<Column> {
+    let column = |key: &'static str, width: f32| {
+        Column::new(key, column_title(key))
+            .width(px(width))
+            .sortable()
+    };
     match side {
         PaneSide::Local => vec![
             name_column(px(260.)),
-            Column::new("size", "大小").width(px(100.)).sortable(),
-            Column::new("type", "类型").width(px(100.)).sortable(),
-            Column::new("modified", "修改时间")
-                .width(px(150.))
-                .sortable(),
+            column("size", 100.),
+            column("type", 100.),
+            column("modified", 150.),
         ],
         PaneSide::Remote => vec![
             name_column(px(240.)),
-            Column::new("size", "大小").width(px(100.)).sortable(),
-            Column::new("modified", "修改时间")
-                .width(px(150.))
-                .sortable(),
-            Column::new("rights", "权限").width(px(96.)).sortable(),
-            Column::new("owner", "所有者").width(px(80.)).sortable(),
+            column("size", 100.),
+            column("modified", 150.),
+            column("rights", 96.),
+            column("owner", 80.),
         ],
+    }
+}
+
+/// A column's title, by its key, in the interface language.
+fn column_title(key: &str) -> SharedString {
+    match key {
+        "name" => t!("explorer.column.name"),
+        "size" => t!("explorer.column.size"),
+        "type" => t!("explorer.column.type"),
+        "modified" => t!("explorer.column.modified"),
+        "rights" => t!("explorer.column.rights"),
+        "owner" => t!("explorer.column.owner"),
+        _ => SharedString::default(),
     }
 }
 
@@ -148,6 +189,14 @@ impl FileListing {
 
     pub(super) fn configure(&mut self, context: ListingContext) {
         self.context = context;
+    }
+
+    /// Title the columns in the interface language again, widths as they
+    /// are; the table takes the titles on its next `refresh`.
+    pub(super) fn retitle_columns(&mut self) {
+        for column in &mut self.columns {
+            column.name = column_title(&column.key);
+        }
     }
 
     /// The rows shown, in display order.
@@ -209,8 +258,16 @@ impl FileListing {
         };
         let paths = names.iter().map(|name| self.child_path(name));
         match self.side {
-            PaneSide::Local => drag_files(cell, paths.map(PathBuf::from).collect(), "上传"),
-            PaneSide::Remote => drag_files(cell, paths.collect::<Vec<String>>(), "下载"),
+            PaneSide::Local => drag_files(
+                cell,
+                paths.map(PathBuf::from).collect(),
+                TransferDirection::Upload,
+            ),
+            PaneSide::Remote => drag_files(
+                cell,
+                paths.collect::<Vec<String>>(),
+                TransferDirection::Download,
+            ),
         }
     }
 
@@ -549,7 +606,7 @@ impl TableDelegate for FileListing {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        let text = self.context.placeholder.clone();
+        let text = self.context.placeholder.text();
         div()
             .id("list-placeholder")
             .size_full()
@@ -568,7 +625,7 @@ impl TableDelegate for FileListing {
 /// included, so it has none of the table's: the cell and the title pad
 /// themselves as the table would (`px_1p5`, the small table's 6 px).
 fn name_column(width: Pixels) -> Column {
-    Column::new("name", "名称")
+    Column::new("name", column_title("name"))
         .width(width)
         .paddings(Edges::all(px(0.)))
         .sortable()
@@ -583,16 +640,20 @@ pub(super) struct FilesDrag<P> {
 pub(super) type LocalFilesDrag = FilesDrag<PathBuf>;
 pub(super) type RemoteFilesDrag = FilesDrag<String>;
 
-/// Let `cell` be dragged to the other pane, carrying `paths`. `verb` is what
-/// dropping them there does.
-fn drag_files<P: 'static>(cell: Stateful<Div>, paths: Vec<P>, verb: &'static str) -> Stateful<Div> {
+/// Let `cell` be dragged to the other pane, carrying `paths`, which dropping
+/// there moves in `direction`.
+fn drag_files<P: 'static>(
+    cell: Stateful<Div>,
+    paths: Vec<P>,
+    direction: TransferDirection,
+) -> Stateful<Div> {
     let drag = FilesDrag {
         paths,
         spot: DropSpot::default(),
     };
     cell.on_drag(drag, move |drag, _, _, cx| {
         cx.new(|_| FileDragPreview {
-            verb,
+            direction,
             count: drag.paths.len(),
             spot: drag.spot.clone(),
         })
@@ -675,7 +736,7 @@ impl DropSpot {
 }
 
 struct FileDragPreview {
-    verb: &'static str,
+    direction: TransferDirection,
     count: usize,
     spot: DropSpot,
 }
@@ -698,7 +759,10 @@ impl Render for FileDragPreview {
         if !droppable {
             return div().child(pointer).into_any_element();
         }
-        let text = format!("{} {} 个项目", self.verb, self.count);
+        let text = match self.direction {
+            TransferDirection::Upload => tn!("explorer.drag.upload", self.count),
+            TransferDirection::Download => tn!("explorer.drag.download", self.count),
+        };
         div()
             .id("file-drag-preview")
             .px_3()

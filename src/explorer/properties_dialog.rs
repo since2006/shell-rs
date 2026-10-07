@@ -4,6 +4,7 @@
 
 use super::{ExplorerPanel, FileEntry, PaneOperation, format_changed, format_size};
 use crate::app::ExplorerCommand;
+use crate::i18n::{t, tn};
 use crate::sftp::PermissionEdit;
 use crate::shared::commit_footer;
 use gpui_kit::component::{
@@ -152,7 +153,7 @@ impl PropertiesForm {
         }
     }
 
-    fn row(label: &'static str, value: String, cx: &App) -> impl IntoElement {
+    fn row(label: SharedString, value: String, cx: &App) -> impl IntoElement {
         h_flex()
             .gap_3()
             .text_sm()
@@ -173,7 +174,7 @@ impl PropertiesForm {
             Some(first) if values.iter().all(|value| value == first) => {
                 first.clone().unwrap_or_else(|| "—".into())
             }
-            Some(_) => "（不一致）".into(),
+            Some(_) => t!("explorer.properties.mixed").into(),
             None => "—".into(),
         }
     }
@@ -185,22 +186,30 @@ impl Render for PropertiesForm {
             "—".to_string()
         } else {
             let bytes: u64 = self.items.iter().map(|item| item.size).sum();
-            format!("{}（{bytes} 字节）", format_size(bytes))
+            tn!("explorer.properties.size", bytes, size = format_size(bytes)).into()
         };
-        let classes = ["所有者", "组", "其他"];
-        let verbs = ["读", "写", "执行"];
+        let classes = [
+            t!("explorer.properties.class_owner"),
+            t!("explorer.properties.class_group"),
+            t!("explorer.properties.class_others"),
+        ];
+        let verbs = [
+            t!("explorer.properties.read"),
+            t!("explorer.properties.write"),
+            t!("explorer.properties.execute"),
+        ];
         let grid = v_flex()
             .gap_1()
             .children(classes.iter().enumerate().map(|(row, class)| {
                 h_flex()
                     .gap_3()
                     .text_sm()
-                    .child(div().w_16().flex_shrink_0().child(*class))
+                    .child(div().w_16().flex_shrink_0().child(class.clone()))
                     .children(verbs.iter().enumerate().map(|(column, verb)| {
                         let index = row * 3 + column;
                         let bit = BITS[index];
                         Checkbox::new(("perm", index))
-                            .label(*verb)
+                            .label(verb.clone())
                             .small()
                             .checked(self.draft.is_checked(bit))
                             .disabled(!self.editable)
@@ -215,11 +224,15 @@ impl Render for PropertiesForm {
             }));
         v_flex()
             .gap_3()
-            .child(Self::row("位置", self.location.clone(), cx))
-            .child(Self::row("大小", size, cx))
+            .child(Self::row(
+                t!("explorer.properties.location"),
+                self.location.clone(),
+                cx,
+            ))
+            .child(Self::row(t!("explorer.column.size"), size, cx))
             .when(self.items.len() == 1, |this| {
                 this.child(Self::row(
-                    "修改时间",
+                    t!("explorer.column.modified"),
                     self.items[0]
                         .modified
                         .map(format_changed)
@@ -229,7 +242,7 @@ impl Render for PropertiesForm {
             })
             .when(self.remote, |this| {
                 this.child(Self::row(
-                    "所有者",
+                    t!("explorer.column.owner"),
                     Self::shared(
                         self.items
                             .iter()
@@ -238,7 +251,7 @@ impl Render for PropertiesForm {
                     cx,
                 ))
                 .child(Self::row(
-                    "组",
+                    t!("explorer.properties.group"),
                     Self::shared(
                         self.items
                             .iter()
@@ -253,7 +266,12 @@ impl Render for PropertiesForm {
                 h_flex()
                     .gap_3()
                     .text_sm()
-                    .child(div().w_16().flex_shrink_0().child("八进制"))
+                    .child(
+                        div()
+                            .w_16()
+                            .flex_shrink_0()
+                            .child(t!("explorer.properties.octal")),
+                    )
                     .child(
                         div().w_20().child(
                             Input::new(&self.octal)
@@ -268,7 +286,7 @@ impl Render for PropertiesForm {
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child("部分项目权限不同，未改动的位保持原样。"),
+                        .child(t!("explorer.properties.mixed_note")),
                 )
             })
             .when(!self.editable, |this| {
@@ -277,9 +295,9 @@ impl Render for PropertiesForm {
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .child(if self.items.iter().all(FileEntry::is_link) {
-                            "符号链接没有独立的权限。"
+                            t!("explorer.properties.links")
                         } else {
-                            "此系统不支持修改权限。"
+                            t!("explorer.properties.unsupported")
                         }),
                 )
             })
@@ -289,7 +307,7 @@ impl Render for PropertiesForm {
                         .gap_1()
                         .child(
                             Checkbox::new("perm-recursive")
-                                .label("同时应用到其中的文件和子目录")
+                                .label(t!("explorer.properties.recursive"))
                                 .small()
                                 .checked(self.recursive)
                                 .on_change(cx.listener(|this, checked: &bool, _, cx| {
@@ -299,7 +317,7 @@ impl Render for PropertiesForm {
                         )
                         .child(
                             Checkbox::new("perm-dir-x")
-                                .label("为目录添加执行权限（X）")
+                                .label(t!("explorer.properties.dir_x"))
                                 .small()
                                 .checked(self.add_x_to_dirs)
                                 .disabled(!self.recursive)
@@ -327,9 +345,9 @@ impl ExplorerPanel {
             return;
         }
         let title = if let [item] = items.as_slice() {
-            format!("「{}」的属性", item.name)
+            t!("explorer.properties.title_one", name = item.name)
         } else {
-            format!("{} 个项目的属性", items.len())
+            tn!("explorer.properties.title_several", items.len())
         };
         let names: Vec<String> = items
             .iter()
@@ -345,7 +363,7 @@ impl ExplorerPanel {
                 // Closed by its buttons or Escape, not by a click beside it.
                 .overlay_closable(false)
                 .child(form.clone())
-                .footer(commit_footer("commit", "应用"))
+                .footer(commit_footer("commit", t!("explorer.properties.apply")))
                 .on_ok({
                     let (form, sender, names) = (form.clone(), sender.clone(), names.clone());
                     move |_, window, cx| {

@@ -1,6 +1,7 @@
 //! Directory row snapshots and display formatting.
 
 use super::PaneSide;
+use crate::i18n::t;
 use crate::sftp::{DirectoryEntry, EntryKind};
 use gpui_kit::{App, Global, SharedString};
 use serde::{Deserialize, Serialize};
@@ -18,17 +19,17 @@ pub enum NewEntryKind {
 }
 
 impl NewEntryKind {
-    pub fn title(self) -> &'static str {
+    pub fn title(self) -> SharedString {
         match self {
-            NewEntryKind::Folder => "新建文件夹",
-            NewEntryKind::File => "新建文件",
+            NewEntryKind::Folder => t!("explorer.new.folder_title"),
+            NewEntryKind::File => t!("explorer.new.file_title"),
         }
     }
 
-    pub fn default_name(self) -> &'static str {
+    pub fn default_name(self) -> SharedString {
         match self {
-            NewEntryKind::Folder => "新建文件夹",
-            NewEntryKind::File => "新建文件.txt",
+            NewEntryKind::Folder => t!("explorer.new.folder_name"),
+            NewEntryKind::File => t!("explorer.new.file_name"),
         }
     }
 }
@@ -41,11 +42,11 @@ pub enum FileKind {
 }
 
 impl FileKind {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            FileKind::Dir => "文件夹",
-            FileKind::File => "文件",
-            FileKind::Symlink => "链接",
+            FileKind::Dir => t!("explorer.kind.folder"),
+            FileKind::File => t!("explorer.kind.file"),
+            FileKind::Symlink => t!("explorer.kind.link"),
         }
     }
 }
@@ -149,12 +150,12 @@ impl FileEntry {
     /// The type shown in the 类型 column: the kind, or the extension for files.
     pub fn type_label(&self) -> String {
         if self.is_parent() {
-            return "上级目录".into();
+            return t!("explorer.kind.parent").into();
         }
         match self.kind {
             FileKind::File => match self.name.rsplit_once('.') {
                 Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() => {
-                    format!("{} 文件", ext.to_uppercase())
+                    t!("explorer.kind.extension", ext = ext.to_uppercase()).into()
                 }
                 _ => self.kind.label().to_string(),
             },
@@ -317,11 +318,11 @@ impl FileSizeFormat {
         FileSizeFormat::Short,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            FileSizeFormat::Bytes => "字节",
-            FileSizeFormat::Kilobytes => "千字节（KB）",
-            FileSizeFormat::Short => "简短格式（B、KB、MB、GB）",
+            FileSizeFormat::Bytes => t!("explorer.size_format.bytes"),
+            FileSizeFormat::Kilobytes => t!("explorer.size_format.kilobytes"),
+            FileSizeFormat::Short => t!("explorer.size_format.short"),
         }
     }
 

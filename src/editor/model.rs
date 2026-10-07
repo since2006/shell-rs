@@ -2,6 +2,7 @@
 //! how it indents, and what the status line says.
 
 use crate::host::HostId;
+use crate::i18n::t;
 use crate::sftp::{RemotePath, TextFormat};
 use gpui_kit::component::input::TabSize;
 use std::path::PathBuf;
@@ -78,7 +79,12 @@ pub fn indentation(language: &str, text: &str) -> TabSize {
 
 /// 「行 12，列 5」, from the editor's zero-based position.
 pub fn cursor_label(line: u32, character: u32) -> String {
-    format!("行 {}，列 {}", line + 1, character + 1)
+    t!(
+        "editor.status.cursor",
+        line = line + 1,
+        column = character + 1
+    )
+    .to_string()
 }
 
 /// 「UTF-8 · LF」, 「UTF-8 BOM · CRLF」.

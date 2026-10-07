@@ -9,6 +9,7 @@ use crate::app::ExplorerDispatch as _;
 use crate::{
     app::{CatalogIcon, ExplorerAction, ExplorerCommand},
     host::{BookmarkSide, HostId, HostStore},
+    i18n::t,
     shared::{commit_footer, dismiss_form_error, form_error_notification},
 };
 use gpui_kit::component::{
@@ -75,7 +76,10 @@ impl OpenDirectoryForm {
     fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let path = self.directory(cx);
         if path.is_empty() {
-            window.push_notification(form_error_notification("请输入要打开的目录"), cx);
+            window.push_notification(
+                form_error_notification(t!("explorer.open_directory.missing")),
+                cx,
+            );
             return false;
         }
         let remote = self.remote;
@@ -151,7 +155,7 @@ impl OpenDirectoryForm {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("选择要打开的目录".into()),
+            prompt: Some(t!("explorer.open_directory.choose")),
         });
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = choice.await
@@ -177,7 +181,7 @@ impl OpenDirectoryForm {
             .id("bookmark-list")
             .test_support()
             .role(Role::ListBox)
-            .aria_label("书签")
+            .aria_label(t!("explorer.open_directory.bookmarks"))
             .track_focus(&self.list_focus)
             .flex_1()
             .min_w_0()
@@ -203,7 +207,7 @@ impl OpenDirectoryForm {
                         .px_2()
                         .py_1()
                         .text_color(theme.muted_foreground)
-                        .child("暂无书签"),
+                        .child(t!("explorer.bookmarks.none")),
                 )
             })
             .children(bookmarks.iter().enumerate().map(|(ix, path)| {
@@ -247,74 +251,96 @@ impl Render for OpenDirectoryForm {
         let bookmarks = self.bookmarks(cx);
         let selected = self.selected(cx);
         let typed = !self.directory(cx).is_empty();
-        let button = |id: &'static str, label: &'static str| Button::new(id).small().label(label);
+        let button = |id: &'static str, label: SharedString| Button::new(id).small().label(label);
         v_flex().gap_3().child(
             Form::new()
                 .child(
-                    Field::new().label("目录").child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Input::new(&self.input)
-                                    .id("open-directory-path")
-                                    .small()
-                                    .flex_1(),
-                            )
-                            .when(!self.remote, |this| {
-                                this.child(button("open-directory-browse", "浏览…").on_click(
-                                    cx.listener(|this, _, window, cx| this.browse(window, cx)),
-                                ))
-                            }),
-                    ),
+                    Field::new()
+                        .label(t!("explorer.open_directory.folder"))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Input::new(&self.input)
+                                        .id("open-directory-path")
+                                        .small()
+                                        .flex_1(),
+                                )
+                                .when(!self.remote, |this| {
+                                    this.child(
+                                        button("open-directory-browse", t!("explorer.browse"))
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.browse(window, cx)
+                                            })),
+                                    )
+                                }),
+                        ),
                 )
                 .child(
-                    Field::new().label("书签").child(
-                        h_flex()
-                            .gap_2()
-                            .items_start()
-                            .child(self.render_list(&bookmarks, selected, window, cx))
-                            .child(
-                                v_flex()
-                                    .gap_1()
-                                    .w(rems(5.))
-                                    .flex_shrink_0()
-                                    .child(
-                                        button("bookmark-add", "添加")
+                    Field::new()
+                        .label(t!("explorer.open_directory.bookmarks"))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_start()
+                                .child(self.render_list(&bookmarks, selected, window, cx))
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .w(rems(5.))
+                                        .flex_shrink_0()
+                                        .child(
+                                            button(
+                                                "bookmark-add",
+                                                t!("explorer.open_directory.add"),
+                                            )
                                             .w_full()
                                             .disabled(!typed || selected.is_some())
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.add(window, cx)
-                                            })),
-                                    )
-                                    .child(
-                                        button("bookmark-remove", "删除")
+                                            .on_click(
+                                                cx.listener(|this, _, window, cx| {
+                                                    this.add(window, cx)
+                                                }),
+                                            ),
+                                        )
+                                        .child(
+                                            button(
+                                                "bookmark-remove",
+                                                t!("explorer.open_directory.remove"),
+                                            )
                                             .w_full()
                                             .disabled(selected.is_none())
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.remove(window, cx)
-                                            })),
-                                    )
-                                    .child(div().h_4())
-                                    .child(
-                                        button("bookmark-up", "上移")
-                                            .w_full()
-                                            .disabled(selected.is_none_or(|ix| ix == 0))
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.shift(-1, window, cx)
-                                            })),
-                                    )
-                                    .child(
-                                        button("bookmark-down", "下移")
+                                            .on_click(
+                                                cx.listener(|this, _, window, cx| {
+                                                    this.remove(window, cx)
+                                                }),
+                                            ),
+                                        )
+                                        .child(div().h_4())
+                                        .child(
+                                            button("bookmark-up", t!("explorer.open_directory.up"))
+                                                .w_full()
+                                                .disabled(selected.is_none_or(|ix| ix == 0))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.shift(-1, window, cx)
+                                                })),
+                                        )
+                                        .child(
+                                            button(
+                                                "bookmark-down",
+                                                t!("explorer.open_directory.down"),
+                                            )
                                             .w_full()
                                             .disabled(
                                                 selected.is_none_or(|ix| ix + 1 >= bookmarks.len()),
                                             )
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.shift(1, window, cx)
-                                            })),
-                                    ),
-                            ),
-                    ),
+                                            .on_click(
+                                                cx.listener(|this, _, window, cx| {
+                                                    this.shift(1, window, cx)
+                                                }),
+                                            ),
+                                        ),
+                                ),
+                        ),
                 ),
         )
     }
@@ -351,11 +377,14 @@ impl ExplorerPanel {
         });
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
-                .title("打开目录")
+                .title(t!("explorer.open_directory.title"))
                 // Closed by its buttons or Escape, not by a click beside it.
                 .overlay_closable(false)
                 .child(form.clone())
-                .footer(commit_footer("open-directory-confirm", "打开"))
+                .footer(commit_footer(
+                    "open-directory-confirm",
+                    t!("explorer.open_directory.open"),
+                ))
                 .on_ok({
                     let form = form.clone();
                     move |_, window, cx| form.update(cx, |form, cx| form.open(window, cx))

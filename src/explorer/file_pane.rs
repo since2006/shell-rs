@@ -1,7 +1,9 @@
 use super::{
     ClickMode, CursorMotion, ExplorerId, FileEntry, FileListing, FileSizeFormat, LoadIntent,
     NavigationHistory, PreviewKind, Selection, ShowHiddenFiles, child_path,
-    file_listing::{ListGeometry, ListingContext, MenuHit, Pressed, accept_drops, offer_drop},
+    file_listing::{
+        ListGeometry, ListPlaceholder, ListingContext, MenuHit, Pressed, accept_drops, offer_drop,
+    },
     pane_menu::{
         PaneMenuState, bookmark_menu, directory_menu, item_menu, new_menu, size_format_menu,
     },
@@ -15,7 +17,8 @@ use crate::{
         REMOTE_FILE_LIST_CONTEXT, ToggleHiddenFiles,
     },
     host::{BookmarkSide, ConnectionState, HostId, HostStore},
-    sftp::{DirectoryListing, SharedLocalDirectoryProvider},
+    i18n::{UiLocale, t, tn},
+    sftp::{DirectoryListing, Place, SharedLocalDirectoryProvider},
 };
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
@@ -80,11 +83,20 @@ impl PaneSide {
     pub fn from_remote(remote: bool) -> Self {
         if remote { Self::Remote } else { Self::Local }
     }
-    pub fn label(self) -> &'static str {
+    /// What assistive technology calls this side's path label.
+    pub(super) fn path_label_name(self) -> SharedString {
         if self == Self::Local {
-            "本地"
+            t!("explorer.path.local")
         } else {
-            "远程"
+            t!("explorer.path.remote")
+        }
+    }
+    /// What assistive technology calls this side's 目录列表 select.
+    fn directory_select_name(self) -> SharedString {
+        if self == Self::Local {
+            t!("explorer.directory_select.local")
+        } else {
+            t!("explorer.directory_select.remote")
         }
     }
     fn pane_id(self) -> &'static str {
@@ -171,7 +183,7 @@ pub struct FilePane {
     pub(super) path: String,
     home: String,
     /// Well-known local places for the 目录列表 select; empty for remote.
-    places: Vec<(SharedString, String)>,
+    places: Vec<(Place, String)>,
     table: Entity<TableState<FileListing>>,
     /// The path label part under the pointer, by the directory it opens.
     pub(super) hovered_part: Option<String>,
@@ -224,7 +236,7 @@ impl FilePane {
         explorer: ExplorerId,
         host_id: HostId,
         home: String,
-        places: Vec<(SharedString, String)>,
+        places: Vec<(Place, String)>,
         store: Entity<HostStore>,
         dispatch: FocusHandle,
         window: &mut Window,
@@ -262,6 +274,15 @@ impl FilePane {
             ),
             cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe_global::<ShowHiddenFiles>(|pane, cx| pane.sync_hidden_files(cx)),
+            // The column titles and the select's groups are kept by
+            // gpui-kit, so they are given again in the new language.
+            cx.observe_global_in::<UiLocale>(window, |pane, window, cx| {
+                pane.table.update(cx, |table, cx| {
+                    table.delegate_mut().retitle_columns();
+                    table.refresh(cx);
+                });
+                pane.sync_path_select(window, cx);
+            }),
         ];
         let mut pane = Self {
             side,
@@ -489,9 +510,7 @@ impl FilePane {
             pane: Some(cx.entity().downgrade()),
             menu_hit: self.menu_hit.clone(),
             geometry: self.geometry.clone(),
-            placeholder: self
-                .placeholder(self.table.read(cx).delegate().hidden_count())
-                .into(),
+            placeholder: self.placeholder(self.table.read(cx).delegate().hidden_count()),
         };
         self.table.update(cx, |table, cx| {
             table.delegate_mut().configure(context);
@@ -504,22 +523,22 @@ impl FilePane {
     /// the read is slow, like the status line, so a quick refresh does not
     /// flicker. A directory of nothing but hidden files, not shown, is not
     /// empty.
-    fn placeholder(&self, hidden: usize) -> &'static str {
+    fn placeholder(&self, hidden: usize) -> ListPlaceholder {
         if self.connection == ConnectionState::Connecting {
-            "正在连接 SFTP…"
+            ListPlaceholder::Connecting
         } else if self.loading && (!self.listed || self.slow_load) {
-            "正在读取目录…"
+            ListPlaceholder::Reading
         } else if self.listed && hidden > 0 {
-            "只有隐藏文件"
+            ListPlaceholder::OnlyHidden
         } else if self.listed {
-            "空目录"
+            ListPlaceholder::Empty
         } else if self.connection == ConnectionState::Disconnected {
-            "未连接"
+            ListPlaceholder::NotConnected
         } else if self.error.is_some() {
-            "无法读取目录"
+            ListPlaceholder::Unreadable
         } else {
             // Before the first read is asked for.
-            "正在读取目录…"
+            ListPlaceholder::Reading
         }
     }
     fn update_selection(
@@ -686,21 +705,22 @@ impl FilePane {
     /// wrong goes to the window's status line instead, see `problem`.
     fn render_status(&self, file_count: usize, selected: usize, cx: &App) -> impl IntoElement {
         let hidden = self.table.read(cx).delegate().hidden_count();
-        let status = if self.connection == ConnectionState::Connecting {
-            "正在连接 SFTP…".to_string()
+        let status: SharedString = if self.connection == ConnectionState::Connecting {
+            t!("explorer.list.connecting")
         } else if let Some(name) = &self.opening {
-            format!("正在打开 {name}…")
+            t!("explorer.status.opening", name = name)
         } else if self.slow_load {
-            "正在读取目录…".to_string()
+            t!("explorer.list.reading")
         } else {
-            let mut status = format!("{file_count} 个项目");
+            // Counts, each a phrase of its own, joined by a dot.
+            let mut parts = vec![tn!("explorer.status.items", file_count)];
             if hidden > 0 {
-                status.push_str(&format!(" · 隐藏 {hidden} 项"));
+                parts.push(tn!("explorer.status.hidden", hidden));
             }
             if selected > 0 {
-                status.push_str(&format!(" · 已选择 {selected} 项"));
+                parts.push(tn!("explorer.status.selected", selected));
             }
-            status
+            parts.join(" · ").into()
         };
         h_flex()
             .id("pane-status")
@@ -907,27 +927,30 @@ impl FilePane {
         let side = self.side;
         let chain = path_ancestors(&self.path, side == PaneSide::Remote);
         let mut groups = vec![
-            SearchableGroup::new("当前路径").items(chain.into_iter().enumerate().map(
-                |(depth, (title, path))| PathChoice {
-                    title: title.into(),
-                    path: path.into(),
-                    depth,
-                    home: false,
-                    side,
-                },
-            )),
+            SearchableGroup::new(t!("explorer.directory_select.current")).items(
+                chain
+                    .into_iter()
+                    .enumerate()
+                    .map(|(depth, (title, path))| PathChoice {
+                        title: title.into(),
+                        path: path.into(),
+                        depth,
+                        home: false,
+                        side,
+                    }),
+            ),
         ];
         if !self.places.is_empty() {
             groups.push(
-                SearchableGroup::new("位置").items(self.places.iter().enumerate().map(
-                    |(ix, (title, path))| PathChoice {
-                        title: title.clone(),
+                SearchableGroup::new(t!("explorer.directory_select.places")).items(
+                    self.places.iter().map(|(place, path)| PathChoice {
+                        title: place.title(),
                         path: path.clone().into(),
                         depth: 0,
-                        home: ix == 0,
+                        home: *place == Place::Home,
                         side,
-                    },
-                )),
+                    }),
+                ),
             );
         }
         let current: SharedString = self.path.clone().into();
@@ -950,7 +973,7 @@ impl FilePane {
                 .background_spawn(async move {
                     provider
                         .list(&PathBuf::from(path))
-                        .map_err(|e| format!("无法读取目录：{e}"))
+                        .map_err(|e| t!("explorer.list.read_failed", error = e).to_string())
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
@@ -1000,14 +1023,14 @@ impl Render for FilePane {
         let navigable = self.takes_commands();
         // A toolbar button dispatches the same command as its key binding,
         // and its tooltip shows that binding.
-        let tool = |id: &'static str, icon: Icon, tip: &'static str, command: ExplorerCommand| {
+        let tool = |id: &'static str, icon: Icon, tip: SharedString, command: ExplorerCommand| {
             let dispatch = self.dispatch.clone();
             let shortcut = ExplorerShortcut(command.clone());
             Button::new(id)
                 .ghost()
                 .small()
                 .icon(icon)
-                .accessibility_label(tip)
+                .accessibility_label(tip.clone())
                 .tooltip_with_action(tip, &shortcut, Some(context))
                 .on_click(move |_, window, cx| {
                     dispatch.dispatch_explorer_action(
@@ -1039,9 +1062,9 @@ impl Render for FilePane {
                 .child(row)
         };
         let hidden_files_tip = if state.show_hidden {
-            "不显示隐藏文件"
+            t!("explorer.toolbar.hide_hidden_files")
         } else {
-            "显示隐藏文件"
+            t!("explorer.command.show_hidden_files")
         };
         let navigation = toolbar()
             // `Select` fills its parent (`size_full`), so it needs a sized
@@ -1052,7 +1075,7 @@ impl Render for FilePane {
                         .id("path-select")
                         .small()
                         .menu_width(rems(18.))
-                        .accessibility_label(format!("{}目录", self.side.label()))
+                        .accessibility_label(self.side.directory_select_name())
                         .disabled(!navigable),
                 ),
             )
@@ -1067,7 +1090,7 @@ impl Render for FilePane {
                         tool(
                             "bookmarks",
                             Icon::new(CatalogIcon::Bookmark),
-                            "打开目录/书签…",
+                            t!("explorer.command.open_directory"),
                             ExplorerCommand::OpenDirectory { remote },
                         )
                         .disabled(!navigable),
@@ -1080,7 +1103,7 @@ impl Render for FilePane {
                 tool(
                     "up",
                     Icon::new(CatalogIcon::FolderUp),
-                    "上级目录",
+                    t!("explorer.command.up"),
                     ExplorerCommand::Up { remote },
                 )
                 .disabled(!navigable || !state.can_go_up),
@@ -1089,7 +1112,7 @@ impl Render for FilePane {
                 tool(
                     "root",
                     Icon::new(CatalogIcon::FolderRoot),
-                    "根目录",
+                    t!("explorer.command.root"),
                     ExplorerCommand::Root { remote },
                 )
                 .disabled(!navigable || !state.can_go_up),
@@ -1098,7 +1121,7 @@ impl Render for FilePane {
                 tool(
                     "home",
                     Icon::new(CatalogIcon::House),
-                    "主目录",
+                    t!("explorer.command.home"),
                     ExplorerCommand::Home { remote },
                 )
                 .disabled(!navigable || !state.can_go_home),
@@ -1107,7 +1130,7 @@ impl Render for FilePane {
                 tool(
                     "refresh",
                     Icon::new(CatalogIcon::RefreshCw),
-                    "刷新",
+                    t!("explorer.command.refresh"),
                     ExplorerCommand::Refresh { remote },
                 )
                 .disabled(!navigable),
@@ -1117,7 +1140,7 @@ impl Render for FilePane {
                 tool(
                     "back",
                     Icon::new(IconName::ArrowLeft),
-                    "后退",
+                    t!("explorer.command.back"),
                     ExplorerCommand::Back { remote },
                 )
                 .disabled(!navigable || !state.can_go_back),
@@ -1126,7 +1149,7 @@ impl Render for FilePane {
                 tool(
                     "forward",
                     Icon::new(IconName::ArrowRight),
-                    "前进",
+                    t!("explorer.command.forward"),
                     ExplorerCommand::Forward { remote },
                 )
                 .disabled(!navigable || !state.can_go_forward),
@@ -1144,7 +1167,7 @@ impl Render for FilePane {
                     } else {
                         CatalogIcon::EyeOff
                     }))
-                    .accessibility_label(hidden_files_tip)
+                    .accessibility_label(hidden_files_tip.clone())
                     .tooltip_with_action(
                         hidden_files_tip,
                         &ToggleHiddenFiles(self.side),
@@ -1163,9 +1186,19 @@ impl Render for FilePane {
             );
         let transfer_shortcut = ExplorerShortcut(ExplorerCommand::Transfer { remote });
         let (id, icon, label, tip) = if remote {
-            ("download", CatalogIcon::Download, "下载…", "下载所选项目")
+            (
+                "download",
+                CatalogIcon::Download,
+                t!("explorer.command.download"),
+                t!("explorer.toolbar.download_tip"),
+            )
         } else {
-            ("upload", CatalogIcon::Upload, "上传…", "上传所选项目")
+            (
+                "upload",
+                CatalogIcon::Upload,
+                t!("explorer.command.upload"),
+                t!("explorer.toolbar.upload_tip"),
+            )
         };
         let transfer = Button::new(id)
             .icon(Icon::new(icon))
@@ -1192,7 +1225,7 @@ impl Render for FilePane {
                 .disabled(!state.can_transfer)
                 .dropdown_menu(move |menu, _, _| {
                     menu.menu(
-                        "选择文件上传…",
+                        t!("explorer.toolbar.choose_files"),
                         Box::new(ExplorerAction::new(sid, ExplorerCommand::ChooseFiles)),
                     )
                 })
@@ -1205,7 +1238,7 @@ impl Render for FilePane {
                 tool(
                     "delete",
                     Icon::new(CatalogIcon::Trash),
-                    "删除",
+                    t!("common.delete"),
                     ExplorerCommand::Delete { remote },
                 )
                 .disabled(selected == 0 || !state.can_modify),
@@ -1214,7 +1247,7 @@ impl Render for FilePane {
                 tool(
                     "rename",
                     Icon::new(CatalogIcon::SquarePen),
-                    "重命名…",
+                    t!("explorer.command.rename"),
                     ExplorerCommand::Rename { remote },
                 )
                 .disabled(selected != 1 || !state.can_modify),
@@ -1223,7 +1256,7 @@ impl Render for FilePane {
                 tool(
                     "properties",
                     Icon::new(IconName::Info),
-                    "属性…",
+                    t!("explorer.command.properties"),
                     ExplorerCommand::Properties { remote },
                 )
                 .disabled(selected == 0 || !state.can_modify),
@@ -1235,7 +1268,7 @@ impl Render for FilePane {
                     .ghost()
                     .small()
                     .icon(Icon::new(CatalogIcon::FolderPlus))
-                    .label("新建")
+                    .label(t!("explorer.command.new"))
                     .dropdown_caret(true)
                     .disabled(!state.can_modify)
                     .dropdown_menu(move |popup, _, _| new_menu(popup, &menu))

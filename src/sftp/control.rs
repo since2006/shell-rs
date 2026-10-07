@@ -1,4 +1,5 @@
 use super::{SftpEvent, TransferAnswer, TransferChoice, TransferQuestion, TransferQuestionKind};
+use crate::i18n::t;
 use anyhow::Result;
 use async_channel::{Receiver, Sender};
 use std::{
@@ -12,7 +13,7 @@ static NEXT_QUESTION: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct Cancelled;
 impl std::fmt::Display for Cancelled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("传输已停止，进度已保留")
+        f.write_str(&t!("sftp.transfer.cancelled"))
     }
 }
 impl std::error::Error for Cancelled {}

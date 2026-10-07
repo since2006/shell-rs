@@ -13,6 +13,7 @@ use super::{
     journal::{DownloadJournal, DownloadRecord, partial_path, remove_if_present},
     meter::TransferMeter,
 };
+use crate::i18n::{t, tn};
 use anyhow::{Result, anyhow, bail};
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use std::{
@@ -58,7 +59,7 @@ fn local_name(name: &str) -> Result<&str> {
         name.contains(['/', '\0'])
     };
     if invalid || matches!(name, "" | "." | "..") {
-        bail!("名称「{name}」在本机无效");
+        bail!(t!("sftp.download.name_invalid", name = name));
     }
     Ok(name)
 }
@@ -114,7 +115,7 @@ impl DownloadBatch {
                     let found = control.run(fs.metadata(&source)).await;
                     let error = match found {
                         Ok(Some(metadata)) => Ok(metadata),
-                        Ok(None) => Err("远程项目不存在".to_string()),
+                        Ok(None) => Err(t!("sftp.download.source_missing").to_string()),
                         Err(error)
                             if super::client::is_network_error(&error)
                                 || error.is::<Cancelled>() =>
@@ -183,7 +184,7 @@ impl DownloadBatch {
 
     pub fn verify_host(&self, fingerprint: &str) -> Result<()> {
         if self.host_key != fingerprint {
-            bail!("服务器主机指纹已改变，已停止续传");
+            bail!(t!("sftp.transfer.host_key_changed"));
         }
         Ok(())
     }
@@ -203,14 +204,14 @@ impl DownloadBatch {
                 .begin(item.source.to_string(), target.clone(), size, control);
             let _target_guard = TargetGuard::acquire(
                 format!("local\0{}", item.target.display()),
-                "另一个传输正在下载到同一位置，请稍后继续下载",
+                &t!("sftp.download.target_busy"),
             )?;
             let result = if self
                 .blocked_directories
                 .iter()
                 .any(|dir| item.target.starts_with(dir) && item.target != *dir)
             {
-                Err(anyhow!("父目录未创建，无法下载"))
+                Err(anyhow!(t!("sftp.download.parent_missing")))
             } else if let Some(error) = &item.error {
                 Err(anyhow!("{error}"))
             } else {
@@ -235,7 +236,7 @@ impl DownloadBatch {
                         .ask(
                             TransferQuestionKind::Error,
                             item.source.as_str(),
-                            &format!("无法下载：{error:#}"),
+                            &t!("sftp.download.failed", error = format!("{error:#}")),
                         )
                         .await?;
                     if answer.choice() == TransferChoice::Retry {
@@ -245,7 +246,7 @@ impl DownloadBatch {
                                 item.target
                                     .parent()
                                     .map(Path::to_path_buf)
-                                    .ok_or_else(|| anyhow!("无效的下载目标"))?,
+                                    .ok_or_else(|| anyhow!(t!("sftp.download.target_invalid")))?,
                             )?;
                             let scanned = Self::scan(
                                 &request,
@@ -290,7 +291,7 @@ impl DownloadBatch {
         control: &TransferControl,
     ) -> Result<bool> {
         if existing.is_dir() {
-            bail!("本地已有同名目录，不会删除它");
+            bail!(t!("sftp.download.folder_in_the_way"));
         }
         if !changed && let Some(choice) = self.all_conflicts {
             return Ok(choice == TransferChoice::Overwrite);
@@ -301,16 +302,16 @@ impl DownloadBatch {
             .ok()
             .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|time| time.as_secs());
-        let message = format!(
-            "{}本地已有同名项目（{} 字节，修改时间 {:?}）。覆盖会替换它。",
-            if changed {
-                "目标在下载期间发生变化。"
-            } else {
-                ""
-            },
-            existing.len(),
-            modified
-        );
+        let modified = format!("{modified:?}");
+        let message = if changed {
+            tn!(
+                "sftp.download.exists_changed",
+                existing.len(),
+                modified = modified
+            )
+        } else {
+            tn!("sftp.download.exists", existing.len(), modified = modified)
+        };
         let answer = control
             .ask(
                 TransferQuestionKind::Conflict,
@@ -335,7 +336,7 @@ impl DownloadBatch {
         match item.metadata.kind() {
             EntryKind::Directory => match existing {
                 Some(metadata) if metadata.is_dir() => Ok(true),
-                Some(_) => bail!("本地已有同名文件，不会替换为目录"),
+                Some(_) => bail!(t!("sftp.download.file_in_the_way")),
                 None => {
                     tokio::fs::create_dir(&item.target).await?;
                     Ok(true)
@@ -351,7 +352,7 @@ impl DownloadBatch {
                 create_link(&link, &item.target, existing.is_some()).await?;
                 Ok(true)
             }
-            EntryKind::Other => bail!("不支持下载设备、套接字或其他特殊文件"),
+            EntryKind::Other => bail!(t!("sftp.download.special_file")),
             EntryKind::File => self.download_regular(fs, item, existing, control).await,
         }
     }
@@ -388,20 +389,23 @@ impl DownloadBatch {
         let mut offset = 0;
         if let Some(partial) = &partial {
             if !partial.is_file() {
-                bail!("临时文件 {} 不是普通文件", temporary.display());
+                bail!(t!(
+                    "sftp.download.partial_not_file",
+                    path = temporary.display()
+                ));
             }
             if partial.len() > item.metadata.size() || (record.is_some() && !resumable) {
                 self.meter.phase(TransferPhase::Waiting, control);
                 let reason = if partial.len() > item.metadata.size() {
-                    "本地 .filepart 文件比远程文件大，无法续传。"
+                    t!("sftp.download.partial_too_large")
                 } else {
-                    "远程文件在上次下载后已变化，无法续传。"
+                    t!("sftp.download.source_changed")
                 };
                 let answer = control
                     .ask(
                         TransferQuestionKind::InvalidResume,
                         item.source.as_str(),
-                        reason,
+                        &reason,
                     )
                     .await?;
                 if answer.choice() != TransferChoice::Restart {
@@ -415,7 +419,7 @@ impl DownloadBatch {
                     .ask(
                         TransferQuestionKind::Resume,
                         item.source.as_str(),
-                        "发现未完成的 .filepart 文件。续传会按它的现有大小跳过远程文件前缀，请确认远程文件仍是同一版本。",
+                        &t!("sftp.download.resume_found"),
                     )
                     .await?;
                 match answer.choice() {
@@ -505,10 +509,10 @@ impl DownloadBatch {
                 let (at, len, bytes) = reads
                     .next()
                     .await
-                    .ok_or_else(|| anyhow!("下载读取流水线意外结束"))?;
+                    .ok_or_else(|| anyhow!(t!("sftp.download.pipeline_ended")))?;
                 let bytes = match bytes? {
                     Some(bytes) if !bytes.is_empty() => bytes,
-                    _ => bail!("远程文件在下载期间变短，已停止"),
+                    _ => bail!(t!("sftp.download.source_shrank")),
                 };
                 let got = bytes.len().min(len as usize);
                 if got < len as usize {
@@ -632,5 +636,5 @@ async fn create_link(link: &str, target: &Path, replace: bool) -> Result<()> {
 
 #[cfg(not(unix))]
 async fn create_link(_: &str, _: &Path, _: bool) -> Result<()> {
-    bail!("此系统不支持创建符号链接")
+    bail!(t!("sftp.download.links_unsupported"))
 }

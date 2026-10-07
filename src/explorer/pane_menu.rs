@@ -6,6 +6,7 @@ use super::{ExplorerId, FileSizeFormat, NewEntryKind, PaneSide, PreviewKind};
 use crate::app::{
     CatalogIcon, ExplorerAction, ExplorerCommand, SetFileSizeFormat, ToggleHiddenFiles,
 };
+use crate::i18n::t;
 use gpui_kit::component::{Icon, IconName, menu::PopupMenu};
 use gpui_kit::*;
 
@@ -54,7 +55,7 @@ pub(super) fn item_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
             menu
         } else {
             menu.menu_with_icon(
-                "编辑",
+                t!("explorer.command.edit"),
                 Icon::new(CatalogIcon::FilePenLine),
                 state.action(ExplorerCommand::Edit {
                     remote,
@@ -64,7 +65,7 @@ pub(super) fn item_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
         };
         let menu = if kind.is_some() {
             menu.menu_with_icon(
-                "预览",
+                t!("explorer.command.preview"),
                 Icon::new(CatalogIcon::Eye),
                 state.action(ExplorerCommand::Preview {
                     remote,
@@ -79,9 +80,9 @@ pub(super) fn item_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
         menu
     };
     let (verb, icon) = if remote {
-        ("下载…", CatalogIcon::Download)
+        (t!("explorer.command.download"), CatalogIcon::Download)
     } else {
-        ("上传…", CatalogIcon::Upload)
+        (t!("explorer.command.upload"), CatalogIcon::Upload)
     };
     menu.menu_with_icon_and_disabled(
         verb,
@@ -90,27 +91,27 @@ pub(super) fn item_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
         state.targets.is_empty() || !state.can_transfer,
     )
     .menu_with_icon_and_disabled(
-        "复制路径",
+        t!("explorer.command.copy_path"),
         Icon::new(IconName::Copy),
         state.action(ExplorerCommand::CopySelectedPaths { remote }),
         state.targets.is_empty(),
     )
     .separator()
     .menu_with_icon_and_disabled(
-        "删除",
+        t!("common.delete"),
         Icon::new(CatalogIcon::Trash),
         state.action(ExplorerCommand::Delete { remote }),
         none,
     )
     .menu_with_icon_and_disabled(
-        "重命名…",
+        t!("explorer.command.rename"),
         Icon::new(CatalogIcon::SquarePen),
         state.action(ExplorerCommand::Rename { remote }),
         none || state.targets.len() != 1,
     )
     .separator()
     .menu_with_icon_and_disabled(
-        "属性…",
+        t!("explorer.command.properties"),
         Icon::new(IconName::Info),
         state.action(ExplorerCommand::Properties { remote }),
         none,
@@ -127,16 +128,17 @@ pub(super) fn directory_menu(
     let create = state.clone();
     let menu = refresh_items(menu, state, window, cx)
         .menu_with_check(
-            "显示隐藏文件",
+            t!("explorer.command.show_hidden_files"),
             state.show_hidden,
             Box::new(ToggleHiddenFiles(PaneSide::from_remote(state.remote))),
         )
         .separator();
-    add_bookmark_item(menu, state)
-        .separator()
-        .submenu("新建", window, cx, move |menu, _, _| {
-            new_menu(menu, &create)
-        })
+    add_bookmark_item(menu, state).separator().submenu(
+        t!("explorer.command.new"),
+        window,
+        cx,
+        move |menu, _, _| new_menu(menu, &create),
+    )
 }
 
 /// Right-click on the path label: WinSCP's panel menu.
@@ -149,13 +151,13 @@ pub(super) fn path_menu(
     let remote = state.remote;
     add_bookmark_item(refresh_items(menu, state, window, cx).separator(), state)
         .menu_with_icon(
-            "复制路径",
+            t!("explorer.command.copy_path"),
             Icon::new(IconName::Copy),
             state.action(ExplorerCommand::CopyPath { remote }),
         )
         .separator()
         .menu_with_icon(
-            "打开目录/书签…",
+            t!("explorer.command.open_directory"),
             Icon::new(IconName::FolderOpen),
             state.action(ExplorerCommand::OpenDirectory { remote }),
         )
@@ -170,41 +172,41 @@ fn refresh_items(
 ) -> PopupMenu {
     let remote = state.remote;
     let go = state.clone();
-    menu.submenu("前往", window, cx, move |menu, _, _| {
+    menu.submenu(t!("explorer.command.go"), window, cx, move |menu, _, _| {
         menu.menu_with_icon_and_disabled(
-            "上级目录",
+            t!("explorer.command.up"),
             Icon::new(CatalogIcon::FolderUp),
             go.action(ExplorerCommand::Up { remote }),
             !go.can_go_up,
         )
         .menu_with_icon_and_disabled(
-            "根目录",
+            t!("explorer.command.root"),
             Icon::new(CatalogIcon::FolderRoot),
             go.action(ExplorerCommand::Root { remote }),
             !go.can_go_up,
         )
         .menu_with_icon_and_disabled(
-            "主目录",
+            t!("explorer.command.home"),
             Icon::new(CatalogIcon::House),
             go.action(ExplorerCommand::Home { remote }),
             !go.can_go_home,
         )
         .separator()
         .menu_with_icon_and_disabled(
-            "后退",
+            t!("explorer.command.back"),
             Icon::new(IconName::ArrowLeft),
             go.action(ExplorerCommand::Back { remote }),
             !go.can_go_back,
         )
         .menu_with_icon_and_disabled(
-            "前进",
+            t!("explorer.command.forward"),
             Icon::new(IconName::ArrowRight),
             go.action(ExplorerCommand::Forward { remote }),
             !go.can_go_forward,
         )
     })
     .menu_with_icon(
-        "刷新",
+        t!("explorer.command.refresh"),
         Icon::new(CatalogIcon::RefreshCw),
         state.action(ExplorerCommand::Refresh { remote }),
     )
@@ -212,7 +214,7 @@ fn refresh_items(
 
 fn add_bookmark_item(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
     menu.menu_with_icon_and_disabled(
-        "添加路径到书签",
+        t!("explorer.command.add_bookmark"),
         Icon::new(CatalogIcon::Bookmark),
         state.action(ExplorerCommand::AddBookmark {
             remote: state.remote,
@@ -225,22 +227,23 @@ fn add_bookmark_item(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
 /// The 大小 column title's menu: WinSCP's 文件大小显示为, with the format in
 /// use checked. The choice holds for every SFTP tab and is saved.
 pub(super) fn size_format_menu(menu: PopupMenu, current: FileSizeFormat) -> PopupMenu {
-    FileSizeFormat::ALL
-        .into_iter()
-        .fold(menu.label("文件大小显示为"), |menu, format| {
+    FileSizeFormat::ALL.into_iter().fold(
+        menu.label(t!("explorer.command.size_format")),
+        |menu, format| {
             menu.menu_with_check(
                 format.label(),
                 format == current,
                 Box::new(SetFileSizeFormat(format)),
             )
-        })
+        },
+    )
 }
 
 /// The toolbar's 新建 menu, also the context menu's 新建 submenu.
 pub(super) fn new_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
     let remote = state.remote;
     menu.menu_with_icon_and_disabled(
-        "文件夹…",
+        t!("explorer.command.new_folder"),
         Icon::new(CatalogIcon::FolderPlus),
         state.action(ExplorerCommand::New {
             remote,
@@ -249,7 +252,7 @@ pub(super) fn new_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
         !state.can_modify,
     )
     .menu_with_icon_and_disabled(
-        "文件…",
+        t!("explorer.command.new_file"),
         Icon::new(CatalogIcon::FilePlus),
         state.action(ExplorerCommand::New {
             remote,
@@ -264,7 +267,7 @@ pub(super) fn new_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
 pub(super) fn bookmark_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
     let remote = state.remote;
     let menu = if state.bookmarks.is_empty() {
-        menu.label("暂无书签")
+        menu.label(t!("explorer.bookmarks.none"))
     } else {
         state.bookmarks.iter().fold(menu, |menu, path| {
             menu.menu_with_check(
@@ -280,7 +283,7 @@ pub(super) fn bookmark_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu
     let menu = menu.separator();
     if state.bookmarks.contains(&state.path) {
         menu.menu(
-            "从书签中移除路径",
+            t!("explorer.command.remove_bookmark"),
             state.action(ExplorerCommand::RemoveBookmark {
                 remote,
                 path: state.path.clone(),
@@ -288,7 +291,7 @@ pub(super) fn bookmark_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu
         )
     } else {
         menu.menu_with_disabled(
-            "添加路径到书签",
+            t!("explorer.command.add_bookmark"),
             state.action(ExplorerCommand::AddBookmark { remote, path: None }),
             state.path.is_empty(),
         )

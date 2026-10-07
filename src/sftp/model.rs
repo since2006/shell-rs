@@ -1,5 +1,7 @@
 use super::{FileStamp, ReadFailure, SaveFailure};
+use crate::i18n::t;
 use anyhow::{Result, bail};
+use gpui_kit::SharedString;
 use serde::{Deserialize, Serialize};
 use std::{
     path::{Path, PathBuf},
@@ -14,7 +16,7 @@ impl RemotePath {
     pub fn new(path: impl Into<String>) -> Result<Self> {
         let path = path.into();
         if path.is_empty() || path.contains('\0') {
-            bail!("远程路径不能为空或包含空字符");
+            bail!(t!("sftp.error.remote_path_invalid"));
         }
         Ok(Self(path))
     }
@@ -23,7 +25,7 @@ impl RemotePath {
     }
     pub fn join(&self, name: &str) -> Result<Self> {
         if name.is_empty() || matches!(name, "." | "..") || name.contains(['/', '\0']) {
-            bail!("无效的文件名：{name}");
+            bail!(t!("sftp.error.file_name_invalid", name = name));
         }
         Self::new(format!("{}/{name}", self.0.trim_end_matches('/')))
     }
@@ -180,7 +182,7 @@ enum UploadMode {
 impl UploadRequest {
     pub fn new(sources: Vec<PathBuf>, destination: RemotePath) -> Result<Self> {
         if sources.is_empty() {
-            bail!("请选择要上传的文件或目录");
+            bail!(t!("sftp.error.nothing_to_upload"));
         }
         Ok(Self {
             sources,
@@ -281,15 +283,6 @@ pub enum TransferDirection {
     Upload,
     Download,
 }
-impl TransferDirection {
-    /// The verb used in progress and confirmation copy.
-    pub fn verb(self) -> &'static str {
-        match self {
-            Self::Upload => "上传",
-            Self::Download => "下载",
-        }
-    }
-}
 /// Remote files and directories to copy into one local directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DownloadRequest {
@@ -301,10 +294,10 @@ pub struct DownloadRequest {
 impl DownloadRequest {
     pub fn new(sources: Vec<RemotePath>, destination: PathBuf) -> Result<Self> {
         if sources.is_empty() {
-            bail!("请选择要下载的文件或目录");
+            bail!(t!("sftp.error.nothing_to_download"));
         }
         if !destination.is_absolute() {
-            bail!("下载目标必须是绝对路径");
+            bail!(t!("sftp.error.download_target_relative"));
         }
         Ok(Self {
             sources,
@@ -316,7 +309,7 @@ impl DownloadRequest {
     /// One source copied the way scp copies it; see [`UploadRequest::scp`].
     pub fn scp(source: RemotePath, destination: PathBuf) -> Result<Self> {
         if !destination.is_absolute() {
-            bail!("下载目标必须是绝对路径");
+            bail!(t!("sftp.error.download_target_relative"));
         }
         Ok(Self {
             sources: vec![source],
@@ -693,13 +686,33 @@ impl PermissionEdit {
     }
 }
 
+/// A well-known local folder, offered by the 目录列表 select.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Place {
+    Home,
+    Desktop,
+    Documents,
+    Downloads,
+}
+
+impl Place {
+    pub fn title(self) -> SharedString {
+        match self {
+            Self::Home => t!("sftp.place.home"),
+            Self::Desktop => t!("sftp.place.desktop"),
+            Self::Documents => t!("sftp.place.documents"),
+            Self::Downloads => t!("sftp.place.downloads"),
+        }
+    }
+}
+
 /// Local I/O is blocking and must be called on a background executor.
 pub trait LocalDirectoryProvider: Send + Sync + 'static {
     fn home(&self) -> PathBuf;
     fn list(&self, path: &Path) -> Result<DirectoryListing>;
     /// Well-known folders for the 目录列表 select, home first. Looked up
     /// from the platform, without touching the file system.
-    fn places(&self) -> Vec<(String, PathBuf)> {
+    fn places(&self) -> Vec<(Place, PathBuf)> {
         Vec::new()
     }
     /// Move items to the system trash. Links go as links.
@@ -739,15 +752,15 @@ impl LocalDirectoryProvider for SystemLocalDirectoryProvider {
     fn home(&self) -> PathBuf {
         dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"))
     }
-    fn places(&self) -> Vec<(String, PathBuf)> {
+    fn places(&self) -> Vec<(Place, PathBuf)> {
         [
-            ("主目录", dirs::home_dir()),
-            ("桌面", dirs::desktop_dir()),
-            ("文稿", dirs::document_dir()),
-            ("下载", dirs::download_dir()),
+            (Place::Home, dirs::home_dir()),
+            (Place::Desktop, dirs::desktop_dir()),
+            (Place::Documents, dirs::document_dir()),
+            (Place::Downloads, dirs::download_dir()),
         ]
         .into_iter()
-        .filter_map(|(title, path)| Some((title.to_string(), path?)))
+        .filter_map(|(place, path)| Some((place, path?)))
         .collect()
     }
     fn list(&self, path: &Path) -> Result<DirectoryListing> {
@@ -761,7 +774,7 @@ impl LocalDirectoryProvider for SystemLocalDirectoryProvider {
             let name = entry
                 .file_name()
                 .into_string()
-                .map_err(|_| anyhow::anyhow!("目录包含无法用 UTF-8 表示的文件名"))?;
+                .map_err(|_| anyhow::anyhow!(t!("sftp.error.file_name_not_utf8")))?;
             let metadata = std::fs::symlink_metadata(entry.path())?;
             let mut row = DirectoryEntry::new(name, local_metadata(&metadata));
             if metadata.is_symlink() {
@@ -775,7 +788,7 @@ impl LocalDirectoryProvider for SystemLocalDirectoryProvider {
         }
         Ok(DirectoryListing::new(
             path.to_str()
-                .ok_or_else(|| anyhow::anyhow!("路径不是有效的 UTF-8"))?,
+                .ok_or_else(|| anyhow::anyhow!(t!("sftp.error.path_not_utf8")))?,
             entries,
         ))
     }
@@ -789,14 +802,18 @@ impl LocalDirectoryProvider for SystemLocalDirectoryProvider {
             use trash::macos::{DeleteMethod, TrashContextExtMacos as _};
             context.set_delete_method(DeleteMethod::NsFileManager);
         }
-        context
-            .delete_all(paths)
-            .map_err(|error| anyhow::anyhow!("无法移到废纸篓：{error}"))
+        context.delete_all(paths).map_err(|error| {
+            anyhow::anyhow!(if cfg!(windows) {
+                t!("sftp.error.recycle_bin_failed", error = error)
+            } else {
+                t!("sftp.error.trash_failed", error = error)
+            })
+        })
     }
     fn rename(&self, from: &Path, to: &Path) -> Result<()> {
         // POSIX rename silently replaces the target.
         if std::fs::symlink_metadata(to).is_ok() {
-            bail!("已有名为「{}」的项目", display_name(to));
+            bail!(t!("sftp.error.exists", name = display_name(to)));
         }
         std::fs::rename(from, to).map_err(|error| describe_io(error, to))
     }
@@ -847,7 +864,7 @@ impl LocalDirectoryProvider for SystemLocalDirectoryProvider {
     }
     #[cfg(not(unix))]
     fn set_permissions(&self, _: &[PathBuf], _: PermissionEdit, _: bool, _: bool) -> Result<()> {
-        bail!("此系统不支持修改权限")
+        bail!(t!("sftp.error.permissions_unsupported"))
     }
     fn read_file(&self, path: &Path, limit: u64) -> Result<(Vec<u8>, FileStamp)> {
         let metadata = std::fs::metadata(path).map_err(|error| describe_io(error, path))?;
@@ -898,10 +915,12 @@ fn display_name(path: &Path) -> String {
 fn describe_io(error: std::io::Error, path: &Path) -> anyhow::Error {
     let name = display_name(path);
     match error.kind() {
-        std::io::ErrorKind::AlreadyExists => anyhow::anyhow!("已有名为「{name}」的项目"),
-        std::io::ErrorKind::PermissionDenied => anyhow::anyhow!("没有权限操作「{name}」"),
-        std::io::ErrorKind::NotFound => anyhow::anyhow!("「{name}」不存在"),
-        _ => anyhow::anyhow!("「{name}」：{error}"),
+        std::io::ErrorKind::AlreadyExists => anyhow::anyhow!(t!("sftp.error.exists", name = name)),
+        std::io::ErrorKind::PermissionDenied => {
+            anyhow::anyhow!(t!("sftp.error.permission_denied", name = name))
+        }
+        std::io::ErrorKind::NotFound => anyhow::anyhow!(t!("sftp.error.not_found", name = name)),
+        _ => anyhow::anyhow!(t!("sftp.error.item", name = name, error = error)),
     }
 }
 

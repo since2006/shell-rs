@@ -7,6 +7,7 @@
 //! size and modification time the file had when it was read or last saved.
 
 use super::{EntryKind, FileMetadata, LocalDirectoryProvider, RemotePath, client::RemoteFs};
+use crate::i18n::{t, tn};
 use anyhow::{Result, anyhow, bail};
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -160,9 +161,9 @@ pub enum ReadFailure {
 impl std::fmt::Display for ReadFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ReadFailure::NotFile => f.write_str("不是普通文件"),
-            ReadFailure::TooLarge(size) => write!(f, "文件太大（{size} 字节）"),
-            ReadFailure::NotText => f.write_str("不是 UTF-8 文本文件"),
+            ReadFailure::NotFile => f.write_str(&t!("sftp.edit.not_file")),
+            ReadFailure::TooLarge(size) => f.write_str(&tn!("sftp.edit.too_large", *size)),
+            ReadFailure::NotText => f.write_str(&t!("sftp.edit.not_text")),
             ReadFailure::Failed(message) => f.write_str(message),
         }
     }
@@ -196,7 +197,7 @@ pub enum SaveFailure {
 impl std::fmt::Display for SaveFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SaveFailure::Changed => f.write_str("文件在打开后已被修改"),
+            SaveFailure::Changed => f.write_str(&t!("sftp.edit.changed")),
             SaveFailure::Interrupted(message) | SaveFailure::Failed(message) => {
                 f.write_str(message)
             }
@@ -268,7 +269,7 @@ async fn read_bytes<F: RemoteFs>(
     text: bool,
 ) -> Result<(Vec<u8>, FileStamp)> {
     let Some(metadata) = fs.stat(path).await? else {
-        bail!("文件不存在");
+        bail!(t!("sftp.edit.missing"));
     };
     if metadata.kind() != EntryKind::File {
         return Err(ReadFailure::NotFile.into());
@@ -342,7 +343,7 @@ async fn read_all<F: RemoteFs>(fs: &F, handle: &str, size: u64, text: bool) -> R
         };
         let bytes = match bytes? {
             Some(bytes) if !bytes.is_empty() => bytes,
-            _ => bail!("文件在读取时变短了，请重新打开"),
+            _ => bail!(t!("sftp.edit.shrank")),
         };
         let got = bytes.len().min(len as usize);
         let start = at as usize;
@@ -390,7 +391,7 @@ pub(crate) async fn write_in_place<F: RemoteFs>(
     let metadata = fs
         .stat(path)
         .await?
-        .ok_or_else(|| anyhow!("保存后找不到文件"))?;
+        .ok_or_else(|| anyhow!(t!("sftp.edit.gone_after_save")))?;
     Ok(FileStamp::of(&metadata))
 }
 

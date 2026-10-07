@@ -1,0 +1,71 @@
+_version: 2
+
+# The editor tab: its toolbar, status line text, and the questions about
+# saving, reloading and closing.
+
+editor.status.cursor:
+  zh-CN: 行 %{line}，列 %{column}
+  en: Ln %{line}, Col %{column}
+
+editor.state.saving:
+  zh-CN: 正在保存…
+  en: Saving…
+editor.state.reloading:
+  zh-CN: 正在重新加载…
+  en: Reloading…
+editor.state.modified:
+  zh-CN: 已修改
+  en: Modified
+
+editor.command.reload:
+  zh-CN: 重新加载
+  en: Reload
+editor.command.copy_path:
+  zh-CN: 复制路径
+  en: Copy path
+editor.text_label:
+  zh-CN: 编辑 %{name}
+  en: Edit %{name}
+
+editor.reload.title:
+  zh-CN: 放弃对“%{name}”的修改并重新加载？
+  en: Discard changes to “%{name}” and reload?
+editor.reload.description:
+  zh-CN: 编辑器里没有保存的修改会丢失。
+  en: Changes not saved in the editor will be lost.
+editor.reload.failed:
+  zh-CN: 无法重新加载“%{name}”
+  en: Couldn’t reload “%{name}”
+
+editor.changed.title:
+  zh-CN: “%{name}”在打开后已被修改
+  en: “%{name}” changed after it was opened
+editor.changed.remote:
+  zh-CN: 服务器上的这个文件在你打开或上次保存之后被改过或删除了。覆盖会用编辑器里的内容替换它。
+  en: This file on the server was changed or deleted after you opened or last saved it. Overwriting replaces it with what’s in the editor.
+editor.changed.local:
+  zh-CN: 本机上的这个文件在你打开或上次保存之后被改过或删除了。覆盖会用编辑器里的内容替换它。
+  en: This file on this computer was changed or deleted after you opened or last saved it. Overwriting replaces it with what’s in the editor.
+editor.changed.overwrite:
+  zh-CN: 覆盖
+  en: Overwrite
+
+editor.save.interrupted:
+  zh-CN: "%{message}。文件可能只写了一部分，请重新连接后再保存一次。"
+  en: "%{message}. The file may be only partly written. Reconnect and save it again."
+editor.save.interrupted_title:
+  zh-CN: 没有保存完“%{name}”
+  en: Couldn’t finish saving “%{name}”
+editor.save.failed:
+  zh-CN: 无法保存“%{name}”
+  en: Couldn’t save “%{name}”
+
+editor.close.title:
+  zh-CN: 保存对“%{name}”的修改？
+  en: Save changes to “%{name}”?
+editor.close.description:
+  zh-CN: 不保存的话，这些修改会丢失。
+  en: Your changes will be lost if you don’t save them.
+editor.close.discard:
+  zh-CN: 放弃修改
+  en: Discard changes

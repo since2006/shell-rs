@@ -8,8 +8,10 @@ use super::{
     meter::TransferMeter,
     model::local_metadata,
 };
+use crate::i18n::{t, tn};
 use anyhow::{Result, anyhow, bail};
 use futures::{StreamExt as _, stream::FuturesUnordered};
+use gpui_kit::SharedString;
 use std::{collections::HashSet, path::PathBuf};
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 const CHUNK: usize = 32 * 1024;
@@ -78,7 +80,7 @@ impl UploadBatch {
                 None => source
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .ok_or_else(|| anyhow!("来源文件名不是有效的 UTF-8"))?,
+                    .ok_or_else(|| anyhow!(t!("sftp.upload.source_name_not_utf8")))?,
             };
             let target = request.destination().join(name)?;
             stack.push((source, target));
@@ -108,7 +110,7 @@ impl UploadBatch {
                         let name = entry
                             .file_name()
                             .into_string()
-                            .map_err(|_| anyhow!("目录包含无法用 UTF-8 表示的文件名"))?;
+                            .map_err(|_| anyhow!(t!("sftp.error.file_name_not_utf8")))?;
                         children.push((entry.path(), target.join(&name)?));
                     }
                     children.sort_by(|a, b| a.0.cmp(&b.0));
@@ -155,7 +157,7 @@ impl UploadBatch {
     }
     pub fn verify_host(&self, fingerprint: &str) -> Result<()> {
         if self.host_key != fingerprint {
-            bail!("服务器主机指纹已改变，已停止续传");
+            bail!(t!("sftp.transfer.host_key_changed"));
         }
         Ok(())
     }
@@ -176,14 +178,14 @@ impl UploadBatch {
             );
             let _target_guard = TargetGuard::acquire(
                 format!("{}\0{}", self.endpoint, item.target),
-                "另一个传输正在上传同一目标，请稍后继续上传",
+                &t!("sftp.upload.target_busy"),
             )?;
             let result = if self
                 .blocked_directories
                 .iter()
                 .any(|p| item.target.as_str().starts_with(&format!("{p}/")))
             {
-                Err(anyhow!("父目录未创建，无法上传"))
+                Err(anyhow!(t!("sftp.upload.parent_missing")))
             } else if let Some(error) = &item.error {
                 Err(anyhow!("{error}"))
             } else {
@@ -208,7 +210,7 @@ impl UploadBatch {
                         .ask(
                             TransferQuestionKind::Error,
                             item.target.as_str(),
-                            &format!("无法上传：{error:#}"),
+                            &t!("sftp.upload.failed", error = format!("{error:#}")),
                         )
                         .await?;
                     if answer.choice() == TransferChoice::Retry {
@@ -264,24 +266,26 @@ impl UploadBatch {
             .as_ref()
             .is_some_and(|m| m.kind() == EntryKind::Directory)
         {
-            bail!("目录与文件类型冲突，不会删除远程目录");
+            bail!(t!("sftp.upload.folder_in_the_way"));
         }
         if !changed && let Some(choice) = self.all_conflicts {
             return Ok(choice == TransferChoice::Overwrite);
         }
         self.meter.phase(TransferPhase::Waiting, control);
         let message = match original {
-            Some(metadata) => format!(
-                "{}远程项目已存在（{} 字节，修改时间 {:?}）。覆盖会替换这个文件或链接。",
+            Some(metadata) => {
+                let modified = format!("{:?}", metadata.modified());
                 if changed {
-                    "目标在上传期间发生变化。"
+                    tn!(
+                        "sftp.upload.exists_changed",
+                        metadata.size(),
+                        modified = modified
+                    )
                 } else {
-                    ""
-                },
-                metadata.size(),
-                metadata.modified()
-            ),
-            None => "原目标在上传期间已被删除或移走。是否继续发布此文件？".into(),
+                    tn!("sftp.upload.exists", metadata.size(), modified = modified)
+                }
+            }
+            None => t!("sftp.upload.target_gone"),
         };
         let answer = control
             .ask(TransferQuestionKind::Conflict, target.as_str(), &message)
@@ -310,7 +314,7 @@ impl UploadBatch {
                     .ask(
                         TransferQuestionKind::InvalidResume,
                         item.target.as_str(),
-                        "来源已变为目录，请丢弃旧文件进度后重新上传，或跳过。",
+                        &t!("sftp.upload.source_now_folder"),
                     )
                     .await?;
                 if answer.choice() != TransferChoice::Restart {
@@ -320,7 +324,7 @@ impl UploadBatch {
             }
             return match control.run(fs.metadata(&item.target)).await? {
                 Some(metadata) if metadata.kind() == EntryKind::Directory => Ok(!self.sync),
-                Some(_) => bail!("目标已存在且不是目录，不会跟随或替换链接"),
+                Some(_) => bail!(t!("sftp.upload.target_not_folder")),
                 None => {
                     control.run(fs.mkdir(&item.target)).await?;
                     Ok(true)
@@ -328,7 +332,7 @@ impl UploadBatch {
             };
         }
         if item.metadata.kind() == EntryKind::Other {
-            bail!("不支持上传设备、套接字或其他特殊文件");
+            bail!(t!("sftp.upload.special_file"));
         }
         let mut record = if let Some(record) = existing_record {
             record.validate(&self.endpoint, &self.host_key, &item.source, &item.target)?;
@@ -338,7 +342,7 @@ impl UploadBatch {
                     .ask(
                         TransferQuestionKind::Resume,
                         item.target.as_str(),
-                        "发现未完成的 .filepart 文件。续传会按它的现有大小跳过本地文件前缀，请确认本地文件仍是同一版本。",
+                        &t!("sftp.upload.resume_found"),
                     )
                     .await?;
                 match answer.choice() {
@@ -378,7 +382,7 @@ impl UploadBatch {
                         .ask(
                             TransferQuestionKind::Resume,
                             item.target.as_str(),
-                            "发现未完成的 .filepart 文件。续传会按它的现有大小跳过本地文件前缀，请确认本地文件仍是同一版本。",
+                            &t!("sftp.upload.resume_found"),
                         )
                         .await?;
                     match answer.choice() {
@@ -396,7 +400,7 @@ impl UploadBatch {
                         .await?
                         .into_os_string()
                         .into_string()
-                        .map_err(|_| anyhow!("链接目标不是有效的 UTF-8"))?,
+                        .map_err(|_| anyhow!(t!("sftp.upload.link_target_not_utf8")))?,
                 );
             }
             self.journal.save(&record).await?;
@@ -414,12 +418,12 @@ impl UploadBatch {
             let target = record
                 .link_target
                 .as_ref()
-                .ok_or_else(|| anyhow!("续传记录中缺少链接目标"))?;
+                .ok_or_else(|| anyhow!(t!("sftp.upload.record_without_link")))?;
             if let Some(existing) = control.run(fs.metadata(&record.temporary)).await? {
                 if existing.kind() != EntryKind::Symlink
                     || control.run(fs.readlink(&record.temporary)).await? != *target
                 {
-                    bail!("临时链接已变化，无法继续上传");
+                    bail!(t!("sftp.upload.temporary_link_changed"));
                 }
             } else {
                 control.run(fs.symlink(target, &record.temporary)).await?;
@@ -487,14 +491,14 @@ impl UploadBatch {
         let source_metadata = record
             .source_metadata
             .clone()
-            .ok_or_else(|| anyhow!("续传记录中缺少来源文件信息"))?;
+            .ok_or_else(|| anyhow!(t!("sftp.upload.record_without_source")))?;
         let remote = control.run(fs.metadata(&record.temporary)).await?;
         if remote.as_ref().is_some_and(|m| m.kind() != EntryKind::File) {
-            return Err(InvalidResume("远端临时文件类型已变化").into());
+            return Err(InvalidResume(t!("sftp.upload.temporary_kind_changed")).into());
         }
         let resume_offset = remote.as_ref().map(FileMetadata::size).unwrap_or(0);
         if resume_offset > source_metadata.size {
-            return Err(InvalidResume("远端续传偏移大于本地文件").into());
+            return Err(InvalidResume(t!("sftp.upload.partial_too_large")).into());
         }
         let handle = control
             .run(fs.open(&record.temporary, remote.is_none()))
@@ -524,7 +528,7 @@ impl UploadBatch {
                 let length = writes
                     .next()
                     .await
-                    .ok_or_else(|| anyhow!("上传写入流水线意外结束"))??;
+                    .ok_or_else(|| anyhow!(t!("sftp.upload.pipeline_ended")))??;
                 uploaded += length;
                 self.meter.advance(length, uploaded, control);
             }
@@ -601,22 +605,22 @@ impl UploadBatch {
             {
                 fs.rename(&record.backup, &record.target, false).await?;
             }
-            bail!("无法确认文件发布结果，已保留恢复文件；请检查远端目录");
+            bail!(t!("sftp.upload.publish_unconfirmed"));
         }
         if !self
             .matches_expected_item(fs, &record.temporary, record, control)
             .await?
         {
-            bail!("临时文件大小或类型已变化，未替换目标");
+            bail!(t!("sftp.upload.temporary_changed"));
         }
         let backup = control.run(fs.metadata(&record.backup)).await?;
         let current = control.run(fs.metadata(&record.target)).await?;
         if backup.is_some() {
             if current.is_some() {
-                bail!("替换期间目标被其他操作创建，已保留目标、备份和临时文件");
+                bail!(t!("sftp.upload.target_created"));
             }
             if backup != record.original {
-                bail!("恢复备份已变化，停止替换");
+                bail!(t!("sftp.upload.backup_changed"));
             }
             record.phase = PublishPhase::BackedUp;
             self.journal.save(record).await?;
@@ -682,7 +686,7 @@ impl UploadBatch {
     async fn cleanup<F: RemoteFs>(&self, fs: &F, record: &ResumeRecord) -> Result<()> {
         if let Some(backup) = fs.metadata(&record.backup).await? {
             if Some(backup) != record.original {
-                bail!("备份已变化，未清理；上传的目标文件已发布");
+                bail!(t!("sftp.upload.backup_changed_after_publish"));
             }
             fs.remove(&record.backup).await?;
         }
@@ -699,7 +703,7 @@ impl UploadBatch {
             if fs.metadata(&record.target).await?.is_none() {
                 fs.rename(&record.backup, &record.target, false).await?;
             } else {
-                bail!("存在恢复备份和目标文件，请先检查远端目录；未删除任何文件");
+                bail!(t!("sftp.upload.backup_and_target"));
             }
         }
         fs.remove(&record.temporary).await?;
@@ -719,10 +723,10 @@ impl UploadBatch {
     }
 }
 #[derive(Debug)]
-struct InvalidResume(&'static str);
+struct InvalidResume(SharedString);
 impl std::fmt::Display for InvalidResume {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)
+        f.write_str(&self.0)
     }
 }
 impl std::error::Error for InvalidResume {}

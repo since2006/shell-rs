@@ -2,6 +2,7 @@
 
 use super::{ExplorerPanel, NewEntryKind, PaneOperation};
 use crate::app::ExplorerCommand;
+use crate::i18n::{t, tn};
 use crate::shared::{commit_footer, dismiss_form_error, form_error_notification};
 use gpui_kit::component::{
     Sizable as _, WindowExt as _,
@@ -21,19 +22,19 @@ pub fn validate_entry_name(
     existing: &[String],
 ) -> Result<(), String> {
     if name.trim().is_empty() {
-        return Err("名称不能为空".into());
+        return Err(t!("explorer.name.empty").into());
     }
     if matches!(name, "." | "..") {
-        return Err("名称不能是「.」或「..」".into());
+        return Err(t!("explorer.name.dots").into());
     }
     if name.contains(['/', '\0']) {
-        return Err("名称不能包含「/」".into());
+        return Err(t!("explorer.name.slash").into());
     }
     if original == Some(name) {
-        return Err("名称未改变".into());
+        return Err(t!("explorer.name.unchanged").into());
     }
     if existing.iter().any(|existing| existing == name) {
-        return Err(format!("已有名为「{name}」的项目"));
+        return Err(t!("explorer.name.exists", name = name).into());
     }
     Ok(())
 }
@@ -47,14 +48,14 @@ enum NameIntent {
 
 struct NameForm {
     input: Entity<InputState>,
-    label: &'static str,
+    label: SharedString,
 }
 impl Render for NameForm {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         v_flex().gap_2().child(
             Form::new().child(
                 Field::new()
-                    .label(self.label)
+                    .label(self.label.clone())
                     .required(true)
                     .child(Input::new(&self.input).id("entry-name").small()),
             ),
@@ -76,26 +77,28 @@ impl ExplorerPanel {
             return;
         }
         let title = if let [name] = names.as_slice() {
-            format!("删除「{name}」？")
+            t!("explorer.delete.title_one", name = name)
         } else {
-            format!("删除 {} 个项目？", names.len())
+            tn!("explorer.delete.title_several", names.len())
         };
         let description = if remote {
-            "远程文件无法恢复，目录会连同其中全部内容一起删除。"
+            t!("explorer.delete.remote")
+        } else if cfg!(windows) {
+            t!("explorer.delete.recycle_bin")
         } else {
-            "项目会移到废纸篓。"
+            t!("explorer.delete.trash")
         };
         let sender = self.sender();
         let focus = window.focused(cx);
         window.open_alert_dialog(cx, move |dialog, _, _| {
             dialog
                 .title(title.clone())
-                .description(description)
+                .description(description.clone())
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("删除")
+                        .ok_text(t!("common.delete"))
                         .ok_variant(ButtonVariant::Danger)
-                        .cancel_text("取消"),
+                        .cancel_text(t!("common.cancel")),
                 )
                 .show_cancel(true)
                 .on_cancel({
@@ -163,16 +166,16 @@ impl ExplorerPanel {
             .collect();
         let (title, initial, commit, label) = match &intent {
             NameIntent::Rename(name) => (
-                format!("重命名「{name}」"),
+                t!("explorer.rename.title", name = name),
                 name.clone(),
-                "重命名",
-                "新名称",
+                t!("explorer.rename.commit"),
+                t!("explorer.rename.label"),
             ),
             NameIntent::New(kind) => (
-                kind.title().to_string(),
+                kind.title(),
                 kind.default_name().to_string(),
-                "创建",
-                "名称",
+                t!("explorer.new.commit"),
+                t!("explorer.new.label"),
             ),
         };
         let input = cx.new(|cx| InputState::new(window, cx).default_value(initial));
@@ -185,7 +188,7 @@ impl ExplorerPanel {
                 // Closed by its buttons or Escape, not by a click beside it.
                 .overlay_closable(false)
                 .child(form.clone())
-                .footer(commit_footer("commit", commit))
+                .footer(commit_footer("commit", commit.clone()))
                 .on_ok({
                     let (form, sender, intent, existing) = (
                         form.clone(),

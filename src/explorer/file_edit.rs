@@ -10,6 +10,7 @@ use super::preview::{IMAGE_LIMIT, Preview, PreviewContent, PreviewKind, open_pre
 use super::{ExplorerPanel, ExplorerPanelEvent, format_size};
 use crate::app::{ExplorerAction, ExplorerCommand, ExplorerDispatch as _};
 use crate::host::ConnectionState;
+use crate::i18n::t;
 use crate::sftp::{
     EDIT_LIMIT, FileBytes, FileStamp, ReadFailure, RemotePath, SaveFailure, SftpCommand, TextFile,
     read_local_bytes, read_local_text,
@@ -191,9 +192,11 @@ impl ExplorerPanel {
                     path: path.clone(),
                 });
                 Some(cx.spawn(async move |_, _| {
-                    receiver
-                        .await
-                        .unwrap_or_else(|_| Err(ReadFailure::Failed("SFTP 连接已断开".into())))
+                    receiver.await.unwrap_or_else(|_| {
+                        Err(ReadFailure::Failed(
+                            t!("explorer.file.connection_lost").into(),
+                        ))
+                    })
                 }))
             }
         }
@@ -227,9 +230,11 @@ impl ExplorerPanel {
                     limit,
                 });
                 Some(cx.spawn(async move |_, _| {
-                    receiver
-                        .await
-                        .unwrap_or_else(|_| Err(ReadFailure::Failed("SFTP 连接已断开".into())))
+                    receiver.await.unwrap_or_else(|_| {
+                        Err(ReadFailure::Failed(
+                            t!("explorer.file.connection_lost").into(),
+                        ))
+                    })
                 }))
             }
         }
@@ -259,9 +264,11 @@ impl ExplorerPanel {
         Some(cx.spawn(async move |_, _| {
             // The connection dropped before the answer: the write may have
             // stopped halfway.
-            receiver
-                .await
-                .unwrap_or_else(|_| Err(SaveFailure::Interrupted("SFTP 连接已断开".into())))
+            receiver.await.unwrap_or_else(|_| {
+                Err(SaveFailure::Interrupted(
+                    t!("explorer.file.connection_lost").into(),
+                ))
+            })
         }))
     }
 
@@ -310,7 +317,7 @@ impl ExplorerPanel {
                 false
             }
             ConnectionState::Connecting => {
-                window.push_notification(Notification::warning("正在连接 SFTP，请稍候再试。"), cx);
+                window.push_notification(Notification::warning(t!("explorer.file.connecting")), cx);
                 false
             }
         }
@@ -393,28 +400,40 @@ impl ExplorerPanel {
         cx: &mut Context<Self>,
     ) {
         let name = location.name();
-        let (title, what, limit) = match opening {
-            Opening::Edit => (format!("无法在编辑器中打开“{name}”"), "编辑器", EDIT_LIMIT),
-            Opening::Preview(PreviewKind::Image(_)) => {
-                (format!("无法预览“{name}”"), "预览", IMAGE_LIMIT)
-            }
+        let editing = opening == Opening::Edit;
+        let (title, limit) = match opening {
+            Opening::Edit => (t!("explorer.file.edit_refused", name = name), EDIT_LIMIT),
+            Opening::Preview(PreviewKind::Image(_)) => (
+                t!("explorer.file.preview_refused", name = name),
+                IMAGE_LIMIT,
+            ),
             Opening::Preview(PreviewKind::Markdown) => {
-                (format!("无法预览“{name}”"), "预览", EDIT_LIMIT)
+                (t!("explorer.file.preview_refused", name = name), EDIT_LIMIT)
             }
         };
         let reason = match &failure {
-            ReadFailure::TooLarge(size) => format!(
-                "文件有 {}，{what}只打开 {} 以内的文件。",
-                format_size(*size),
-                format_size(limit)
-            ),
-            ReadFailure::NotText => {
-                "它不是 UTF-8 编码的文本文件：可能是二进制文件，或用了 GBK 等其他编码。".into()
+            ReadFailure::TooLarge(size) => {
+                let (size, limit) = (format_size(*size), format_size(limit));
+                if editing {
+                    t!(
+                        "explorer.file.too_large_for_editor",
+                        size = size,
+                        limit = limit
+                    )
+                } else {
+                    t!(
+                        "explorer.file.too_large_for_preview",
+                        size = size,
+                        limit = limit
+                    )
+                }
             }
-            ReadFailure::NotFile => "它不是普通文件。".into(),
+            ReadFailure::NotText => t!("explorer.file.not_text"),
+            ReadFailure::NotFile => t!("explorer.file.not_file"),
             ReadFailure::Failed(message) => {
                 window.push_notification(
-                    Notification::error(message.clone()).title(format!("无法打开“{name}”")),
+                    Notification::error(message.clone())
+                        .title(t!("explorer.file.open_failed", name = name)),
                     cx,
                 );
                 return;
@@ -422,7 +441,7 @@ impl ExplorerPanel {
         };
         let download = self.download_action(location, cx);
         let description = if download.is_some() {
-            format!("{reason}可以下载到本机，用别的程序打开。")
+            t!("explorer.file.download_instead", reason = reason)
         } else {
             reason
         };
@@ -433,8 +452,8 @@ impl ExplorerPanel {
                 Some(download) => alert
                     .button_props(
                         DialogButtonProps::default()
-                            .ok_text("下载…")
-                            .cancel_text("取消"),
+                            .ok_text(t!("explorer.file.download"))
+                            .cancel_text(t!("common.cancel")),
                     )
                     .show_cancel(true)
                     .on_ok({
@@ -448,7 +467,7 @@ impl ExplorerPanel {
                             true
                         }
                     }),
-                None => alert.button_props(DialogButtonProps::default().ok_text("知道了")),
+                None => alert.button_props(DialogButtonProps::default().ok_text(t!("explorer.ok"))),
             }
         });
     }

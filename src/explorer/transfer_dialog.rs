@@ -3,6 +3,7 @@ use crate::app::ExplorerDispatch as _;
 use crate::{
     app::{ExplorerAction, ExplorerCommand},
     host::ConnectionState,
+    i18n::{t, tn},
     sftp::{TransferAnswer, TransferChoice, TransferDirection, TransferQuestionKind},
     shared::commit_footer,
 };
@@ -99,8 +100,16 @@ impl ExplorerPanel {
             error: None,
         });
         let (title, confirm_id, confirm_label) = match direction {
-            TransferDirection::Upload => ("上传文件", "upload-confirm", "上传"),
-            TransferDirection::Download => ("下载", "download-confirm", "下载"),
+            TransferDirection::Upload => (
+                t!("explorer.transfer.upload_title"),
+                "upload-confirm",
+                t!("explorer.transfer.upload"),
+            ),
+            TransferDirection::Download => (
+                t!("explorer.transfer.download_title"),
+                "download-confirm",
+                t!("explorer.transfer.download"),
+            ),
         };
         let sender = self.sender();
         let job = Rc::new(job);
@@ -109,26 +118,26 @@ impl ExplorerPanel {
         self.dialog_open = true;
         window.open_dialog(cx, move |dialog, _, _| {
             dialog
-                .title(title)
+                .title(title.clone())
                 .child(form.clone())
                 .overlay_closable(false)
-                .footer(commit_footer(confirm_id, confirm_label))
+                .footer(commit_footer(confirm_id, confirm_label.clone()))
                 .on_ok({
                     let (form, sender, job) = (form.clone(), sender.clone(), job.clone());
                     move |_, window, cx| {
                         let target = form.read(cx).target.read(cx).value().to_string();
                         let problem = match direction {
                             TransferDirection::Upload if target.is_empty() => {
-                                Some("请输入目标目录")
+                                Some(t!("explorer.transfer.target_missing"))
                             }
                             TransferDirection::Download if !Path::new(&target).is_absolute() => {
-                                Some("请输入本机目录的完整路径")
+                                Some(t!("explorer.transfer.local_target_relative"))
                             }
                             _ => None,
                         };
                         if let Some(problem) = problem {
                             form.update(cx, |form, cx| {
-                                form.error = Some(problem.into());
+                                form.error = Some(problem.to_string());
                                 cx.notify();
                             });
                             return false;
@@ -197,32 +206,52 @@ impl ExplorerPanel {
         let focus = window.focused(cx).unwrap_or_else(|| self.focus_handle(cx));
         self.dialog_open = true;
         self.question_shown = true;
-        let verb = self.transfer_direction().verb();
+        let upload = self.transfer_direction() == TransferDirection::Upload;
+        // Each direction says its own words: English puts them in another
+        // order than Chinese.
+        let either = |upload_text: SharedString, download_text: SharedString| {
+            if upload { upload_text } else { download_text }
+        };
+        let restart_label = either(
+            t!("explorer.question.restart_upload"),
+            t!("explorer.question.restart_download"),
+        );
         let (title, primary_label, primary_choice): (SharedString, SharedString, _) =
             match question.kind() {
                 TransferQuestionKind::Conflict => (
-                    "同名文件已存在".into(),
-                    "覆盖".into(),
+                    t!("explorer.question.conflict_title"),
+                    t!("explorer.question.overwrite"),
                     TransferChoice::Overwrite,
                 ),
                 TransferQuestionKind::Resume => (
-                    format!("发现未完成的{verb}").into(),
-                    format!("继续{verb}").into(),
+                    either(
+                        t!("explorer.question.resume_upload_title"),
+                        t!("explorer.question.resume_download_title"),
+                    ),
+                    either(
+                        t!("explorer.question.resume_upload"),
+                        t!("explorer.question.resume_download"),
+                    ),
                     TransferChoice::Resume,
                 ),
                 TransferQuestionKind::InvalidResume => (
-                    "无法继续此文件".into(),
-                    format!("重新{verb}").into(),
+                    t!("explorer.question.invalid_resume_title"),
+                    restart_label.clone(),
                     TransferChoice::Restart,
                 ),
                 TransferQuestionKind::Error => (
-                    format!("无法{verb}此项目").into(),
-                    "重试".into(),
+                    either(
+                        t!("explorer.question.upload_failed_title"),
+                        t!("explorer.question.download_failed_title"),
+                    ),
+                    t!("explorer.question.retry"),
                     TransferChoice::Retry,
                 ),
             };
-        let cancel_label: SharedString = format!("取消{verb}").into();
-        let restart_label: SharedString = format!("重新{verb}").into();
+        let cancel_label = either(
+            t!("explorer.question.cancel_upload"),
+            t!("explorer.question.cancel_download"),
+        );
         window.open_dialog(cx, move |dialog, _, _| {
             let answer_button = |id: &'static str, label: SharedString, choice: TransferChoice| {
                 let (answered, answer, form) = (answered.clone(), answer.clone(), form.clone());
@@ -251,7 +280,7 @@ impl ExplorerPanel {
                         ))
                         .child(answer_button(
                             "transfer-question-skip",
-                            "跳过".into(),
+                            t!("explorer.question.skip"),
                             TransferChoice::Skip,
                         ))
                         .when(question.kind() == TransferQuestionKind::Resume, |footer| {
@@ -346,17 +375,17 @@ impl TransferSources {
     }
 
     /// `2 个文件`, `1 个文件夹`, or `3 个项目（1 个文件夹、2 个文件）`.
-    fn count(&self) -> String {
+    fn count(&self) -> SharedString {
         let folders = self.items.iter().filter(|item| item.is_dir).count();
         match (folders, self.items.len() - folders) {
-            (0, files) => format!("{files} 个文件"),
-            (folders, 0) => format!("{folders} 个文件夹"),
-            (folders, files) => {
-                format!(
-                    "{} 个项目（{folders} 个文件夹、{files} 个文件）",
-                    folders + files
-                )
-            }
+            (0, files) => tn!("explorer.transfer.files", files),
+            (folders, 0) => tn!("explorer.transfer.folders", folders),
+            (folders, files) => tn!(
+                "explorer.transfer.items",
+                folders + files,
+                folders = tn!("explorer.transfer.folders", folders),
+                files = tn!("explorer.transfer.files", files)
+            ),
         }
     }
 
@@ -370,7 +399,7 @@ impl TransferSources {
                     div()
                         .text_xs()
                         .text_color(muted)
-                        .child(format!("位于 {folder}")),
+                        .child(t!("explorer.transfer.in_folder", folder = folder)),
                 )
             })
             .child(
@@ -427,11 +456,11 @@ fn queued_note(cx: &App) -> impl IntoElement {
         .test_support()
         .text_xs()
         .text_color(cx.theme().muted_foreground)
-        .child("当前有传输在进行，这一批会排在传输队列里，轮到时自动开始。")
+        .child(t!("explorer.transfer.queued_note"))
 }
 
 /// The dialog's first line: what goes where.
-fn summary(text: String) -> impl IntoElement {
+fn summary(text: SharedString) -> impl IntoElement {
     div()
         .id("transfer-summary")
         .test_support()
@@ -457,7 +486,7 @@ impl TransferForm {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("选择下载到的目录".into()),
+            prompt: Some(t!("explorer.transfer.choose_download_folder")),
         });
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = choice.await
@@ -480,9 +509,13 @@ impl Render for TransferForm {
         let count = self.sources.count();
         let (text, list_id, label, error_id, target) = match self.direction {
             TransferDirection::Upload => (
-                format!("上传 {count}到 {}", self.endpoint),
+                t!(
+                    "explorer.transfer.upload_summary",
+                    items = count,
+                    endpoint = self.endpoint
+                ),
                 "upload-source-list",
-                "目标目录",
+                t!("explorer.transfer.target"),
                 "upload-form-error",
                 Input::new(&self.target)
                     .id("upload-target")
@@ -490,9 +523,13 @@ impl Render for TransferForm {
                     .into_any_element(),
             ),
             TransferDirection::Download => (
-                format!("从 {} 下载 {count}", self.endpoint),
+                t!(
+                    "explorer.transfer.download_summary",
+                    items = count,
+                    endpoint = self.endpoint
+                ),
                 "download-source-list",
-                "下载到",
+                t!("explorer.transfer.download_to"),
                 "download-form-error",
                 h_flex()
                     .gap_2()
@@ -505,7 +542,7 @@ impl Render for TransferForm {
                     .child(
                         Button::new("download-browse")
                             .small()
-                            .label("浏览…")
+                            .label(t!("explorer.browse"))
                             .on_click(cx.listener(|this, _, window, cx| this.browse(window, cx))),
                     )
                     .into_any_element(),
@@ -537,7 +574,7 @@ impl Render for ConflictForm {
         div().when(self.kind == TransferQuestionKind::Conflict, |this| {
             this.child(
                 Checkbox::new("transfer-apply-all")
-                    .label("应用于本批剩余冲突")
+                    .label(t!("explorer.question.apply_to_all"))
                     .checked(self.apply_all)
                     .on_change(cx.listener(|this, value, _, cx| {
                         this.apply_all = *value;
@@ -561,19 +598,42 @@ pub fn confirm_close_transfer(
     cx: &mut App,
 ) {
     let focus = window.focused(cx);
-    let verb = direction.verb();
-    let description = format!(
-        "{verb}进度会保留，下次选择相同来源和目标目录时可以继续{verb}。{}",
-        unsaved.unwrap_or_default()
+    let upload = direction == TransferDirection::Upload;
+    let either = |upload_text: SharedString, download_text: SharedString| {
+        if upload { upload_text } else { download_text }
+    };
+    let kept = either(
+        t!("explorer.close_transfer.upload_kept"),
+        t!("explorer.close_transfer.download_kept"),
+    );
+    let description = match unsaved {
+        Some(unsaved) => t!(
+            "explorer.close_transfer.two_sentences",
+            first = kept,
+            second = unsaved
+        ),
+        None => kept,
+    };
+    let title = either(
+        t!("explorer.close_transfer.upload_title"),
+        t!("explorer.close_transfer.download_title"),
+    );
+    let ok = either(
+        t!("explorer.close_transfer.stop_upload"),
+        t!("explorer.close_transfer.stop_download"),
+    );
+    let cancel = either(
+        t!("explorer.close_transfer.keep_uploading"),
+        t!("explorer.close_transfer.keep_downloading"),
     );
     window.open_alert_dialog(cx, move |dialog, _, _| {
         dialog
-            .title(format!("停止{verb}并关闭？"))
+            .title(title.clone())
             .description(description.clone())
             .button_props(
                 gpui_kit::component::dialog::DialogButtonProps::default()
-                    .ok_text(format!("停止{verb}并关闭"))
-                    .cancel_text(format!("继续{verb}")),
+                    .ok_text(ok.clone())
+                    .cancel_text(cancel.clone()),
             )
             .show_cancel(true)
             .on_cancel({
@@ -640,5 +700,21 @@ mod tests {
         assert_eq!(root.folder.as_deref(), Some("/"));
         assert_eq!(root.items[0].name, "boot");
         assert_eq!(root.count(), "1 个文件夹");
+    }
+
+    #[test]
+    fn english_counts_each_kind_in_its_own_number() {
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("en");
+        let count = |items: &[(&str, bool, bool)]| sources(items).count();
+        assert_eq!(count(&[("/a", true, false)]), "1 file");
+        assert_eq!(
+            count(&[("/a", true, true), ("/b", true, true)]),
+            "2 folders"
+        );
+        assert_eq!(
+            count(&[("/a", true, true), ("/b", true, false)]),
+            "2 items (1 folder, 1 file)"
+        );
     }
 }

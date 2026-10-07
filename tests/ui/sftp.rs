@@ -235,6 +235,51 @@ async fn sftp_panes_list_winscp_columns_and_open_links_to_directories(cx: &mut T
     .await;
 }
 
+/// The panes follow a change of interface language at once, the column
+/// titles too, which the table keeps for itself.
+#[gpui_kit::test]
+async fn sftp_panes_follow_a_change_of_interface_language(cx: &mut TestAppContext) {
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| settings.language = InterfaceLanguage::English,
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let explorer = workspace
+            .read(cx)
+            .explorer(ExplorerId(SFTP_TAB))
+            .unwrap()
+            .read(cx);
+        assert_eq!(
+            explorer.local().read(cx).column_names(cx),
+            ["Name", "Size", "Type", "Modified"]
+        );
+        assert_eq!(
+            explorer.remote().read(cx).column_names(cx),
+            ["Name", "Size", "Modified", "Permissions", "Owner"]
+        );
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let remote = window.within(("remote-pane", SFTP_TAB));
+        assert_eq!(remote.find("pane-status").label(), Some("4 items"));
+        assert_eq!(
+            remote.find("hidden-files").label(),
+            Some("Show hidden files")
+        );
+        assert_eq!(window.find("remote-path").label(), Some("Remote path"));
+    })
+    .unwrap();
+}
+
 /// The 大小 column shows whole kilobytes, as WinSCP does, until its title's
 /// menu picks another format, which then holds for both panes and is saved.
 /// The menu itself is not driven; the test dispatches what its items do.

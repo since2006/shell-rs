@@ -5,6 +5,7 @@
 use super::{ExplorerPanel, NewEntryKind};
 use crate::app::{ExplorerAction, ExplorerCommand, ExplorerDispatch as _};
 use crate::host::ConnectionState;
+use crate::i18n::t;
 use crate::sftp::{
     LocalDirectoryProvider, PermissionEdit, RemoteOperation, RemotePath, SftpCommand,
 };
@@ -37,19 +38,20 @@ pub enum PaneOperation {
 /// What to do when an operation answers.
 pub(super) struct PendingOperation {
     remote: bool,
-    failure: &'static str,
+    /// The title of the notification that says it failed.
+    failure: fn() -> SharedString,
     select: Option<String>,
     /// A new file, to open in the editor once it exists (WinSCP does).
     edit: Option<String>,
 }
 
 impl PaneOperation {
-    fn failure_title(&self) -> &'static str {
+    fn failure_title(&self) -> fn() -> SharedString {
         match self {
-            PaneOperation::Delete(_) => "删除失败",
-            PaneOperation::Rename { .. } => "重命名失败",
-            PaneOperation::Create { .. } => "新建失败",
-            PaneOperation::Permissions { .. } => "修改权限失败",
+            PaneOperation::Delete(_) => || t!("explorer.operation.delete_failed"),
+            PaneOperation::Rename { .. } => || t!("explorer.operation.rename_failed"),
+            PaneOperation::Create { .. } => || t!("explorer.operation.create_failed"),
+            PaneOperation::Permissions { .. } => || t!("explorer.operation.permissions_failed"),
         }
     }
 
@@ -212,9 +214,8 @@ impl ExplorerPanel {
             }
         });
         match result {
-            Err(message) => {
-                window.push_notification(Notification::error(message).title(pending.failure), cx)
-            }
+            Err(message) => window
+                .push_notification(Notification::error(message).title((pending.failure)()), cx),
             Ok(()) => {
                 if let Some(path) = pending.edit {
                     self.dispatch.dispatch_explorer_action(

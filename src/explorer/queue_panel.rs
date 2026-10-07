@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use super::{ExplorerPanel, FileSizeFormat, QueueEntry, QueueState, format_size, percent};
 use crate::app::{CatalogIcon, ExplorerAction, ExplorerCommand, ExplorerDispatch as _};
+use crate::i18n::t;
 use crate::sftp::{TransferDirection, TransferOutcome, TransferPhase};
 
 // Column widths, which the layout takes in pixels.
@@ -45,7 +46,7 @@ impl ExplorerPanel {
         let stopped = head == Some(QueueState::Stopped) && !self.engine_busy;
         let tool = |id: &'static str,
                     icon: Icon,
-                    tip: &'static str,
+                    tip: SharedString,
                     enabled: bool,
                     command: ExplorerCommand| {
             Button::new(id)
@@ -74,43 +75,43 @@ impl ExplorerPanel {
                     .py_1()
                     .gap_1()
                     .child(div().text_sm().child(if unfinished > 0 {
-                        format!("传输队列 ({unfinished})")
+                        t!("explorer.queue.title_count", unfinished = unfinished)
                     } else {
-                        "传输队列".into()
+                        t!("explorer.queue.title")
                     }))
                     .child(div().flex_1())
                     .child(tool(
                         "resume-transfer",
                         Icon::new(CatalogIcon::Play),
-                        "继续",
+                        t!("explorer.queue.resume"),
                         stopped,
                         ExplorerCommand::ResumeTransfer,
                     ))
                     .child(tool(
                         "cancel-transfer",
                         Icon::new(CatalogIcon::Square),
-                        "停止",
+                        t!("explorer.queue.stop"),
                         head == Some(QueueState::Active),
                         ExplorerCommand::CancelTransfer,
                     ))
                     .child(tool(
                         "remove-transfer",
                         Icon::new(IconName::Close),
-                        "移出队列",
+                        t!("explorer.queue.remove"),
                         queue.removable().is_some(),
                         ExplorerCommand::RemoveQueueEntry,
                     ))
                     .child(tool(
                         "discard-transfer",
                         Icon::new(CatalogIcon::Trash),
-                        "丢弃续传进度",
+                        t!("explorer.queue.discard"),
                         stopped,
                         ExplorerCommand::DiscardTransfer,
                     ))
                     .child(tool(
                         "clear-finished-transfers",
                         Icon::new(CatalogIcon::Eraser),
-                        "清除已完成",
+                        t!("explorer.queue.clear_finished"),
                         queue.has_finished(),
                         ExplorerCommand::ClearFinishedTransfers,
                     )),
@@ -122,13 +123,29 @@ impl ExplorerPanel {
                     .text_xs()
                     .text_color(theme.muted_foreground)
                     .bg(theme.muted)
-                    .child(fixed(OPERATION).child("操作"))
-                    .child(flexible().child("来源"))
-                    .child(flexible().child("目标"))
-                    .child(fixed(TRANSFERRED).justify_end().child("已传输"))
-                    .child(fixed(TIME).justify_end().child("时间"))
-                    .child(fixed(SPEED).justify_end().child("速度"))
-                    .child(fixed(PROGRESS).pl_3().child("进度")),
+                    .child(fixed(OPERATION).child(t!("explorer.queue.column.operation")))
+                    .child(flexible().child(t!("explorer.queue.column.source")))
+                    .child(flexible().child(t!("explorer.queue.column.target")))
+                    .child(
+                        fixed(TRANSFERRED)
+                            .justify_end()
+                            .child(t!("explorer.queue.column.transferred")),
+                    )
+                    .child(
+                        fixed(TIME)
+                            .justify_end()
+                            .child(t!("explorer.queue.column.time")),
+                    )
+                    .child(
+                        fixed(SPEED)
+                            .justify_end()
+                            .child(t!("explorer.queue.column.speed")),
+                    )
+                    .child(
+                        fixed(PROGRESS)
+                            .pl_3()
+                            .child(t!("explorer.queue.column.progress")),
+                    ),
             )
             .child(
                 v_flex()
@@ -228,9 +245,9 @@ fn batch_row(
                             IconName::ChevronRight
                         }))
                         .tooltip(if row.expanded {
-                            "收起逐项结果"
+                            t!("explorer.queue.hide_results")
                         } else {
-                            "展开逐项结果"
+                            t!("explorer.queue.show_results")
                         })
                         .on_click(toggle),
                 )
@@ -319,7 +336,7 @@ fn item_results(entry: &QueueEntry, cx: &Context<ExplorerPanel>) -> impl IntoEle
         .progress()
         .map(|progress| progress.details())
         .unwrap_or_default();
-    let verb = entry.job().direction().verb();
+    let upload = entry.job().direction() == TransferDirection::Upload;
     v_flex()
         .id(("transfer-detail-list", entry.id().0))
         .test_support()
@@ -335,17 +352,31 @@ fn item_results(entry: &QueueEntry, cx: &Context<ExplorerPanel>) -> impl IntoEle
                     .py_0p5()
                     .text_color(muted)
                     .child(if entry.state() == QueueState::Pending {
-                        "还没有开始".to_string()
+                        t!("explorer.queue.not_started")
+                    } else if upload {
+                        t!("explorer.queue.nothing_uploaded")
                     } else {
-                        format!("还没有{verb}完的项目，每完成一项会列在这里")
+                        t!("explorer.queue.nothing_downloaded")
                     }),
             )
         })
         .children(details.iter().rev().map(|detail| {
             let (icon, color, outcome) = match detail.outcome() {
-                TransferOutcome::Done => (Icon::new(IconName::CircleCheck), success, "完成"),
-                TransferOutcome::Skipped => (Icon::new(CatalogIcon::CircleMinus), muted, "已跳过"),
-                TransferOutcome::Failed => (Icon::new(IconName::CircleX), danger, "失败"),
+                TransferOutcome::Done => (
+                    Icon::new(IconName::CircleCheck),
+                    success,
+                    t!("explorer.queue.outcome.done"),
+                ),
+                TransferOutcome::Skipped => (
+                    Icon::new(CatalogIcon::CircleMinus),
+                    muted,
+                    t!("explorer.queue.outcome.skipped"),
+                ),
+                TransferOutcome::Failed => (
+                    Icon::new(IconName::CircleX),
+                    danger,
+                    t!("explorer.queue.outcome.failed"),
+                ),
             };
             h_flex()
                 .id(ElementId::Name(
