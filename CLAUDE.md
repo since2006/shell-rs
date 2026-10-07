@@ -178,7 +178,7 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 - **启动**：`main` 读完设置、建任何东西之前先 `set_locale`；外部 CLI 的客户端按 settings.json 设，与应用一致。
 - **标签和静态表**：返回文案的函数返回 `SharedString`，不是 `&'static str`。`static` 表里存键，显示时 `t!(key)`；键要以完整的字面量出现在源码里，守卫测试靠它找没人用的文案。
 - **英文文风**按 Design Guides：sentence case；省略号用单字符 `…`；按钮写结果（Delete，不写 Confirm deletion）；不写 Please、successfully、Are you sure；引号用 “ ” 和 ’。语言名用各自的语言写（「简体中文」「English」），这样的中文字面量所在行加 `// i18n: keep`。
-- **守卫测试**在 `src/i18n.rs`：两种语言都齐、占位一致、英文里没有中文和 `...`、代码里的键都有文案且文案都被用到、`TRANSLATED` 列出的目录没有中文字面量（`SHELLRS_I18N_CHECK=src/host,src/forward` 可临时追加目录）。
+- **守卫测试**在 `src/i18n.rs`：两种语言都齐、占位一致、英文里没有中文和 `...`、代码里的键都有文案且文案都被用到、`src/` 里测试以外没有中文字面量（扫描时跳过注释和 `#[cfg(test)]` / `#[cfg(any(test…))]` / `#[cfg(all(test…))]` 下的条目以及 `*tests.rs`）。键名不要以 `.one`、`.other` 结尾，除非它就是复数形式：守卫按复数处理这两个后缀。
 - **测试**：单元测试默认就是中文。UI 夹具经 `support::init_app` 和 `settings_store()`：本线程的语言与别的线程隔开（`i18n::isolate_thread`），并固定中文；切到英文的测试不影响并行的其他测试，也碰不到 gpui-kit 的全局语言。
 
 用词表（新文案照此，改要整体改）：
@@ -207,6 +207,14 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 | 应用更新 / 稳定版 / 重启并安装 / 查看更新内容 | Updates / Stable / Restart to update / What’s new |
 | 连接 / 断开连接 / 重新连接 | Connect / Disconnect / Reconnect |
 | 已连接 / 未连接 / 连接中 | Connected / Not connected / Connecting |
+| 目录、文件夹 | folder（上级目录 Parent folder，主目录 Home folder） |
+| SFTP 列：名称 / 大小 / 类型 / 修改时间 / 权限 / 所有者 | Name / Size / Type / Modified / Permissions / Owner |
+| 目标（转发、传输） | destination |
+| 本机 | this computer |
+| 系统钥匙串 / 主机信任文件 | system keychain / known hosts file |
+| SSH Agent（句子里） | the SSH agent |
+| 删除（容器、规则等） | Delete（不用 Remove） |
+| 正在读取… / 读取失败 | Loading… / Couldn’t load |
 
 ### GPUI / gpui-kit
 

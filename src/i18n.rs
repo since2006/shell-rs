@@ -173,53 +173,6 @@ mod tests {
 
     use super::*;
 
-    /// Directories and files whose code is through with Chinese literals:
-    /// every text in them goes through `t!`. Grows as modules are
-    /// translated, until it is all of `src`.
-    const TRANSLATED: &[&str] = &[
-        "src/app",
-        "src/cli",
-        "src/connection.rs",
-        "src/credential",
-        "src/docker",
-        "src/forward",
-        "src/history",
-        "src/host",
-        "src/i18n.rs",
-        "src/main.rs",
-        "src/monitor",
-        "src/netstat",
-        "src/processes",
-        "src/secrets",
-        "src/services",
-        "src/settings",
-        "src/shared",
-        "src/snippets",
-        "src/ssh",
-        "src/terminal",
-        "src/update",
-        "src/workspace/analytics.rs",
-        "src/workspace/cli_changes.rs",
-        "src/workspace/credentials.rs",
-        "src/workspace/dock_skin.rs",
-        "src/workspace/editors.rs",
-        "src/workspace/forwards.rs",
-        "src/workspace/links.rs",
-        "src/workspace/mod.rs",
-        "src/workspace/notices.rs",
-        "src/workspace/recent_hosts.rs",
-        "src/workspace/sidebar.rs",
-        "src/workspace/snippets.rs",
-        "src/workspace/status_bar.rs",
-        "src/workspace/tabs.rs",
-        "src/workspace/title_bar.rs",
-        "src/workspace/tool_sidebar.rs",
-        "src/workspace/tools.rs",
-        "src/workspace/updates.rs",
-        "src/workspace/window_state.rs",
-        "src/workspace/workspace_view.rs",
-    ];
-
     /// Marks a line whose Chinese literal is meant to stay, such as a
     /// language named in itself.
     const KEEP: &str = "i18n: keep";
@@ -398,28 +351,14 @@ mod tests {
         assert!(problems.is_empty(), "{problems:#?}");
     }
 
+    /// Every text goes through `t!`: no Chinese is left in the code
+    /// outside tests, but for lines marked to keep it.
     #[test]
-    fn translated_code_has_no_chinese_literals() {
-        // More to check while a module is being translated, comma-separated:
-        // `SHELLRS_I18N_CHECK=src/host,src/forward`.
-        let extra = std::env::var("SHELLRS_I18N_CHECK").unwrap_or_default();
-        let prefixes = TRANSLATED
-            .iter()
-            .copied()
-            .chain(
-                extra
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|prefix| !prefix.is_empty()),
-            )
-            .collect::<Vec<_>>();
+    fn the_code_has_no_chinese_literals() {
         let mut problems = Vec::new();
         for (path, text) in all_sources() {
             let name = path.to_string_lossy().replace('\\', "/");
-            let translated = prefixes
-                .iter()
-                .any(|prefix| name == *prefix || name.starts_with(&format!("{prefix}/")));
-            if !translated || name.ends_with("tests.rs") {
+            if name.ends_with("tests.rs") {
                 continue;
             }
             let lines = text.lines().collect::<Vec<_>>();
@@ -492,7 +431,7 @@ mod tests {
                         i += 1;
                     }
                 }
-            } else if at(i, "#[cfg(test)]") || at(i, "#[cfg(any(test") {
+            } else if at(i, "#[cfg(test)]") || at(i, "#[cfg(any(test") || at(i, "#[cfg(all(test") {
                 skipping = true;
                 i += 1;
             } else if c == '"'
