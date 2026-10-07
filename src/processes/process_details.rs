@@ -16,6 +16,7 @@ use gpui_kit::*;
 use super::linux::{command_line, command_line_command};
 use super::model::{ProcessDetails, format_started};
 use crate::app::{CatalogIcon, EndProcess};
+use crate::i18n::t;
 use crate::shared::{format_bytes, format_duration, format_percent};
 use crate::terminal::{TerminalView, exec_answer};
 
@@ -74,7 +75,7 @@ pub fn open_process_dialog(
             .justify_between()
             .child(copy_button(
                 "process-copy-pid",
-                "复制 PID",
+                t!("processes.details.copy_pid"),
                 Some(pid.to_string()),
                 this.copied == Some(Copied::Pid),
                 Copied::Pid,
@@ -87,13 +88,13 @@ pub fn open_process_dialog(
                         end("process-end", false)
                             .outline()
                             .icon(Icon::new(CatalogIcon::CircleStop))
-                            .label("结束进程"),
+                            .label(t!("processes.details.end")),
                     )
                     .child(
                         end("process-force-end", true)
                             .danger()
                             .icon(Icon::new(CatalogIcon::OctagonX))
-                            .label("强制结束"),
+                            .label(t!("processes.details.kill")),
                     ),
             );
         dialog
@@ -148,15 +149,15 @@ impl ProcessDetailsView {
         });
         let reading = cx.spawn(async move |this, cx| {
             let command = match reply {
-                None => CommandLine::Unknown("终端没有连接".into()),
+                None => CommandLine::Unknown(t!("tools.not_connected").into()),
                 Some(reply) => match exec_answer(reply, cx).await {
-                    None => CommandLine::Unknown("终端没有连接".into()),
-                    Some(Err(error)) => CommandLine::Unknown(format!("读取失败：{error}")),
+                    None => CommandLine::Unknown(t!("tools.not_connected").into()),
+                    Some(Err(error)) => {
+                        CommandLine::Unknown(t!("tools.read_failed", error = error).into())
+                    }
                     Some(Ok(output)) => match command_line(&output) {
                         Some(line) => CommandLine::Known(line),
-                        None => {
-                            CommandLine::Unknown("没有命令行：进程已经退出，或是僵尸进程".into())
-                        }
+                        None => CommandLine::Unknown(t!("processes.details.no_command").into()),
                     },
                 },
             };
@@ -193,7 +194,7 @@ impl ProcessDetailsView {
 /// 「复制命令」, which says 「已复制」 for a moment once it has.
 fn copy_button(
     id: &'static str,
-    label: &'static str,
+    label: SharedString,
     text: Option<String>,
     copied: bool,
     which: Copied,
@@ -207,7 +208,11 @@ fn copy_button(
         } else {
             IconName::Copy
         }))
-        .label(if copied { "已复制" } else { label })
+        .label(if copied {
+            t!("processes.details.copied")
+        } else {
+            label
+        })
         .disabled(text.is_none())
         .on_click(move |_, _, cx| {
             if let Some(text) = text.clone() {
@@ -221,38 +226,59 @@ impl Render for ProcessDetailsView {
         let details = &self.details;
         let process = &details.process;
         let info = &process.info;
-        let fields: [(&str, String); 16] = [
-            ("PID", process.pid.to_string()),
+        // Each label by its text's key; its line is found by the key's
+        // last part: 「process-field:parent」.
+        let none = || t!("processes.details.none").to_string();
+        let fields: [(&'static str, String); 16] = [
+            ("processes.field.pid", process.pid.to_string()),
             (
-                "父进程",
-                details.parent.clone().unwrap_or_else(|| "无".into()),
+                "processes.field.parent",
+                details.parent.clone().unwrap_or_else(none),
             ),
-            ("用户", process.user.clone().unwrap_or_else(|| "—".into())),
             (
-                "状态",
+                "processes.field.user",
+                process.user.clone().unwrap_or_else(|| "—".into()),
+            ),
+            (
+                "processes.field.state",
                 format!("{} ({})", process.state.label(), info.letters),
             ),
-            ("启动时间", format_started(process.started)),
-            ("运行时长", format_duration(process.running)),
-            ("终端", info.terminal.clone().unwrap_or_else(|| "无".into())),
-            ("优先级", info.priority.to_string()),
-            ("Nice", info.nice.to_string()),
-            ("CPU 使用率", process.cpu.map_or("—".into(), format_percent)),
-            ("累计 CPU 时间", format_duration(process.cpu_time)),
+            ("processes.field.started", format_started(process.started)),
+            ("processes.field.running", format_duration(process.running)),
             (
-                "常驻内存",
+                "processes.field.terminal",
+                info.terminal.clone().unwrap_or_else(none),
+            ),
+            ("processes.field.priority", info.priority.to_string()),
+            ("processes.field.nice", info.nice.to_string()),
+            (
+                "processes.field.cpu",
+                process.cpu.map_or("—".into(), format_percent),
+            ),
+            (
+                "processes.field.cpu_time",
+                format_duration(process.cpu_time),
+            ),
+            (
+                "processes.field.memory",
                 format!(
                     "{} ({})",
                     format_bytes(process.memory),
                     format_percent(process.memory_percent)
                 ),
             ),
-            ("虚拟内存", format_bytes(info.virtual_memory)),
-            ("线程", info.threads.to_string()),
-            ("直接子进程", details.children.to_string()),
-            ("全部后代进程", details.descendants.to_string()),
+            (
+                "processes.field.virtual_memory",
+                format_bytes(info.virtual_memory),
+            ),
+            ("processes.field.threads", info.threads.to_string()),
+            ("processes.field.children", details.children.to_string()),
+            (
+                "processes.field.descendants",
+                details.descendants.to_string(),
+            ),
         ];
-        let heading = |text: &'static str| {
+        let heading = |text: SharedString| {
             div()
                 .text_sm()
                 .font_weight(FontWeight::SEMIBOLD)
@@ -268,49 +294,56 @@ impl Render for ProcessDetailsView {
             .test_support()
             .gap_5()
             .child(
-                v_flex().gap_1().child(heading("进程信息")).child(
-                    div()
-                        .grid()
-                        .grid_cols(2)
-                        .gap_x_8()
-                        .children(fields.into_iter().map(|(label, value)| {
-                            h_flex()
-                                .id(SharedString::from(format!("process-field:{label}")))
-                                .test_support()
-                                .aria_label(value.clone())
-                                .min_w_0()
-                                .gap_3()
-                                .py_2()
-                                .border_b_1()
-                                .border_color(cx.theme().border)
-                                .text_sm()
-                                .child(
-                                    div()
-                                        .w(rems(6.5))
-                                        .flex_shrink_0()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(label),
-                                )
-                                .child(div().flex_1().min_w_0().truncate().child(value))
-                        })),
-                ),
+                v_flex()
+                    .gap_1()
+                    .child(heading(t!("processes.details.info")))
+                    .child(
+                        div()
+                            .grid()
+                            .grid_cols(2)
+                            .gap_x_8()
+                            .children(fields.into_iter().map(|(label, value)| {
+                                let id = label.rsplit('.').next().unwrap_or(label);
+                                h_flex()
+                                    .id(SharedString::from(format!("process-field:{id}")))
+                                    .test_support()
+                                    .aria_label(value.clone())
+                                    .min_w_0()
+                                    .gap_3()
+                                    .py_2()
+                                    .border_b_1()
+                                    .border_color(cx.theme().border)
+                                    .text_sm()
+                                    .child(
+                                        div()
+                                            .w(rems(6.5))
+                                            .flex_shrink_0()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(t!(label)),
+                                    )
+                                    .child(div().flex_1().min_w_0().truncate().child(value))
+                            })),
+                    ),
             )
             .child(
                 v_flex()
                     .gap_2()
                     .child(
-                        h_flex().justify_between().child(heading("完整命令")).child(
-                            copy_button(
-                                "process-copy-command",
-                                "复制命令",
-                                command_text,
-                                self.copied == Some(Copied::Command),
-                                Copied::Command,
-                                &view,
-                            )
-                            .ghost()
-                            .small(),
-                        ),
+                        h_flex()
+                            .justify_between()
+                            .child(heading(t!("processes.details.command")))
+                            .child(
+                                copy_button(
+                                    "process-copy-command",
+                                    t!("processes.details.copy_command"),
+                                    command_text,
+                                    self.copied == Some(Copied::Command),
+                                    Copied::Command,
+                                    &view,
+                                )
+                                .ghost()
+                                .small(),
+                            ),
                     )
                     .child(match &self.command {
                         CommandLine::Reading => h_flex()
@@ -321,7 +354,7 @@ impl Render for ProcessDetailsView {
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .child(Spinner::new().small())
-                            .child("正在读取…")
+                            .child(t!("tools.reading"))
                             .into_any_element(),
                         CommandLine::Known(line) => div()
                             .id("process-command")

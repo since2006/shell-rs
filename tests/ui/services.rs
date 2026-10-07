@@ -253,27 +253,27 @@ async fn a_click_on_a_service_shows_its_state_and_journal(cx: &mut TestAppContex
     in_frame(cx, handle, |window, cx| {
         window.click("service:nginx.service", cx)
     });
-    wait_for_label(cx, handle, "service-field:主进程 PID", "781").await;
+    wait_for_label(cx, handle, "service-field:main_pid", "781").await;
     in_frame(cx, handle, |window, _| {
-        let field = |label: &str| {
+        let field = |id: &str| {
             window
-                .find(SharedString::from(format!("service-field:{label}")))
+                .find(SharedString::from(format!("service-field:{id}")))
                 .label()
                 .map(str::to_owned)
         };
-        for (label, value) in [
-            ("加载状态", "已加载"),
-            ("运行状态", "运行中 / 运行中"),
-            ("开机启动", "已启用"),
-            ("内存", "1.90 MB"),
-            ("任务数", "5"),
-            ("重启次数", "0"),
-            ("退出状态", "0"),
-            ("启动时间", "Tue 2026-09-15 17:49:07 CST"),
-            ("停止时间", "—"),
-            ("Unit 文件", "/lib/systemd/system/nginx.service"),
+        for (id, value) in [
+            ("load", "已加载"),
+            ("active", "运行中 / 运行中"),
+            ("boot", "已启用"),
+            ("memory", "1.90 MB"),
+            ("tasks", "5"),
+            ("restarts", "0"),
+            ("exit_status", "0"),
+            ("started", "Tue 2026-09-15 17:49:07 CST"),
+            ("stopped", "—"),
+            ("unit_file", "/lib/systemd/system/nginx.service"),
         ] {
-            assert_eq!(field(label).as_deref(), Some(value), "{label}");
+            assert_eq!(field(id).as_deref(), Some(value), "{id}");
         }
         assert!(window.try_find("service-dialog-stop").is_some());
         assert!(window.try_find("service-dialog-disable").is_some());

@@ -1,0 +1,251 @@
+_version: 2
+
+# 系统服务: a Linux host's systemd services. systemd's states keep the
+# words systemd uses.
+
+services.panel.search:
+  zh-CN: 搜索服务名称或描述
+  en: Search names and descriptions
+services.panel.empty:
+  zh-CN: 没有服务
+  en: No services
+services.panel.no_match:
+  zh-CN: 没有符合条件的服务
+  en: No matching services
+services.panel.no_description:
+  zh-CN: 无描述
+  en: No description
+services.panel.not_connected:
+  zh-CN: 终端没有连接。连接后这里显示主机的系统服务。
+  en: The terminal isn’t connected. Once it is, the host’s services show here.
+services.panel.no_systemd:
+  zh-CN: 这台主机没有使用 systemd，暂不支持管理它的服务。
+  en: This host doesn’t use systemd, so its services can’t be managed yet.
+services.panel.unsupported_system:
+  zh-CN: 暂不支持管理 %{system} 的服务，目前只支持使用 systemd 的 Linux 主机。
+  en: Services on %{system} can’t be managed yet. Only Linux hosts with systemd are supported.
+services.panel.unsupported:
+  zh-CN: 暂不支持管理这台主机的服务，目前只支持使用 systemd 的 Linux 主机。
+  en: This host’s services can’t be managed yet. Only Linux hosts with systemd are supported.
+services.group.custom:
+  zh-CN: 自定义服务
+  en: Custom services
+services.group.system:
+  zh-CN: 系统服务
+  en: System services
+
+services.filter.all:
+  zh-CN: 全部
+  en: All
+services.filter.running:
+  zh-CN: 运行中
+  en: Active
+services.filter.stopped:
+  zh-CN: 已停止
+  en: Inactive
+services.filter.failed:
+  zh-CN: 失败
+  en: Failed
+
+services.command.start:
+  zh-CN: 启动
+  en: Start
+services.command.stop:
+  zh-CN: 停止
+  en: Stop
+services.command.restart:
+  zh-CN: 重启
+  en: Restart
+services.command.enable:
+  zh-CN: 启用开机启动
+  en: Enable at boot
+services.command.disable:
+  zh-CN: 禁用开机启动
+  en: Disable at boot
+
+# systemd's ActiveState.
+services.active.active:
+  zh-CN: 运行中
+  en: Active
+services.active.reloading:
+  zh-CN: 正在重载
+  en: Reloading
+services.active.inactive:
+  zh-CN: 已停止
+  en: Inactive
+services.active.failed:
+  zh-CN: 失败
+  en: Failed
+services.active.activating:
+  zh-CN: 正在启动
+  en: Activating
+services.active.deactivating:
+  zh-CN: 正在停止
+  en: Deactivating
+
+# systemd's SubState.
+services.sub.running:
+  zh-CN: 运行中
+  en: Running
+services.sub.exited:
+  zh-CN: 已退出
+  en: Exited
+services.sub.dead:
+  zh-CN: 未运行
+  en: Dead
+services.sub.failed:
+  zh-CN: 失败
+  en: Failed
+services.sub.waiting:
+  zh-CN: 等待中
+  en: Waiting
+services.sub.listening:
+  zh-CN: 监听中
+  en: Listening
+services.sub.reload:
+  zh-CN: 正在重载
+  en: Reloading
+services.sub.auto_restart:
+  zh-CN: 等待自动重启
+  en: Waiting to restart
+services.sub.condition:
+  zh-CN: 条件不满足
+  en: Condition not met
+services.sub.starting:
+  zh-CN: 正在启动
+  en: Starting
+services.sub.stopping:
+  zh-CN: 正在停止
+  en: Stopping
+
+# systemd's UnitFileState: whether it starts at boot.
+services.file.enabled:
+  zh-CN: 已启用
+  en: Enabled
+services.file.enabled_runtime:
+  zh-CN: 已启用（本次运行）
+  en: Enabled until reboot
+services.file.disabled:
+  zh-CN: 已禁用
+  en: Disabled
+services.file.static:
+  zh-CN: 静态
+  en: Static
+services.file.masked:
+  zh-CN: 已屏蔽
+  en: Masked
+services.file.generated:
+  zh-CN: 自动生成
+  en: Generated
+services.file.indirect:
+  zh-CN: 间接启用
+  en: Indirect
+services.file.linked:
+  zh-CN: 已链接
+  en: Linked
+services.file.transient:
+  zh-CN: 临时
+  en: Transient
+services.file.alias:
+  zh-CN: 别名
+  en: Alias
+services.file.bad:
+  zh-CN: 出错
+  en: Bad
+
+# systemd's LoadState.
+services.load.loaded:
+  zh-CN: 已加载
+  en: Loaded
+services.load.not_found:
+  zh-CN: 未找到
+  en: Not found
+services.load.masked:
+  zh-CN: 已屏蔽
+  en: Masked
+services.load.error:
+  zh-CN: 出错
+  en: Error
+services.load.bad_setting:
+  zh-CN: 配置有误
+  en: Bad setting
+
+# `systemctl is-system-running`.
+services.system.running:
+  zh-CN: 运行正常
+  en: Running
+services.system.degraded:
+  zh-CN: 降级运行
+  en: Degraded
+services.system.starting:
+  zh-CN: 正在启动
+  en: Starting
+services.system.initializing:
+  zh-CN: 正在初始化
+  en: Initializing
+services.system.maintenance:
+  zh-CN: 维护模式
+  en: Maintenance
+services.system.stopping:
+  zh-CN: 正在关机
+  en: Shutting down
+services.system.offline:
+  zh-CN: 离线
+  en: Offline
+
+services.error.needs_root:
+  zh-CN: 需要 root 权限：以 root 登录，或给这个用户配置免密码的 sudo
+  en: "Needs root: log in as root, or give this user passwordless sudo"
+services.error.needs_root_no_sudo:
+  zh-CN: 需要 root 权限：这台主机没有 sudo，请以 root 登录
+  en: "Needs root: this host has no sudo, so log in as root"
+services.error.status:
+  zh-CN: systemctl 返回 %{status}
+  en: systemctl exited with status %{status}
+
+# A service's details.
+services.details.tab_status:
+  zh-CN: 状态
+  en: Status
+services.details.tab_journal:
+  zh-CN: 日志
+  en: Journal
+services.details.unreadable:
+  zh-CN: 读不到这个服务的状态
+  en: Couldn’t read this service’s state
+services.details.no_journal:
+  zh-CN: 没有日志
+  en: No journal entries
+services.field.load:
+  zh-CN: 加载状态
+  en: Load state
+services.field.active:
+  zh-CN: 运行状态
+  en: Active state
+services.field.boot:
+  zh-CN: 开机启动
+  en: At boot
+services.field.main_pid:
+  zh-CN: 主进程 PID
+  en: Main PID
+services.field.memory:
+  zh-CN: 内存
+  en: Memory
+services.field.tasks:
+  zh-CN: 任务数
+  en: Tasks
+services.field.restarts:
+  zh-CN: 重启次数
+  en: Restarts
+services.field.exit_status:
+  zh-CN: 退出状态
+  en: Exit status
+services.field.started:
+  zh-CN: 启动时间
+  en: Started
+services.field.stopped:
+  zh-CN: 停止时间
+  en: Stopped
+services.field.unit_file:
+  zh-CN: Unit 文件
+  en: Unit file

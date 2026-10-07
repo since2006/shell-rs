@@ -23,6 +23,7 @@ use super::model::{
     Order, Process, ProcessDetails, ProcessSort, ProcessState, Snapshot, Tracker, format_started,
 };
 use crate::app::{CatalogIcon, EndProcess, RefreshProcesses, ShowProcess, SortProcesses};
+use crate::i18n::{UiLocale, t, tn};
 use crate::shared::{format_bytes, format_percent};
 use crate::terminal::{ExecResult, ExecTarget, RemoteTerminalId, exec_answer};
 
@@ -88,10 +89,15 @@ impl ProcessPanel {
     pub fn new(dispatch: FocusHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("搜索进程名称、PID 或用户")
+                .placeholder(t!("processes.panel.search"))
                 .clean_on_escape()
         });
         let subscriptions = vec![
+            cx.observe_global_in::<UiLocale>(window, |this, window, cx| {
+                this.search.update(cx, |search, cx| {
+                    search.set_placeholder(t!("processes.panel.search"), window, cx)
+                });
+            }),
             cx.subscribe(&search, |this, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.query = input.read(cx).value().to_string();
@@ -252,10 +258,10 @@ impl ProcessPanel {
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let rows = Rc::new(snapshot.listed(&self.query, self.order));
-        let summary = format!(
-            "共 {} 个进程 · 每 {} 秒刷新",
+        let summary = tn!(
+            "processes.panel.summary",
             snapshot.processes().len(),
-            INTERVAL.as_secs()
+            seconds = INTERVAL.as_secs()
         );
         let refresh = self.dispatch.clone();
         let header = v_flex()
@@ -285,8 +291,8 @@ impl ProcessPanel {
                             .xsmall()
                             .icon(Icon::new(CatalogIcon::RefreshCw))
                             .loading(self.loading)
-                            .tooltip("刷新")
-                            .accessibility_label("刷新")
+                            .tooltip(t!("tools.refresh"))
+                            .accessibility_label(t!("tools.refresh"))
                             .on_click(move |_, window, cx| {
                                 refresh.dispatch_action(&RefreshProcesses, window, cx)
                             }),
@@ -296,7 +302,7 @@ impl ProcessPanel {
                 header.child(render_problem(&problem, cx))
             })
             .when(snapshot.truncated(), |header| {
-                let text = format!("进程太多，只列出了前 {} 个。", linux::LIMIT);
+                let text = t!("processes.panel.truncated", limit = linux::LIMIT);
                 header.child(
                     div()
                         .id("processes-truncated")
@@ -362,15 +368,15 @@ impl ProcessPanel {
             .map(|list| {
                 if rows.is_empty() {
                     let empty = if self.query.trim().is_empty() {
-                        "没有进程"
+                        t!("processes.panel.empty")
                     } else {
-                        "没有符合条件的进程"
+                        t!("processes.panel.no_match")
                     };
                     list.child(
                         div()
                             .id("processes-empty")
                             .test_support()
-                            .aria_label(empty)
+                            .aria_label(empty.clone())
                             .py_8()
                             .text_sm()
                             .text_center()
@@ -452,7 +458,7 @@ impl Render for ProcessPanel {
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
                         .child(Spinner::new().small())
-                        .child("正在读取…"),
+                        .child(t!("tools.reading")),
                 ),
             })
     }
@@ -461,18 +467,18 @@ impl Render for ProcessPanel {
 fn render_problem(problem: &Problem, cx: &App) -> impl IntoElement {
     let (text, color) = match problem {
         Problem::NotConnected => (
-            "终端没有连接。连接后这里显示主机的进程。".to_string(),
+            t!("processes.panel.not_connected"),
             cx.theme().muted_foreground,
         ),
         Problem::Unsupported(Some(system)) => (
-            format!("暂不支持管理 {system} 的进程，目前只支持 Linux 主机。"),
+            t!("processes.panel.unsupported_system", system = system),
             cx.theme().muted_foreground,
         ),
         Problem::Unsupported(None) => (
-            "暂不支持管理这台主机的进程，目前只支持 Linux 主机。".to_string(),
+            t!("processes.panel.unsupported"),
             cx.theme().muted_foreground,
         ),
-        Problem::Failed(error) => (format!("读取失败：{error}"), cx.theme().danger),
+        Problem::Failed(error) => (t!("tools.read_failed", error = error), cx.theme().danger),
     };
     div()
         .id("processes-message")
@@ -493,13 +499,15 @@ fn sort_button(
     dispatch: &FocusHandle,
 ) -> impl IntoElement {
     let active = order.by == by;
-    let label = match by {
-        ProcessSort::Memory => "内存",
-        ProcessSort::Cpu => "CPU",
+    let label: SharedString = match by {
+        ProcessSort::Memory => t!("processes.memory"),
+        ProcessSort::Cpu => "CPU".into(),
     };
-    let tooltip = match (active, order.descending) {
-        (true, true) => format!("改为按{label}从少到多排列"),
-        _ => format!("按{label}从多到少排列"),
+    let tooltip = match (by, active && order.descending) {
+        (ProcessSort::Memory, true) => t!("processes.sort.memory_ascending"),
+        (ProcessSort::Memory, false) => t!("processes.sort.memory_descending"),
+        (ProcessSort::Cpu, true) => t!("processes.sort.cpu_ascending"),
+        (ProcessSort::Cpu, false) => t!("processes.sort.cpu_descending"),
     };
     let dispatch = dispatch.clone();
     Button::new(id)
@@ -525,18 +533,18 @@ fn build_context_menu(hit: Option<u32>, menu: PopupMenu) -> PopupMenu {
         return menu;
     };
     menu.menu_with_icon(
-        "查看详情",
+        t!("tools.menu.details"),
         Icon::new(IconName::Info),
         Box::new(ShowProcess(pid)),
     )
     .separator()
     .menu_with_icon(
-        "结束进程…",
+        t!("processes.menu.end"),
         Icon::new(CatalogIcon::CircleStop),
         Box::new(EndProcess { pid, force: false }),
     )
     .menu_with_icon(
-        "强制结束进程…",
+        t!("processes.menu.kill"),
         Icon::new(CatalogIcon::OctagonX),
         Box::new(EndProcess { pid, force: true }),
     )
@@ -573,12 +581,16 @@ fn render_process(
         format_percent(process.memory_percent)
     );
     let cpu = process.cpu.map_or("—".into(), format_percent);
-    let label = format!(
-        "{} · PID {pid} · {} · {user} · 内存 {memory} · CPU {cpu}",
-        process.name,
-        process.state.label(),
+    let label = t!(
+        "processes.card.label",
+        name = process.name,
+        pid = pid,
+        state = process.state.label(),
+        user = user,
+        memory = memory,
+        cpu = cpu
     );
-    let state: SharedString = process.state.label().into();
+    let state = process.state.label();
     let numeric = |text: String| {
         div()
             .font_family(cx.theme().mono_font_family.clone())
@@ -652,7 +664,11 @@ fn render_process(
                         .flex_1()
                         .min_w_0()
                         .gap_1()
-                        .child(div().text_color(cx.theme().muted_foreground).child("内存"))
+                        .child(
+                            div()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("processes.memory")),
+                        )
                         .child(numeric(memory).text_color(cx.theme().info)),
                 )
                 .child(

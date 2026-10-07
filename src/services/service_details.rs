@@ -18,6 +18,7 @@ use super::model::{
 };
 use super::service_panel::{command_icon, state_color};
 use crate::app::{CatalogIcon, ControlService};
+use crate::i18n::t;
 use crate::shared::{format_bytes, soft_tag};
 use crate::terminal::{ExecResult, TerminalView, exec_answer};
 
@@ -131,7 +132,7 @@ impl ServiceDetailsView {
                 this.status = match answer {
                     Ok(output) => match parse_status(&output) {
                         Some(status) => Read::Known(status),
-                        None => Read::Unknown("读不到这个服务的状态".into()),
+                        None => Read::Unknown(t!("services.details.unreadable").into()),
                     },
                     Err(why) => Read::Unknown(why),
                 };
@@ -173,7 +174,9 @@ impl ServiceDetailsView {
                 cx,
                 |this, answer, _| {
                     this.journal = match answer {
-                        Ok(output) if output.trim().is_empty() => Read::Unknown("没有日志".into()),
+                        Ok(output) if output.trim().is_empty() => {
+                            Read::Unknown(t!("services.details.no_journal").into())
+                        }
                         Ok(output) => Read::Known(output.trim_end().to_owned()),
                         Err(why) => Read::Unknown(why),
                     };
@@ -193,34 +196,38 @@ impl ServiceDetailsView {
         };
         let active = ActiveState::parse(&status.active);
         let number = |value: Option<u64>| value.map_or("—".to_owned(), |value| value.to_string());
-        let fields: [(&str, String); 10] = [
-            ("加载状态", load_state_label(&status.load)),
+        let fields: [(&'static str, String); 10] = [
+            ("services.field.load", load_state_label(&status.load).into()),
             (
-                "运行状态",
+                "services.field.active",
                 format!("{} / {}", active.label(), sub_state_label(&status.sub)),
             ),
             (
-                "开机启动",
-                file_state_label(&status.file_state)
-                    .unwrap_or("—")
-                    .to_owned(),
+                "services.field.boot",
+                file_state_label(&status.file_state).map_or("—".into(), Into::into),
             ),
             (
-                "主进程 PID",
+                "services.field.main_pid",
                 status.main_pid.map_or("—".into(), |pid| pid.to_string()),
             ),
-            ("内存", status.memory.map_or("—".into(), format_bytes)),
-            ("任务数", number(status.tasks)),
-            ("重启次数", number(status.restarts)),
             (
-                "退出状态",
+                "services.field.memory",
+                status.memory.map_or("—".into(), format_bytes),
+            ),
+            ("services.field.tasks", number(status.tasks)),
+            ("services.field.restarts", number(status.restarts)),
+            (
+                "services.field.exit_status",
                 status
                     .exit_status
                     .map_or("—".into(), |status| status.to_string()),
             ),
-            ("启动时间", status.started.clone().unwrap_or("—".into())),
             (
-                "停止时间",
+                "services.field.started",
+                status.started.clone().unwrap_or("—".into()),
+            ),
+            (
+                "services.field.stopped",
                 // When it last went down; while it runs, that is history.
                 status
                     .stopped
@@ -238,7 +245,7 @@ impl ServiceDetailsView {
                 ),
             )
             .child(field(
-                "Unit 文件",
+                "services.field.unit_file",
                 status.path.clone().unwrap_or("—".into()),
                 cx,
             ))
@@ -282,10 +289,10 @@ fn run(
     let reply = command.and_then(|command| terminal.upgrade()?.read(cx).exec(command, cx));
     cx.spawn(async move |this, cx| {
         let answer: ExecResult = match reply {
-            None => Err("终端没有连接".into()),
+            None => Err(t!("tools.not_connected").into()),
             Some(reply) => match exec_answer(reply, cx).await {
-                None => Err("终端没有连接".into()),
-                Some(Err(error)) => Err(format!("读取失败：{error}")),
+                None => Err(t!("tools.not_connected").into()),
+                Some(Err(error)) => Err(t!("tools.read_failed", error = error).into()),
                 Some(Ok(output)) => Ok(output),
             },
         };
@@ -297,10 +304,12 @@ fn run(
     })
 }
 
-/// A label and its value, over a line.
+/// A label, by its text's key, and its value, over a line. The line is
+/// found by the last part of the key: 「service-field:main_pid」.
 fn field(label: &'static str, value: String, cx: &App) -> impl IntoElement {
+    let id = label.rsplit('.').next().unwrap_or(label);
     h_flex()
-        .id(SharedString::from(format!("service-field:{label}")))
+        .id(SharedString::from(format!("service-field:{id}")))
         .test_support()
         .aria_label(value.clone())
         .min_w_0()
@@ -314,7 +323,7 @@ fn field(label: &'static str, value: String, cx: &App) -> impl IntoElement {
                 .w(rems(6.5))
                 .flex_shrink_0()
                 .text_color(cx.theme().muted_foreground)
-                .child(label),
+                .child(t!(label)),
         )
         .child(div().flex_1().min_w_0().truncate().child(value))
 }
@@ -329,7 +338,7 @@ fn reading(id: &'static str, cx: &App) -> AnyElement {
         .text_sm()
         .text_color(cx.theme().muted_foreground)
         .child(Spinner::new().small())
-        .child("正在读取…")
+        .child(t!("tools.reading"))
         .into_any_element()
 }
 
@@ -362,12 +371,12 @@ impl Render for ServiceDetailsView {
                         .child(
                             Tab::new()
                                 .icon(Icon::new(CatalogIcon::CircleDot))
-                                .label("状态"),
+                                .label(t!("services.details.tab_status")),
                         )
                         .child(
                             Tab::new()
                                 .icon(Icon::new(CatalogIcon::FileText))
-                                .label("日志"),
+                                .label(t!("services.details.tab_journal")),
                         ),
                 ),
             )

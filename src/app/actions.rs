@@ -5,7 +5,7 @@ use gpui_kit::*;
 
 use crate::{
     cli::AgentKind,
-    docker::{ContainerCommand, DockerObject},
+    docker::{ContainerCommand, ContainerSubject, DockerObject},
     editor::EditorId,
     explorer::{ExplorerId, FileSizeFormat, PaneSide},
     host::{
@@ -327,7 +327,7 @@ pub struct ControlService {
 pub struct ControlContainers {
     /// What they are, for the question and the notification: 「容器“web”」,
     /// 「项目“php-56”」.
-    pub subject: String,
+    pub subject: ContainerSubject,
     pub ids: Vec<String>,
     pub command: ContainerCommand,
 }

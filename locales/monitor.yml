@@ -1,0 +1,92 @@
+_version: 2
+
+# 系统监控: a Linux host's CPU, memory, network and disks.
+
+monitor.panel.not_connected:
+  zh-CN: 终端没有连接。连接后这里显示主机的 CPU、内存、网络和磁盘。
+  en: The terminal isn’t connected. Once it is, the host’s CPU, memory, network and disks show here.
+monitor.panel.unsupported_system:
+  zh-CN: 暂不支持 %{system} 的监控，目前只支持 Linux 主机。
+  en: Monitoring %{system} isn’t supported yet. Only Linux hosts are supported.
+monitor.panel.unsupported:
+  zh-CN: 暂不支持这台主机的监控，目前只支持 Linux 主机。
+  en: Monitoring this host isn’t supported yet. Only Linux hosts are supported.
+
+monitor.system.title:
+  zh-CN: 系统
+  en: System
+monitor.system.host:
+  zh-CN: 主机
+  en: Host
+monitor.system.arch:
+  zh-CN: 架构
+  en: Architecture
+monitor.system.os:
+  zh-CN: 系统
+  en: OS
+monitor.system.uptime:
+  zh-CN: 运行时长
+  en: Uptime
+
+monitor.cpu.cores.one:
+  en: "%{count} core"
+monitor.cpu.cores.other:
+  zh-CN: "%{count} 核"
+  en: "%{count} cores"
+monitor.cpu.unfold_cores:
+  zh-CN: 显示更多核的占用
+  en: Show every core
+monitor.cpu.fold_cores:
+  zh-CN: 收起更多核的占用
+  en: Show fewer cores
+monitor.cpu.average:
+  zh-CN: 平均使用率
+  en: Average
+# 「核 0：100.0%，核 1：33.3%」: each core, and the list they make.
+monitor.cpu.core:
+  zh-CN: 核 %{index}：%{load}
+  en: "Core %{index}: %{load}"
+monitor.cpu.core_list:
+  zh-CN: "%{list}，%{core}"
+  en: "%{list}, %{core}"
+
+monitor.memory.title:
+  zh-CN: 内存
+  en: Memory
+monitor.memory.physical:
+  zh-CN: 物理内存
+  en: Physical memory
+monitor.memory.swap:
+  zh-CN: 交换空间
+  en: Swap
+
+monitor.network.title:
+  zh-CN: 网络
+  en: Network
+monitor.network.interfaces.one:
+  en: "%{count} interface"
+monitor.network.interfaces.other:
+  zh-CN: "%{count} 个网卡"
+  en: "%{count} interfaces"
+monitor.network.unfold:
+  zh-CN: 显示全部网卡
+  en: Show all interfaces
+monitor.network.fold:
+  zh-CN: 只显示主网卡
+  en: Show only the main interface
+monitor.network.none:
+  zh-CN: 没有在用的网卡
+  en: No interfaces in use
+monitor.network.label:
+  zh-CN: 上传 %{up}，下载 %{down}
+  en: Up %{up}, down %{down}
+
+monitor.disks.title:
+  zh-CN: 磁盘
+  en: Disks
+monitor.disks.none:
+  zh-CN: 没有读到磁盘
+  en: No disks found
+monitor.disks.label:
+  zh-CN: "%{percent}，%{used} / %{total}"
+  en: "%{percent}, %{used} / %{total}"

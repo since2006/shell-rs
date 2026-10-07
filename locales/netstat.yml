@@ -1,0 +1,100 @@
+_version: 2
+
+# 网络连接: a Linux host's sockets, as `ss` lists them.
+
+netstat.panel.search:
+  zh-CN: 搜索地址、端口、状态、PID 或进程
+  en: Search addresses, ports, states, PIDs and processes
+netstat.panel.truncated:
+  zh-CN: 连接太多，只列出了前 %{limit} 条。
+  en: There are too many sockets, so only the first %{limit} are listed.
+netstat.panel.own_processes:
+  zh-CN: 当前用户不是 root，只能看到自己的进程。
+  en: You’re not logged in as root, so only your own processes show.
+netstat.panel.no_ss:
+  zh-CN: 这台主机没有 ss 命令，看不到占用连接的进程。
+  en: This host has no ss command, so the processes behind the sockets don’t show.
+netstat.panel.protocol:
+  zh-CN: 协议
+  en: Protocol
+netstat.panel.state:
+  zh-CN: 状态
+  en: State
+netstat.panel.matches.one:
+  en: "%{count} match"
+netstat.panel.matches.other:
+  zh-CN: 筛选出 %{count} 条
+  en: "%{count} matches"
+netstat.panel.empty:
+  zh-CN: 没有网络连接
+  en: No sockets
+netstat.panel.no_match:
+  zh-CN: 没有符合条件的连接
+  en: No matching sockets
+netstat.panel.not_connected:
+  zh-CN: 终端没有连接。连接后这里显示主机的网络连接。
+  en: The terminal isn’t connected. Once it is, the host’s sockets show here.
+netstat.panel.unsupported_system:
+  zh-CN: 暂不支持查看 %{system} 的网络连接，目前只支持 Linux 主机。
+  en: Sockets on %{system} can’t be listed yet. Only Linux hosts are supported.
+netstat.panel.unsupported:
+  zh-CN: 暂不支持查看这台主机的网络连接，目前只支持 Linux 主机。
+  en: This host’s sockets can’t be listed yet. Only Linux hosts are supported.
+
+# 「共 96 条 · 15 个监听端口 · 21 条已连接」.
+netstat.summary.total.one:
+  en: "%{count} socket"
+netstat.summary.total.other:
+  zh-CN: 共 %{count} 条
+  en: "%{count} sockets"
+netstat.summary.listening.one:
+  en: "%{count} listening port"
+netstat.summary.listening.other:
+  zh-CN: "%{count} 个监听端口"
+  en: "%{count} listening ports"
+netstat.summary.connected.other:
+  zh-CN: "%{count} 条已连接"
+  en: "%{count} established"
+
+netstat.filter.all_protocols:
+  zh-CN: 全部协议
+  en: All protocols
+netstat.filter.all_states:
+  zh-CN: 全部状态
+  en: All states
+netstat.filter.other_states:
+  zh-CN: 其他状态
+  en: Other states
+
+# The two states said in words; the rest keep their TCP names.
+netstat.state.listen:
+  zh-CN: 监听
+  en: Listening
+netstat.state.established:
+  zh-CN: 已连接
+  en: Established
+netstat.role.listening:
+  zh-CN: 监听端口
+  en: Listening port
+netstat.role.inbound:
+  zh-CN: 入站连接
+  en: Inbound
+netstat.role.outbound:
+  zh-CN: 出站连接
+  en: Outbound
+
+netstat.card.label:
+  zh-CN: "%{protocol} %{state} · 本地 %{local} · 远端 %{peer} · %{process} · %{user}"
+  en: "%{protocol} %{state} · Local %{local} · Remote %{peer} · %{process} · %{user}"
+netstat.card.local:
+  zh-CN: 本地
+  en: Local
+netstat.card.peer:
+  zh-CN: 远端
+  en: Remote
+netstat.card.process:
+  zh-CN: 进程
+  en: Process
+netstat.process.several:
+  zh-CN: "%{name} (PID %{pid} 等 %{count} 个)"
+  en: "%{name} (PID %{pid} and others, %{count} in all)"

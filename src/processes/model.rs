@@ -3,6 +3,10 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+use gpui_kit::SharedString;
+
+use crate::i18n::t;
+
 /// One look at a host's processes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Reading {
@@ -81,15 +85,15 @@ impl ProcessState {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            ProcessState::Running => "运行中",
-            ProcessState::Sleeping => "休眠",
-            ProcessState::Uninterruptible => "等待 I/O",
-            ProcessState::Stopped => "已暂停",
-            ProcessState::Zombie => "僵尸进程",
-            ProcessState::Idle => "空闲",
-            ProcessState::Other => "其他",
+            ProcessState::Running => t!("processes.state.running"),
+            ProcessState::Sleeping => t!("processes.state.sleeping"),
+            ProcessState::Uninterruptible => t!("processes.state.uninterruptible"),
+            ProcessState::Stopped => t!("processes.state.stopped"),
+            ProcessState::Zombie => t!("processes.state.zombie"),
+            ProcessState::Idle => t!("processes.state.idle"),
+            ProcessState::Other => t!("processes.state.misc"),
         }
     }
 }

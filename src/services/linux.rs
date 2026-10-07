@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use super::model::{Service, ServiceCommand, ServiceStatus, ServiceTable};
+use crate::i18n::t;
 
 /// What the list asks `systemctl show` for each service.
 const LIST_PROPERTIES: [&str; 6] = [
@@ -102,7 +103,7 @@ pub fn control_command(name: &str, command: ServiceCommand) -> Option<String> {
 pub fn controlled(output: &str) -> Result<(), String> {
     let (said, status) = output
         .rsplit_once("@@status")
-        .ok_or_else(|| "主机没有回答".to_string())?;
+        .ok_or_else(|| t!("tools.no_answer").to_string())?;
     if status.trim() == "0" {
         return Ok(());
     }
@@ -113,11 +114,11 @@ pub fn controlled(output: &str) -> Result<(), String> {
             || said.contains("Access denied")
             || said.contains("not in the sudoers")
         {
-            "需要 root 权限：以 root 登录，或给这个用户配置免密码的 sudo".into()
+            t!("services.error.needs_root").into()
         } else if said.contains("command not found") && said.contains("sudo") {
-            "需要 root 权限：这台主机没有 sudo，请以 root 登录".into()
+            t!("services.error.needs_root_no_sudo").into()
         } else if said.is_empty() {
-            format!("systemctl 返回 {}", status.trim())
+            t!("services.error.status", status = status.trim()).into()
         } else {
             said.lines().next().unwrap_or(said).trim().to_owned()
         },

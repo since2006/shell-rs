@@ -3,6 +3,10 @@
 
 use std::collections::BTreeMap;
 
+use gpui_kit::SharedString;
+
+use crate::i18n::{t, tn};
+
 /// What a container is doing, as `docker ps` says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ContainerState {
@@ -37,15 +41,15 @@ impl ContainerState {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            ContainerState::Running => "运行中",
-            ContainerState::Paused => "已暂停",
-            ContainerState::Restarting => "正在重启",
-            ContainerState::Created => "已创建",
-            ContainerState::Exited => "已停止",
-            ContainerState::Dead => "异常",
-            ContainerState::Removing => "正在删除",
+            ContainerState::Running => t!("docker.state.running"),
+            ContainerState::Paused => t!("docker.state.paused"),
+            ContainerState::Restarting => t!("docker.state.restarting"),
+            ContainerState::Created => t!("docker.state.created"),
+            ContainerState::Exited => t!("docker.state.exited"),
+            ContainerState::Dead => t!("docker.state.dead"),
+            ContainerState::Removing => t!("docker.state.removing"),
         }
     }
 
@@ -159,22 +163,23 @@ impl ContainerCommand {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            ContainerCommand::Start => "启动",
-            ContainerCommand::Stop => "停止",
-            ContainerCommand::Restart => "重启",
+            ContainerCommand::Start => t!("docker.command.start"),
+            ContainerCommand::Stop => t!("docker.command.stop"),
+            ContainerCommand::Restart => t!("docker.command.restart"),
         }
     }
+}
 
-    /// What it did, after the name: 「已停止」.
-    pub fn done(self) -> &'static str {
-        match self {
-            ContainerCommand::Start => "已启动",
-            ContainerCommand::Stop => "已停止",
-            ContainerCommand::Restart => "已重启",
-        }
-    }
+/// What a container command is run on, for the question and the
+/// notification: 「容器“web”」, 「项目“php-56”」.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContainerSubject {
+    /// One container, by name.
+    Container(String),
+    /// A compose project's containers, by the project's name.
+    Project(String),
 }
 
 /// What kind of thing a removal removes.
@@ -187,12 +192,12 @@ pub enum DockerObject {
 }
 
 impl DockerObject {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            DockerObject::Container => "容器",
-            DockerObject::Image => "镜像",
-            DockerObject::Volume => "卷",
-            DockerObject::Network => "网络",
+            DockerObject::Container => t!("docker.object.container"),
+            DockerObject::Image => t!("docker.object.image"),
+            DockerObject::Volume => t!("docker.object.volume"),
+            DockerObject::Network => t!("docker.object.network"),
         }
     }
 }
@@ -215,12 +220,12 @@ impl DockerTab {
         DockerTab::Networks,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            DockerTab::Containers => "容器",
-            DockerTab::Volumes => "卷",
-            DockerTab::Images => "镜像",
-            DockerTab::Networks => "网络",
+            DockerTab::Containers => t!("docker.tab.containers"),
+            DockerTab::Volumes => t!("docker.tab.volumes"),
+            DockerTab::Images => t!("docker.tab.images"),
+            DockerTab::Networks => t!("docker.tab.networks"),
         }
     }
 }
@@ -468,7 +473,7 @@ pub struct ObjectSummary {
     pub detail: String,
     pub tag: Option<(String, Tone)>,
     /// Whether it can be removed, and why not.
-    pub removable: Result<(), &'static str>,
+    pub removable: Result<(), SharedString>,
     /// The containers using it, by name.
     pub used_by: Vec<String>,
 }
@@ -491,12 +496,12 @@ impl Volume {
             name: self.name.clone(),
             detail: joined(&[&self.driver, &self.mountpoint]),
             tag: Some(if in_use {
-                ("使用中".into(), Tone::Good)
+                (t!("docker.object.in_use").into(), Tone::Good)
             } else {
-                ("未使用".into(), Tone::Quiet)
+                (t!("docker.object.unused").into(), Tone::Quiet)
             }),
             removable: if in_use {
-                Err("有容器在用，不能删除")
+                Err(t!("docker.object.in_use_by_containers"))
             } else {
                 Ok(())
             },
@@ -514,11 +519,11 @@ impl Image {
             name: self
                 .reference
                 .clone()
-                .unwrap_or_else(|| "未命名镜像".into()),
+                .unwrap_or_else(|| t!("docker.image.unnamed").into()),
             detail: joined(&[&self.id, &self.size, &self.created]),
-            tag: in_use.then(|| ("使用中".into(), Tone::Good)),
+            tag: in_use.then(|| (t!("docker.object.in_use").into(), Tone::Good)),
             removable: if in_use {
-                Err("有容器在用，不能删除")
+                Err(t!("docker.object.in_use_by_containers"))
             } else {
                 Ok(())
             },
@@ -531,16 +536,19 @@ impl Network {
     pub fn summary(&self) -> ObjectSummary {
         let (tag, removable) = if self.builtin() {
             (
-                ("内置".to_owned(), Tone::Quiet),
-                Err("Docker 自带的网络，不能删除"),
+                (t!("docker.network.builtin").into(), Tone::Quiet),
+                Err(t!("docker.network.builtin_kept")),
             )
         } else if !self.used_by.is_empty() {
             (
-                (format!("{} 个容器", self.used_by.len()), Tone::Good),
-                Err("有容器连着，不能删除"),
+                (
+                    tn!("docker.network.containers", self.used_by.len()).into(),
+                    Tone::Good,
+                ),
+                Err(t!("docker.network.in_use")),
             )
         } else {
-            (("未使用".to_owned(), Tone::Quiet), Ok(()))
+            ((t!("docker.object.unused").into(), Tone::Quiet), Ok(()))
         };
         ObjectSummary {
             object: DockerObject::Network,
@@ -559,14 +567,48 @@ impl Network {
 pub struct DetailSection {
     /// For the test ids of its lines: 「basics」.
     pub id: &'static str,
+    /// The heading's text, by its key: translated where it is drawn.
     pub title: &'static str,
     pub body: SectionBody,
+}
+
+/// What a line of details is labelled with.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RowLabel {
+    /// One of ShellRS's labels, by its text's key: 「docker.field.mountpoint」.
+    Field(&'static str),
+    /// One of the host's, as it is: a port, a path, a label's key.
+    Raw(String),
+}
+
+impl RowLabel {
+    /// What the line is found by: a field by the last part of its key
+    /// (「mountpoint」), the host's own as it is.
+    pub fn id(&self) -> &str {
+        match self {
+            RowLabel::Field(key) => key.rsplit('.').next().unwrap_or(key),
+            RowLabel::Raw(label) => label,
+        }
+    }
+
+    pub fn text(&self) -> SharedString {
+        match self {
+            RowLabel::Field(key) => t!(*key),
+            RowLabel::Raw(label) => label.clone().into(),
+        }
+    }
+}
+
+impl From<String> for RowLabel {
+    fn from(label: String) -> Self {
+        RowLabel::Raw(label)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SectionBody {
     /// Labels and their values: 「挂载点」 「/var/lib/docker/volumes/…」.
-    Rows(Vec<(String, String)>),
+    Rows(Vec<(RowLabel, String)>),
     /// Names, one a line: the containers using it.
     List(Vec<String>),
     /// Lines of text as they are, in a fixed-width face: the environment.
@@ -583,7 +625,9 @@ impl SectionBody {
 }
 
 /// Labels and values, with 「—」 for the empty values.
-pub fn rows(rows: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>) -> SectionBody {
+pub fn rows(
+    rows: impl IntoIterator<Item = (impl Into<RowLabel>, impl Into<String>)>,
+) -> SectionBody {
     SectionBody::Rows(
         rows.into_iter()
             .map(|(label, value)| {
@@ -607,34 +651,43 @@ impl ContainerDetails {
         vec![
             DetailSection {
                 id: "basics",
-                title: "基础信息",
+                title: "docker.section.basics",
                 body: rows([
-                    ("名称", self.name.clone()),
-                    ("ID", self.id.clone()),
-                    ("镜像", self.image.clone()),
-                    ("创建时间", self.created.clone()),
-                    ("入口", self.entrypoint.clone()),
-                    ("命令", self.command.clone()),
+                    (RowLabel::Field("docker.field.name"), self.name.clone()),
+                    (RowLabel::Raw("ID".into()), self.id.clone()),
+                    (RowLabel::Field("docker.field.image"), self.image.clone()),
+                    (
+                        RowLabel::Field("docker.field.created"),
+                        self.created.clone(),
+                    ),
+                    (
+                        RowLabel::Field("docker.field.entrypoint"),
+                        self.entrypoint.clone(),
+                    ),
+                    (
+                        RowLabel::Field("docker.field.command"),
+                        self.command.clone(),
+                    ),
                 ]),
             },
             DetailSection {
                 id: "ports",
-                title: "端口映射",
+                title: "docker.section.ports",
                 body: rows(self.ports.clone()),
             },
             DetailSection {
                 id: "mounts",
-                title: "挂载",
+                title: "docker.section.mounts",
                 body: rows(self.mounts.clone()),
             },
             DetailSection {
                 id: "environment",
-                title: "环境变量",
+                title: "docker.section.environment",
                 body: SectionBody::Text(self.environment.clone()),
             },
             DetailSection {
                 id: "labels",
-                title: "标签",
+                title: "docker.section.labels",
                 body: rows(self.labels.clone()),
             },
         ]
@@ -832,7 +885,7 @@ mod tests {
         let summary = |object, id: &str| table.summary_of(object, id).expect(id);
         let data = summary(DockerObject::Volume, "web-data");
         assert_eq!(data.tag, Some(("使用中".into(), Tone::Good)));
-        assert_eq!(data.removable, Err("有容器在用，不能删除"));
+        assert_eq!(data.removable, Err("有容器在用，不能删除".into()));
         assert_eq!(data.used_by, ["web"]);
         assert_eq!(summary(DockerObject::Volume, "old-data").removable, Ok(()));
         let dangling = summary(DockerObject::Image, "aaa");
@@ -840,7 +893,7 @@ mod tests {
         assert_eq!(dangling.tag, None);
         assert_eq!(
             summary(DockerObject::Network, "bridge").removable,
-            Err("Docker 自带的网络，不能删除")
+            Err("Docker 自带的网络，不能删除".into())
         );
         assert_eq!(
             summary(DockerObject::Network, "web_default").tag,

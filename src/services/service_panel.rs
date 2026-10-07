@@ -22,6 +22,7 @@ use super::model::{
     ActiveState, Service, ServiceCommand, ServiceFilter, ServiceRow, ServiceTable, file_state_label,
 };
 use crate::app::{CatalogIcon, ControlService, RefreshServices, ShowService};
+use crate::i18n::{UiLocale, t};
 use crate::shared::{soft_tag, tinted};
 use crate::terminal::{ExecResult, ExecTarget, RemoteTerminalId, exec_answer};
 
@@ -87,10 +88,15 @@ impl ServicePanel {
     pub fn new(dispatch: FocusHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("搜索服务名称或描述")
+                .placeholder(t!("services.panel.search"))
                 .clean_on_escape()
         });
         let subscriptions = vec![
+            cx.observe_global_in::<UiLocale>(window, |this, window, cx| {
+                this.search.update(cx, |search, cx| {
+                    search.set_placeholder(t!("services.panel.search"), window, cx)
+                });
+            }),
             cx.subscribe(&search, |this, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.query = input.read(cx).value().to_string();
@@ -267,8 +273,8 @@ impl ServicePanel {
                                 .xsmall()
                                 .icon(Icon::new(CatalogIcon::RefreshCw))
                                 .loading(self.loading)
-                                .tooltip("刷新")
-                                .accessibility_label("刷新")
+                                .tooltip(t!("tools.refresh"))
+                                .accessibility_label(t!("tools.refresh"))
                                 .on_click(move |_, window, cx| {
                                     refresh.dispatch_action(&RefreshServices, window, cx)
                                 }),
@@ -324,9 +330,9 @@ impl ServicePanel {
         let clear_hit = self.menu_hit.clone();
         let menu_hit = self.menu_hit.clone();
         let empty = if self.query.trim().is_empty() {
-            "没有服务"
+            t!("services.panel.empty")
         } else {
-            "没有符合条件的服务"
+            t!("services.panel.no_match")
         };
         // The scrollbar goes on the list's box, which does not scroll: on
         // the scrolled lines it would scroll away with them. The menu hangs
@@ -344,7 +350,7 @@ impl ServicePanel {
                         div()
                             .id("services-empty")
                             .test_support()
-                            .aria_label(empty)
+                            .aria_label(empty.clone())
                             .py_8()
                             .text_sm()
                             .text_center()
@@ -427,7 +433,7 @@ impl Render for ServicePanel {
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(Spinner::new().small())
-                .child("正在读取…")
+                .child(t!("tools.reading"))
                 .into_any_element(),
         };
         v_flex()
@@ -442,22 +448,21 @@ impl Render for ServicePanel {
 fn render_problem(problem: &Problem, cx: &App) -> impl IntoElement {
     let (text, color) = match problem {
         Problem::NotConnected => (
-            "终端没有连接。连接后这里显示主机的系统服务。".to_string(),
+            t!("services.panel.not_connected"),
             cx.theme().muted_foreground,
         ),
-        Problem::Unsupported(Some(system)) if system == "Linux" => (
-            "这台主机没有使用 systemd，暂不支持管理它的服务。".to_string(),
-            cx.theme().muted_foreground,
-        ),
+        Problem::Unsupported(Some(system)) if system == "Linux" => {
+            (t!("services.panel.no_systemd"), cx.theme().muted_foreground)
+        }
         Problem::Unsupported(Some(system)) => (
-            format!("暂不支持管理 {system} 的服务，目前只支持使用 systemd 的 Linux 主机。"),
+            t!("services.panel.unsupported_system", system = system),
             cx.theme().muted_foreground,
         ),
         Problem::Unsupported(None) => (
-            "暂不支持管理这台主机的服务，目前只支持使用 systemd 的 Linux 主机。".to_string(),
+            t!("services.panel.unsupported"),
             cx.theme().muted_foreground,
         ),
-        Problem::Failed(error) => (format!("读取失败：{error}"), cx.theme().danger),
+        Problem::Failed(error) => (t!("tools.read_failed", error = error), cx.theme().danger),
     };
     div()
         .id("services-message")
@@ -480,7 +485,7 @@ fn build_context_menu(hit: Option<&Service>, menu: PopupMenu) -> PopupMenu {
     };
     let menu = menu
         .menu_with_icon(
-            "查看详情",
+            t!("tools.menu.details"),
             Icon::new(IconName::Info),
             Box::new(ShowService(service.name.clone())),
         )
@@ -521,9 +526,9 @@ pub(super) fn state_color(state: ActiveState, cx: &App) -> Hsla {
 /// 「自定义服务 3」.
 fn render_group(custom: bool, count: usize, cx: &App) -> impl IntoElement {
     let label = if custom {
-        "自定义服务"
+        t!("services.group.custom")
     } else {
-        "系统服务"
+        t!("services.group.system")
     };
     h_flex()
         .id(if custom {
@@ -599,10 +604,10 @@ fn render_service(
     let color = state_color(service.active, cx);
     let boot = file_state_label(&service.file_state);
     let label = [
-        Some(service.name.as_str()),
-        Some(service.description.as_str()).filter(|text| !text.is_empty()),
+        Some(SharedString::from(service.name.clone())),
+        Some(SharedString::from(service.description.clone())).filter(|text| !text.is_empty()),
         Some(service.active.label()),
-        boot,
+        boot.clone(),
     ]
     .into_iter()
     .flatten()
@@ -663,9 +668,9 @@ fn render_service(
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(if service.description.is_empty() {
-                                    "无描述".to_owned()
+                                    t!("services.panel.no_description")
                                 } else {
-                                    service.description.clone()
+                                    service.description.clone().into()
                                 }),
                         )
                         .child(
@@ -703,8 +708,8 @@ fn render_service(
                             .ghost()
                             .small()
                             .icon(IconName::Ellipsis)
-                            .tooltip("详情和日志")
-                            .accessibility_label("详情和日志")
+                            .tooltip(t!("tools.details_and_logs"))
+                            .accessibility_label(t!("tools.details_and_logs"))
                             .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
                                 dispatch.dispatch_action(&ShowService(name.clone()), window, cx)

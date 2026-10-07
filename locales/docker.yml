@@ -1,0 +1,253 @@
+_version: 2
+
+# Docker: the right sidebar's tool for containers, volumes, images and
+# networks. Docker's own terms stay as Docker says them.
+
+docker.tab.containers:
+  zh-CN: 容器
+  en: Containers
+docker.tab.volumes:
+  zh-CN: 卷
+  en: Volumes
+docker.tab.images:
+  zh-CN: 镜像
+  en: Images
+docker.tab.networks:
+  zh-CN: 网络
+  en: Networks
+
+docker.panel.no_containers:
+  zh-CN: 没有容器
+  en: No containers
+docker.panel.no_volumes:
+  zh-CN: 没有卷
+  en: No volumes
+docker.panel.no_images:
+  zh-CN: 没有镜像
+  en: No images
+docker.panel.no_networks:
+  zh-CN: 没有网络
+  en: No networks
+docker.panel.standalone:
+  zh-CN: 独立容器
+  en: Standalone containers
+docker.panel.not_connected:
+  zh-CN: 终端没有连接。连接后这里显示主机上的容器。
+  en: The terminal isn’t connected. Once it is, the host’s containers show here.
+docker.panel.missing:
+  zh-CN: 这台主机没有安装 Docker。
+  en: Docker isn’t installed on this host.
+docker.panel.unsupported:
+  zh-CN: 暂不支持这台主机上的 Docker。
+  en: Docker on this host isn’t supported yet.
+docker.panel.unreachable:
+  zh-CN: 无法读取 Docker：%{error}
+  en: "Couldn’t read Docker: %{error}"
+docker.project.running:
+  zh-CN: "%{running}/%{total} 运行中"
+  en: "%{running}/%{total} running"
+
+# What a container is doing, as `docker ps` says.
+docker.state.running:
+  zh-CN: 运行中
+  en: Running
+docker.state.paused:
+  zh-CN: 已暂停
+  en: Paused
+docker.state.restarting:
+  zh-CN: 正在重启
+  en: Restarting
+docker.state.created:
+  zh-CN: 已创建
+  en: Created
+docker.state.exited:
+  zh-CN: 已停止
+  en: Exited
+docker.state.dead:
+  zh-CN: 异常
+  en: Dead
+docker.state.removing:
+  zh-CN: 正在删除
+  en: Removing
+
+docker.command.start:
+  zh-CN: 启动
+  en: Start
+docker.command.stop:
+  zh-CN: 停止
+  en: Stop
+docker.command.restart:
+  zh-CN: 重启
+  en: Restart
+
+docker.object.container:
+  zh-CN: 容器
+  en: Container
+docker.object.image:
+  zh-CN: 镜像
+  en: Image
+docker.object.volume:
+  zh-CN: 卷
+  en: Volume
+docker.object.network:
+  zh-CN: 网络
+  en: Network
+docker.object.in_use:
+  zh-CN: 使用中
+  en: In use
+docker.object.unused:
+  zh-CN: 未使用
+  en: Unused
+docker.object.in_use_by_containers:
+  zh-CN: 有容器在用，不能删除
+  en: A container uses it, so it can’t be deleted
+docker.image.unnamed:
+  zh-CN: 未命名镜像
+  en: Untagged image
+docker.network.builtin:
+  zh-CN: 内置
+  en: Built-in
+docker.network.builtin_kept:
+  zh-CN: Docker 自带的网络，不能删除
+  en: Docker’s own network can’t be deleted
+docker.network.containers.one:
+  en: "%{count} container"
+docker.network.containers.other:
+  zh-CN: "%{count} 个容器"
+  en: "%{count} containers"
+docker.network.in_use:
+  zh-CN: 有容器连着，不能删除
+  en: Containers are attached, so it can’t be deleted
+
+# Docker's complaints, where the user can do something about them.
+docker.error.permission:
+  zh-CN: 没有权限：以 root 登录、把这个用户加入 docker 组，或给它配置免密码的 sudo
+  en: "Permission denied: log in as root, add this user to the docker group, or give it passwordless sudo"
+docker.error.not_running:
+  zh-CN: Docker 没有运行
+  en: Docker isn’t running
+docker.error.status:
+  zh-CN: docker 返回 %{status}
+  en: docker exited with status %{status}
+
+# The details dialogs.
+docker.details.tab_details:
+  zh-CN: 详情
+  en: Details
+docker.details.tab_logs:
+  zh-CN: 日志
+  en: Logs
+docker.details.no_output:
+  zh-CN: 没有输出
+  en: No output
+docker.details.container_gone:
+  zh-CN: 读不到这个容器：它可能已经被删除
+  en: Couldn’t read this container. It may have been deleted.
+docker.details.image_gone:
+  zh-CN: 读不到这个镜像：它可能已经被删除
+  en: Couldn’t read this image. It may have been deleted.
+docker.details.volume_gone:
+  zh-CN: 读不到这个卷：它可能已经被删除
+  en: Couldn’t read this volume. It may have been deleted.
+docker.details.network_gone:
+  zh-CN: 读不到这个网络：它可能已经被删除
+  en: Couldn’t read this network. It may have been deleted.
+
+docker.section.basics:
+  zh-CN: 基础信息
+  en: Overview
+docker.section.ports:
+  zh-CN: 端口映射
+  en: Ports
+docker.section.mounts:
+  zh-CN: 挂载
+  en: Mounts
+docker.section.environment:
+  zh-CN: 环境变量
+  en: Environment
+docker.section.labels:
+  zh-CN: 标签
+  en: Labels
+docker.section.users:
+  zh-CN: 使用它的容器
+  en: Used by
+docker.section.options:
+  zh-CN: 选项
+  en: Options
+docker.section.config:
+  zh-CN: 运行配置
+  en: Configuration
+docker.section.subnets:
+  zh-CN: 子网
+  en: Subnets
+docker.section.containers:
+  zh-CN: 容器
+  en: Containers
+
+docker.field.name:
+  zh-CN: 名称
+  en: Name
+docker.field.image:
+  zh-CN: 镜像
+  en: Image
+docker.field.created:
+  zh-CN: 创建时间
+  en: Created
+docker.field.entrypoint:
+  zh-CN: 入口
+  en: Entrypoint
+docker.field.command:
+  zh-CN: 命令
+  en: Command
+docker.field.driver:
+  zh-CN: 驱动
+  en: Driver
+docker.field.mountpoint:
+  zh-CN: 挂载点
+  en: Mountpoint
+docker.field.scope:
+  zh-CN: 范围
+  en: Scope
+docker.field.tags:
+  zh-CN: 标签
+  en: Tags
+docker.field.digests:
+  zh-CN: 摘要
+  en: Digests
+docker.field.size:
+  zh-CN: 大小
+  en: Size
+docker.field.platform:
+  zh-CN: 平台
+  en: Platform
+docker.field.layers:
+  zh-CN: 层数
+  en: Layers
+docker.field.author:
+  zh-CN: 作者
+  en: Author
+docker.field.working_dir:
+  zh-CN: 工作目录
+  en: Working directory
+docker.field.user:
+  zh-CN: 用户
+  en: User
+docker.field.exposed_ports:
+  zh-CN: 暴露端口
+  en: Exposed ports
+docker.field.internal:
+  zh-CN: 内部网络
+  en: Internal
+
+docker.value.yes:
+  zh-CN: 是
+  en: "Yes"
+docker.value.no:
+  zh-CN: 否
+  en: "No"
+docker.mount.read_only:
+  zh-CN: "%{path}（只读）"
+  en: "%{path} (read-only)"
+docker.network.gateway:
+  zh-CN: 网关 %{address}
+  en: Gateway %{address}

@@ -16,14 +16,15 @@ use gpui_kit::*;
 
 use super::linux::{self, Parsed};
 use super::model::{
-    Container, ContainerCommand, ContainerState, DockerObject, DockerRow, DockerTab, DockerTable,
-    ObjectSummary, Project,
+    Container, ContainerCommand, ContainerState, ContainerSubject, DockerObject, DockerRow,
+    DockerTab, DockerTable, ObjectSummary, Project,
 };
 use super::object_details::tone_color;
 use crate::app::{
     CatalogIcon, ControlContainers, RefreshDocker, RemoveDockerObject, ShowDockerObject,
     ToggleDockerProject,
 };
+use crate::i18n::t;
 use crate::shared::{count_tabs, soft_tag, tinted};
 use crate::terminal::{ExecResult, ExecTarget, RemoteTerminalId, exec_answer};
 
@@ -275,8 +276,8 @@ impl DockerPanel {
                             .xsmall()
                             .icon(Icon::new(CatalogIcon::RefreshCw))
                             .loading(self.loading)
-                            .tooltip("刷新")
-                            .accessibility_label("刷新")
+                            .tooltip(t!("tools.refresh"))
+                            .accessibility_label(t!("tools.refresh"))
                             .on_click(move |_, window, cx| {
                                 refresh.dispatch_action(&RefreshDocker, window, cx)
                             }),
@@ -299,10 +300,10 @@ impl DockerPanel {
             ));
 
         let empty = match self.tab {
-            DockerTab::Containers => "没有容器",
-            DockerTab::Volumes => "没有卷",
-            DockerTab::Images => "没有镜像",
-            DockerTab::Networks => "没有网络",
+            DockerTab::Containers => t!("docker.panel.no_containers"),
+            DockerTab::Volumes => t!("docker.panel.no_volumes"),
+            DockerTab::Images => t!("docker.panel.no_images"),
+            DockerTab::Networks => t!("docker.panel.no_networks"),
         };
         // The scrollbar goes on the list's box, which does not scroll: on
         // the scrolled lines it would scroll away with them.
@@ -320,7 +321,7 @@ impl DockerPanel {
                         div()
                             .id("docker-empty")
                             .test_support()
-                            .aria_label(empty)
+                            .aria_label(empty.clone())
                             .py_8()
                             .text_sm()
                             .text_center()
@@ -347,7 +348,7 @@ impl DockerPanel {
                                     .pt_2()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("独立容器")
+                                    .child(t!("docker.panel.standalone"))
                                     .into_any_element(),
                                 DockerRow::Container(index) => render_container(
                                     &table.containers()[*index],
@@ -430,7 +431,7 @@ impl Render for DockerPanel {
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(Spinner::new().small())
-                .child("正在读取…")
+                .child(t!("tools.reading"))
                 .into_any_element(),
         };
         v_flex().id("docker").test_support().size_full().child(body)
@@ -440,19 +441,16 @@ impl Render for DockerPanel {
 fn render_problem(problem: &Problem, cx: &App) -> impl IntoElement {
     let (text, color) = match problem {
         Problem::NotConnected => (
-            "终端没有连接。连接后这里显示主机上的容器。".to_string(),
+            t!("docker.panel.not_connected"),
             cx.theme().muted_foreground,
         ),
-        Problem::Missing => (
-            "这台主机没有安装 Docker。".to_string(),
-            cx.theme().muted_foreground,
+        Problem::Missing => (t!("docker.panel.missing"), cx.theme().muted_foreground),
+        Problem::Unsupported => (t!("docker.panel.unsupported"), cx.theme().muted_foreground),
+        Problem::Unreachable(why) => (
+            t!("docker.panel.unreachable", error = why),
+            cx.theme().danger,
         ),
-        Problem::Unsupported => (
-            "暂不支持这台主机上的 Docker。".to_string(),
-            cx.theme().muted_foreground,
-        ),
-        Problem::Unreachable(why) => (format!("无法读取 Docker：{why}"), cx.theme().danger),
-        Problem::Failed(error) => (format!("读取失败：{error}"), cx.theme().danger),
+        Problem::Failed(error) => (t!("tools.read_failed", error = error), cx.theme().danger),
     };
     div()
         .id("docker-message")
@@ -484,7 +482,7 @@ fn dot(color: Hsla) -> Div {
 /// stop while something in it is up.
 fn command_buttons(
     id: &str,
-    subject: String,
+    subject: ContainerSubject,
     ids: Vec<String>,
     up: bool,
     dispatch: &FocusHandle,
@@ -563,8 +561,13 @@ fn render_project(
         )))
         .test_support()
         .aria_label(format!(
-            "{} · {}/{total} 运行中",
-            project.name, project.running
+            "{} · {}",
+            project.name,
+            t!(
+                "docker.project.running",
+                running = project.running,
+                total = total
+            )
         ))
         .rounded(cx.theme().radius)
         .bg(cx.theme().tokens.group_box)
@@ -628,7 +631,7 @@ fn render_project(
                 )
                 .child(command_buttons(
                     &format!("project:{}", project.name),
-                    format!("项目“{}”", project.name),
+                    ContainerSubject::Project(project.name.clone()),
                     ids,
                     project.running > 0,
                     dispatch,
@@ -720,7 +723,7 @@ fn render_container(
         )
         .child(command_buttons(
             &container.name,
-            format!("容器“{}”", container.name),
+            ContainerSubject::Container(container.name.clone()),
             vec![container.id.clone()],
             container.state.is_up(),
             dispatch,
@@ -734,8 +737,8 @@ fn render_container(
             .ghost()
             .small()
             .icon(IconName::Ellipsis)
-            .tooltip("详情和日志")
-            .accessibility_label("详情和日志")
+            .tooltip(t!("tools.details_and_logs"))
+            .accessibility_label(t!("tools.details_and_logs"))
             .on_click(move |_, window, cx| {
                 cx.stop_propagation();
                 more.dispatch_action(
@@ -831,8 +834,14 @@ fn render_object(
                 .ghost()
                 .small()
                 .icon(Icon::new(CatalogIcon::Trash))
-                .tooltip(summary.removable.err().unwrap_or("删除"))
-                .accessibility_label("删除")
+                .tooltip(
+                    summary
+                        .removable
+                        .clone()
+                        .err()
+                        .unwrap_or_else(|| t!("common.delete")),
+                )
+                .accessibility_label(t!("common.delete"))
                 .disabled(summary.removable.is_err())
                 .on_click(move |_, window, cx| {
                     // Not the card's click too, which opens the details.

@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use super::model::{ProcessInfo, ProcessState, ProcessTimes, Reading};
+use crate::i18n::t;
 
 /// The most processes a reading lists: some 300 bytes of `/proc` each, and
 /// a reading's output holds 1 MB.
@@ -194,17 +195,17 @@ pub fn end_command(pid: u32, force: bool) -> String {
 pub fn ended(output: &str) -> Result<(), String> {
     let (said, status) = output
         .rsplit_once("@@status")
-        .ok_or_else(|| "主机没有回答".to_string())?;
+        .ok_or_else(|| t!("tools.no_answer").to_string())?;
     if status.trim() == "0" {
         return Ok(());
     }
     let said = said.trim();
     Err(if said.contains("not permitted") {
-        "没有权限：只能结束自己的进程，root 才能结束所有进程".into()
+        t!("processes.error.not_permitted").into()
     } else if said.contains("No such process") {
-        "进程已经退出".into()
+        t!("processes.error.gone").into()
     } else if said.is_empty() {
-        format!("kill 返回 {}", status.trim())
+        t!("processes.error.status", status = status.trim()).into()
     } else {
         said.to_owned()
     })

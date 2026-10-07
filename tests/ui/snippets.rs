@@ -344,3 +344,32 @@ async fn on_windows_a_snippet_is_typed_after_what_is_there(cx: &mut TestAppConte
     // No Ctrl-E, Ctrl-U: its shells do not edit the line with them.
     assert_eq!(&factory.written_text()[before..], "df -h\r");
 }
+
+#[gpui_kit::test]
+async fn the_sidebar_follows_a_switch_to_english(cx: &mut TestAppContext) {
+    let (handle, workspace, _) = open_snippets(cx, store_with_snippets()).await;
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| settings.language = InterfaceLanguage::English,
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find(("tool-sidebar", INITIAL_WEB_TERMINAL)).label(),
+            Some("Snippets")
+        );
+        assert_eq!(
+            window.find("snippets-summary").label(),
+            Some("4 snippets · 2 categories")
+        );
+        assert_eq!(
+            window.find("snippet-category:none").label(),
+            Some("Uncategorized 1")
+        );
+    });
+}

@@ -2,6 +2,10 @@
 
 use std::collections::{HashMap, HashSet};
 
+use gpui_kit::SharedString;
+
+use crate::i18n::{t, tn};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Protocol {
     Tcp,
@@ -80,10 +84,19 @@ impl SocketState {
 
     /// How the list says it: 「监听」「已连接」, and the TCP name for the
     /// states only the TCP-minded look for: 「TIME_WAIT」.
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            SocketState::Listen => "监听",
-            SocketState::Established => "已连接",
+            SocketState::Listen => t!("netstat.state.listen"),
+            SocketState::Established => t!("netstat.state.established"),
+            other => other.netstat_name().into(),
+        }
+    }
+
+    /// The name netstat gives it, which a search finds as well.
+    fn netstat_name(self) -> &'static str {
+        match self {
+            SocketState::Listen => "LISTEN",
+            SocketState::Established => "ESTABLISHED",
             SocketState::SynSent => "SYN_SENT",
             SocketState::SynReceived => "SYN_RECV",
             SocketState::FinWait1 => "FIN_WAIT1",
@@ -93,15 +106,6 @@ impl SocketState {
             SocketState::CloseWait => "CLOSE_WAIT",
             SocketState::LastAck => "LAST_ACK",
             SocketState::Closing => "CLOSING",
-        }
-    }
-
-    /// The name netstat gives it, which a search finds as well.
-    fn netstat_name(self) -> &'static str {
-        match self {
-            SocketState::Listen => "LISTEN",
-            SocketState::Established => "ESTABLISHED",
-            other => other.label(),
         }
     }
 
@@ -135,11 +139,11 @@ pub enum Role {
 }
 
 impl Role {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            Role::Listening => "监听端口",
-            Role::Inbound => "入站连接",
-            Role::Outbound => "出站连接",
+            Role::Listening => t!("netstat.role.listening"),
+            Role::Inbound => t!("netstat.role.inbound"),
+            Role::Outbound => t!("netstat.role.outbound"),
         }
     }
 }
@@ -192,16 +196,22 @@ impl Socket {
         let first = self.processes.first()?;
         Some(match self.processes.len() {
             1 => format!("{} (PID {})", first.name, first.pid),
-            count => format!("{} (PID {} 等 {count} 个)", first.name, first.pid),
+            count => t!(
+                "netstat.process.several",
+                name = first.name,
+                pid = first.pid,
+                count = count
+            )
+            .into(),
         })
     }
 
-    /// What the search looks in, lowercased.
+    /// What the search looks in, lowercased; besides the state as the
+    /// list says it, which follows the interface language.
     fn haystack(&self) -> String {
         let mut haystack = format!(
-            "{} {} {} {} {}",
+            "{} {} {} {}",
             self.protocol.label(),
-            self.state.label(),
             self.state.netstat_name(),
             self.local,
             self.peer,
@@ -243,8 +253,10 @@ impl Counts {
     /// 「共 96 条 · 15 个监听端口 · 21 条已连接」.
     pub fn summary(&self) -> String {
         format!(
-            "共 {} 条 · {} 个监听端口 · {} 条已连接",
-            self.total, self.listening, self.connected
+            "{} · {} · {}",
+            tn!("netstat.summary.total", self.total),
+            tn!("netstat.summary.listening", self.listening),
+            tn!("netstat.summary.connected", self.connected)
         )
     }
 }
@@ -369,6 +381,13 @@ impl Table {
     /// The sockets `filter` lets through, by their place in `sockets()`.
     pub fn filtered(&self, filter: &Filter) -> Vec<usize> {
         let query = filter.query.trim().to_lowercase();
+        // The states as the list says them now, which the search finds.
+        let mut labels: HashMap<SocketState, bool> = HashMap::new();
+        let mut label_matches = |state: SocketState| {
+            *labels
+                .entry(state)
+                .or_insert_with(|| state.label().to_lowercase().contains(&query))
+        };
         self.sockets
             .iter()
             .zip(&self.haystacks)
@@ -376,7 +395,9 @@ impl Table {
             .filter(|(_, (socket, haystack))| {
                 filter.protocol.lets_through(socket.protocol)
                     && filter.state.lets_through(socket.state)
-                    && (query.is_empty() || haystack.contains(&query))
+                    && (query.is_empty()
+                        || haystack.contains(&query)
+                        || label_matches(socket.state))
             })
             .map(|(index, _)| index)
             .collect()
@@ -398,11 +419,11 @@ impl ProtocolFilter {
         ProtocolFilter::Udp,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            ProtocolFilter::All => "全部协议",
-            ProtocolFilter::Tcp => "TCP",
-            ProtocolFilter::Udp => "UDP",
+            ProtocolFilter::All => t!("netstat.filter.all_protocols"),
+            ProtocolFilter::Tcp => "TCP".into(),
+            ProtocolFilter::Udp => "UDP".into(),
         }
     }
 
@@ -437,14 +458,14 @@ impl StateFilter {
         StateFilter::Other,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            StateFilter::All => "全部状态",
+            StateFilter::All => t!("netstat.filter.all_states"),
             StateFilter::Listen => SocketState::Listen.label(),
             StateFilter::Established => SocketState::Established.label(),
             StateFilter::TimeWait => SocketState::TimeWait.label(),
             StateFilter::CloseWait => SocketState::CloseWait.label(),
-            StateFilter::Other => "其他状态",
+            StateFilter::Other => t!("netstat.filter.other_states"),
         }
     }
 
@@ -565,10 +586,16 @@ mod tests {
     #[test]
     fn what_listens_comes_first_and_shares_of_a_port_make_one_line() {
         let table = sample();
+        let labels: Vec<SharedString> = table
+            .sockets()
+            .iter()
+            .map(|socket| socket.state.label())
+            .collect();
         let lines: Vec<(&str, &str, Role)> = table
             .sockets()
             .iter()
-            .map(|socket| (socket.state.label(), socket.local.as_str(), socket.role))
+            .zip(&labels)
+            .map(|(socket, label)| (label.as_ref(), socket.local.as_str(), socket.role))
             .collect();
         assert_eq!(
             lines,

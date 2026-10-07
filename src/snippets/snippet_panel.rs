@@ -20,10 +20,8 @@ use crate::app::{
     NewSnippet, NewSnippetCategory, NewSnippetIn, RenameSnippetCategory, ToggleSnippetCategory,
 };
 use crate::host::{HostStore, Snippet, SnippetCategoryId, SnippetId};
+use crate::i18n::{UiLocale, t, tn};
 use crate::shared::{command_tooltip, one_line};
-
-/// What 未分类 is called, as a category's heading.
-const UNCATEGORIZED: &str = "未分类";
 
 /// 命令片段: the commands kept for every host, in categories one level
 /// deep. A click puts one on the input line of the SSH terminal in front to
@@ -68,11 +66,16 @@ impl SnippetPanel {
     ) -> Self {
         let search = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("搜索名称或命令")
+                .placeholder(t!("snippets.panel.search"))
                 .clean_on_escape()
         });
         let subscriptions = vec![
             cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.observe_global_in::<UiLocale>(window, |this, window, cx| {
+                this.search.update(cx, |search, cx| {
+                    search.set_placeholder(t!("snippets.panel.search"), window, cx)
+                });
+            }),
             cx.subscribe(&search, |this, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.query = input.read(cx).value().to_string();
@@ -116,10 +119,15 @@ impl SnippetPanel {
     }
 
     fn render_header(&self, snippets: usize, categories: usize, cx: &App) -> impl IntoElement {
-        let summary = if categories == 0 {
-            format!("共 {snippets} 个片段")
+        let summary: SharedString = if categories == 0 {
+            tn!("snippets.panel.count", snippets)
         } else {
-            format!("共 {snippets} 个片段 · {categories} 个分类")
+            format!(
+                "{} · {}",
+                tn!("snippets.panel.count", snippets),
+                tn!("snippets.panel.categories", categories)
+            )
+            .into()
         };
         let (new_category, new_snippet) = (self.dispatch.clone(), self.dispatch.clone());
         v_flex()
@@ -148,8 +156,8 @@ impl SnippetPanel {
                             .ghost()
                             .xsmall()
                             .icon(Icon::new(IconName::Plus))
-                            .tooltip("新建片段")
-                            .accessibility_label("新建片段")
+                            .tooltip(t!("snippets.panel.new_snippet"))
+                            .accessibility_label(t!("snippets.panel.new_snippet"))
                             .on_click(move |_, window, cx| {
                                 new_snippet.dispatch_action(&NewSnippet, window, cx)
                             }),
@@ -159,8 +167,8 @@ impl SnippetPanel {
                             .ghost()
                             .xsmall()
                             .icon(Icon::new(CatalogIcon::FolderPlus))
-                            .tooltip("新建分类")
-                            .accessibility_label("新建分类")
+                            .tooltip(t!("snippets.panel.new_category"))
+                            .accessibility_label(t!("snippets.panel.new_category"))
                             .on_click(move |_, window, cx| {
                                 new_category.dispatch_action(&NewSnippetCategory, window, cx)
                             }),
@@ -182,18 +190,18 @@ impl SnippetPanel {
         v_flex()
             .id("snippets-empty")
             .test_support()
-            .aria_label("还没有命令片段")
+            .aria_label(t!("snippets.panel.empty"))
             .items_center()
             .gap_2()
             .px_4()
             .py_8()
-            .child(div().text_sm().child("还没有命令片段"))
+            .child(div().text_sm().child(t!("snippets.panel.empty")))
             .child(
                 div()
                     .text_xs()
                     .text_center()
                     .text_color(cx.theme().muted_foreground)
-                    .child("把常用的命令存成片段，点一下就输入到当前终端。"),
+                    .child(t!("snippets.panel.empty_description")),
             )
             .child(
                 Button::new("snippets-empty-new")
@@ -201,7 +209,7 @@ impl SnippetPanel {
                     .primary()
                     .mt_2()
                     .icon(Icon::new(IconName::Plus))
-                    .label("新建片段")
+                    .label(t!("snippets.panel.new_snippet"))
                     .on_click(move |_, window, cx| {
                         dispatch.dispatch_action(&NewSnippet, window, cx)
                     }),
@@ -255,12 +263,12 @@ impl Render for SnippetPanel {
                 if nothing {
                     list.child(self.render_empty(cx))
                 } else if rows.is_empty() {
-                    let empty = "没有符合条件的片段";
+                    let empty = t!("snippets.panel.no_match");
                     list.child(
                         div()
                             .id("snippets-no-match")
                             .test_support()
-                            .aria_label(empty)
+                            .aria_label(empty.clone())
                             .py_8()
                             .text_sm()
                             .text_center()
@@ -281,7 +289,10 @@ impl Render for SnippetPanel {
                                 SnippetRow::Category { id, count, folded } => {
                                     let name = id
                                         .and_then(|id| names.iter().find(|(each, _)| *each == id))
-                                        .map_or(UNCATEGORIZED.into(), |(_, name)| name.clone());
+                                        .map_or_else(
+                                            || t!("snippets.uncategorized"),
+                                            |(_, name)| name.clone(),
+                                        );
                                     render_category(
                                         Heading {
                                             id,
@@ -354,24 +365,28 @@ impl Render for SnippetPanel {
 /// is then.
 fn build_context_menu(hit: Option<MenuHit>, store: &HostStore, menu: PopupMenu) -> PopupMenu {
     let new_snippet = |menu: PopupMenu, action: Box<dyn Action>| {
-        menu.menu_with_icon("新建片段…", Icon::new(IconName::Plus), action)
+        menu.menu_with_icon(
+            t!("snippets.menu.new_snippet"),
+            Icon::new(IconName::Plus),
+            action,
+        )
     };
     match hit {
         None => new_snippet(menu, Box::new(NewSnippet)).menu_with_icon(
-            "新建分类…",
+            t!("snippets.menu.new_category"),
             Icon::new(CatalogIcon::FolderPlus),
             Box::new(NewSnippetCategory),
         ),
         Some(MenuHit::Category(None)) => new_snippet(menu, Box::new(NewSnippet)),
         Some(MenuHit::Category(Some(id))) => new_snippet(menu, Box::new(NewSnippetIn(id)))
             .menu_with_icon(
-                "重命名分类…",
+                t!("snippets.menu.rename_category"),
                 Icon::new(CatalogIcon::Pencil),
                 Box::new(RenameSnippetCategory(id)),
             )
             .separator()
             .menu_with_icon(
-                "删除分类…",
+                t!("snippets.menu.delete_category"),
                 Icon::new(CatalogIcon::Trash),
                 Box::new(DeleteSnippetCategory(id)),
             ),
@@ -381,7 +396,7 @@ fn build_context_menu(hit: Option<MenuHit>, store: &HostStore, menu: PopupMenu) 
             };
             let command = snippet.command.clone();
             menu.menu_with_icon(
-                "输入到终端",
+                t!("tools.menu.insert"),
                 Icon::new(CatalogIcon::SquareTerminal),
                 Box::new(EnterCommand {
                     command: command.clone(),
@@ -389,7 +404,7 @@ fn build_context_menu(hit: Option<MenuHit>, store: &HostStore, menu: PopupMenu) 
                 }),
             )
             .menu_with_icon(
-                "执行",
+                t!("tools.run"),
                 Icon::new(CatalogIcon::Play),
                 Box::new(EnterCommand {
                     command: command.clone(),
@@ -397,18 +412,18 @@ fn build_context_menu(hit: Option<MenuHit>, store: &HostStore, menu: PopupMenu) 
                 }),
             )
             .menu_with_icon(
-                "复制命令",
+                t!("snippets.menu.copy"),
                 Icon::new(IconName::Copy),
                 Box::new(CopyCommand(command)),
             )
             .separator()
             .menu_with_icon(
-                "编辑…",
+                t!("snippets.menu.edit"),
                 Icon::new(CatalogIcon::Pencil),
                 Box::new(EditSnippet(id)),
             )
             .menu_with_icon(
-                "删除…",
+                t!("snippets.menu.delete"),
                 Icon::new(CatalogIcon::Trash),
                 Box::new(DeleteSnippet(id)),
             )
@@ -520,7 +535,11 @@ fn render_snippet(
         .test_support()
         .group(card.clone())
         .aria_label(if runs {
-            format!("{} · {line} · 点击时自动执行", snippet.name)
+            format!(
+                "{} · {line} · {}",
+                snippet.name,
+                t!("snippets.card.runs_on_click")
+            )
         } else {
             format!("{} · {line}", snippet.name)
         })
@@ -587,12 +606,14 @@ fn render_snippet(
                                     .icon(
                                         Icon::new(CatalogIcon::Zap).text_color(cx.theme().warning),
                                     )
-                                    .tooltip("点击时自动执行")
+                                    .tooltip(t!("snippets.card.runs_on_click"))
                             } else {
-                                button.icon(Icon::new(CatalogIcon::Play)).tooltip("执行")
+                                button
+                                    .icon(Icon::new(CatalogIcon::Play))
+                                    .tooltip(t!("tools.run"))
                             }
                         })
-                        .accessibility_label("执行")
+                        .accessibility_label(t!("tools.run"))
                         .on_click(move |_, window, cx| {
                             // Not the card's click too, which would run it
                             // again or only type it.

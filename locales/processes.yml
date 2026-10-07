@@ -1,0 +1,166 @@
+_version: 2
+
+# 进程管理: a Linux host's processes.
+
+processes.panel.search:
+  zh-CN: 搜索进程名称、PID 或用户
+  en: Search names, PIDs and users
+processes.panel.summary.one:
+  en: "%{count} process · refreshed every %{seconds} s"
+processes.panel.summary.other:
+  zh-CN: 共 %{count} 个进程 · 每 %{seconds} 秒刷新
+  en: "%{count} processes · refreshed every %{seconds} s"
+processes.panel.truncated:
+  zh-CN: 进程太多，只列出了前 %{limit} 个。
+  en: There are too many processes, so only the first %{limit} are listed.
+processes.panel.empty:
+  zh-CN: 没有进程
+  en: No processes
+processes.panel.no_match:
+  zh-CN: 没有符合条件的进程
+  en: No matching processes
+processes.panel.not_connected:
+  zh-CN: 终端没有连接。连接后这里显示主机的进程。
+  en: The terminal isn’t connected. Once it is, the host’s processes show here.
+processes.panel.unsupported_system:
+  zh-CN: 暂不支持管理 %{system} 的进程，目前只支持 Linux 主机。
+  en: Processes on %{system} can’t be managed yet. Only Linux hosts are supported.
+processes.panel.unsupported:
+  zh-CN: 暂不支持管理这台主机的进程，目前只支持 Linux 主机。
+  en: This host’s processes can’t be managed yet. Only Linux hosts are supported.
+processes.memory:
+  zh-CN: 内存
+  en: Memory
+processes.card.label:
+  zh-CN: "%{name} · PID %{pid} · %{state} · %{user} · 内存 %{memory} · CPU %{cpu}"
+  en: "%{name} · PID %{pid} · %{state} · %{user} · Memory %{memory} · CPU %{cpu}"
+
+processes.sort.memory_descending:
+  zh-CN: 按内存从多到少排列
+  en: Sort by memory, most first
+processes.sort.memory_ascending:
+  zh-CN: 改为按内存从少到多排列
+  en: Sort by memory, least first
+processes.sort.cpu_descending:
+  zh-CN: 按CPU从多到少排列
+  en: Sort by CPU, most first
+processes.sort.cpu_ascending:
+  zh-CN: 改为按CPU从少到多排列
+  en: Sort by CPU, least first
+
+processes.menu.end:
+  zh-CN: 结束进程…
+  en: End process…
+processes.menu.kill:
+  zh-CN: 强制结束进程…
+  en: Kill process…
+
+# What a process is doing: the letter in /proc/<pid>/stat.
+processes.state.running:
+  zh-CN: 运行中
+  en: Running
+processes.state.sleeping:
+  zh-CN: 休眠
+  en: Sleeping
+processes.state.uninterruptible:
+  zh-CN: 等待 I/O
+  en: Waiting for I/O
+processes.state.stopped:
+  zh-CN: 已暂停
+  en: Stopped
+processes.state.zombie:
+  zh-CN: 僵尸进程
+  en: Zombie
+processes.state.idle:
+  zh-CN: 空闲
+  en: Idle
+processes.state.misc:
+  zh-CN: 其他
+  en: Other
+
+processes.error.not_permitted:
+  zh-CN: 没有权限：只能结束自己的进程，root 才能结束所有进程
+  en: "Permission denied: only root can end another user’s process"
+processes.error.gone:
+  zh-CN: 进程已经退出
+  en: The process has already exited
+processes.error.status:
+  zh-CN: kill 返回 %{status}
+  en: kill exited with status %{status}
+
+# A process's details.
+processes.details.info:
+  zh-CN: 进程信息
+  en: Overview
+processes.details.command:
+  zh-CN: 完整命令
+  en: Command line
+processes.details.copy_pid:
+  zh-CN: 复制 PID
+  en: Copy PID
+processes.details.copy_command:
+  zh-CN: 复制命令
+  en: Copy command
+processes.details.copied:
+  zh-CN: 已复制
+  en: Copied
+processes.details.end:
+  zh-CN: 结束进程
+  en: End process
+processes.details.kill:
+  zh-CN: 强制结束
+  en: Kill
+processes.details.none:
+  zh-CN: 无
+  en: None
+processes.details.no_command:
+  zh-CN: 没有命令行：进程已经退出，或是僵尸进程
+  en: No command line. The process has exited, or it’s a zombie.
+processes.field.pid:
+  zh-CN: PID
+  en: PID
+processes.field.parent:
+  zh-CN: 父进程
+  en: Parent
+processes.field.user:
+  zh-CN: 用户
+  en: User
+processes.field.state:
+  zh-CN: 状态
+  en: State
+processes.field.started:
+  zh-CN: 启动时间
+  en: Started
+processes.field.running:
+  zh-CN: 运行时长
+  en: Elapsed
+processes.field.terminal:
+  zh-CN: 终端
+  en: TTY
+processes.field.priority:
+  zh-CN: 优先级
+  en: Priority
+processes.field.nice:
+  zh-CN: Nice
+  en: Nice
+processes.field.cpu:
+  zh-CN: CPU 使用率
+  en: CPU usage
+processes.field.cpu_time:
+  zh-CN: 累计 CPU 时间
+  en: CPU time
+processes.field.memory:
+  zh-CN: 常驻内存
+  en: Memory (RSS)
+processes.field.virtual_memory:
+  zh-CN: 虚拟内存
+  en: Virtual memory
+processes.field.threads:
+  zh-CN: 线程
+  en: Threads
+processes.field.children:
+  zh-CN: 直接子进程
+  en: Children
+processes.field.descendants:
+  zh-CN: 全部后代进程
+  en: Descendants

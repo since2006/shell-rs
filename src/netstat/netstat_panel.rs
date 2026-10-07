@@ -22,6 +22,7 @@ use super::model::{
     Filter, Processes, ProtocolFilter, Role, Socket, SocketState, StateFilter, Table,
 };
 use crate::app::{CatalogIcon, RefreshConnections};
+use crate::i18n::{UiLocale, t, tn};
 use crate::terminal::{ExecResult, ExecTarget, RemoteTerminalId, exec_answer};
 
 /// How long a terminal not connected is left before it is asked again.
@@ -77,7 +78,7 @@ impl SearchableListItem for ProtocolFilter {
     type Value = Self;
 
     fn title(&self) -> SharedString {
-        self.label().into()
+        self.label()
     }
 
     fn value(&self) -> &Self::Value {
@@ -89,7 +90,7 @@ impl SearchableListItem for StateFilter {
     type Value = Self;
 
     fn title(&self) -> SharedString {
-        self.label().into()
+        self.label()
     }
 
     fn value(&self) -> &Self::Value {
@@ -101,7 +102,7 @@ impl NetstatPanel {
     pub fn new(dispatch: FocusHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("搜索地址、端口、状态、PID 或进程")
+                .placeholder(t!("netstat.panel.search"))
                 .clean_on_escape()
         });
         let protocol = cx.new(|cx| {
@@ -121,6 +122,11 @@ impl NetstatPanel {
             )
         });
         let subscriptions = vec![
+            cx.observe_global_in::<UiLocale>(window, |this, window, cx| {
+                this.search.update(cx, |search, cx| {
+                    search.set_placeholder(t!("netstat.panel.search"), window, cx)
+                });
+            }),
             cx.subscribe(&search, |this, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     let query = input.read(cx).value().to_string();
@@ -297,8 +303,8 @@ impl NetstatPanel {
                             .xsmall()
                             .icon(Icon::new(CatalogIcon::RefreshCw))
                             .loading(self.loading)
-                            .tooltip("刷新")
-                            .accessibility_label("刷新")
+                            .tooltip(t!("tools.refresh"))
+                            .accessibility_label(t!("tools.refresh"))
                             .on_click(move |_, window, cx| {
                                 dispatch.dispatch_action(&RefreshConnections, window, cx)
                             }),
@@ -310,21 +316,17 @@ impl NetstatPanel {
             .when(table.truncated(), |header| {
                 header.child(note(
                     "netstat-truncated",
-                    format!("连接太多，只列出了前 {} 条。", linux::LIMIT),
+                    t!("netstat.panel.truncated", limit = linux::LIMIT),
                     cx.theme().warning,
                 ))
             })
             .map(|header| {
                 let text = match table.processes() {
                     Processes::All => return header,
-                    Processes::Own => "当前用户不是 root，只能看到自己的进程。",
-                    Processes::None => "这台主机没有 ss 命令，看不到占用连接的进程。",
+                    Processes::Own => t!("netstat.panel.own_processes"),
+                    Processes::None => t!("netstat.panel.no_ss"),
                 };
-                header.child(note(
-                    "netstat-processes",
-                    text.into(),
-                    cx.theme().muted_foreground,
-                ))
+                header.child(note("netstat-processes", text, cx.theme().muted_foreground))
             })
             .child(
                 Input::new(&self.search)
@@ -342,7 +344,7 @@ impl NetstatPanel {
                             Select::new(&self.protocol)
                                 .id("netstat-protocol")
                                 .small()
-                                .accessibility_label("协议"),
+                                .accessibility_label(t!("netstat.panel.protocol")),
                         ),
                     )
                     .child(
@@ -350,12 +352,12 @@ impl NetstatPanel {
                             Select::new(&self.state)
                                 .id("netstat-state")
                                 .small()
-                                .accessibility_label("状态"),
+                                .accessibility_label(t!("netstat.panel.state")),
                         ),
                     ),
             )
             .when(self.filter.is_active(), |header| {
-                let text = format!("筛选出 {} 条", rows.len());
+                let text = tn!("netstat.panel.matches", rows.len());
                 header.child(
                     div()
                         .id("netstat-matches")
@@ -368,9 +370,9 @@ impl NetstatPanel {
             });
 
         let empty = if self.filter.is_active() {
-            "没有符合条件的连接"
+            t!("netstat.panel.no_match")
         } else {
-            "没有网络连接"
+            t!("netstat.panel.empty")
         };
         // The scrollbar goes on the list's box, which does not scroll: on
         // the scrolled rows it would scroll away with them.
@@ -388,7 +390,7 @@ impl NetstatPanel {
                         div()
                             .id("netstat-empty")
                             .test_support()
-                            .aria_label(empty)
+                            .aria_label(empty.clone())
                             .py_8()
                             .text_sm()
                             .text_center()
@@ -450,7 +452,7 @@ impl Render for NetstatPanel {
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
                         .child(Spinner::new().small())
-                        .child("正在读取…"),
+                        .child(t!("tools.reading")),
                 ),
             })
     }
@@ -459,18 +461,17 @@ impl Render for NetstatPanel {
 fn render_problem(problem: &Problem, cx: &App) -> impl IntoElement {
     let (text, color) = match problem {
         Problem::NotConnected => (
-            "终端没有连接。连接后这里显示主机的网络连接。".to_string(),
+            t!("netstat.panel.not_connected"),
             cx.theme().muted_foreground,
         ),
         Problem::Unsupported(Some(system)) => (
-            format!("暂不支持查看 {system} 的网络连接，目前只支持 Linux 主机。"),
+            t!("netstat.panel.unsupported_system", system = system),
             cx.theme().muted_foreground,
         ),
-        Problem::Unsupported(None) => (
-            "暂不支持查看这台主机的网络连接，目前只支持 Linux 主机。".to_string(),
-            cx.theme().muted_foreground,
-        ),
-        Problem::Failed(error) => (format!("读取失败：{error}"), cx.theme().danger),
+        Problem::Unsupported(None) => {
+            (t!("netstat.panel.unsupported"), cx.theme().muted_foreground)
+        }
+        Problem::Failed(error) => (t!("tools.read_failed", error = error), cx.theme().danger),
     };
     div()
         .id("netstat-message")
@@ -482,7 +483,7 @@ fn render_problem(problem: &Problem, cx: &App) -> impl IntoElement {
 }
 
 /// A line under the summary: 「连接太多，只列出了前 3000 条。」.
-fn note(id: &'static str, text: String, color: Hsla) -> impl IntoElement {
+fn note(id: &'static str, text: SharedString, color: Hsla) -> impl IntoElement {
     div()
         .id(id)
         .test_support()
@@ -517,16 +518,16 @@ fn role_icon(role: Role) -> CatalogIcon {
 fn render_socket(socket: &Socket, cx: &App) -> impl IntoElement {
     let color = state_color(socket.state, cx);
     let process = socket.process_label();
-    let label = format!(
-        "{} {} · 本地 {} · 远端 {} · {} · {}",
-        socket.protocol.label(),
-        socket.state.label(),
-        socket.local,
-        socket.peer,
-        process.as_deref().unwrap_or("—"),
-        socket.user.as_deref().unwrap_or("—"),
+    let label = t!(
+        "netstat.card.label",
+        protocol = socket.protocol.label(),
+        state = socket.state.label(),
+        local = socket.local,
+        peer = socket.peer,
+        process = process.as_deref().unwrap_or("—"),
+        user = socket.user.as_deref().unwrap_or("—")
     );
-    let address = |name: &'static str, value: &str| {
+    let address = |name: SharedString, value: &str| {
         h_flex()
             .gap_2()
             .text_xs()
@@ -577,8 +578,8 @@ fn render_socket(socket: &Socket, cx: &App) -> impl IntoElement {
                         .child(socket.role.label()),
                 ),
         )
-        .child(address("本地", &socket.local))
-        .child(address("远端", &socket.peer))
+        .child(address(t!("netstat.card.local"), &socket.local))
+        .child(address(t!("netstat.card.peer"), &socket.peer))
         .child(
             h_flex()
                 .gap_2()
@@ -591,7 +592,7 @@ fn render_socket(socket: &Socket, cx: &App) -> impl IntoElement {
                     div()
                         .flex_shrink_0()
                         .text_color(cx.theme().muted_foreground)
-                        .child("进程"),
+                        .child(t!("netstat.card.process")),
                 )
                 .child(
                     div()

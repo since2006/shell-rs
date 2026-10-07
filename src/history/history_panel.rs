@@ -19,6 +19,7 @@ use gpui_kit::*;
 use super::bash::{self, Parsed};
 use super::model::{Entry, History};
 use crate::app::{CatalogIcon, CopyCommand, EnterCommand, RefreshHistory};
+use crate::i18n::{UiLocale, t, tn};
 use crate::shared::command_tooltip;
 use crate::terminal::{ExecResult, ExecTarget, RemoteTerminalId, exec_answer};
 
@@ -78,10 +79,15 @@ impl HistoryPanel {
     pub fn new(dispatch: FocusHandle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("搜索命令")
+                .placeholder(t!("history.panel.search"))
                 .clean_on_escape()
         });
         let subscriptions = vec![
+            cx.observe_global_in::<UiLocale>(window, |this, window, cx| {
+                this.search.update(cx, |search, cx| {
+                    search.set_placeholder(t!("history.panel.search"), window, cx)
+                });
+            }),
             cx.subscribe(&search, |this, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.query = input.read(cx).value().to_string();
@@ -192,7 +198,10 @@ impl HistoryPanel {
         cx: &Context<Self>,
     ) -> impl IntoElement {
         let rows = Rc::new(history.matching(&self.query));
-        let summary = format!("共 {} 条 · ~/.bash_history", history.entries().len());
+        let summary = format!(
+            "{} · ~/.bash_history",
+            tn!("history.panel.count", history.entries().len())
+        );
         let refresh = self.dispatch.clone();
         let header = v_flex()
             .flex_shrink_0()
@@ -221,8 +230,8 @@ impl HistoryPanel {
                             .xsmall()
                             .icon(Icon::new(CatalogIcon::RefreshCw))
                             .loading(self.loading)
-                            .tooltip("刷新")
-                            .accessibility_label("刷新")
+                            .tooltip(t!("tools.refresh"))
+                            .accessibility_label(t!("tools.refresh"))
                             .on_click(move |_, window, cx| {
                                 refresh.dispatch_action(&RefreshHistory, window, cx)
                             }),
@@ -234,16 +243,12 @@ impl HistoryPanel {
             .when(history.truncated(), |header| {
                 header.child(note(
                     "history-truncated",
-                    format!("历史文件太长，只读了最后 {} KB。", bash::LIMIT / 1024),
+                    t!("history.panel.truncated", size = bash::LIMIT / 1024),
                     cx,
                 ))
             })
             // Why the command just run is not there.
-            .child(note(
-                "history-note",
-                "这个终端里执行的命令，bash 退出后才会出现在这里。".into(),
-                cx,
-            ))
+            .child(note("history-note", t!("history.panel.note"), cx))
             .child(
                 Input::new(&self.search)
                     .id("history-search")
@@ -269,15 +274,15 @@ impl HistoryPanel {
             .map(|list| {
                 if rows.is_empty() {
                     let empty = if self.query.trim().is_empty() {
-                        "没有历史命令"
+                        t!("history.panel.empty")
                     } else {
-                        "没有符合条件的命令"
+                        t!("history.panel.no_match")
                     };
                     list.child(
                         div()
                             .id("history-empty")
                             .test_support()
-                            .aria_label(empty)
+                            .aria_label(empty.clone())
                             .py_8()
                             .text_sm()
                             .text_center()
@@ -361,7 +366,7 @@ impl Render for HistoryPanel {
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
                         .child(Spinner::new().small())
-                        .child("正在读取…"),
+                        .child(t!("tools.reading")),
                 ),
             })
     }
@@ -370,19 +375,12 @@ impl Render for HistoryPanel {
 fn render_problem(problem: &Problem, cx: &App) -> impl IntoElement {
     let (text, color) = match problem {
         Problem::NotConnected => (
-            "终端没有连接。连接后这里显示主机上 bash 的历史命令。".to_string(),
+            t!("history.panel.not_connected"),
             cx.theme().muted_foreground,
         ),
-        Problem::Missing => (
-            "这台主机上还没有 bash 的历史命令（~/.bash_history）。bash 退出时才会写入它。"
-                .to_string(),
-            cx.theme().muted_foreground,
-        ),
-        Problem::Unsupported => (
-            "暂不支持读取这台主机的历史命令，只支持 bash 的 ~/.bash_history。".to_string(),
-            cx.theme().muted_foreground,
-        ),
-        Problem::Failed(error) => (format!("读取失败：{error}"), cx.theme().danger),
+        Problem::Missing => (t!("history.panel.missing"), cx.theme().muted_foreground),
+        Problem::Unsupported => (t!("history.panel.unsupported"), cx.theme().muted_foreground),
+        Problem::Failed(error) => (t!("tools.read_failed", error = error), cx.theme().danger),
     };
     div()
         .id("history-message")
@@ -394,7 +392,7 @@ fn render_problem(problem: &Problem, cx: &App) -> impl IntoElement {
 }
 
 /// A line under the summary.
-fn note(id: &'static str, text: String, cx: &App) -> impl IntoElement {
+fn note(id: &'static str, text: SharedString, cx: &App) -> impl IntoElement {
     div()
         .id(id)
         .test_support()
@@ -409,7 +407,7 @@ fn build_context_menu(hit: Option<String>, menu: PopupMenu) -> PopupMenu {
         return menu;
     };
     menu.menu_with_icon(
-        "输入到终端",
+        t!("tools.menu.insert"),
         Icon::new(CatalogIcon::SquareTerminal),
         Box::new(EnterCommand {
             command: command.clone(),
@@ -417,7 +415,7 @@ fn build_context_menu(hit: Option<String>, menu: PopupMenu) -> PopupMenu {
         }),
     )
     .menu_with_icon(
-        "执行",
+        t!("tools.run"),
         Icon::new(CatalogIcon::Play),
         Box::new(EnterCommand {
             command: command.clone(),
@@ -426,7 +424,7 @@ fn build_context_menu(hit: Option<String>, menu: PopupMenu) -> PopupMenu {
     )
     .separator()
     .menu_with_icon(
-        "复制",
+        t!("history.menu.copy"),
         Icon::new(IconName::Copy),
         Box::new(CopyCommand(command)),
     )
@@ -510,8 +508,8 @@ fn render_entry(
             Button::new(SharedString::from(format!("history-run:{command}")))
                 .ghost()
                 .icon(Icon::new(CatalogIcon::Play))
-                .tooltip("执行")
-                .accessibility_label("执行")
+                .tooltip(t!("tools.run"))
+                .accessibility_label(t!("tools.run"))
                 .on_click(move |_, window, cx| {
                     // Not the card's click too, which would only put it on
                     // the line.

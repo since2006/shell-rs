@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use crate::i18n::{t, tn};
+
 /// A command of the history, listed once however often it ran.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {
@@ -22,9 +24,10 @@ impl Entry {
 
     /// 「3 分钟前 · 执行 5 次」, or without a time 「执行 5 次」.
     pub fn summary(&self, now: i64) -> String {
+        let runs = tn!("history.entry.runs", self.runs);
         match self.last_run {
-            Some(at) => format!("{} · 执行 {} 次", format_when(at, now), self.runs),
-            None => format!("执行 {} 次", self.runs),
+            Some(at) => format!("{} · {runs}", format_when(at, now)),
+            None => runs.into(),
         }
     }
 }
@@ -92,10 +95,10 @@ pub fn format_when(at: i64, now: i64) -> String {
     // A host whose clock runs ahead says its commands ran in the future.
     let ago = now - at;
     match ago {
-        ..MINUTE => "刚刚".into(),
-        MINUTE..HOUR => format!("{} 分钟前", ago / MINUTE),
-        HOUR..DAY => format!("{} 小时前", ago / HOUR),
-        DAY..=MONTH => format!("{} 天前", ago / DAY),
+        ..MINUTE => t!("history.when.just_now").into(),
+        MINUTE..HOUR => tn!("history.when.minutes", ago / MINUTE).into(),
+        HOUR..DAY => tn!("history.when.hours", ago / HOUR).into(),
+        DAY..=MONTH => tn!("history.when.days", ago / DAY).into(),
         _ => chrono::DateTime::from_timestamp(at, 0)
             .map(|time| {
                 time.with_timezone(&chrono::Local)
@@ -155,6 +158,33 @@ mod tests {
         assert_eq!(format_when(now - 30 * 86_400, now), "30 天前");
         let long_ago = format_when(now - 60 * 86_400, now);
         assert!(long_ago.starts_with("2024-08-0"), "{long_ago}");
+    }
+
+    #[test]
+    fn english_says_how_long_ago_and_how_often() {
+        crate::i18n::isolate_thread();
+        crate::i18n::set_locale("en");
+        let now = 1_727_846_400;
+        assert_eq!(format_when(now - 20, now), "Just now");
+        assert_eq!(format_when(now - 60, now), "1 minute ago");
+        assert_eq!(format_when(now - 5 * 60, now), "5 minutes ago");
+        assert_eq!(format_when(now - 3600, now), "1 hour ago");
+        assert_eq!(format_when(now - 2 * 86_400, now), "2 days ago");
+        let entry = Entry {
+            command: "ls".into(),
+            last_run: Some(now - 86_400),
+            runs: 1,
+        };
+        assert_eq!(entry.summary(now), "1 day ago · Ran once");
+        assert_eq!(
+            Entry {
+                last_run: None,
+                runs: 4,
+                ..entry
+            }
+            .summary(now),
+            "Ran 4 times"
+        );
     }
 
     #[test]

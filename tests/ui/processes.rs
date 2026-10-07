@@ -294,32 +294,32 @@ async fn a_click_on_a_process_shows_its_details_and_command_line(cx: &mut TestAp
     .await;
     assert_eq!(factory.exec_commands()[2], "sh -c 'cat /proc/2202/cmdline'");
     in_frame(cx, handle, |window, _| {
-        let field = |label: &str| {
+        let field = |id: &str| {
             window
-                .find(SharedString::from(format!("process-field:{label}")))
+                .find(SharedString::from(format!("process-field:{id}")))
                 .label()
                 .map(str::to_owned)
         };
-        for (label, value) in [
-            ("PID", "2202"),
-            ("父进程", "systemd (1)"),
-            ("用户", "root"),
+        for (id, value) in [
+            ("pid", "2202"),
+            ("parent", "systemd (1)"),
+            ("user", "root"),
             // A session leader with threads.
-            ("状态", "休眠 (Ssl)"),
+            ("state", "休眠 (Ssl)"),
             // Up since tick 5000 of a host up 1002 s.
-            ("运行时长", "00:15:52"),
-            ("终端", "无"),
-            ("优先级", "20"),
-            ("Nice", "0"),
-            ("CPU 使用率", "5.0%"),
-            ("累计 CPU 时间", "00:00:10"),
-            ("常驻内存", "468.75 MB (24.0%)"),
-            ("虚拟内存", "858.31 MB"),
-            ("线程", "30"),
-            ("直接子进程", "0"),
-            ("全部后代进程", "0"),
+            ("running", "00:15:52"),
+            ("terminal", "无"),
+            ("priority", "20"),
+            ("nice", "0"),
+            ("cpu", "5.0%"),
+            ("cpu_time", "00:00:10"),
+            ("memory", "468.75 MB (24.0%)"),
+            ("virtual_memory", "858.31 MB"),
+            ("threads", "30"),
+            ("children", "0"),
+            ("descendants", "0"),
         ] {
-            assert_eq!(field(label).as_deref(), Some(value), "{label}");
+            assert_eq!(field(id).as_deref(), Some(value), "{id}");
         }
     });
 

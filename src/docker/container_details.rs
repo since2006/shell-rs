@@ -15,8 +15,9 @@ use gpui_kit::*;
 use super::details::{Read, message, reading, render_sections, run};
 use super::docker_panel::state_color;
 use super::linux::{inspect_command, logs_command, parse_details};
-use super::model::{Container, ContainerCommand, ContainerDetails, DockerObject};
+use super::model::{Container, ContainerCommand, ContainerDetails, ContainerSubject, DockerObject};
 use crate::app::{CatalogIcon, ControlContainers, RemoveDockerObject};
+use crate::i18n::t;
 use crate::shared::soft_tag;
 use crate::terminal::TerminalView;
 
@@ -52,7 +53,7 @@ pub fn open_container_dialog(
                     .text_color(cx.theme().muted_foreground)
                     .child(container.image.clone()),
             );
-        let subject = format!("容器“{}”", container.name);
+        let subject = ContainerSubject::Container(container.name.clone());
         let control = |command: ContainerCommand| {
             let (dispatch, subject, id) = (dispatch.clone(), subject.clone(), container.id.clone());
             let button = Button::new(SharedString::from(format!(
@@ -94,7 +95,7 @@ pub fn open_container_dialog(
             Button::new("container-dialog-remove")
                 .outline()
                 .icon(Icon::new(CatalogIcon::Trash))
-                .label("删除")
+                .label(t!("common.delete"))
                 .on_click(move |_, window, cx| {
                     window.close_dialog(cx);
                     dispatch.dispatch_action(&action, window, cx);
@@ -152,7 +153,7 @@ impl ContainerDetailsView {
                 this.details = match answer {
                     Ok(output) => match parse_details(&output) {
                         Some(details) => Read::Known(details),
-                        None => Read::Unknown("读不到这个容器：它可能已经被删除".into()),
+                        None => Read::Unknown(t!("docker.details.container_gone").into()),
                     },
                     Err(why) => Read::Unknown(why),
                 };
@@ -180,7 +181,9 @@ impl ContainerDetailsView {
                 cx,
                 |this, answer| {
                     this.output = match answer {
-                        Ok(output) if output.trim().is_empty() => Read::Unknown("没有输出".into()),
+                        Ok(output) if output.trim().is_empty() => {
+                            Read::Unknown(t!("docker.details.no_output").into())
+                        }
                         Ok(output) => Read::Known(output.trim_end().to_owned()),
                         Err(why) => Read::Unknown(why),
                     };
@@ -238,11 +241,15 @@ impl Render for ContainerDetailsView {
                         .small()
                         .selected_index(self.tab)
                         .on_click(cx.listener(|this, index: &usize, _, cx| this.select(*index, cx)))
-                        .child(Tab::new().icon(Icon::new(IconName::Info)).label("详情"))
+                        .child(
+                            Tab::new()
+                                .icon(Icon::new(IconName::Info))
+                                .label(t!("docker.details.tab_details")),
+                        )
                         .child(
                             Tab::new()
                                 .icon(Icon::new(CatalogIcon::FileText))
-                                .label("日志"),
+                                .label(t!("docker.details.tab_logs")),
                         ),
                 ),
             )

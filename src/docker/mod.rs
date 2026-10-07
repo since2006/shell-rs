@@ -14,5 +14,5 @@ mod object_details;
 pub use container_details::open_container_dialog;
 pub use docker_panel::DockerPanel;
 pub use linux::{control_command, done, remove_command};
-pub use model::{Container, ContainerCommand, DockerObject, ObjectSummary};
+pub use model::{Container, ContainerCommand, ContainerSubject, DockerObject, ObjectSummary};
 pub use object_details::open_object_dialog;

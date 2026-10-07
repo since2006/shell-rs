@@ -278,7 +278,7 @@ async fn a_click_on_a_container_shows_its_details_and_output(cx: &mut TestAppCon
     wait_for_label(
         cx,
         handle,
-        "container-basics:命令",
+        "container-basics:command",
         "node ./dist/server/entry.mjs",
     )
     .await;
@@ -289,9 +289,9 @@ async fn a_click_on_a_container_shows_its_details_and_output(cx: &mut TestAppCon
                 .label()
                 .map(str::to_owned)
         };
-        assert_eq!(row("container-basics:名称").as_deref(), Some("forex-web"));
+        assert_eq!(row("container-basics:name").as_deref(), Some("forex-web"));
         assert_eq!(
-            row("container-basics:入口").as_deref(),
+            row("container-basics:entrypoint").as_deref(),
             Some("docker-entrypoint.sh")
         );
         assert_eq!(
@@ -400,7 +400,7 @@ async fn a_click_on_a_volume_an_image_or_a_network_shows_its_details(cx: &mut Te
     wait_for_label(
         cx,
         handle,
-        "volume-basics:挂载点",
+        "volume-basics:mountpoint",
         "/var/lib/docker/volumes/vw-data/_data",
     )
     .await;
@@ -419,9 +419,9 @@ async fn a_click_on_a_volume_an_image_or_a_network_shows_its_details(cx: &mut Te
     in_frame(cx, handle, |window, cx| {
         window.click("docker-image:hello-world:latest", cx)
     });
-    wait_for_label(cx, handle, "image-basics:平台", "linux/amd64").await;
+    wait_for_label(cx, handle, "image-basics:platform", "linux/amd64").await;
     in_frame(cx, handle, |window, _| {
-        assert_eq!(window.find("image-basics:大小").label(), Some("13.00 KB"));
+        assert_eq!(window.find("image-basics:size").label(), Some("13.00 KB"));
         assert!(window.try_find("image-users:exciting_tesla").is_some());
         assert_eq!(
             window.find("image-environment").label(),
@@ -470,7 +470,7 @@ async fn an_unused_volume_is_removed_from_its_details_after_asking(cx: &mut Test
     in_frame(cx, handle, |window, cx| {
         window.click("docker-volume:old", cx)
     });
-    wait_for_label(cx, handle, "volume-basics:名称", "old").await;
+    wait_for_label(cx, handle, "volume-basics:name", "old").await;
     in_frame(cx, handle, |window, cx| {
         window.click("docker-dialog-remove", cx)
     });

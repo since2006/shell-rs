@@ -24,6 +24,7 @@ use super::model::{
     format_rate,
 };
 use crate::app::{CatalogIcon, ToggleMonitorDetail};
+use crate::i18n::{t, tn};
 use crate::shared::{format_bytes, format_duration, format_percent};
 use crate::terminal::{ExecResult, ExecTarget, RemoteTerminalId, exec_answer};
 
@@ -276,7 +277,7 @@ impl Render for MonitorPanel {
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
                         .child(Spinner::new().small())
-                        .child("正在读取…"),
+                        .child(t!("tools.reading")),
                 ),
             })
             .overflow_y_scrollbar();
@@ -291,18 +292,17 @@ impl Render for MonitorPanel {
 fn render_problem(problem: &Problem, cx: &App) -> impl IntoElement {
     let (text, color) = match problem {
         Problem::NotConnected => (
-            "终端没有连接。连接后这里显示主机的 CPU、内存、网络和磁盘。".to_string(),
+            t!("monitor.panel.not_connected"),
             cx.theme().muted_foreground,
         ),
         Problem::Unsupported(Some(system)) => (
-            format!("暂不支持 {system} 的监控，目前只支持 Linux 主机。"),
+            t!("monitor.panel.unsupported_system", system = system),
             cx.theme().muted_foreground,
         ),
-        Problem::Unsupported(None) => (
-            "暂不支持这台主机的监控，目前只支持 Linux 主机。".to_string(),
-            cx.theme().muted_foreground,
-        ),
-        Problem::Failed(error) => (format!("读取失败：{error}"), cx.theme().danger),
+        Problem::Unsupported(None) => {
+            (t!("monitor.panel.unsupported"), cx.theme().muted_foreground)
+        }
+        Problem::Failed(error) => (t!("tools.read_failed", error = error), cx.theme().danger),
     };
     div()
         .id("monitor-message")
@@ -317,7 +317,7 @@ fn render_problem(problem: &Problem, cx: &App) -> impl IntoElement {
 fn card(
     id: &'static str,
     icon: impl Into<Icon>,
-    title: &'static str,
+    title: impl Into<SharedString>,
     meta: Option<AnyElement>,
     cx: &App,
 ) -> GroupBox {
@@ -330,14 +330,14 @@ fn card(
                     .flex_1()
                     .text_sm()
                     .font_weight(FontWeight::MEDIUM)
-                    .child(title),
+                    .child(title.into()),
             )
             .children(meta),
     )
 }
 
 /// A card's quiet note at the end of its title row: 「1 核」.
-fn note(text: String, cx: &App) -> AnyElement {
+fn note(text: SharedString, cx: &App) -> AnyElement {
     div()
         .text_xs()
         .text_color(cx.theme().muted_foreground)
@@ -348,10 +348,10 @@ fn note(text: String, cx: &App) -> AnyElement {
 /// In place of the note, when the card folds something away: 「8 核 ⌄」.
 fn unfold_button(
     id: &'static str,
-    label: String,
+    label: SharedString,
     detail: MonitorDetail,
     unfolded: bool,
-    tooltip: &'static str,
+    tooltip: SharedString,
     dispatch: &FocusHandle,
 ) -> AnyElement {
     let dispatch = dispatch.clone();
@@ -388,7 +388,7 @@ fn numeric(text: impl Into<SharedString>, cx: &App) -> Div {
 }
 
 fn render_system(system: &SystemInfo, uptime: Option<Duration>, cx: &App) -> impl IntoElement {
-    let field = |id: &'static str, label: &'static str, value: String| {
+    let field = |id: &'static str, label: SharedString, value: String| {
         v_flex()
             .min_w_0()
             .gap_0p5()
@@ -408,18 +408,37 @@ fn render_system(system: &SystemInfo, uptime: Option<Duration>, cx: &App) -> imp
                     .child(value),
             )
     };
-    card("monitor-system", CatalogIcon::Monitor, "系统", None, cx).child(
+    card(
+        "monitor-system",
+        CatalogIcon::Monitor,
+        t!("monitor.system.title"),
+        None,
+        cx,
+    )
+    .child(
         div()
             .grid()
             .grid_cols(2)
             .gap_x_4()
             .gap_y_3()
-            .child(field("monitor-host", "主机", system.host_name.clone()))
-            .child(field("monitor-arch", "架构", system.arch.clone()))
-            .child(field("monitor-os", "系统", system.os.clone()))
+            .child(field(
+                "monitor-host",
+                t!("monitor.system.host"),
+                system.host_name.clone(),
+            ))
+            .child(field(
+                "monitor-arch",
+                t!("monitor.system.arch"),
+                system.arch.clone(),
+            ))
+            .child(field(
+                "monitor-os",
+                t!("monitor.system.os"),
+                system.os.clone(),
+            ))
             .child(field(
                 "monitor-uptime",
-                "运行时长",
+                t!("monitor.system.uptime"),
                 uptime.map(format_duration).unwrap_or_default(),
             )),
     )
@@ -452,7 +471,7 @@ fn gauge(id: &'static str, percent: Option<f32>, cx: &App) -> impl IntoElement {
 /// A labelled bar: the label and the share above it.
 fn meter(
     id: &'static str,
-    label: &'static str,
+    label: SharedString,
     percent: Option<f32>,
     cx: &App,
 ) -> impl IntoElement {
@@ -512,7 +531,7 @@ fn render_cpu(
     let more = layout
         .per_row
         .filter(|per_row| cores.is_some_and(|cores| cores.len() > *per_row));
-    let count = format!("{} 核", snapshot.cores);
+    let count = tn!("monitor.cpu.cores", snapshot.cores);
     let meta = if more.is_some() {
         unfold_button(
             "monitor-cores-toggle",
@@ -520,9 +539,9 @@ fn render_cpu(
             MonitorDetail::Cores,
             layout.unfolded,
             if layout.unfolded {
-                "收起更多核的占用"
+                t!("monitor.cpu.fold_cores")
             } else {
-                "显示更多核的占用"
+                t!("monitor.cpu.unfold_cores")
             },
             dispatch,
         )
@@ -552,7 +571,12 @@ fn render_cpu(
                         .flex_1()
                         .min_w_0()
                         .gap_3()
-                        .child(meter("monitor-cpu-usage", "平均使用率", total, cx))
+                        .child(meter(
+                            "monitor-cpu-usage",
+                            t!("monitor.cpu.average"),
+                            total,
+                            cx,
+                        ))
                         .when_some(shown, |column, shown| {
                             column.child(render_cores(shown, layout, cx))
                         }),
@@ -565,12 +589,19 @@ fn render_cpu(
 /// the first row; it measures its width for the next frame to know how many
 /// make one. Pointing at a bar tells its core's number and share.
 fn render_cores(cores: &[f32], layout: &CoresLayout, cx: &App) -> impl IntoElement {
+    let core = |index: usize, load: f32| {
+        t!(
+            "monitor.cpu.core",
+            index = index,
+            load = format_percent(load)
+        )
+    };
     let label = cores
         .iter()
         .enumerate()
-        .map(|(index, load)| format!("核 {index}：{}", format_percent(*load)))
-        .collect::<Vec<_>>()
-        .join("，");
+        .map(|(index, load)| core(index, *load))
+        .reduce(|list, next| t!("monitor.cpu.core_list", list = list, core = next))
+        .unwrap_or_default();
     let (width, panel) = (layout.width.clone(), layout.panel);
     h_flex()
         .id("monitor-cpu-cores")
@@ -586,7 +617,7 @@ fn render_cores(cores: &[f32], layout: &CoresLayout, cx: &App) -> impl IntoEleme
         })
         .children(cores.iter().enumerate().map(|(index, load)| {
             let color = load_color(*load, cx);
-            let tooltip: SharedString = format!("核 {index}：{}", format_percent(*load)).into();
+            let tooltip = core(index, *load);
             div()
                 .id(("monitor-core", index as u64))
                 .test_support()
@@ -638,7 +669,14 @@ fn amount(id: &'static str, used: u64, total: u64, cx: &App) -> impl IntoElement
 }
 
 fn render_memory(memory: &Memory, cx: &App) -> impl IntoElement {
-    card("monitor-memory", IconName::MemoryStick, "内存", None, cx).child(
+    card(
+        "monitor-memory",
+        IconName::MemoryStick,
+        t!("monitor.memory.title"),
+        None,
+        cx,
+    )
+    .child(
         h_flex()
             .gap_4()
             .child(gauge("monitor-memory-gauge", Some(memory.percent()), cx))
@@ -652,7 +690,7 @@ fn render_memory(memory: &Memory, cx: &App) -> impl IntoElement {
                             .gap_1p5()
                             .child(meter(
                                 "monitor-memory-usage",
-                                "物理内存",
+                                t!("monitor.memory.physical"),
                                 Some(memory.percent()),
                                 cx,
                             ))
@@ -669,7 +707,7 @@ fn render_memory(memory: &Memory, cx: &App) -> impl IntoElement {
                                 .gap_1p5()
                                 .child(meter(
                                     "monitor-swap-usage",
-                                    "交换空间",
+                                    t!("monitor.memory.swap"),
                                     Some(memory.swap_percent()),
                                     cx,
                                 ))
@@ -695,13 +733,13 @@ fn render_network(
     let meta = (busy.len() > 1).then(|| {
         unfold_button(
             "monitor-interfaces-toggle",
-            format!("{} 个网卡", busy.len()),
+            tn!("monitor.network.interfaces", busy.len()),
             MonitorDetail::Interfaces,
             unfolded,
             if unfolded {
-                "只显示主网卡"
+                t!("monitor.network.fold")
             } else {
-                "显示全部网卡"
+                t!("monitor.network.unfold")
             },
             dispatch,
         )
@@ -712,41 +750,47 @@ fn render_network(
         snapshot.main_interface().into_iter().collect()
     };
     let rate = |rate: Option<f64>| rate.map_or("—".into(), format_rate);
-    card("monitor-network", IconName::Network, "网络", meta, cx)
-        .when(shown.is_empty(), |card| {
-            card.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("没有在用的网卡"),
-            )
-        })
-        .children(shown.into_iter().map(|interface| {
-            let (up, down) = (rate(interface.transmitted), rate(interface.received));
-            h_flex()
-                .id(SharedString::from(format!(
-                    "monitor-interface:{}",
-                    interface.name
-                )))
-                .test_support()
-                .aria_label(format!("上传 {up}，下载 {down}"))
-                .gap_3()
+    card(
+        "monitor-network",
+        IconName::Network,
+        t!("monitor.network.title"),
+        meta,
+        cx,
+    )
+    .when(shown.is_empty(), |card| {
+        card.child(
+            div()
                 .text_sm()
-                .child(
-                    numeric(interface.name.clone(), cx)
-                        .flex_1()
-                        .min_w_0()
-                        .truncate(),
-                )
-                .child(
-                    h_flex()
-                        .flex_shrink_0()
-                        .gap_3()
-                        .text_xs()
-                        .child(direction(IconName::ArrowUp, up, cx))
-                        .child(direction(IconName::ArrowDown, down, cx)),
-                )
-        }))
+                .text_color(cx.theme().muted_foreground)
+                .child(t!("monitor.network.none")),
+        )
+    })
+    .children(shown.into_iter().map(|interface| {
+        let (up, down) = (rate(interface.transmitted), rate(interface.received));
+        h_flex()
+            .id(SharedString::from(format!(
+                "monitor-interface:{}",
+                interface.name
+            )))
+            .test_support()
+            .aria_label(t!("monitor.network.label", up = up, down = down))
+            .gap_3()
+            .text_sm()
+            .child(
+                numeric(interface.name.clone(), cx)
+                    .flex_1()
+                    .min_w_0()
+                    .truncate(),
+            )
+            .child(
+                h_flex()
+                    .flex_shrink_0()
+                    .gap_3()
+                    .text_xs()
+                    .child(direction(IconName::ArrowUp, up, cx))
+                    .child(direction(IconName::ArrowDown, down, cx)),
+            )
+    }))
 }
 
 fn direction(icon: IconName, rate: String, cx: &App) -> impl IntoElement {
@@ -761,54 +805,65 @@ fn direction(icon: IconName, rate: String, cx: &App) -> impl IntoElement {
 }
 
 fn render_disks(disks: &[DiskUsage], cx: &App) -> impl IntoElement {
-    card("monitor-disks", IconName::HardDrive, "磁盘", None, cx)
-        .when(disks.is_empty(), |card| {
-            card.child(
-                div()
+    card(
+        "monitor-disks",
+        IconName::HardDrive,
+        t!("monitor.disks.title"),
+        None,
+        cx,
+    )
+    .when(disks.is_empty(), |card| {
+        card.child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(t!("monitor.disks.none")),
+        )
+    })
+    .children(disks.iter().map(|disk| {
+        let percent = disk.percent();
+        let color = load_color(percent, cx);
+        let (used, total) = (format_bytes(disk.used), format_bytes(disk.total));
+        v_flex()
+            .id(SharedString::from(format!("monitor-disk:{}", disk.mount)))
+            .test_support()
+            .aria_label(t!(
+                "monitor.disks.label",
+                percent = format_percent(percent),
+                used = used,
+                total = total
+            ))
+            .gap_1p5()
+            .child(
+                h_flex()
+                    .gap_3()
                     .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("没有读到磁盘"),
+                    .child(
+                        numeric(disk.mount.clone(), cx)
+                            .flex_1()
+                            .min_w_0()
+                            .truncate(),
+                    )
+                    .child(
+                        numeric(format_percent(percent), cx)
+                            .flex_shrink_0()
+                            .text_color(color)
+                            .font_weight(FontWeight::SEMIBOLD),
+                    ),
             )
-        })
-        .children(disks.iter().map(|disk| {
-            let percent = disk.percent();
-            let color = load_color(percent, cx);
-            let (used, total) = (format_bytes(disk.used), format_bytes(disk.total));
-            v_flex()
-                .id(SharedString::from(format!("monitor-disk:{}", disk.mount)))
-                .test_support()
-                .aria_label(format!("{}，{used} / {total}", format_percent(percent)))
-                .gap_1p5()
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .text_sm()
-                        .child(
-                            numeric(disk.mount.clone(), cx)
-                                .flex_1()
-                                .min_w_0()
-                                .truncate(),
-                        )
-                        .child(
-                            numeric(format_percent(percent), cx)
-                                .flex_shrink_0()
-                                .text_color(color)
-                                .font_weight(FontWeight::SEMIBOLD),
-                        ),
-                )
-                .child(
-                    Progress::new(SharedString::from(format!(
-                        "monitor-disk-bar:{}",
-                        disk.mount
-                    )))
-                    .small()
-                    .value(percent)
-                    .color(color),
-                )
-                .child(
-                    numeric(format!("{used} / {total}"), cx)
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground),
-                )
-        }))
+            .child(
+                Progress::new(SharedString::from(format!(
+                    "monitor-disk-bar:{}",
+                    disk.mount
+                )))
+                .small()
+                .value(percent)
+                .color(color),
+            )
+            .child(
+                numeric(format!("{used} / {total}"), cx)
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground),
+            )
+    }))
 }

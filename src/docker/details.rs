@@ -6,6 +6,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::model::{DetailSection, SectionBody};
+use crate::i18n::t;
 use crate::terminal::{ExecResult, TerminalView, exec_answer};
 
 /// Something read off the host for a dialog.
@@ -29,10 +30,10 @@ pub(super) fn run<V: 'static>(
     let reply = command.and_then(|command| terminal.upgrade()?.read(cx).exec(command, cx));
     cx.spawn(async move |this, cx| {
         let answer: ExecResult = match reply {
-            None => Err("终端没有连接".into()),
+            None => Err(t!("tools.not_connected").into()),
             Some(reply) => match exec_answer(reply, cx).await {
-                None => Err("终端没有连接".into()),
-                Some(Err(error)) => Err(format!("读取失败：{error}")),
+                None => Err(t!("tools.not_connected").into()),
+                Some(Err(error)) => Err(t!("tools.read_failed", error = error).into()),
                 Some(Ok(output)) => Ok(output),
             },
         };
@@ -46,7 +47,7 @@ pub(super) fn run<V: 'static>(
 
 /// The sections one under another, each under its heading; 「—」 for one
 /// with nothing in it. Their lines are found as 「{prefix}-{section}:{label}」
-/// (「container-basics:名称」), a text section as 「{prefix}-{section}」.
+/// (「container-basics:name」), a text section as 「{prefix}-{section}」.
 pub(super) fn render_sections(
     prefix: &'static str,
     sections: &[DetailSection],
@@ -59,7 +60,7 @@ pub(super) fn render_sections(
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child(section.title),
+                    .child(t!(section.title)),
             )
             .child(render_body(prefix, section, cx))
     }))
@@ -98,7 +99,7 @@ fn render_body(prefix: &'static str, section: &DetailSection, cx: &App) -> AnyEl
             rows.iter()
                 .map(|(label, value)| {
                     h_flex()
-                        .id(line_id(label))
+                        .id(line_id(label.id()))
                         .test_support()
                         .aria_label(value.clone())
                         .items_start()
@@ -111,7 +112,7 @@ fn render_body(prefix: &'static str, section: &DetailSection, cx: &App) -> AnyEl
                                 .w(rems(7.))
                                 .flex_shrink_0()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(label.clone()),
+                                .child(label.text()),
                         )
                         // Long IDs and names wrap rather than go off the edge.
                         .child(div().flex_1().min_w_0().child(value.clone()))
@@ -164,7 +165,7 @@ pub(super) fn reading(id: &'static str, cx: &App) -> AnyElement {
         .text_sm()
         .text_color(cx.theme().muted_foreground)
         .child(Spinner::new().small())
-        .child("正在读取…")
+        .child(t!("tools.reading"))
         .into_any_element()
 }
 

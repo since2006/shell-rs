@@ -1,0 +1,61 @@
+_version: 2
+
+# 历史命令: the commands bash kept in the host's ~/.bash_history.
+
+history.panel.search:
+  zh-CN: 搜索命令
+  en: Search commands
+history.panel.count.one:
+  en: "%{count} command"
+history.panel.count.other:
+  zh-CN: 共 %{count} 条
+  en: "%{count} commands"
+history.panel.truncated:
+  zh-CN: 历史文件太长，只读了最后 %{size} KB。
+  en: The history file is long, so only its last %{size} KB were read.
+history.panel.note:
+  zh-CN: 这个终端里执行的命令，bash 退出后才会出现在这里。
+  en: Commands run in this terminal show up here once bash exits.
+history.panel.empty:
+  zh-CN: 没有历史命令
+  en: No history
+history.panel.no_match:
+  zh-CN: 没有符合条件的命令
+  en: No matching commands
+history.panel.not_connected:
+  zh-CN: 终端没有连接。连接后这里显示主机上 bash 的历史命令。
+  en: The terminal isn’t connected. Once it is, the host’s bash history shows here.
+history.panel.missing:
+  zh-CN: 这台主机上还没有 bash 的历史命令（~/.bash_history）。bash 退出时才会写入它。
+  en: This host has no bash history yet (~/.bash_history). bash writes it when it exits.
+history.panel.unsupported:
+  zh-CN: 暂不支持读取这台主机的历史命令，只支持 bash 的 ~/.bash_history。
+  en: This host’s history can’t be read yet. Only bash’s ~/.bash_history is supported.
+history.menu.copy:
+  zh-CN: 复制
+  en: Copy
+
+# Under each command: when it last ran, and how often.
+history.entry.runs.one:
+  en: Ran once
+history.entry.runs.other:
+  zh-CN: 执行 %{count} 次
+  en: Ran %{count} times
+history.when.just_now:
+  zh-CN: 刚刚
+  en: Just now
+history.when.minutes.one:
+  en: "%{count} minute ago"
+history.when.minutes.other:
+  zh-CN: "%{count} 分钟前"
+  en: "%{count} minutes ago"
+history.when.hours.one:
+  en: "%{count} hour ago"
+history.when.hours.other:
+  zh-CN: "%{count} 小时前"
+  en: "%{count} hours ago"
+history.when.days.one:
+  en: "%{count} day ago"
+history.when.days.other:
+  zh-CN: "%{count} 天前"
+  en: "%{count} days ago"

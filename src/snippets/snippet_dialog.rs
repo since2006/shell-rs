@@ -10,10 +10,8 @@ use gpui_kit::component::{
 use gpui_kit::*;
 
 use crate::host::{HostStore, SnippetCategoryId, SnippetDraft, SnippetId, SnippetScope, by_name};
+use crate::i18n::t;
 use crate::shared::{commit_footer, dismiss_form_error, form_error_notification};
-
-/// The category list's row for a snippet of none.
-const NO_CATEGORY: &str = "未分类";
 
 /// How wide the snippet dialog is: room for a command of a fair length on
 /// one line.
@@ -71,7 +69,8 @@ impl SnippetForm {
         };
         categories.sort_by(|a, b| by_name((&a.1, a.0.0), (&b.1, b.0.0)));
         let mut category_ids: Vec<Option<SnippetCategoryId>> = vec![None];
-        let mut labels: Vec<SharedString> = vec![NO_CATEGORY.into()];
+        // The category list's row for a snippet of none.
+        let mut labels: Vec<SharedString> = vec![t!("snippets.uncategorized")];
         for (id, name) in categories {
             category_ids.push(Some(id));
             labels.push(name);
@@ -83,7 +82,7 @@ impl SnippetForm {
 
         let name = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("例如 查看容器")
+                .placeholder(t!("snippets.dialog.name_placeholder"))
                 .default_value(draft.name.clone())
         });
         let category =
@@ -91,7 +90,7 @@ impl SnippetForm {
         let command = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(4, 12)
-                .placeholder("例如 docker ps -a")
+                .placeholder(t!("snippets.dialog.command_placeholder"))
                 .default_value(draft.command.clone())
         });
         Self {
@@ -146,12 +145,12 @@ impl Render for SnippetForm {
         Form::new()
             .child(
                 Field::new()
-                    .label("名称")
+                    .label(t!("snippets.dialog.name"))
                     .required(true)
                     .child(Input::new(&self.name).id("snippet-name").small()),
             )
             .child(
-                Field::new().label("分类").child(
+                Field::new().label(t!("snippets.dialog.category")).child(
                     div()
                         .id("snippet-category")
                         .test_support()
@@ -161,9 +160,9 @@ impl Render for SnippetForm {
             )
             .child(
                 Field::new()
-                    .label("命令")
+                    .label(t!("snippets.dialog.command"))
                     .required(true)
-                    .description("可以有多行。")
+                    .description(t!("snippets.dialog.command_description"))
                     .child(
                         div().id("snippet-command").test_support().w_full().child(
                             Textarea::new(&self.command)
@@ -175,7 +174,7 @@ impl Render for SnippetForm {
             .child(
                 Field::new().child(
                     Checkbox::new("snippet-run-on-click")
-                        .label("点击时自动执行")
+                        .label(t!("snippets.dialog.run_on_click"))
                         .checked(self.run_on_click)
                         .small()
                         .on_click(cx.listener(|this, checked: &bool, _, cx| {
@@ -186,7 +185,7 @@ impl Render for SnippetForm {
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child("启用后将自动执行命令，否则只将内容填入终端"),
+                                .child(t!("snippets.dialog.run_on_click_description")),
                         ),
                 ),
             )
@@ -203,9 +202,12 @@ pub fn open_snippet_dialog(
     let form = cx.new(|cx| SnippetForm::new(dialog, store, window, cx));
     let editing = form.read(cx).editing.is_some();
     let (title, commit): (SharedString, SharedString) = if editing {
-        ("编辑命令片段".into(), "保存".into())
+        (t!("snippets.dialog.edit_title"), t!("common.save"))
     } else {
-        ("新建命令片段".into(), "创建".into())
+        (
+            t!("snippets.dialog.new_title"),
+            t!("snippets.dialog.create"),
+        )
     };
     window.open_dialog(cx, {
         let form = form.clone();
@@ -262,7 +264,7 @@ impl CategoryForm {
         };
         let name = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("例如 Docker")
+                .placeholder(t!("snippets.category.name_placeholder"))
                 .default_value(current)
         });
         Self {
@@ -282,9 +284,9 @@ impl CategoryForm {
             .iter()
             .any(|category| category.name == name.as_str() && Some(category.id) != editing);
         let error = if name.is_empty() {
-            Some("请输入分类名称")
+            Some(t!("snippets.category.name_missing"))
         } else if taken {
-            Some("已有同名分类")
+            Some(t!("snippets.category.name_taken"))
         } else {
             None
         };
@@ -308,7 +310,7 @@ impl Render for CategoryForm {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         Form::new().child(
             Field::new()
-                .label("名称")
+                .label(t!("snippets.category.name"))
                 .required(true)
                 .child(Input::new(&self.name).id("snippet-category-name").small()),
         )
@@ -325,9 +327,12 @@ pub fn open_category_dialog(
     let form = cx.new(|cx| CategoryForm::new(dialog, store, window, cx));
     let renaming = form.read(cx).editing.is_some();
     let (title, commit): (SharedString, SharedString) = if renaming {
-        ("重命名分类".into(), "保存".into())
+        (t!("snippets.category.rename_title"), t!("common.save"))
     } else {
-        ("新建分类".into(), "创建".into())
+        (
+            t!("snippets.category.new_title"),
+            t!("snippets.dialog.create"),
+        )
     };
     window.open_dialog(cx, {
         let form = form.clone();

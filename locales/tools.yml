@@ -1,0 +1,251 @@
+_version: 2
+
+# The right sidebar: its seven tools, the words they share, and the
+# workspace's confirmations and notifications for what they run.
+
+tools.kind.snippets:
+  zh-CN: 命令片段
+  en: Snippets
+tools.kind.history:
+  zh-CN: 历史命令
+  en: History
+tools.kind.services:
+  zh-CN: 系统服务
+  en: Services
+tools.kind.processes:
+  zh-CN: 进程管理
+  en: Processes
+tools.kind.connections:
+  zh-CN: 网络连接
+  en: Network
+tools.kind.monitor:
+  zh-CN: 系统监控
+  en: Monitor
+
+# Shared by the tools.
+tools.refresh:
+  zh-CN: 刷新
+  en: Refresh
+tools.reading:
+  zh-CN: 正在读取…
+  en: Loading…
+tools.read_failed:
+  zh-CN: 读取失败：%{error}
+  en: "Couldn’t load: %{error}"
+tools.not_connected:
+  zh-CN: 终端没有连接
+  en: The terminal isn’t connected
+tools.no_answer:
+  zh-CN: 主机没有回答
+  en: The host didn’t answer
+tools.details_and_logs:
+  zh-CN: 详情和日志
+  en: Details and logs
+tools.run:
+  zh-CN: 执行
+  en: Run
+tools.menu.insert:
+  zh-CN: 输入到终端
+  en: Insert into terminal
+tools.menu.details:
+  zh-CN: 查看详情
+  en: View details
+
+# A command of 命令片段 or 历史命令 onto the terminal's input line.
+tools.command.run_failed:
+  zh-CN: 无法执行命令：%{error}
+  en: "Couldn’t run the command: %{error}"
+tools.command.enter_failed:
+  zh-CN: 无法输入命令：%{error}
+  en: "Couldn’t insert the command: %{error}"
+tools.command.copied:
+  zh-CN: 已复制命令
+  en: Command copied
+
+# Docker: a container, or a compose project's containers.
+tools.container.start.done:
+  zh-CN: 容器“%{name}”已启动
+  en: Container “%{name}” started
+tools.container.start.failed:
+  zh-CN: 无法启动容器“%{name}”：%{error}
+  en: "Couldn’t start container “%{name}”: %{error}"
+tools.container.stop.title:
+  zh-CN: 停止容器“%{name}”？
+  en: Stop container “%{name}”?
+tools.container.stop.description:
+  zh-CN: 停止后它提供的服务就不可用了，直到再次启动。
+  en: What it serves is unavailable until it’s started again.
+tools.container.stop.done:
+  zh-CN: 容器“%{name}”已停止
+  en: Container “%{name}” stopped
+tools.container.stop.failed:
+  zh-CN: 无法停止容器“%{name}”：%{error}
+  en: "Couldn’t stop container “%{name}”: %{error}"
+tools.container.restart.title:
+  zh-CN: 重启容器“%{name}”？
+  en: Restart container “%{name}”?
+tools.container.restart.description:
+  zh-CN: 会先停止再启动，中间短暂不可用。
+  en: It stops and starts again, so it’s briefly unavailable.
+tools.container.restart.done:
+  zh-CN: 容器“%{name}”已重启
+  en: Container “%{name}” restarted
+tools.container.restart.failed:
+  zh-CN: 无法重启容器“%{name}”：%{error}
+  en: "Couldn’t restart container “%{name}”: %{error}"
+
+tools.project.start.done:
+  zh-CN: 项目“%{name}”已启动
+  en: Project “%{name}” started
+tools.project.start.failed:
+  zh-CN: 无法启动项目“%{name}”：%{error}
+  en: "Couldn’t start project “%{name}”: %{error}"
+tools.project.stop.title:
+  zh-CN: 停止项目“%{name}”？
+  en: Stop project “%{name}”?
+tools.project.stop.description:
+  zh-CN: 停止后它提供的服务就不可用了，直到再次启动。
+  en: What its containers serve is unavailable until they’re started again.
+tools.project.stop.done:
+  zh-CN: 项目“%{name}”已停止
+  en: Project “%{name}” stopped
+tools.project.stop.failed:
+  zh-CN: 无法停止项目“%{name}”：%{error}
+  en: "Couldn’t stop project “%{name}”: %{error}"
+tools.project.restart.title:
+  zh-CN: 重启项目“%{name}”？
+  en: Restart project “%{name}”?
+tools.project.restart.description:
+  zh-CN: 会先停止再启动，中间短暂不可用。
+  en: Its containers stop and start again, so they’re briefly unavailable.
+tools.project.restart.done:
+  zh-CN: 项目“%{name}”已重启
+  en: Project “%{name}” restarted
+tools.project.restart.failed:
+  zh-CN: 无法重启项目“%{name}”：%{error}
+  en: "Couldn’t restart project “%{name}”: %{error}"
+
+tools.remove.container.title:
+  zh-CN: 删除容器“%{name}”？
+  en: Delete container “%{name}”?
+tools.remove.container.description:
+  zh-CN: 容器和它里面没有存进卷的数据会一起删除，不能恢复。
+  en: The container is deleted with any data not kept in a volume. This can’t be undone.
+tools.remove.container.done:
+  zh-CN: 容器“%{name}”已删除
+  en: Container “%{name}” deleted
+tools.remove.container.failed:
+  zh-CN: 无法删除容器“%{name}”：%{error}
+  en: "Couldn’t delete container “%{name}”: %{error}"
+tools.remove.image.title:
+  zh-CN: 删除镜像“%{name}”？
+  en: Delete image “%{name}”?
+tools.remove.image.description:
+  zh-CN: 删除后再要用它，需要重新拉取或构建。
+  en: To use it again, you’ll need to pull or build it again.
+tools.remove.image.done:
+  zh-CN: 镜像“%{name}”已删除
+  en: Image “%{name}” deleted
+tools.remove.image.failed:
+  zh-CN: 无法删除镜像“%{name}”：%{error}
+  en: "Couldn’t delete image “%{name}”: %{error}"
+tools.remove.volume.title:
+  zh-CN: 删除卷“%{name}”？
+  en: Delete volume “%{name}”?
+tools.remove.volume.description:
+  zh-CN: 卷里的数据会一起删除，不能恢复。
+  en: The data in it is deleted too. This can’t be undone.
+tools.remove.volume.done:
+  zh-CN: 卷“%{name}”已删除
+  en: Volume “%{name}” deleted
+tools.remove.volume.failed:
+  zh-CN: 无法删除卷“%{name}”：%{error}
+  en: "Couldn’t delete volume “%{name}”: %{error}"
+tools.remove.network.title:
+  zh-CN: 删除网络“%{name}”？
+  en: Delete network “%{name}”?
+tools.remove.network.description:
+  zh-CN: 删除后再要用它，需要重新创建。
+  en: To use it again, you’ll need to create it again.
+tools.remove.network.done:
+  zh-CN: 网络“%{name}”已删除
+  en: Network “%{name}” deleted
+tools.remove.network.failed:
+  zh-CN: 无法删除网络“%{name}”：%{error}
+  en: "Couldn’t delete network “%{name}”: %{error}"
+
+# 系统服务: a systemd service.
+tools.service.start.done:
+  zh-CN: "%{name} 已启动"
+  en: "%{name} started"
+tools.service.start.failed:
+  zh-CN: 无法启动 %{name}：%{error}
+  en: "Couldn’t start %{name}: %{error}"
+tools.service.stop.title:
+  zh-CN: 停止服务“%{name}”？
+  en: Stop service “%{name}”?
+tools.service.stop.description:
+  zh-CN: 停止后它提供的功能就不可用了，直到再次启动。
+  en: What it provides is unavailable until it’s started again.
+tools.service.stop.description_ssh:
+  zh-CN: 这是 SSH 服务：停止后新的连接都连不上这台主机，直到它再次启动。
+  en: This is the SSH service. Until it’s started again, no new connection can reach this host.
+tools.service.stop.done:
+  zh-CN: "%{name} 已停止"
+  en: "%{name} stopped"
+tools.service.stop.failed:
+  zh-CN: 无法停止 %{name}：%{error}
+  en: "Couldn’t stop %{name}: %{error}"
+tools.service.restart.title:
+  zh-CN: 重启服务“%{name}”？
+  en: Restart service “%{name}”?
+tools.service.restart.description:
+  zh-CN: 服务会先停止再启动，中间短暂不可用。
+  en: The service stops and starts again, so it’s briefly unavailable.
+tools.service.restart.done:
+  zh-CN: "%{name} 已重启"
+  en: "%{name} restarted"
+tools.service.restart.failed:
+  zh-CN: 无法重启 %{name}：%{error}
+  en: "Couldn’t restart %{name}: %{error}"
+tools.service.enable.done:
+  zh-CN: "%{name} 已设为开机启动"
+  en: "%{name} now starts at boot"
+tools.service.enable.failed:
+  zh-CN: 无法启用开机启动 %{name}：%{error}
+  en: "Couldn’t enable %{name} at boot: %{error}"
+tools.service.disable.done:
+  zh-CN: "%{name} 已取消开机启动"
+  en: "%{name} no longer starts at boot"
+tools.service.disable.failed:
+  zh-CN: 无法禁用开机启动 %{name}：%{error}
+  en: "Couldn’t disable %{name} at boot: %{error}"
+
+# 进程管理: ending a process.
+tools.process.end.title:
+  zh-CN: 结束进程“%{name}”？
+  en: End process “%{name}”?
+tools.process.end.description:
+  zh-CN: PID %{pid}，用户 %{user}。进程会收到结束信号（SIGTERM），可以先做完收尾再退出。
+  en: PID %{pid}, user %{user}. The process gets SIGTERM, so it can clean up before it exits.
+tools.process.end.confirm:
+  zh-CN: 结束进程
+  en: End process
+tools.process.kill.title:
+  zh-CN: 强制结束进程“%{name}”？
+  en: Kill process “%{name}”?
+tools.process.kill.description:
+  zh-CN: PID %{pid}，用户 %{user}。进程会立即被终止（SIGKILL），来不及保存数据；只在「结束进程」不起作用时使用。
+  en: PID %{pid}, user %{user}. The process is stopped at once (SIGKILL), with no chance to save its data. Use this only when “End process” doesn’t work.
+tools.process.kill.confirm:
+  zh-CN: 强制结束
+  en: Kill
+tools.process.ended:
+  zh-CN: 已向 %{name}（PID %{pid}）发送结束信号
+  en: Sent SIGTERM to %{name} (PID %{pid})
+tools.process.killed:
+  zh-CN: 已强制结束 %{name}（PID %{pid}）
+  en: Killed %{name} (PID %{pid})
+tools.process.end_failed:
+  zh-CN: 无法结束 %{name}（PID %{pid}）：%{error}
+  en: "Couldn’t end %{name} (PID %{pid}): %{error}"

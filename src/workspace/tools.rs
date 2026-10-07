@@ -25,9 +25,11 @@ use crate::app::{
     ToggleDockerProject, ToggleMonitorDetail, ToggleTool, ToggleToolSidebar, ToolKind,
 };
 use crate::docker::{
-    self, ContainerCommand, DockerObject, open_container_dialog, open_object_dialog,
+    self, ContainerCommand, ContainerSubject, DockerObject, open_container_dialog,
+    open_object_dialog,
 };
 use crate::host::HostOs;
+use crate::i18n::t;
 use crate::processes::{end_command, ended, open_process_dialog};
 use crate::services::{ServiceCommand, control_command, controlled, open_service_dialog};
 use crate::shared::confirm_danger;
@@ -226,8 +228,12 @@ impl Workspace {
                 });
             }
             Err(why) => {
-                let verb = if *run { "执行" } else { "输入" };
-                window.push_notification(Notification::error(format!("无法{verb}命令：{why}")), cx);
+                let message = if *run {
+                    t!("tools.command.run_failed", error = why)
+                } else {
+                    t!("tools.command.enter_failed", error = why)
+                };
+                window.push_notification(Notification::error(message), cx);
             }
         }
     }
@@ -240,7 +246,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         cx.write_to_clipboard(ClipboardItem::new_string(action.0.clone()));
-        window.push_notification(Notification::success("已复制命令"), cx);
+        window.push_notification(Notification::success(t!("tools.command.copied")), cx);
     }
 
     /// Docker's 刷新: read the host's Docker again.
@@ -307,12 +313,13 @@ impl Workspace {
         let run = Rc::new({
             let subject = subject.clone();
             move |window: &mut Window, cx: &mut App| {
+                let failed = subject.clone();
                 run_on_host(
                     HostCommand {
                         script: docker::control_command(&ids, command),
                         outcome: docker::done,
-                        done: format!("{subject}{}", command.done()),
-                        failed: format!("无法{}{subject}", command.label()),
+                        done: containers_done(&subject, command),
+                        failed: Box::new(move |why| containers_failed(&failed, command, why)),
                         then: ToolSidebar::refresh_docker,
                     },
                     &terminal,
@@ -322,19 +329,26 @@ impl Workspace {
                 )
             }
         });
-        let description = match command {
-            ContainerCommand::Start => return run(window, cx),
-            ContainerCommand::Stop => "停止后它提供的服务就不可用了，直到再次启动。",
-            ContainerCommand::Restart => "会先停止再启动，中间短暂不可用。",
+        let (title, description) = match (&subject, command) {
+            (_, ContainerCommand::Start) => return run(window, cx),
+            (ContainerSubject::Container(name), ContainerCommand::Stop) => (
+                t!("tools.container.stop.title", name = name),
+                t!("tools.container.stop.description"),
+            ),
+            (ContainerSubject::Project(name), ContainerCommand::Stop) => (
+                t!("tools.project.stop.title", name = name),
+                t!("tools.project.stop.description"),
+            ),
+            (ContainerSubject::Container(name), ContainerCommand::Restart) => (
+                t!("tools.container.restart.title", name = name),
+                t!("tools.container.restart.description"),
+            ),
+            (ContainerSubject::Project(name), ContainerCommand::Restart) => (
+                t!("tools.project.restart.title", name = name),
+                t!("tools.project.restart.description"),
+            ),
         };
-        confirm_danger(
-            format!("{}{subject}？", command.label()).into(),
-            Some(description.into()),
-            command.label(),
-            run,
-            window,
-            cx,
-        );
+        confirm_danger(title, Some(description), command.label(), run, window, cx);
     }
 
     /// Ask, then remove a container, an image, a volume or a network.
@@ -348,25 +362,37 @@ impl Workspace {
             return;
         };
         let RemoveDockerObject { object, id, name } = action.clone();
-        let subject = format!("{}“{name}”", object.label());
-        let description = match object {
-            DockerObject::Container => "容器和它里面没有存进卷的数据会一起删除，不能恢复。",
-            DockerObject::Image => "删除后再要用它，需要重新拉取或构建。",
-            DockerObject::Volume => "卷里的数据会一起删除，不能恢复。",
-            DockerObject::Network => "删除后再要用它，需要重新创建。",
+        let (title, description) = match object {
+            DockerObject::Container => (
+                t!("tools.remove.container.title", name = name),
+                t!("tools.remove.container.description"),
+            ),
+            DockerObject::Image => (
+                t!("tools.remove.image.title", name = name),
+                t!("tools.remove.image.description"),
+            ),
+            DockerObject::Volume => (
+                t!("tools.remove.volume.title", name = name),
+                t!("tools.remove.volume.description"),
+            ),
+            DockerObject::Network => (
+                t!("tools.remove.network.title", name = name),
+                t!("tools.remove.network.description"),
+            ),
         };
         let workspace = cx.entity().downgrade();
         confirm_danger(
-            format!("删除{subject}？").into(),
-            Some(description.into()),
-            "删除",
+            title,
+            Some(description),
+            t!("common.delete"),
             Rc::new(move |window, cx| {
+                let failed = name.clone();
                 run_on_host(
                     HostCommand {
                         script: docker::remove_command(object, &id),
                         outcome: docker::done,
-                        done: format!("{subject}已删除"),
-                        failed: format!("无法删除{subject}"),
+                        done: removed(object, &name),
+                        failed: Box::new(move |why| not_removed(object, &failed, why)),
                         then: ToolSidebar::refresh_docker,
                     },
                     &terminal,
@@ -430,12 +456,13 @@ impl Workspace {
         let run = Rc::new({
             let name = name.clone();
             move |window: &mut Window, cx: &mut App| {
+                let failed = name.clone();
                 run_on_host(
                     HostCommand {
                         script: control_command(&name, command),
                         outcome: controlled,
-                        done: format!("{name} {}", command.done()),
-                        failed: format!("无法{} {name}", command.label()),
+                        done: service_done(&name, command),
+                        failed: Box::new(move |why| service_failed(&failed, command, why)),
                         then: ToolSidebar::refresh_services,
                     },
                     &terminal,
@@ -450,27 +477,20 @@ impl Workspace {
         let ssh = matches!(name.as_str(), "ssh.service" | "sshd.service");
         let (title, description) = match command {
             ServiceCommand::Stop => (
-                format!("停止服务“{name}”？"),
+                t!("tools.service.stop.title", name = name),
                 if ssh {
-                    "这是 SSH 服务：停止后新的连接都连不上这台主机，直到它再次启动。"
+                    t!("tools.service.stop.description_ssh")
                 } else {
-                    "停止后它提供的功能就不可用了，直到再次启动。"
+                    t!("tools.service.stop.description")
                 },
             ),
             ServiceCommand::Restart => (
-                format!("重启服务“{name}”？"),
-                "服务会先停止再启动，中间短暂不可用。",
+                t!("tools.service.restart.title", name = name),
+                t!("tools.service.restart.description"),
             ),
             _ => return run(window, cx),
         };
-        confirm_danger(
-            title.into(),
-            Some(description.into()),
-            command.label(),
-            run,
-            window,
-            cx,
-        );
+        confirm_danger(title, Some(description), command.label(), run, window, cx);
     }
 
     /// A process's details, from 进程管理's list and its command line.
@@ -515,25 +535,21 @@ impl Workspace {
         let user = process.user.unwrap_or_else(|| "—".into());
         let (title, description, verb) = if force {
             (
-                format!("强制结束进程“{name}”？"),
-                format!(
-                    "PID {pid}，用户 {user}。进程会立即被终止（SIGKILL），来不及保存数据；                     只在「结束进程」不起作用时使用。"
-                ),
-                "强制结束",
+                t!("tools.process.kill.title", name = name),
+                t!("tools.process.kill.description", pid = pid, user = user),
+                t!("tools.process.kill.confirm"),
             )
         } else {
             (
-                format!("结束进程“{name}”？"),
-                format!(
-                    "PID {pid}，用户 {user}。进程会收到结束信号（SIGTERM），可以先做完收尾再退出。"
-                ),
-                "结束进程",
+                t!("tools.process.end.title", name = name),
+                t!("tools.process.end.description", pid = pid, user = user),
+                t!("tools.process.end.confirm"),
             )
         };
         let workspace = cx.entity().downgrade();
         confirm_danger(
-            title.into(),
-            Some(description.into()),
+            title,
+            Some(description),
             verb,
             Rc::new(move |window, cx| {
                 let Some(view) = terminal.view.upgrade() else {
@@ -541,7 +557,12 @@ impl Workspace {
                 };
                 let Some(reply) = view.read(cx).exec(end_command(pid, force), cx) else {
                     window.push_notification(
-                        Notification::error(format!("无法结束 {name}（PID {pid}）：终端没有连接")),
+                        Notification::error(t!(
+                            "tools.process.end_failed",
+                            name = name,
+                            pid = pid,
+                            error = t!("tools.not_connected")
+                        )),
                         cx,
                     );
                     return;
@@ -550,20 +571,27 @@ impl Workspace {
                 window
                     .spawn(cx, async move |cx| {
                         let outcome = match exec_answer(reply, cx).await {
-                            None => Err("终端没有连接".to_string()),
+                            None => Err(t!("tools.not_connected").to_string()),
                             Some(Err(error)) => Err(error),
                             Some(Ok(output)) => ended(&output),
                         };
                         cx.update(|window, cx| {
                             let notification = match outcome {
-                                Ok(()) if force => {
-                                    Notification::success(format!("已强制结束 {name}（PID {pid}）"))
-                                }
-                                Ok(()) => Notification::success(format!(
-                                    "已向 {name}（PID {pid}）发送结束信号"
+                                Ok(()) if force => Notification::success(t!(
+                                    "tools.process.killed",
+                                    name = name,
+                                    pid = pid
                                 )),
-                                Err(why) => Notification::error(format!(
-                                    "无法结束 {name}（PID {pid}）：{why}"
+                                Ok(()) => Notification::success(t!(
+                                    "tools.process.ended",
+                                    name = name,
+                                    pid = pid
+                                )),
+                                Err(why) => Notification::error(t!(
+                                    "tools.process.end_failed",
+                                    name = name,
+                                    pid = pid,
+                                    error = why
                                 )),
                             };
                             window.push_notification(notification, cx);
@@ -663,10 +691,10 @@ struct HostCommand {
     /// How it went, from what it printed.
     outcome: fn(&str) -> Result<(), String>,
     /// The notification when it went: 「nginx.service 已停止」.
-    done: String,
-    /// The notification's start when it did not, before why: 「无法停止
-    /// nginx.service」.
-    failed: String,
+    done: SharedString,
+    /// The notification when it did not, from why: 「无法停止
+    /// nginx.service：…」.
+    failed: Box<dyn FnOnce(&str) -> SharedString>,
     /// What the sidebar does after: read the tool's list again.
     then: fn(&mut ToolSidebar, &mut Context<ToolSidebar>),
 }
@@ -689,20 +717,20 @@ fn run_on_host(
     } = command;
     let reply = script.and_then(|script| terminal.view.upgrade()?.read(cx).exec(script, cx));
     let Some(reply) = reply else {
-        window.push_notification(Notification::error(format!("{failed}：终端没有连接")), cx);
+        window.push_notification(Notification::error(failed(&t!("tools.not_connected"))), cx);
         return;
     };
     window
         .spawn(cx, async move |cx| {
             let result = match exec_answer(reply, cx).await {
-                None => Err("终端没有连接".to_string()),
+                None => Err(t!("tools.not_connected").to_string()),
                 Some(Err(error)) => Err(error),
                 Some(Ok(output)) => outcome(&output),
             };
             cx.update(|window, cx| {
                 let notification = match result {
                     Ok(()) => Notification::success(done),
-                    Err(why) => Notification::error(format!("{failed}：{why}")),
+                    Err(why) => Notification::error(failed(&why)),
                 };
                 window.push_notification(notification, cx);
                 workspace
@@ -712,4 +740,98 @@ fn run_on_host(
             .ok();
         })
         .detach();
+}
+
+/// The notification when containers did as `command` said.
+fn containers_done(subject: &ContainerSubject, command: ContainerCommand) -> SharedString {
+    match (subject, command) {
+        (ContainerSubject::Container(name), ContainerCommand::Start) => {
+            t!("tools.container.start.done", name = name)
+        }
+        (ContainerSubject::Container(name), ContainerCommand::Stop) => {
+            t!("tools.container.stop.done", name = name)
+        }
+        (ContainerSubject::Container(name), ContainerCommand::Restart) => {
+            t!("tools.container.restart.done", name = name)
+        }
+        (ContainerSubject::Project(name), ContainerCommand::Start) => {
+            t!("tools.project.start.done", name = name)
+        }
+        (ContainerSubject::Project(name), ContainerCommand::Stop) => {
+            t!("tools.project.stop.done", name = name)
+        }
+        (ContainerSubject::Project(name), ContainerCommand::Restart) => {
+            t!("tools.project.restart.done", name = name)
+        }
+    }
+}
+
+/// The notification when they did not, and why.
+fn containers_failed(
+    subject: &ContainerSubject,
+    command: ContainerCommand,
+    why: &str,
+) -> SharedString {
+    match (subject, command) {
+        (ContainerSubject::Container(name), ContainerCommand::Start) => {
+            t!("tools.container.start.failed", name = name, error = why)
+        }
+        (ContainerSubject::Container(name), ContainerCommand::Stop) => {
+            t!("tools.container.stop.failed", name = name, error = why)
+        }
+        (ContainerSubject::Container(name), ContainerCommand::Restart) => {
+            t!("tools.container.restart.failed", name = name, error = why)
+        }
+        (ContainerSubject::Project(name), ContainerCommand::Start) => {
+            t!("tools.project.start.failed", name = name, error = why)
+        }
+        (ContainerSubject::Project(name), ContainerCommand::Stop) => {
+            t!("tools.project.stop.failed", name = name, error = why)
+        }
+        (ContainerSubject::Project(name), ContainerCommand::Restart) => {
+            t!("tools.project.restart.failed", name = name, error = why)
+        }
+    }
+}
+
+/// The notification when a container, an image, a volume or a network went.
+fn removed(object: DockerObject, name: &str) -> SharedString {
+    match object {
+        DockerObject::Container => t!("tools.remove.container.done", name = name),
+        DockerObject::Image => t!("tools.remove.image.done", name = name),
+        DockerObject::Volume => t!("tools.remove.volume.done", name = name),
+        DockerObject::Network => t!("tools.remove.network.done", name = name),
+    }
+}
+
+/// The notification when it did not, and why.
+fn not_removed(object: DockerObject, name: &str, why: &str) -> SharedString {
+    match object {
+        DockerObject::Container => t!("tools.remove.container.failed", name = name, error = why),
+        DockerObject::Image => t!("tools.remove.image.failed", name = name, error = why),
+        DockerObject::Volume => t!("tools.remove.volume.failed", name = name, error = why),
+        DockerObject::Network => t!("tools.remove.network.failed", name = name, error = why),
+    }
+}
+
+/// The notification when a service did as `command` said.
+fn service_done(name: &str, command: ServiceCommand) -> SharedString {
+    match command {
+        ServiceCommand::Start => t!("tools.service.start.done", name = name),
+        ServiceCommand::Stop => t!("tools.service.stop.done", name = name),
+        ServiceCommand::Restart => t!("tools.service.restart.done", name = name),
+        ServiceCommand::Enable => t!("tools.service.enable.done", name = name),
+        ServiceCommand::Disable => t!("tools.service.disable.done", name = name),
+    }
+}
+
+/// The notification when it did not, and why.
+fn service_failed(name: &str, command: ServiceCommand, why: &str) -> SharedString {
+    match command {
+        ServiceCommand::Start => t!("tools.service.start.failed", name = name, error = why),
+        ServiceCommand::Stop => t!("tools.service.stop.failed", name = name, error = why),
+        ServiceCommand::Restart => t!("tools.service.restart.failed", name = name, error = why),
+        ServiceCommand::Enable => t!("tools.service.enable.failed", name = name, error = why),
+        ServiceCommand::Disable => t!("tools.service.disable.failed", name = name, error = why),
+    }
 }

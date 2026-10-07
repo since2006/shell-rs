@@ -11,6 +11,7 @@ use crate::app::{CatalogIcon, DOCKER_ICON, ToggleTool, ToolKind};
 use crate::docker::{Container, DockerObject, DockerPanel, ObjectSummary};
 use crate::history::HistoryPanel;
 use crate::host::{HostId, HostOs, HostStore, SnippetCategoryId};
+use crate::i18n::t;
 use crate::monitor::{MonitorDetail, MonitorPanel};
 use crate::netstat::NetstatPanel;
 use crate::processes::{Process, ProcessDetails, ProcessPanel, ProcessSort};
@@ -19,15 +20,15 @@ use crate::snippets::SnippetPanel;
 use crate::terminal::{ExecTarget, RemoteTerminalId, TerminalView};
 
 impl ToolKind {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            ToolKind::Snippets => "命令片段",
-            ToolKind::History => "历史命令",
-            ToolKind::Docker => "Docker",
-            ToolKind::Services => "系统服务",
-            ToolKind::Processes => "进程管理",
-            ToolKind::Connections => "网络连接",
-            ToolKind::Monitor => "系统监控",
+            ToolKind::Snippets => t!("tools.kind.snippets"),
+            ToolKind::History => t!("tools.kind.history"),
+            ToolKind::Docker => "Docker".into(),
+            ToolKind::Services => t!("tools.kind.services"),
+            ToolKind::Processes => t!("tools.kind.processes"),
+            ToolKind::Connections => t!("tools.kind.connections"),
+            ToolKind::Monitor => t!("tools.kind.monitor"),
         }
     }
 

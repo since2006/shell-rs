@@ -1,6 +1,10 @@
 //! What 系统服务 reads off a host, and how its tabs, groups and search
 //! pick from it.
 
+use gpui_kit::SharedString;
+
+use crate::i18n::t;
+
 /// Where a service's unit file lives, which the list groups by.
 const CUSTOM_UNITS: &str = "/etc/systemd/system/";
 
@@ -29,14 +33,14 @@ impl ActiveState {
         }
     }
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            ActiveState::Active => "运行中",
-            ActiveState::Reloading => "正在重载",
-            ActiveState::Inactive | ActiveState::Other => "已停止",
-            ActiveState::Failed => "失败",
-            ActiveState::Activating => "正在启动",
-            ActiveState::Deactivating => "正在停止",
+            ActiveState::Active => t!("services.active.active"),
+            ActiveState::Reloading => t!("services.active.reloading"),
+            ActiveState::Inactive | ActiveState::Other => t!("services.active.inactive"),
+            ActiveState::Failed => t!("services.active.failed"),
+            ActiveState::Activating => t!("services.active.activating"),
+            ActiveState::Deactivating => t!("services.active.deactivating"),
         }
     }
 
@@ -62,70 +66,69 @@ pub enum ServiceKind {
 
 /// The finer state under `ActiveState`, as systemd's `SubState` says: 「已退出」
 /// for a one-shot service that did its work.
-pub fn sub_state_label(state: &str) -> String {
+pub fn sub_state_label(state: &str) -> SharedString {
     match state {
-        "running" => "运行中",
-        "exited" => "已退出",
-        "dead" => "未运行",
-        "failed" => "失败",
-        "waiting" => "等待中",
-        "listening" => "监听中",
-        "reload" => "正在重载",
-        "auto-restart" => "等待自动重启",
-        "condition" => "条件不满足",
-        state if state.starts_with("start") => "正在启动",
-        state if state.starts_with("stop") || state.starts_with("final") => "正在停止",
-        state => return state.to_owned(),
+        "running" => t!("services.sub.running"),
+        "exited" => t!("services.sub.exited"),
+        "dead" => t!("services.sub.dead"),
+        "failed" => t!("services.sub.failed"),
+        "waiting" => t!("services.sub.waiting"),
+        "listening" => t!("services.sub.listening"),
+        "reload" => t!("services.sub.reload"),
+        "auto-restart" => t!("services.sub.auto_restart"),
+        "condition" => t!("services.sub.condition"),
+        state if state.starts_with("start") => t!("services.sub.starting"),
+        state if state.starts_with("stop") || state.starts_with("final") => {
+            t!("services.sub.stopping")
+        }
+        state => state.to_owned().into(),
     }
-    .to_owned()
 }
 
 /// Whether it starts at boot, as systemd's `UnitFileState` says; `None`
 /// with nothing to say.
-pub fn file_state_label(state: &str) -> Option<&'static str> {
+pub fn file_state_label(state: &str) -> Option<SharedString> {
     Some(match state {
-        "enabled" => "已启用",
-        "enabled-runtime" => "已启用（本次运行）",
-        "disabled" => "已禁用",
-        "static" => "静态",
-        "masked" | "masked-runtime" => "已屏蔽",
-        "generated" => "自动生成",
-        "indirect" => "间接启用",
-        "linked" | "linked-runtime" => "已链接",
-        "transient" => "临时",
-        "alias" => "别名",
-        "bad" => "出错",
+        "enabled" => t!("services.file.enabled"),
+        "enabled-runtime" => t!("services.file.enabled_runtime"),
+        "disabled" => t!("services.file.disabled"),
+        "static" => t!("services.file.static"),
+        "masked" | "masked-runtime" => t!("services.file.masked"),
+        "generated" => t!("services.file.generated"),
+        "indirect" => t!("services.file.indirect"),
+        "linked" | "linked-runtime" => t!("services.file.linked"),
+        "transient" => t!("services.file.transient"),
+        "alias" => t!("services.file.alias"),
+        "bad" => t!("services.file.bad"),
         _ => return None,
     })
 }
 
 /// Whether the unit file was found and read, as systemd's `LoadState` says.
-pub fn load_state_label(state: &str) -> String {
+pub fn load_state_label(state: &str) -> SharedString {
     match state {
-        "loaded" => "已加载",
-        "not-found" => "未找到",
-        "masked" => "已屏蔽",
-        "error" => "出错",
-        "bad-setting" => "配置有误",
-        state => return state.to_owned(),
+        "loaded" => t!("services.load.loaded"),
+        "not-found" => t!("services.load.not_found"),
+        "masked" => t!("services.load.masked"),
+        "error" => t!("services.load.error"),
+        "bad-setting" => t!("services.load.bad_setting"),
+        state => state.to_owned().into(),
     }
-    .to_owned()
 }
 
 /// How the machine as a whole is doing, as `systemctl is-system-running`
 /// says: 「降级运行」 when some unit failed.
-pub fn system_state_label(state: &str) -> String {
+pub fn system_state_label(state: &str) -> SharedString {
     match state {
-        "running" => "运行正常",
-        "degraded" => "降级运行",
-        "starting" => "正在启动",
-        "initializing" => "正在初始化",
-        "maintenance" => "维护模式",
-        "stopping" => "正在关机",
-        "offline" => "离线",
-        state => return state.to_owned(),
+        "running" => t!("services.system.running"),
+        "degraded" => t!("services.system.degraded"),
+        "starting" => t!("services.system.starting"),
+        "initializing" => t!("services.system.initializing"),
+        "maintenance" => t!("services.system.maintenance"),
+        "stopping" => t!("services.system.stopping"),
+        "offline" => t!("services.system.offline"),
+        state => state.to_owned().into(),
     }
-    .to_owned()
 }
 
 /// What can be done to a service.
@@ -153,24 +156,13 @@ impl ServiceCommand {
     }
 
     /// The button: 「停止」「禁用开机启动」.
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            ServiceCommand::Start => "启动",
-            ServiceCommand::Stop => "停止",
-            ServiceCommand::Restart => "重启",
-            ServiceCommand::Enable => "启用开机启动",
-            ServiceCommand::Disable => "禁用开机启动",
-        }
-    }
-
-    /// What it did, after the service's name: 「已停止」.
-    pub fn done(self) -> &'static str {
-        match self {
-            ServiceCommand::Start => "已启动",
-            ServiceCommand::Stop => "已停止",
-            ServiceCommand::Restart => "已重启",
-            ServiceCommand::Enable => "已设为开机启动",
-            ServiceCommand::Disable => "已取消开机启动",
+            ServiceCommand::Start => t!("services.command.start"),
+            ServiceCommand::Stop => t!("services.command.stop"),
+            ServiceCommand::Restart => t!("services.command.restart"),
+            ServiceCommand::Enable => t!("services.command.enable"),
+            ServiceCommand::Disable => t!("services.command.disable"),
         }
     }
 }
@@ -243,12 +235,12 @@ impl ServiceFilter {
         ServiceFilter::Failed,
     ];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> SharedString {
         match self {
-            ServiceFilter::All => "全部",
-            ServiceFilter::Running => "运行中",
-            ServiceFilter::Stopped => "已停止",
-            ServiceFilter::Failed => "失败",
+            ServiceFilter::All => t!("services.filter.all"),
+            ServiceFilter::Running => t!("services.filter.running"),
+            ServiceFilter::Stopped => t!("services.filter.stopped"),
+            ServiceFilter::Failed => t!("services.filter.failed"),
         }
     }
 
@@ -303,7 +295,9 @@ impl ServiceTable {
     pub fn summary(&self) -> String {
         [
             self.version.clone(),
-            self.state.as_deref().map(system_state_label),
+            self.state
+                .as_deref()
+                .map(|state| system_state_label(state).into()),
         ]
         .into_iter()
         .flatten()
@@ -525,7 +519,7 @@ mod tests {
         assert_eq!(sub_state_label("exited"), "已退出");
         assert_eq!(sub_state_label("stop-sigterm"), "正在停止");
         assert_eq!(sub_state_label("mounted"), "mounted");
-        assert_eq!(file_state_label("generated"), Some("自动生成"));
+        assert_eq!(file_state_label("generated"), Some("自动生成".into()));
         assert_eq!(file_state_label(""), None);
         assert_eq!(load_state_label("loaded"), "已加载");
         assert_eq!(system_state_label("running"), "运行正常");

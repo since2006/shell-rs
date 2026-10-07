@@ -12,6 +12,7 @@ use super::details::{Read, message, reading, render_sections, run};
 use super::linux::{image_details, inspect_command, network_details, volume_details};
 use super::model::{DetailSection, DockerObject, ObjectSummary, Tone};
 use crate::app::{CatalogIcon, RemoveDockerObject};
+use crate::i18n::t;
 use crate::shared::soft_tag;
 use crate::terminal::TerminalView;
 
@@ -26,7 +27,7 @@ pub(super) fn tone_color(tone: Tone, cx: &App) -> Hsla {
     }
 }
 
-/// What the lines of `object`'s details are found by: 「volume-basics:挂载点」.
+/// What the lines of `object`'s details are found by: 「volume-basics:mountpoint」.
 fn prefix(object: DockerObject) -> &'static str {
     match object {
         DockerObject::Container => "container",
@@ -76,8 +77,8 @@ pub fn open_object_dialog(
             Button::new("docker-dialog-remove")
                 .outline()
                 .icon(Icon::new(CatalogIcon::Trash))
-                .label("删除")
-                .when_some(summary.removable.err(), |button, why| {
+                .label(t!("common.delete"))
+                .when_some(summary.removable.clone().err(), |button, why| {
                     button.disabled(true).tooltip(why)
                 })
                 .on_click(move |_, window, cx| {
@@ -126,10 +127,7 @@ impl ObjectDetailsView {
                         DockerObject::Container => None,
                     } {
                         Some(sections) => Read::Known(sections),
-                        None => Read::Unknown(format!(
-                            "读不到这个{}：它可能已经被删除",
-                            summary.object.label()
-                        )),
+                        None => Read::Unknown(gone(summary.object).into()),
                     },
                     Err(why) => Read::Unknown(why),
                 };
@@ -153,5 +151,15 @@ impl Render for ObjectDetailsView {
             Read::Reading | Read::NotYet => reading("docker-details-reading", cx),
         };
         div().id("docker-details").test_support().child(body)
+    }
+}
+
+/// Why there are no details: it went since the list was read.
+fn gone(object: DockerObject) -> SharedString {
+    match object {
+        DockerObject::Container => t!("docker.details.container_gone"),
+        DockerObject::Image => t!("docker.details.image_gone"),
+        DockerObject::Volume => t!("docker.details.volume_gone"),
+        DockerObject::Network => t!("docker.details.network_gone"),
     }
 }

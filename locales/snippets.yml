@@ -1,0 +1,114 @@
+_version: 2
+
+# 命令片段: the commands kept for every host, in categories.
+
+snippets.uncategorized:
+  zh-CN: 未分类
+  en: Uncategorized
+
+snippets.panel.search:
+  zh-CN: 搜索名称或命令
+  en: Search names and commands
+snippets.panel.count.one:
+  en: "%{count} snippet"
+snippets.panel.count.other:
+  zh-CN: 共 %{count} 个片段
+  en: "%{count} snippets"
+snippets.panel.categories.one:
+  en: "%{count} category"
+snippets.panel.categories.other:
+  zh-CN: "%{count} 个分类"
+  en: "%{count} categories"
+snippets.panel.new_snippet:
+  zh-CN: 新建片段
+  en: New snippet
+snippets.panel.new_category:
+  zh-CN: 新建分类
+  en: New category
+snippets.panel.empty:
+  zh-CN: 还没有命令片段
+  en: No snippets yet
+snippets.panel.empty_description:
+  zh-CN: 把常用的命令存成片段，点一下就输入到当前终端。
+  en: Save the commands you use often as snippets, then type one into the terminal with a click.
+snippets.panel.no_match:
+  zh-CN: 没有符合条件的片段
+  en: No matching snippets
+snippets.card.runs_on_click:
+  zh-CN: 点击时自动执行
+  en: Runs on click
+
+snippets.menu.new_snippet:
+  zh-CN: 新建片段…
+  en: New snippet…
+snippets.menu.new_category:
+  zh-CN: 新建分类…
+  en: New category…
+snippets.menu.rename_category:
+  zh-CN: 重命名分类…
+  en: Rename category…
+snippets.menu.delete_category:
+  zh-CN: 删除分类…
+  en: Delete category…
+snippets.menu.copy:
+  zh-CN: 复制命令
+  en: Copy command
+snippets.menu.edit:
+  zh-CN: 编辑…
+  en: Edit…
+snippets.menu.delete:
+  zh-CN: 删除…
+  en: Delete…
+
+snippets.dialog.new_title:
+  zh-CN: 新建命令片段
+  en: New snippet
+snippets.dialog.edit_title:
+  zh-CN: 编辑命令片段
+  en: Edit snippet
+snippets.dialog.create:
+  zh-CN: 创建
+  en: Create
+snippets.dialog.name:
+  zh-CN: 名称
+  en: Name
+snippets.dialog.name_placeholder:
+  zh-CN: 例如 查看容器
+  en: e.g. List containers
+snippets.dialog.category:
+  zh-CN: 分类
+  en: Category
+snippets.dialog.command:
+  zh-CN: 命令
+  en: Command
+snippets.dialog.command_placeholder:
+  zh-CN: 例如 docker ps -a
+  en: e.g. docker ps -a
+snippets.dialog.command_description:
+  zh-CN: 可以有多行。
+  en: It can span several lines.
+snippets.dialog.run_on_click:
+  zh-CN: 点击时自动执行
+  en: Run on click
+snippets.dialog.run_on_click_description:
+  zh-CN: 启用后将自动执行命令，否则只将内容填入终端
+  en: A click runs the command; otherwise it’s only typed into the terminal
+
+snippets.category.new_title:
+  zh-CN: 新建分类
+  en: New category
+snippets.category.rename_title:
+  zh-CN: 重命名分类
+  en: Rename category
+snippets.category.name:
+  zh-CN: 名称
+  en: Name
+snippets.category.name_placeholder:
+  zh-CN: 例如 Docker
+  en: e.g. Docker
+snippets.category.name_missing:
+  zh-CN: 请输入分类名称
+  en: Enter a category name
+snippets.category.name_taken:
+  zh-CN: 已有同名分类
+  en: A category with this name already exists

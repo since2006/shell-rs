@@ -7,8 +7,9 @@ use serde_json::Value;
 
 use super::model::{
     Container, ContainerCommand, ContainerDetails, ContainerState, DetailSection, DockerObject,
-    DockerTable, Image, Network, SectionBody, Volume, rows,
+    DockerTable, Image, Network, RowLabel, SectionBody, Volume, rows,
 };
+use crate::i18n::t;
 use crate::shared::format_bytes;
 
 /// Where `docker` may be besides the login's `PATH` (Docker Desktop on a
@@ -107,15 +108,15 @@ pub fn logs_command(id: &str) -> Option<String> {
     ))
 }
 
-/// Docker's complaint, in Chinese where it is one a user can do something
-/// about.
+/// Docker's complaint, in ShellRS's words where it is one a user can do
+/// something about.
 fn complaint(said: &str) -> String {
     if said.contains("password is required")
         || (said.contains("permission denied") && said.contains("docker"))
     {
-        "没有权限：以 root 登录、把这个用户加入 docker 组，或给它配置免密码的 sudo".into()
+        t!("docker.error.permission").into()
     } else if said.contains("Cannot connect to the Docker daemon") {
-        "Docker 没有运行".into()
+        t!("docker.error.not_running").into()
     } else {
         let line = said.lines().next().unwrap_or(said).trim();
         line.trim_start_matches("Error response from daemon: ")
@@ -128,10 +129,10 @@ fn complaint(said: &str) -> String {
 pub fn done(output: &str) -> Result<(), String> {
     let (said, status) = output
         .rsplit_once("@@status")
-        .ok_or_else(|| "主机没有回答".to_string())?;
+        .ok_or_else(|| t!("tools.no_answer").to_string())?;
     match status.trim() {
         "0" => Ok(()),
-        status if said.trim().is_empty() => Err(format!("docker 返回 {status}")),
+        status if said.trim().is_empty() => Err(t!("docker.error.status", status = status).into()),
         _ => Err(complaint(said.trim())),
     }
 }
@@ -374,13 +375,14 @@ pub fn parse_details(output: &str) -> Option<ContainerDetails> {
                 _ => text(mount, "Source"),
             };
             let read_only = mount.get("RW").and_then(Value::as_bool) == Some(false);
+            let destination = text(mount, "Destination");
             (
                 source.to_owned(),
-                format!(
-                    "{}{}",
-                    text(mount, "Destination"),
-                    if read_only { "（只读）" } else { "" }
-                ),
+                if read_only {
+                    t!("docker.mount.read_only", path = destination).into()
+                } else {
+                    destination.to_owned()
+                },
             )
         })
         .collect();
@@ -462,8 +464,8 @@ fn pairs_at(value: &Value, keys: &[&str]) -> Vec<(String, String)> {
 
 fn yes_no(value: &Value, keys: &[&str]) -> String {
     match at(value, keys).and_then(Value::as_bool) {
-        Some(true) => "是".into(),
-        Some(false) => "否".into(),
+        Some(true) => t!("docker.value.yes").into(),
+        Some(false) => t!("docker.value.no").into(),
         None => String::new(),
     }
 }
@@ -473,7 +475,7 @@ fn yes_no(value: &Value, keys: &[&str]) -> String {
 fn used_by(used_by: &[String]) -> DetailSection {
     DetailSection {
         id: "users",
-        title: "使用它的容器",
+        title: "docker.section.users",
         body: SectionBody::List(used_by.to_vec()),
     }
 }
@@ -485,24 +487,39 @@ pub fn volume_details(output: &str, users: &[String]) -> Option<Vec<DetailSectio
     Some(vec![
         DetailSection {
             id: "basics",
-            title: "基础信息",
+            title: "docker.section.basics",
             body: rows([
-                ("名称", string_at(&volume, &["Name"])),
-                ("驱动", string_at(&volume, &["Driver"])),
-                ("挂载点", string_at(&volume, &["Mountpoint"])),
-                ("范围", string_at(&volume, &["Scope"])),
-                ("创建时间", string_at(&volume, &["CreatedAt"])),
+                (
+                    RowLabel::Field("docker.field.name"),
+                    string_at(&volume, &["Name"]),
+                ),
+                (
+                    RowLabel::Field("docker.field.driver"),
+                    string_at(&volume, &["Driver"]),
+                ),
+                (
+                    RowLabel::Field("docker.field.mountpoint"),
+                    string_at(&volume, &["Mountpoint"]),
+                ),
+                (
+                    RowLabel::Field("docker.field.scope"),
+                    string_at(&volume, &["Scope"]),
+                ),
+                (
+                    RowLabel::Field("docker.field.created"),
+                    string_at(&volume, &["CreatedAt"]),
+                ),
             ]),
         },
         used_by(users),
         DetailSection {
             id: "options",
-            title: "选项",
+            title: "docker.section.options",
             body: rows(pairs_at(&volume, &["Options"])),
         },
         DetailSection {
             id: "labels",
-            title: "标签",
+            title: "docker.section.labels",
             body: rows(pairs_at(&volume, &["Labels"])),
         },
     ])
@@ -531,51 +548,75 @@ pub fn image_details(output: &str, users: &[String]) -> Option<Vec<DetailSection
     Some(vec![
         DetailSection {
             id: "basics",
-            title: "基础信息",
+            title: "docker.section.basics",
             body: rows([
                 (
-                    "ID",
+                    RowLabel::Raw("ID".into()),
                     string_at(&image, &["Id"])
                         .trim_start_matches("sha256:")
                         .to_owned(),
                 ),
-                ("标签", strings_at(&image, &["RepoTags"]).join("\n")),
-                ("摘要", strings_at(&image, &["RepoDigests"]).join("\n")),
-                ("创建时间", string_at(&image, &["Created"])),
                 (
-                    "大小",
+                    RowLabel::Field("docker.field.tags"),
+                    strings_at(&image, &["RepoTags"]).join("\n"),
+                ),
+                (
+                    RowLabel::Field("docker.field.digests"),
+                    strings_at(&image, &["RepoDigests"]).join("\n"),
+                ),
+                (
+                    RowLabel::Field("docker.field.created"),
+                    string_at(&image, &["Created"]),
+                ),
+                (
+                    RowLabel::Field("docker.field.size"),
                     at(&image, &["Size"])
                         .and_then(Value::as_u64)
                         .map_or(String::new(), format_bytes),
                 ),
-                ("平台", platform),
-                ("层数", layers),
-                ("作者", string_at(&image, &["Author"])),
+                (RowLabel::Field("docker.field.platform"), platform),
+                (RowLabel::Field("docker.field.layers"), layers),
+                (
+                    RowLabel::Field("docker.field.author"),
+                    string_at(&image, &["Author"]),
+                ),
             ]),
         },
         used_by(users),
         DetailSection {
             id: "config",
-            title: "运行配置",
+            title: "docker.section.config",
             body: rows([
                 (
-                    "入口",
+                    RowLabel::Field("docker.field.entrypoint"),
                     strings_at(&image, &["Config", "Entrypoint"]).join(" "),
                 ),
-                ("命令", strings_at(&image, &["Config", "Cmd"]).join(" ")),
-                ("工作目录", string_at(&image, &["Config", "WorkingDir"])),
-                ("用户", string_at(&image, &["Config", "User"])),
-                ("暴露端口", ports.join(", ")),
+                (
+                    RowLabel::Field("docker.field.command"),
+                    strings_at(&image, &["Config", "Cmd"]).join(" "),
+                ),
+                (
+                    RowLabel::Field("docker.field.working_dir"),
+                    string_at(&image, &["Config", "WorkingDir"]),
+                ),
+                (
+                    RowLabel::Field("docker.field.user"),
+                    string_at(&image, &["Config", "User"]),
+                ),
+                (
+                    RowLabel::Field("docker.field.exposed_ports"),
+                    ports.join(", "),
+                ),
             ]),
         },
         DetailSection {
             id: "environment",
-            title: "环境变量",
+            title: "docker.section.environment",
             body: SectionBody::Text(strings_at(&image, &["Config", "Env"])),
         },
         DetailSection {
             id: "labels",
-            title: "标签",
+            title: "docker.section.labels",
             body: rows(pairs_at(&image, &["Config", "Labels"])),
         },
     ])
@@ -594,7 +635,7 @@ pub fn network_details(output: &str) -> Option<Vec<DetailSection>> {
                 text(config, "Subnet").to_owned(),
                 match text(config, "Gateway") {
                     "" => String::new(),
-                    gateway => format!("网关 {gateway}"),
+                    gateway => t!("docker.network.gateway", address = gateway).into(),
                 },
             )
         })
@@ -621,35 +662,53 @@ pub fn network_details(output: &str) -> Option<Vec<DetailSection>> {
     Some(vec![
         DetailSection {
             id: "basics",
-            title: "基础信息",
+            title: "docker.section.basics",
             body: rows([
-                ("名称", string_at(&network, &["Name"])),
-                ("ID", string_at(&network, &["Id"])),
-                ("驱动", string_at(&network, &["Driver"])),
-                ("范围", string_at(&network, &["Scope"])),
-                ("创建时间", string_at(&network, &["Created"])),
-                ("IPv6", yes_no(&network, &["EnableIPv6"])),
-                ("内部网络", yes_no(&network, &["Internal"])),
+                (
+                    RowLabel::Field("docker.field.name"),
+                    string_at(&network, &["Name"]),
+                ),
+                (RowLabel::Raw("ID".into()), string_at(&network, &["Id"])),
+                (
+                    RowLabel::Field("docker.field.driver"),
+                    string_at(&network, &["Driver"]),
+                ),
+                (
+                    RowLabel::Field("docker.field.scope"),
+                    string_at(&network, &["Scope"]),
+                ),
+                (
+                    RowLabel::Field("docker.field.created"),
+                    string_at(&network, &["Created"]),
+                ),
+                (
+                    RowLabel::Raw("IPv6".into()),
+                    yes_no(&network, &["EnableIPv6"]),
+                ),
+                (
+                    RowLabel::Field("docker.field.internal"),
+                    yes_no(&network, &["Internal"]),
+                ),
             ]),
         },
         DetailSection {
             id: "subnets",
-            title: "子网",
+            title: "docker.section.subnets",
             body: rows(subnets),
         },
         DetailSection {
             id: "containers",
-            title: "容器",
+            title: "docker.section.containers",
             body: rows(containers),
         },
         DetailSection {
             id: "options",
-            title: "选项",
+            title: "docker.section.options",
             body: rows(pairs_at(&network, &["Options"])),
         },
         DetailSection {
             id: "labels",
-            title: "标签",
+            title: "docker.section.labels",
             body: rows(pairs_at(&network, &["Labels"])),
         },
     ])
@@ -846,7 +905,7 @@ v2.25.0
             panic!("{id} has no rows");
         };
         rows.into_iter()
-            .find(|(key, _)| key == label)
+            .find(|(key, _)| key.id() == label)
             .unwrap_or_else(|| panic!("no {label} in {id}"))
             .1
     }
@@ -860,7 +919,7 @@ v2.25.0
         )
         .expect("volume");
         assert_eq!(
-            row(&volume, "basics", "挂载点"),
+            row(&volume, "basics", "mountpoint"),
             "/var/lib/docker/volumes/vw-data/_data"
         );
         assert_eq!(
@@ -882,13 +941,13 @@ v2.25.0
         )
         .expect("image");
         assert_eq!(row(&image, "basics", "ID"), "4a3b5c6d7e8f9a");
-        assert_eq!(row(&image, "basics", "大小"), "9.84 KB");
-        assert_eq!(row(&image, "basics", "平台"), "linux/amd64");
-        assert_eq!(row(&image, "basics", "层数"), "2");
+        assert_eq!(row(&image, "basics", "size"), "9.84 KB");
+        assert_eq!(row(&image, "basics", "platform"), "linux/amd64");
+        assert_eq!(row(&image, "basics", "layers"), "2");
         // Nothing to say is said with a dash.
-        assert_eq!(row(&image, "basics", "作者"), "—");
-        assert_eq!(row(&image, "config", "命令"), "/hello");
-        assert_eq!(row(&image, "config", "暴露端口"), "80/tcp");
+        assert_eq!(row(&image, "basics", "author"), "—");
+        assert_eq!(row(&image, "config", "command"), "/hello");
+        assert_eq!(row(&image, "config", "exposed_ports"), "80/tcp");
         assert_eq!(
             section(&image, "environment"),
             SectionBody::Text(vec!["PATH=/usr/bin".into()])
@@ -905,6 +964,24 @@ v2.25.0
         assert_eq!(row(&network, "subnets", "172.18.0.0/16"), "网关 172.18.0.1");
         assert_eq!(row(&network, "containers", "php56"), "172.18.0.2/16");
         assert_eq!(volume_details("Error: no such volume", &[]), None);
+    }
+
+    #[test]
+    fn every_heading_and_label_has_its_text() {
+        let mut sections = ContainerDetails::default().sections();
+        sections.extend(volume_details("[{}]", &[]).expect("volume"));
+        sections.extend(image_details("[{}]", &[]).expect("image"));
+        sections.extend(network_details("[{}]").expect("network"));
+        for section in sections {
+            assert!(crate::i18n::has(section.title), "{}", section.title);
+            if let SectionBody::Rows(rows) = section.body {
+                for (label, _) in rows {
+                    if let RowLabel::Field(key) = label {
+                        assert!(crate::i18n::has(key), "{key}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
