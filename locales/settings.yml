@@ -259,7 +259,7 @@ settings.about.restart:
   en: Restart to update…
 settings.about.download_page:
   zh-CN: 前往下载页
-  en: Go to downloads
+  en: Open download page
 settings.about.retry_download:
   zh-CN: 重试下载
   en: Retry download
@@ -303,10 +303,10 @@ settings.about.website_description:
 
 settings.highlight.pattern_placeholder:
   zh-CN: 例如：ERROR|WARN 或 failed\s+\d+
-  en: For example ERROR|WARN or failed\s+\d+
+  en: e.g. ERROR|WARN or failed\s+\d+
 settings.highlight.note_placeholder:
   zh-CN: 例如：错误告警
-  en: For example Error alert
+  en: e.g. Error alert
 settings.highlight.add_rule:
   zh-CN: 添加规则
   en: Add rule
