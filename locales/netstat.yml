@@ -4,7 +4,7 @@ _version: 2
 
 netstat.panel.search:
   zh-CN: 搜索地址、端口、状态、PID 或进程
-  en: Search addresses, ports, states, PIDs and processes
+  en: Address, port, state, PID or process
 netstat.panel.truncated:
   zh-CN: 连接太多，只列出了前 %{limit} 条。
   en: There are too many sockets, so only the first %{limit} are listed.

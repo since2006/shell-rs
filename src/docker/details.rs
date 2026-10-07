@@ -109,7 +109,7 @@ fn render_body(prefix: &'static str, section: &DetailSection, cx: &App) -> AnyEl
                         .text_sm()
                         .child(
                             div()
-                                .w(rems(7.))
+                                .w(rems(9.))
                                 .flex_shrink_0()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(label.text()),

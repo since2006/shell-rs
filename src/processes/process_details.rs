@@ -316,7 +316,7 @@ impl Render for ProcessDetailsView {
                                     .text_sm()
                                     .child(
                                         div()
-                                            .w(rems(6.5))
+                                            .w(rems(8.5))
                                             .flex_shrink_0()
                                             .text_color(cx.theme().muted_foreground)
                                             .child(t!(label)),

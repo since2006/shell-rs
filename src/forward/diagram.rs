@@ -297,12 +297,13 @@ fn render_stop(stop: Stop, cx: &App) -> impl IntoElement {
                         .child(stop.name),
                 )
                 .child(
+                    // Wraps rather than cut: "Listens on 127.0.0.1:8080"
+                    // is longer than a third of the dialog.
                     div()
                         .w_full()
                         .text_xs()
                         .text_center()
                         .text_color(theme.muted_foreground)
-                        .truncate()
                         .child(stop.detail),
                 ),
         )
