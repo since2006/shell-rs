@@ -2,13 +2,24 @@
 
 use crate::support::*;
 
+/// The app's list hover is in effect, not the theme's own (a 0.6 alpha):
+/// deepened, and dark halved to stay fainter than a selected row.
+fn app_list_hover(theme: &gpui_kit::component::Theme) -> bool {
+    let alpha = theme.list_hover.a;
+    if theme.is_dark() {
+        (0.4..0.55).contains(&alpha)
+    } else {
+        alpha > 0.9
+    }
+}
+
 #[gpui_kit::test]
 fn theme_toggle_flips_mode(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
     let before = cx.update(|cx| {
         let theme = cx.theme();
         assert_eq!(theme.list_hover, theme.tokens.list_hover.color);
-        assert!(theme.list_hover.a > 0.9);
+        assert!(app_list_hover(theme), "{:?}", theme.list_hover);
         theme.is_dark()
     });
 
@@ -22,7 +33,7 @@ fn theme_toggle_flips_mode(cx: &mut TestAppContext) {
     let after = cx.update(|cx| {
         let theme = cx.theme();
         assert_eq!(theme.list_hover, theme.tokens.list_hover.color);
-        assert!(theme.list_hover.a > 0.9);
+        assert!(app_list_hover(theme), "{:?}", theme.list_hover);
         theme.is_dark()
     });
     assert_ne!(before, after);
@@ -296,7 +307,7 @@ fn the_appearance_setting_drives_the_theme_and_the_title_bar_switch(cx: &mut Tes
         assert!(theme.is_dark());
         // Applied like the title bar switch always did it.
         assert_eq!(theme.list_hover, theme.tokens.list_hover.color);
-        assert!(theme.list_hover.a > 0.9);
+        assert!(app_list_hover(theme), "{:?}", theme.list_hover);
     });
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);

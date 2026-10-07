@@ -190,7 +190,9 @@ impl RecentHosts {
             .py_2()
             .rounded(cx.theme().radius)
             .confirmed(selected)
-            .when(selected, |item| item.bg(cx.theme().tokens.list_hover))
+            .when(selected, |item| {
+                item.bg(crate::app::selected_row_color(cx.theme()))
+            })
             .child(
                 h_flex()
                     .gap_3()

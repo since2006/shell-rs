@@ -320,7 +320,7 @@ impl ForwardPanel {
             .confirmed(selected)
             .aria_selected(selected)
             .when(selected, |item| {
-                item.bg(crate::app::host_tree_selection_color(theme))
+                item.bg(crate::app::selected_row_color(theme))
             })
             .child(
                 h_flex()

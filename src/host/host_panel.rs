@@ -608,7 +608,7 @@ fn render_row(
         // Make selection stronger than hover against the sidebar background.
         .confirmed(selected)
         .when(selected, |row| {
-            row.bg(crate::app::host_tree_selection_color(cx.theme()))
+            row.bg(crate::app::selected_row_color(cx.theme()))
         })
         .pl(rems(0.75 + entry.depth() as f32))
         .child(h_flex().gap_2().child(mark).child(item.label.clone()))
