@@ -663,8 +663,8 @@ fn about_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
             .default_value(true),
         )
         .description(
-            "只发送版本、系统、CPU 架构和各功能的使用次数，用来改进 ShellRS；\
-             不含主机、凭据、命令或文件内容。",
+            "发送应用版本、操作系统/架构，用于评估安装量、版本分布，用于改进 ShellRS。\
+             不会发送任何主机、凭据、命令或会话内容。",
         )]),
         SettingGroup::new()
             .title("ShellRS")
