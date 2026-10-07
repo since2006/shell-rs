@@ -29,7 +29,7 @@ ShellRS brings Xshell-style host management and tabbed terminals, a WinSCP-style
 Hosts, groups, credentials and forwarding rules live in a local SQLite database. Passwords and key passphrases go only into the system keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service); the database never holds a secret. ShellRS also ships a `shellrs` command that lets AI agents such as Claude Code or Codex run commands and transfer files on your saved hosts without ever seeing a password.
 
 > [!NOTE]
-> ShellRS's interface is currently in Simplified Chinese only. An English translation is in progress.
+> The interface is in English and Simplified Chinese. It follows the system language unless you choose one in Settings › Appearance › Language, and switches at once.
 
 ## Features
 
@@ -69,7 +69,7 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 
 - Launched the way Xshell and WinSCP are: in the client of a bastion host such as JumpServer, set ShellRS as the SSH or SFTP client. An `ssh://` link opens a terminal, an `sftp://` link an SFTP tab.
 - Understands Xshell's `-url` and `-newtab` and WinSCP's `/sessionname=`. When ShellRS is already running, the link opens there.
-- What opens is an unsaved external connection: it stays out of the host list, keeps the link's password in memory only and goes away with its tabs. Each connection uses a single channel, so bastion hosts that allow no more still work. See the [user manual](docs/manual.md#从堡垒机打开外部连接) (in Chinese).
+- What opens is an unsaved external connection: it stays out of the host list, keeps the link's password in memory only and goes away with its tabs. Each connection uses a single channel, so bastion hosts that allow no more still work. See the [user manual](docs/manual.en.md#opening-from-a-bastion-host-external-connections).
 
 **Port forwarding**
 
@@ -117,7 +117,7 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 
 ## Download
 
-Download from [shellrs.com/download](https://shellrs.com/download), which offers the package for your system, or from GitHub [Releases](https://github.com/since2006/shell-rs/releases). Betas are marked Pre-release there; to get new features early, switch the update channel to Beta in Settings › About (设置 › 关于).
+Download from [shellrs.com/download](https://shellrs.com/download), which offers the package for your system, or from GitHub [Releases](https://github.com/since2006/shell-rs/releases). Betas are marked Pre-release there; to get new features early, switch the update channel to Beta in Settings › About.
 
 | System | Package | Notes |
 | --- | --- | --- |
@@ -127,19 +127,19 @@ Download from [shellrs.com/download](https://shellrs.com/download), which offers
 
 Every package comes with a minisign signature (`.minisig`), and each release has a `SHA256SUMS` file.
 
-Once installed, ShellRS keeps itself up to date: it checks, downloads and verifies new versions in the background, then shows an icon in the top-right corner of the title bar; click it and choose "重启并安装" (restart and install), or just quit and the update is installed on the way out. Automatic updates are unavailable when ShellRS runs from inside the DMG or outside the Applications folder, or on Linux when it isn't run as the AppImage.
+Once installed, ShellRS keeps itself up to date: it checks, downloads and verifies new versions in the background, then shows an icon in the top-right corner of the title bar; click it and choose "Restart to update", or just quit and the update is installed on the way out. Automatic updates are unavailable when ShellRS runs from inside the DMG or outside the Applications folder, or on Linux when it isn't run as the AppImage.
 
 ## Getting started
 
-1. Click "新建主机…" (New host) in the title bar (⌘N, or Ctrl+N on Windows and Linux) and fill in the address, port and login. Passwords go into the system keychain.
+1. Click "New host…" in the title bar (⌘N, or Ctrl+N on Windows and Linux) and fill in the address, port and login. Passwords go into the system keychain.
 2. Double-click a host to open a terminal. On the first connection you're asked to confirm the host key.
-3. Right-click a host and choose "打开 SFTP" (Open SFTP), or click "SFTP" at the right of the terminal's tab bar. Drag files between the two panes to transfer them.
+3. Right-click a host and choose "Open SFTP", or click "SFTP" at the right of the terminal's tab bar. Drag files between the two panes to transfer them.
 4. The three icons after "ShellRS" in the title bar switch the sidebar between hosts, port forwards and credentials.
 5. ⌘T (Ctrl+T) opens a local terminal. Drag a tab to the top, bottom, left or right edge of the tab area to split it.
 
 ## For AI agents
 
-In 设置 › 外部 CLI (Settings › External CLI), turn on 启用外部 CLI (Enable external CLI), then install the `shellrs` command and the Agent Skills. Your agent can then use the hosts you have saved:
+In Settings › External CLI, turn on Enable external CLI, then install the `shellrs` command and the Agent Skills. Your agent can then use the hosts you have saved:
 
 ```sh
 shellrs hosts list -q web                          # list hosts and their IDs
@@ -149,7 +149,7 @@ shellrs download <ID> /var/log/syslog ./logs/      # download
 shellrs sync <ID> ./dist /opt/app --delete         # sync a folder, skipping unchanged files
 ```
 
-The command hands each request to the running ShellRS, which logs in with the saved settings and keychain. An unknown host or a missing password fails right away with a stable error code instead of a prompt that would hang the agent. See the [user manual](docs/manual.md#外部-cli) (in Chinese) for details.
+The command hands each request to the running ShellRS, which logs in with the saved settings and keychain. An unknown host or a missing password fails right away with a stable error code instead of a prompt that would hang the agent. See the [user manual](docs/manual.en.md#external-cli) for details.
 
 ## Building from source
 
@@ -165,9 +165,9 @@ The first build compiles the whole GPUI stack and takes a while. See [developmen
 
 ## Documentation
 
-The documentation is in Chinese for now:
+Apart from the user manual, the documentation is in Chinese for now:
 
-- [User manual](docs/manual.md): every feature in detail, with shortcuts
+- [User manual](docs/manual.en.md): every feature in detail, with shortcuts
 - [Development](docs/development.md): building, testing, the data directory
 - [Releasing](docs/release.md): packaging, signing and publishing updates
 - [Changelog](CHANGELOG.md)
@@ -176,7 +176,6 @@ The documentation is in Chinese for now:
 
 Not implemented yet:
 
-- An English interface (today only the text built into GPUI Kit's components switches language)
 - Directory sync, filtering, file search and a directory tree in SFTP
 - Keeping the Dock layout across restarts
 - Combining a jump host chain with a proxy, and HTTPS proxies

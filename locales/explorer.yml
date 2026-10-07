@@ -461,7 +461,7 @@ explorer.tab.copy_ip:
   en: Copy IP address
 explorer.tab.copy_host_name:
   zh-CN: 复制主机名
-  en: Copy host name
+  en: Copy hostname
 
 explorer.name.empty:
   zh-CN: 名称不能为空

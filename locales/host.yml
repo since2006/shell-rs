@@ -137,7 +137,7 @@ host.dialog.address:
   en: Address
 host.dialog.address_placeholder:
   zh-CN: 主机名或 IP 地址
-  en: Host name or IP address
+  en: Hostname or IP address
 host.dialog.port:
   zh-CN: 端口
   en: Port
