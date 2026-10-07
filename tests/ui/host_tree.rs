@@ -31,6 +31,24 @@ fn search_filters_the_tree(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn search_finds_a_group_by_name_with_all_of_it(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-search", cx);
+        window.input("生产", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        let tree = window.within("host-tree");
+        assert!(tree.try_find(("group-row", PRODUCTION)).is_some());
+        for host in [WEB_01, WEB_02, DB_01] {
+            assert!(tree.try_find(("host-row", host)).is_some(), "{host}");
+        }
+        assert!(tree.try_find(("host-row", STAGING_API)).is_none());
+        assert!(tree.try_find(("group-row", DEVELOPMENT)).is_none());
+    });
+}
+
+#[gpui_kit::test]
 fn group_expansion_survives_reopening_the_database(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shellrs.db");

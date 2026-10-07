@@ -69,11 +69,18 @@ pub fn matches_query(host: &Host, query: &str) -> bool {
         .any(|field| field.to_lowercase().contains(&query))
 }
 
+/// Case-insensitive match on a group's name.
+fn group_matches_query(group: &HostGroup, query: &str) -> bool {
+    let query = query.trim().to_lowercase();
+    !query.is_empty() && group.name.to_lowercase().contains(&query)
+}
+
 /// Build the nested tree. Each level lists its subgroups first, then the
 /// hosts that belong to it; hosts with no group sit at the root beside
-/// the top-level groups. A non-empty query keeps only matching hosts, drops
-/// the groups left without any, and expands what remains; otherwise
-/// `expanded` decides which groups are open.
+/// the top-level groups. A non-empty query keeps the matching hosts and
+/// the matching groups with everything in them, drops the groups left
+/// without either, and expands what remains; otherwise `expanded` decides
+/// which groups are open.
 pub fn host_tree_items(
     groups: &[HostGroup],
     hosts: &[Host],
@@ -81,7 +88,44 @@ pub fn host_tree_items(
     expanded: &HashSet<GroupId>,
 ) -> Vec<TreeItem> {
     let filtering = !query.trim().is_empty();
-    items_under(None, 0, groups, hosts, query, filtering, expanded)
+    let level = Level {
+        groups,
+        hosts,
+        query,
+        filtering,
+        expanded,
+    };
+    items_under(&level, None, 0, false)
+}
+
+/// The first host the query itself matches, in the order the tree lists
+/// them: what Enter in the search field connects. A host shown only because
+/// its group matched does not count.
+pub fn first_matching_host(groups: &[HostGroup], hosts: &[Host], query: &str) -> Option<HostId> {
+    fn first(items: &[TreeItem], hosts: &[Host], query: &str) -> Option<HostId> {
+        items.iter().find_map(|item| {
+            match HostNode::parse(&item.id)? {
+                HostNode::Host(id) => hosts
+                    .iter()
+                    .find(|host| host.id == id)
+                    .filter(|host| matches_query(host, query))
+                    .map(|host| host.id),
+                HostNode::Group(_) => None,
+            }
+            .or_else(|| first(&item.children, hosts, query))
+        })
+    }
+    let items = host_tree_items(groups, hosts, query, &HashSet::new());
+    first(&items, hosts, query)
+}
+
+/// What every level of the tree is built from.
+struct Level<'a> {
+    groups: &'a [HostGroup],
+    hosts: &'a [Host],
+    query: &'a str,
+    filtering: bool,
+    expanded: &'a HashSet<GroupId>,
 }
 
 /// The groups directly under `parent`, in display order. `None` asks for the
@@ -95,44 +139,37 @@ fn child_groups(groups: &[HostGroup], parent: Option<GroupId>) -> Vec<&HostGroup
     children
 }
 
+/// The items under `parent`. `everything`: a group above matched the query,
+/// so all of it is listed.
 fn items_under(
+    level: &Level,
     parent: Option<GroupId>,
     depth: usize,
-    groups: &[HostGroup],
-    hosts: &[Host],
-    query: &str,
-    filtering: bool,
-    expanded: &HashSet<GroupId>,
+    everything: bool,
 ) -> Vec<TreeItem> {
     // Nesting cannot run deeper than the number of groups unless the data has
     // a cycle, which the store refuses to create. Stop rather than recurse
     // forever if a hand-edited database ever produces one.
-    if depth > groups.len() {
+    if depth > level.groups.len() {
         return Vec::new();
     }
     let mut items: Vec<TreeItem> = Vec::new();
-    for group in child_groups(groups, parent) {
-        let children = items_under(
-            Some(group.id),
-            depth + 1,
-            groups,
-            hosts,
-            query,
-            filtering,
-            expanded,
-        );
-        if filtering && children.is_empty() {
+    for group in child_groups(level.groups, parent) {
+        let matched = everything || group_matches_query(group, level.query);
+        let children = items_under(level, Some(group.id), depth + 1, matched);
+        if level.filtering && !matched && children.is_empty() {
             continue;
         }
         items.push(
             TreeItem::new(HostNode::Group(group.id).id(), group.name.clone())
-                .expanded(filtering || expanded.contains(&group.id))
+                .expanded(level.filtering || level.expanded.contains(&group.id))
                 .children(children),
         );
     }
-    let mut child_hosts: Vec<_> = hosts
+    let mut child_hosts: Vec<_> = level
+        .hosts
         .iter()
-        .filter(|s| s.group == parent && matches_query(s, query))
+        .filter(|s| s.group == parent && (everything || matches_query(s, level.query)))
         .collect();
     child_hosts.sort_by_key(|host| (host.sort_order, host.id));
     items.extend(
@@ -310,6 +347,38 @@ mod tests {
             .map(|(_, path)| path.to_string())
             .collect();
         assert_eq!(paths, ["生产", "测试"]);
+    }
+
+    #[test]
+    fn a_query_matching_a_group_lists_all_of_it() {
+        let store = nested_store();
+        let items = host_tree_items(store.groups(), store.hosts(), "生产", &HashSet::new());
+        assert_eq!(labels(&items), ["生产"]);
+        assert!(items[0].is_expanded());
+        assert_eq!(labels(&items[0].children), ["数据库", "web-01"]);
+        assert_eq!(labels(&items[0].children[0].children), ["db-01"]);
+
+        // A subgroup: its ancestors for the way there, but not their hosts.
+        let items = host_tree_items(store.groups(), store.hosts(), "数据库", &HashSet::new());
+        assert_eq!(labels(&items), ["生产"]);
+        assert_eq!(labels(&items[0].children), ["数据库"]);
+        assert_eq!(labels(&items[0].children[0].children), ["db-01"]);
+    }
+
+    #[test]
+    fn enter_connects_the_first_host_the_query_matches_as_the_tree_lists_them() {
+        let store = nested_store();
+        let id = |name: &str| store.hosts().iter().find(|h| h.name == name).unwrap().id;
+        // In the tree, 数据库's db-01 comes before 生产's own web-01.
+        assert_eq!(
+            first_matching_host(store.groups(), store.hosts(), "-01"),
+            Some(id("db-01"))
+        );
+        // Hosts listed only because their group matched are not chosen.
+        assert_eq!(
+            first_matching_host(store.groups(), store.hosts(), "生产"),
+            None
+        );
     }
 
     #[test]

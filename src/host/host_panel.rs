@@ -30,7 +30,8 @@ use crate::app::{
 use crate::shared::{HostMark, RowTooltip, RowTooltips};
 
 use super::{
-    GroupId, Host, HostId, HostNode, HostOs, HostStore, NodeDrop, host_tree_items, matches_query,
+    GroupId, Host, HostId, HostNode, HostOs, HostStore, NodeDrop, first_matching_host,
+    host_tree_items,
 };
 
 /// The host list of the left dock: a searchable, grouped tree of hosts.
@@ -82,7 +83,7 @@ impl HostPanel {
         let tree_state = cx.new(|cx| TreeState::new(cx).items(items));
         let search = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("搜索主机")
+                .placeholder("搜索主机或分组")
                 .clean_on_escape()
         });
 
@@ -258,13 +259,8 @@ impl HostPanel {
     }
 
     fn connect_first_match(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let first = self
-            .store
-            .read(cx)
-            .hosts()
-            .iter()
-            .find(|host| matches_query(host, &self.query))
-            .map(|host| host.id);
+        let store = self.store.read(cx);
+        let first = first_matching_host(store.groups(), store.hosts(), &self.query);
         if let Some(id) = first {
             window.dispatch_action(Box::new(ConnectHost(id)), cx);
         }
