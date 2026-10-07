@@ -681,6 +681,8 @@ fn the_interface_language_changes_the_window_at_once(cx: &mut TestAppContext) {
         assert_eq!(window.find("settings-tab").label(), Some("设置"));
         assert_eq!(window.find("show-hosts").label(), Some("主机"));
         assert_eq!(appearance_dropdown(window, 1).as_deref(), Some("跟随系统"));
+        // Set once when the list was made, and kept by the input.
+        assert_eq!(window.find("host-search").label(), Some("搜索主机或分组"));
     })
     .unwrap();
 
@@ -699,6 +701,10 @@ fn the_interface_language_changes_the_window_at_once(cx: &mut TestAppContext) {
         assert_eq!(window.find("show-hosts").label(), Some("Hosts"));
         assert_eq!(appearance_dropdown(window, 0).as_deref(), Some("English"));
         assert_eq!(appearance_dropdown(window, 1).as_deref(), Some("System"));
+        assert_eq!(
+            window.find("host-search").label(),
+            Some("Search hosts or groups")
+        );
     })
     .unwrap();
 
