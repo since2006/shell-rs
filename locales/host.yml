@@ -385,7 +385,7 @@ host.menu.copy_ip:
   en: Copy IP address
 host.menu.copy_host_name:
   zh-CN: 复制主机名
-  en: Copy host name
+  en: Copy hostname
 host.menu.copy_id:
   zh-CN: 复制 ID
   en: Copy ID

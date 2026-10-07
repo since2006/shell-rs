@@ -64,7 +64,7 @@ app.shortcut.terminal_find_previous:
   en: Find previous
 app.shortcut.terminal_clear:
   zh-CN: 清屏
-  en: Clear
+  en: Clear screen
 app.shortcut.terminal_zoom_in:
   zh-CN: 放大字号
   en: Bigger text
