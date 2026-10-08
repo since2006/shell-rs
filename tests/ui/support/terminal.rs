@@ -12,6 +12,13 @@ pub enum FakeBehavior {
     ReportsLatency(Latency),
     /// Prints this after its prompt line, as a program would.
     Prints(&'static str),
+    /// Answers what `exec --terminal` types the way a shell whose program
+    /// is `exe` would: the probe, then the command line, which prints
+    /// `ran` and ends with 0 when `ends`, and runs on otherwise.
+    Shell {
+        exe: &'static str,
+        ends: bool,
+    },
 }
 
 #[derive(Default)]
@@ -165,7 +172,11 @@ impl TerminalTransport for FakeTerminalTransport {
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())
                         .push(bytes.clone());
+                    let answer = shell_answer(self.behavior, &bytes);
                     events.send_blocking(TerminalTransportEvent::Output(bytes))?;
+                    if let Some(answer) = answer {
+                        events.send_blocking(TerminalTransportEvent::Output(answer))?;
+                    }
                 }
                 TerminalTransportCommand::Resize(size) => {
                     self.resizes
@@ -197,6 +208,35 @@ impl TerminalTransport for FakeTerminalTransport {
         }
         Ok(())
     }
+}
+
+/// What a [`FakeBehavior::Shell`] prints for a line `exec --terminal`
+/// typed (` sh -c '<script>' sh NONCE …`): the probe's marker, or the
+/// command's, run in /root on web-01 as root.
+fn shell_answer(behavior: FakeBehavior, typed: &[u8]) -> Option<Vec<u8>> {
+    let FakeBehavior::Shell { exe, ends } = behavior else {
+        return None;
+    };
+    let line = String::from_utf8_lossy(typed);
+    let at = line.find("' sh ")?;
+    let nonce = line.get(at + 5..at + 17)?;
+    let answer = if line.contains("6973;P;") {
+        format!("\x1b]6973;P;{nonce};{exe}\x07")
+    } else if line.contains("6973;B;") {
+        let context: String = "root\nweb-01\n/root\nbash"
+            .bytes()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let begin = format!("\x1b]6973;B;{nonce};{context}\x07");
+        if ends {
+            format!("{begin}ran\r\n\x1b]6973;E;{nonce};0\x07")
+        } else {
+            begin
+        }
+    } else {
+        return None;
+    };
+    Some(answer.into_bytes())
 }
 
 pub fn open_workspace_with_remote_factory(

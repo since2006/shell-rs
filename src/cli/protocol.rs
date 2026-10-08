@@ -127,6 +127,14 @@ pub enum Request {
         host: String,
         command: String,
     },
+    /// `exec --terminal`: type `command` into the host's open terminal
+    /// instead of logging in again, for a bastion host that allows one
+    /// login. Its output comes as stdout, then [`Reply::Context`], then
+    /// [`Reply::Exit`].
+    ExecInTerminal {
+        host: String,
+        command: String,
+    },
     /// `source` is absolute: the app's working directory is not the
     /// caller's.
     Upload {
@@ -207,6 +215,8 @@ pub enum Reply {
     Exit {
         code: i32,
     },
+    /// Where an `exec --terminal` command runs, once it started.
+    Context(TerminalContext),
     /// A host as it is now: shown, created or changed.
     Host(HostDetails),
     HostDeleted(HostDeleted),
@@ -248,6 +258,19 @@ impl HostInfo {
     pub fn address(&self) -> String {
         format!("{}@{}:{}", self.user, self.host, self.port)
     }
+}
+
+/// Where an `exec --terminal` command ran: the terminal may have gone to
+/// another user, folder or machine since it was opened.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalContext {
+    pub user: String,
+    pub host: String,
+    pub cwd: String,
+    /// The interactive shell the command was typed into.
+    pub shell: String,
+    /// What ran the command: `bash`, or `sh` where there is none.
+    pub interp: String,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -296,6 +319,14 @@ pub enum ErrorCode {
     /// A change was made, but could not all be written to disk or the
     /// keychain.
     SaveFailed,
+    /// `exec --terminal`: the host has no connected terminal.
+    NoTerminal,
+    /// `exec --terminal`: the terminal could not take the command.
+    TerminalBusy,
+    /// `exec --terminal`: the shell is not bash, dash or busybox ash.
+    UnsupportedShell,
+    /// `exec --terminal`: the command line is longer than the shell takes.
+    TooLong,
 }
 
 impl ErrorCode {
@@ -314,6 +345,10 @@ impl ErrorCode {
             ErrorCode::CredentialNotFound => "credential_not_found",
             ErrorCode::HostInUse => "host_in_use",
             ErrorCode::SaveFailed => "save_failed",
+            ErrorCode::NoTerminal => "no_terminal",
+            ErrorCode::TerminalBusy => "terminal_busy",
+            ErrorCode::UnsupportedShell => "unsupported_shell",
+            ErrorCode::TooLong => "too_long",
         }
     }
 }
@@ -641,7 +676,14 @@ mod tests {
 
     #[test]
     fn error_codes_are_spelled_as_documented() {
-        for code in [ErrorCode::NotEnabled, ErrorCode::HostKeyUnknown] {
+        for code in [
+            ErrorCode::NotEnabled,
+            ErrorCode::HostKeyUnknown,
+            ErrorCode::NoTerminal,
+            ErrorCode::TerminalBusy,
+            ErrorCode::UnsupportedShell,
+            ErrorCode::TooLong,
+        ] {
             assert_eq!(
                 serde_json::to_string(&code).unwrap(),
                 format!("\"{}\"", code.as_str())

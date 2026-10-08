@@ -30,6 +30,7 @@ use super::highlight::{
 };
 use super::links::{LinkMarker, url_search, visible_links};
 use super::notices::{NoticeScanner, ProgramNotice, TerminalNotice};
+use super::run::{BusyReason, RunFailure, RunHandle};
 use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
 use super::{
     ExecRequest, ExecResult, SharedTerminalTransportFactory, TerminalColors, TerminalLifecycle,
@@ -493,6 +494,32 @@ impl TerminalEngine {
         self.runtime.exec(command)
     }
 
+    /// Take up an `exec --terminal` run (see [`super::TerminalRun`]): ^C to
+    /// whatever has the terminal, the rest as the output comes. Refused
+    /// while a full-screen program has the screen, which ^C does not end
+    /// and the command line would be keys to, and while another run has
+    /// the terminal, which the ^C would end.
+    pub fn run_command(&self, run: RunHandle) -> Result<(), RunFailure> {
+        if !self.lifecycle.accepts_input() {
+            return Err(RunFailure::NotConnected);
+        }
+        if self.mode().contains(TermMode::ALT_SCREEN) {
+            return Err(RunFailure::Busy(BusyReason::FullScreen));
+        }
+        {
+            let mut slot = lock_run(&self.runtime.run);
+            if slot.as_ref().is_some_and(RunHandle::is_active) {
+                return Err(RunFailure::Busy(BusyReason::AnotherRun));
+            }
+            if !run.accept(self.runtime.commands.clone()) {
+                return Ok(());
+            }
+            *slot = Some(run);
+        }
+        self.send_user_input(b"\x03".to_vec());
+        Ok(())
+    }
+
     pub fn status(&self) -> TerminalStatus {
         TerminalStatus::new(
             self.lifecycle.clone(),
@@ -636,6 +663,9 @@ struct TerminalRuntime {
     commands: mpsc::Sender<TerminalTransportCommand>,
     size: Arc<Mutex<TerminalSize>>,
     wakeup_pending: Arc<AtomicBool>,
+    /// The `exec --terminal` run this connection carries, which the parser
+    /// thread reads the output for. Given up with the connection.
+    run: Arc<Mutex<Option<RunHandle>>>,
 }
 
 impl TerminalRuntime {
@@ -662,6 +692,8 @@ impl TerminalRuntime {
         let term = Arc::new(FairMutex::new(AlacrittyTerm::new(config, &size, proxy)));
 
         let parser_term = term.clone();
+        let run: Arc<Mutex<Option<RunHandle>>> = Arc::default();
+        let parser_run = run.clone();
         thread::Builder::new()
             .name("shellrs-terminal-parser".into())
             .spawn(move || {
@@ -711,6 +743,7 @@ impl TerminalRuntime {
                             for notice in notices.scan(&bytes) {
                                 parser_proxy.send(TerminalUiEventKind::Notice(notice));
                             }
+                            feed_run(&parser_run, &bytes);
                             parser_proxy.wakeup();
                         }
                         TerminalTransportEvent::HostOsDetected(os) => {
@@ -753,6 +786,9 @@ impl TerminalRuntime {
                         }
                     }
                 }
+                if let Some(run) = lock_run(&parser_run).take() {
+                    run.disconnected();
+                }
             })
             .expect("terminal parser thread");
 
@@ -772,6 +808,7 @@ impl TerminalRuntime {
             commands,
             size: shared_size,
             wakeup_pending,
+            run,
         }
     }
 
@@ -969,6 +1006,21 @@ fn receive<T>(events: &async_channel::Receiver<T>, deadline: Option<Instant>) ->
             Either::Right(_) => Received::Overdue,
         }
     })
+}
+
+/// Hand output to the run the connection carries, and let it go once it
+/// is over.
+fn feed_run(run: &Mutex<Option<RunHandle>>, bytes: &[u8]) {
+    let mut slot = lock_run(run);
+    if let Some(handle) = slot.as_ref()
+        && !handle.feed(bytes)
+    {
+        *slot = None;
+    }
+}
+
+fn lock_run(run: &Mutex<Option<RunHandle>>) -> std::sync::MutexGuard<'_, Option<RunHandle>> {
+    run.lock().unwrap_or_else(|error| error.into_inner())
 }
 
 /// Draw what an open synchronized update has held back, if its time is up.

@@ -345,6 +345,46 @@ cli.change.failures:
   en: "%{before}; %{next}"
 
 # Running commands and moving files.
+cli.exec.try_terminal:
+  zh-CN: "%{message}（堡垒机可能只允许登录一次：改用 shellrs exec --terminal，在 ShellRS 已打开的终端里执行）"
+  en: "%{message} (The bastion host may allow one login only: use shellrs exec --terminal to run the command in the terminal open in ShellRS.)"
+
+# `exec --terminal`: why the command could not be typed into the terminal,
+# or did not finish there.
+cli.terminal.timed_out:
+  zh-CN: ShellRS 没有及时处理这条命令，命令没有执行：请稍后再试
+  en: ShellRS didn't get to the command in time, so it didn't run. Try again later.
+cli.terminal.no_terminal:
+  zh-CN: 这台主机在 ShellRS 里没有打开的终端：请先在 ShellRS 里打开它的终端
+  en: This host has no terminal open in ShellRS. Open its terminal in ShellRS first.
+cli.terminal.not_connected:
+  zh-CN: 这台主机在 ShellRS 里的终端没有连接：请先在 ShellRS 里重新连接
+  en: This host's terminal in ShellRS isn't connected. Reconnect it in ShellRS first.
+cli.terminal.unknown_shell:
+  zh-CN: 认不出终端里的 shell：只支持 Linux 上的 bash、dash 和 busybox ash
+  en: Couldn't tell which shell the terminal runs. Only bash, dash and busybox ash on Linux are supported.
+cli.terminal.unsupported_shell:
+  zh-CN: 终端里的 shell 是 %{shell}：只支持 bash、dash 和 busybox ash
+  en: The terminal runs %{shell}. Only bash, dash and busybox ash are supported.
+cli.terminal.too_long:
+  zh-CN: 命令太长：这个终端里，编码后的命令行最多 %{limit} 字节。请拆成几条
+  en: The command is too long. In this terminal the encoded command line takes %{limit} bytes at most; split it up.
+cli.terminal.full_screen:
+  zh-CN: 终端里正在运行全屏程序（如 vim、less、top、tmux）：请先在 ShellRS 里退出它
+  en: A full-screen program (such as vim, less, top or tmux) has the terminal. Quit it in ShellRS first.
+cli.terminal.another_run:
+  zh-CN: 这个终端里上一条 shellrs exec --terminal 命令还在执行
+  en: The previous shellrs exec --terminal command is still running in this terminal.
+cli.terminal.no_answer:
+  zh-CN: 终端里的 shell 没有回应：前台程序可能不响应 Ctrl-C（如 python、mysql），或者终端里不是 Linux 上的 bash、dash 或 busybox ash
+  en: The shell in the terminal didn't answer. The program in the foreground may ignore Ctrl-C (such as python or mysql), or the terminal doesn't run bash, dash or busybox ash on Linux.
+cli.terminal.not_started:
+  zh-CN: shell 没有开始执行这条命令，可能被堡垒机的命令过滤或命令复核拦下了；已发送 Ctrl-C
+  en: The shell didn't start the command; the bastion host's command filter or review may have held it back. Ctrl-C was sent.
+cli.terminal.disconnected:
+  zh-CN: 命令执行过程中终端断开了，命令可能已执行了一部分
+  en: The terminal disconnected while the command ran; it may have partly run.
+
 cli.exec.signal:
   zh-CN: 远程命令被信号 %{signal} 终止
   en: The remote command was killed by signal %{signal}.

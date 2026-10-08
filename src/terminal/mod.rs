@@ -10,6 +10,7 @@ mod local_terminal_panel;
 mod model;
 mod mouse;
 mod notices;
+mod run;
 mod search;
 mod terminal_panel;
 mod terminal_view;
@@ -31,6 +32,10 @@ pub use model::{
     LocalTerminalId, RemoteTerminalId, TerminalLifecycle, TerminalSize, TerminalStatus,
 };
 pub use notices::TerminalNotice;
+pub use run::{
+    BusyReason, RunContext, RunEvent, RunFailure, RunHandle, RunProgress, RunShell, RunTiming,
+    TerminalRun,
+};
 pub use search::{SearchDirection, SearchMark, SearchPosition};
 pub use terminal_panel::{TerminalPanel, TerminalPanelEvent};
 pub(crate) use terminal_view::terminal_key_bindings;

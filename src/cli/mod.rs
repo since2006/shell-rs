@@ -40,13 +40,14 @@ pub use link::{OpenLink, link_arguments};
 pub use manage::CliChange;
 pub(crate) use manage::{
     CredentialPlan, GroupPlan, SecretChange, credential_details, credential_secrets,
-    find_credential, find_saved_host, host_details, host_info, host_secrets, plan_credential,
-    plan_host, with_saved_credential_secrets, with_saved_passwords,
+    find_credential, find_host, find_saved_host, host_details, host_info, host_secrets,
+    plan_credential, plan_host, with_saved_credential_secrets, with_saved_passwords,
 };
 pub use protocol::{
     AuthChoice, CliError, CredentialDeleted, CredentialDetails, CredentialFields,
     CredentialKindChoice, ErrorCode, HostDeleted, HostDetails, HostFields, HostInfo, ProxyChoice,
-    Reply, Request, RouteDetails, RouteFields, Secret, TransferCounters, TransferSummary,
+    Reply, Request, RouteDetails, RouteFields, Secret, TerminalContext, TransferCounters,
+    TransferSummary,
 };
 pub use server::{ChangeReply, CliBackend, CliServer, CliTarget, CliUse};
 
@@ -135,9 +136,17 @@ enum Command {
         /// {"exit_code", "stdout", "stderr"} once the command ends, errors as
         /// {"error": {"code", "message"}}. The output is ASCII, everything
         /// else escaped: no shell quoting, and no console code page can
-        /// garble it.
+        /// garble it. {"terminal": true} is the same as --terminal.
         #[arg(long, conflicts_with_all = ["id", "command", "stdin"])]
         json: bool,
+        /// Type the command into the host's terminal open in ShellRS
+        /// instead of logging in again, for a bastion host that allows one
+        /// login. It sends Ctrl-C first, which interrupts whatever runs
+        /// there. Its stderr comes as stdout; with --json, the result also
+        /// has "context": the user, host, folder and shell it ran in. Bash,
+        /// dash and busybox ash only.
+        #[arg(long)]
+        terminal: bool,
     },
     /// Copy a local file or folder to a saved host.
     ///
@@ -326,22 +335,34 @@ fn request(command: Command, console: &mut Console) -> Result<Request, i32> {
             command,
             stdin,
             json,
+            terminal,
         } => {
             // From here on, errors are JSON too.
             console.exec_json = json;
-            let (host, command) = if json {
+            let request = if json {
                 exec_request(&read_stdin(console)?)
                     .map_err(|message| console.error(ErrorCode::BadRequest, &message))?
-            } else if stdin {
-                (id.unwrap_or_default(), read_stdin(console)?)
             } else {
-                (id.unwrap_or_default(), command.unwrap_or_default())
+                ExecJson {
+                    host: id.unwrap_or_default(),
+                    command: if stdin {
+                        read_stdin(console)?
+                    } else {
+                        command.unwrap_or_default()
+                    },
+                    terminal: false,
+                }
             };
-            let command = normalize_command(&command);
+            let command = normalize_command(&request.command);
             if command.trim().is_empty() {
                 return Err(console.error(ErrorCode::BadRequest, &t!("cli.exec.empty")));
             }
-            Request::Exec { host, command }
+            let host = request.host;
+            if terminal || request.terminal {
+                Request::ExecInTerminal { host, command }
+            } else {
+                Request::Exec { host, command }
+            }
         }
         Command::Upload {
             id,
@@ -514,24 +535,26 @@ fn read_stdin(console: &mut Console) -> Result<String, i32> {
 }
 
 /// What `exec --json` reads.
-#[derive(serde::Deserialize)]
+#[derive(Debug, PartialEq, serde::Deserialize)]
 struct ExecJson {
     host: String,
     command: String,
+    /// `--terminal`.
+    #[serde(default)]
+    terminal: bool,
 }
 
-/// The host and command of an `exec --json` request.
-fn exec_request(text: &str) -> Result<(String, String), String> {
+/// What an `exec --json` request asks for.
+fn exec_request(text: &str) -> Result<ExecJson, String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let request: ExecJson = serde_json::from_str(text).map_err(|error| {
+    serde_json::from_str(text).map_err(|error| {
         t!(
             "cli.exec.bad_json",
             form = r#"{"host": ..., "command": ...}"#,
             error = error
         )
         .to_string()
-    })?;
-    Ok((request.host, request.command))
+    })
 }
 
 /// A command as the remote shell should see it. PowerShell ends every line

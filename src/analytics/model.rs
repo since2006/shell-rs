@@ -82,6 +82,7 @@ pub enum Counter {
     NoticeKeyword,
     /// A `shellrs` command served.
     CliExec,
+    CliExecTerminal,
     CliUpload,
     CliDownload,
     CliSync,
@@ -95,7 +96,7 @@ pub enum Counter {
 }
 
 impl Counter {
-    pub const ALL: [Counter; 43] = [
+    pub const ALL: [Counter; 44] = [
         Self::Ssh,
         Self::SshJump,
         Self::SshProxy,
@@ -130,6 +131,7 @@ impl Counter {
         Self::NoticeBell,
         Self::NoticeKeyword,
         Self::CliExec,
+        Self::CliExecTerminal,
         Self::CliUpload,
         Self::CliDownload,
         Self::CliSync,
@@ -177,6 +179,7 @@ impl Counter {
             Self::NoticeBell => "notice_bell",
             Self::NoticeKeyword => "notice_keyword",
             Self::CliExec => "cli_exec",
+            Self::CliExecTerminal => "cli_exec_terminal",
             Self::CliUpload => "cli_upload",
             Self::CliDownload => "cli_download",
             Self::CliSync => "cli_sync",

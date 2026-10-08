@@ -41,6 +41,7 @@ ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH �
   - 秘密只写不读：JSON 里的 `password` / `passphrase` / `private_key` 进钥匙串或 `keys/`，任何输出都没有，`show` 只说有没有保存，ShellRS 保存的私钥连路径也不给。
   - 删除不确认：`hosts delete` 遇到有打开标签的主机报 `host_in_use`，`--force` 才关标签；删凭据时用它的主机改回自己登录。临时连接和外部连接只能 `show`。
   - `sync` 只从本机到主机，大小和修改时间都没变的跳过；`--delete` 不删 `.filepart` 和 `.shellrs-….backup`，本地读不了的目录不清理，拒绝同步到 `/`。
+  - `exec --terminal`（`exec --json` 里 `"terminal": true`）：给只允许登录一次的堡垒机（外部连接上 exec 重新登录会被拒，另开通道又会断会话）。把命令打进这台主机已打开的远程终端（右侧栏跟的那个，否则最新已连接的），所有远程终端都能用，不限外部连接。先发 ^C，**不做忙碌检测**（用户定的：用的人有基础，交给 Agent 的标签由用户负责；别加回光标行、密码提示之类的检查），只拒绝备用屏和同一终端已有一次运行。只支持 Linux 上的 bash、dash、busybox ash。输出经管道（没有颜色和分页器）、stderr 并入；`--json` 多一项 `context`（user、host、cwd、shell、interp）。
 - **开始页**：没有标签时显示「最近连接」。「快速连接」搜索保存的主机、回车连接；多选做好但关着（常量 `MULTIPLE`）。
 - **右侧栏**：窗口最右一列竖排的工具切换。
   - 显示规则：只跟着 SSH 远程终端出现，SFTP、本地终端、设置、开始页都不显示。它是工作区级的一份，开合和所选工具在所有终端间共用。默认收起，宽 320 px，只能往宽里拉。⌘⌥B / Ctrl+Alt+B 切换。
@@ -97,6 +98,7 @@ cargo test --lib                            # 只跑单元测试
 cargo test --test ui                        # 只跑 UI 集成测试
 cargo test --test ui new_host -- --nocapture   # 按名称片段跑单个 UI 测试
 cargo test --test cli_bin                   # 以子进程运行 shellrs-cli 的端到端测试（Windows CI 也跑）
+cargo test --lib terminal::run -- --include-ignored   # exec --terminal 对 Docker 里的真实 shell（CI：shells.yml）
 cargo test --lib update::                   # 在线升级；装了 minisign 和 jq 时还验证发布脚本签出的清单客户端认
 cargo clippy --all-targets -- -D warnings   # 必须无警告
 cargo fmt --check
@@ -324,6 +326,12 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
   - 协议只加变体、不升 `PROTOCOL_VERSION`：旧应用对新请求回 serde 的「unknown variant」，客户端改说成 `version_mismatch`。服务端先读版本再解析请求。
   - `exec --json` 的输入输出都是 JSON，输出只用 ASCII（`ascii_json` 转义其余字符），出错也是 JSON：给 Windows PowerShell 用，绕开引号和代码页。不做 MCP：主流 Agent 都能执行命令，CLI 加 skill 已经够用。
   - UI 测试不监听真实套接字，`CliIntegration` 默认没有路径。
+- **`exec --terminal`**（`terminal/run.rs`，纯逻辑，状态都在 `TerminalRun` 的锁里）：
+  - 流程：引擎发 ^C → 请求线程等 500 ms（同时到的字节可能被 tty 随 ^C 冲掉）输入探测行 → 解析线程见到标记 P 就输入命令行 → 标记 B（上下文）、输出、标记 E（退出码）。时限在请求线程（`TerminalRun::drive`）：P 5 秒（`terminal_busy`），B 15 秒（发 ^C 再报，可能被堡垒机命令过滤或复核拦下）；执行中没有时限，每秒一个空 Stdout 帧，写失败就是调用方没了，发 ^C。
+  - 标记是 OSC 6973 带每次随机的 NONCE（单独的参数，回显里的 `\033` 只是文字，伪造不了）。P 带 `readlink /proc/$PPID/exe`（去掉 ` (deleted)`；不用 `comm`，以 sh 名义启动的 bash 的 comm 是 sh）。E 由外层 sh 在管道之后打：`trap : INT` 挺过 ^C，状态经 fd 3 带出，被打断按 130 报，所以 ^C 后也一定有 E。
+  - 命令按 `printf %b` 编码（控制字符、`'`、`\`、`!`、`"`、≥ 0x80 写成 `\0NNN`），打出的行里没有引号和控制字符，命令仍大体可读（审计、命令过滤看得见，所以不用 base64）。从不用 bracketed paste：命令行是在探测还在跑、tty 处于规范模式时预输入的，readline 那时没开 2004，一行最多 4095 字节，所以 bash、dash 上限 4000，busybox 的行编辑 1000。
+  - 运行槽归运行时（`TerminalRuntime::run`）：解析线程在 `notices.scan` 旁边喂字节，循环结束时报断开。服务端另有 `runs` 队列，工作区另起 100 ms 的 `serve_cli_runs`（不能排在逐条等改动的 `serve_cli` 后面）。
+  - 真实 shell 的测试在 `run_tests.rs` 的 `shells`（`#[ignore]`，Docker 里 bash 4.2–5.2、dash、busybox、Rocky 的 sh），CI 是 `shells.yml`。
 - **Windows**：
   - 发布版是 GUI 子系统，命令改由 `shellrs-cli.exe` 承担；PATH 里放的是副本，加进用户 PATH。
   - `main` 先用 `link_arguments` 认堡垒机的链接参数，认出来就不走 CLI。

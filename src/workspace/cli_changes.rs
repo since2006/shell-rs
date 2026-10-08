@@ -1,7 +1,8 @@
 //! The workspace's share of the external CLI: coming forward when ShellRS
-//! is opened again, and the changes to hosts and credentials a `shellrs`
-//! command asks for. The request threads cannot reach the store; the
-//! changes wait in the server until they are made here, one at a time.
+//! is opened again, the changes to hosts and credentials a `shellrs`
+//! command asks for, and the `exec --terminal` runs. The request threads
+//! cannot reach the store or the terminals; the changes and the runs wait
+//! in the server until they are taken up here.
 
 use std::time::Duration;
 
@@ -14,12 +15,13 @@ use crate::cli::{
 };
 use crate::cli::{
     CredentialPlan, GroupPlan, SecretChange, credential_details, credential_secrets,
-    find_credential, find_saved_host, host_details, host_info, host_secrets, plan_credential,
-    plan_host, with_saved_credential_secrets, with_saved_passwords,
+    find_credential, find_host, find_saved_host, host_details, host_info, host_secrets,
+    plan_credential, plan_host, with_saved_credential_secrets, with_saved_passwords,
 };
 use crate::host::{CredentialId, GroupDraft, GroupId, HostId, HostStore};
 use crate::i18n::t;
 use crate::secrets::{SecretRef, SharedSecretStore};
+use crate::terminal::{RunFailure, RunHandle, TerminalLifecycle, TerminalPanel};
 
 use super::workspace_view::Workspace;
 
@@ -48,6 +50,7 @@ impl Workspace {
                     for usage in server.take_usage() {
                         this.count(match usage {
                             CliUse::Exec => Counter::CliExec,
+                            CliUse::ExecTerminal => Counter::CliExecTerminal,
                             CliUse::Upload => Counter::CliUpload,
                             CliUse::Download => Counter::CliDownload,
                             CliUse::Sync => Counter::CliSync,
@@ -71,6 +74,62 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    /// Hand each `exec --terminal` run the CLI server has heard to its
+    /// host's terminal. Asked on a timer of its own: the poller above waits
+    /// for each change to be made, and a run must not wait behind a
+    /// keychain write.
+    pub(super) fn serve_cli_runs(&self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(CLI_POLL).await;
+                let served = this.update(cx, |this, cx| {
+                    let Some(server) = this.cli_server.as_ref() else {
+                        return;
+                    };
+                    let runs: Vec<_> = std::iter::from_fn(|| server.take_run()).collect();
+                    for (host, run) in runs {
+                        if let Err(failure) = this.start_cli_run(&host, run.clone(), cx) {
+                            run.fail(failure);
+                        }
+                    }
+                });
+                if served.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Type an `exec --terminal` run into the terminal of the host the CLI
+    /// calls `host`: the one the right sidebar follows when it is this
+    /// host's, else the host's newest connected one.
+    pub fn start_cli_run(&self, host: &str, run: RunHandle, cx: &App) -> Result<(), RunFailure> {
+        let host = find_host(self.store.read(cx), host)
+            .map_err(|_| RunFailure::HostNotFound)?
+            .id;
+        let connected = |panel: &&Entity<TerminalPanel>| {
+            matches!(panel.read(cx).lifecycle(cx), TerminalLifecycle::Running)
+        };
+        let panel = self
+            .tool_terminal(cx)
+            .filter(|terminal| terminal.host == host)
+            .and_then(|terminal| self.terminals.get(&terminal.id))
+            .filter(connected)
+            .or_else(|| {
+                self.terminals
+                    .values()
+                    .filter(|panel| panel.read(cx).host_id() == host)
+                    .filter(connected)
+                    .max_by_key(|panel| panel.read(cx).id().0)
+            });
+        match panel {
+            Some(panel) => panel.read(cx).terminal().read(cx).run_command(run, cx),
+            None if self.terminal(host, cx).is_some() => Err(RunFailure::NotConnected),
+            None => Err(RunFailure::NoTerminal),
+        }
     }
 
     /// Make a change a `shellrs` command asks for, checked as the host and

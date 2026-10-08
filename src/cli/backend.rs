@@ -145,15 +145,27 @@ impl CliBackend for SshCliBackend {
                 );
                 Ok(signal_exit_code(&signal))
             }
-            Err(error) => Err(CliError::new(
-                match error.kind {
-                    ExecErrorKind::HostKeyUnknown => ErrorCode::HostKeyUnknown,
-                    ExecErrorKind::HostKeyChanged => ErrorCode::HostKeyChanged,
-                    ExecErrorKind::MissingCredential => ErrorCode::MissingCredential,
-                    ExecErrorKind::Connect | ExecErrorKind::Aborted => ErrorCode::ConnectFailed,
-                },
-                error.message,
-            )),
+            Err(error) => {
+                // A bastion host's link logs in once; its terminal is open.
+                let message = if target.login().shell_only
+                    && matches!(
+                        error.kind,
+                        ExecErrorKind::MissingCredential | ExecErrorKind::Connect
+                    ) {
+                    t!("cli.exec.try_terminal", message = error.message).to_string()
+                } else {
+                    error.message
+                };
+                Err(CliError::new(
+                    match error.kind {
+                        ExecErrorKind::HostKeyUnknown => ErrorCode::HostKeyUnknown,
+                        ExecErrorKind::HostKeyChanged => ErrorCode::HostKeyChanged,
+                        ExecErrorKind::MissingCredential => ErrorCode::MissingCredential,
+                        ExecErrorKind::Connect | ExecErrorKind::Aborted => ErrorCode::ConnectFailed,
+                    },
+                    message,
+                ))
+            }
         }
     }
 

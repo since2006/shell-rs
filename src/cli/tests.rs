@@ -19,7 +19,7 @@ use super::protocol::{
 };
 use super::server::{CliBackend, CliServer, CliTarget, CliUse};
 use super::{Cli, Command, CredentialsCommand, HostsCommand};
-use super::{ConsoleText, exec_request, normalize_command};
+use super::{ConsoleText, ExecJson, exec_request, normalize_command};
 use crate::app::cli_endpoint;
 use crate::host::{
     AuthKind, CredentialDraft, CredentialKind, GroupDraft, Host, HostDraft, HostId, HostStore,
@@ -27,6 +27,7 @@ use crate::host::{
 };
 use crate::secrets::SecretRef;
 use crate::ssh::ExecStream;
+use crate::terminal::{RunFailure, RunHandle, TerminalTransportCommand};
 
 /// Records what it was asked and answers from a script.
 #[derive(Default)]
@@ -632,6 +633,19 @@ fn exec_takes_its_command_as_one_argument_or_from_stdin() {
     assert!(parse(&["shellrs", "exec", "--json", "--stdin"]).is_err());
     // Split words are a mistake, not a longer command.
     assert!(parse(&["shellrs", "exec", "ID", "ls", "-la"]).is_err());
+    // Typed into the open terminal, in any of the forms.
+    assert!(matches!(
+        parse(&["shellrs", "exec", "ID", "--terminal", "ls"]),
+        Ok(Command::Exec { terminal: true, command: Some(command), .. }) if command == "ls"
+    ));
+    assert!(matches!(
+        parse(&["shellrs", "exec", "--json", "--terminal"]),
+        Ok(Command::Exec {
+            terminal: true,
+            json: true,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -680,14 +694,23 @@ fn a_windows_console_gets_text_even_from_bytes_that_are_not_utf8() {
 
 #[test]
 fn exec_json_reads_the_host_and_the_command() {
+    let asked = |host: &str, command: &str, terminal| ExecJson {
+        host: host.into(),
+        command: command.into(),
+        terminal,
+    };
     assert_eq!(
         exec_request("\u{feff}{\"host\": \"ID\", \"command\": \"echo \\\"hi\\\" | wc -c\"}"),
-        Ok(("ID".to_string(), "echo \"hi\" | wc -c".to_string()))
+        Ok(asked("ID", "echo \"hi\" | wc -c", false))
     );
     // Escaped as an agent may write it in PowerShell 5.1, which pipes ASCII.
     assert_eq!(
         exec_request(r#"{"host":"ID","command":"grep \u751f\u4ea7 a.log"}"#),
-        Ok(("ID".to_string(), "grep 生产 a.log".to_string()))
+        Ok(asked("ID", "grep 生产 a.log", false))
+    );
+    assert_eq!(
+        exec_request(r#"{"host":"ID","command":"ls","terminal":true}"#),
+        Ok(asked("ID", "ls", true))
     );
     assert!(exec_request(r#"{"command":"ls"}"#).is_err());
     assert!(exec_request("ls -la").is_err());
@@ -1109,4 +1132,166 @@ fn an_app_that_does_not_know_the_command_is_said_to_be_older() {
             .unwrap()
             .starts_with("shellrs: [version_mismatch] 正在运行的 ShellRS 不认识这个命令"),
     );
+}
+
+/// The app's end of an `exec --terminal` run: wait for it to come in.
+fn take_run(server: &CliServer) -> (String, RunHandle) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(taken) = server.take_run() {
+            return taken;
+        }
+        assert!(std::time::Instant::now() < deadline, "no run came in");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// A terminal taking `run` up, with a shell whose program is `shell`: it
+/// answers the probe, then the command line with `output` and `code`,
+/// slowly enough for the server to check on the caller meanwhile.
+/// Everything typed, once nothing more is.
+fn answer_run(
+    run: RunHandle,
+    shell: &'static str,
+    output: &'static str,
+    code: i32,
+) -> std::thread::JoinHandle<String> {
+    let (input, typed) = std::sync::mpsc::channel();
+    assert!(run.accept(input));
+    std::thread::spawn(move || {
+        let mut all = String::new();
+        while let Ok(TerminalTransportCommand::Write(bytes)) =
+            typed.recv_timeout(std::time::Duration::from_millis(500))
+        {
+            let line = String::from_utf8(bytes).unwrap();
+            all.push_str(&line);
+            // ` sh -c '<script>' sh NONCE …`
+            let Some(at) = line.find("' sh ") else {
+                continue;
+            };
+            let nonce = &line[at + 5..at + 17];
+            if line.contains("6973;P;") {
+                run.feed(format!("\x1b]6973;P;{nonce};{shell}\x07").as_bytes());
+            } else if line.contains("6973;B;") {
+                let context: String = "deploy\nasset\n/home/deploy\nbash"
+                    .bytes()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect();
+                run.feed(format!("\x1b]6973;B;{nonce};{context}\x07").as_bytes());
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                run.feed(format!("{output}\x1b]6973;E;{nonce};{code}\x07").as_bytes());
+            }
+        }
+        all
+    })
+}
+
+#[test]
+fn a_command_typed_into_the_terminal_passes_on_its_output_and_where_it_ran() {
+    let fixture = fixture();
+    let exec = |json| {
+        let socket = fixture.socket.clone();
+        let request = Request::ExecInTerminal {
+            host: id(&fixture.web),
+            command: "ls /srv".into(),
+        };
+        std::thread::spawn(move || {
+            if json {
+                let (code, result, _) = run_exec_json(&socket, request);
+                (code, result.to_string())
+            } else {
+                let (code, stdout, _) = run(&socket, request, false);
+                (code, stdout)
+            }
+        })
+    };
+
+    let command = exec(false);
+    let (host, run) = take_run(&fixture.server);
+    assert_eq!(host, id(&fixture.web));
+    let terminal = answer_run(run, "/usr/bin/bash", "a\r\nb\r\n", 2);
+    assert_eq!(command.join().unwrap(), (2, "a\nb\n".to_string()));
+    assert!(terminal.join().unwrap().contains(" 'ls /srv'\r"));
+
+    let command = exec(true);
+    let (_, run) = take_run(&fixture.server);
+    answer_run(run, "/bin/busybox", "a\r\n", 0);
+    let (code, result) = command.join().unwrap();
+    assert_eq!(code, 0);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&result).unwrap(),
+        serde_json::json!({
+            "exit_code": 0,
+            "stdout": "a\n",
+            "stderr": "",
+            "context": {
+                "user": "deploy",
+                "host": "asset",
+                "cwd": "/home/deploy",
+                "shell": "busybox",
+                "interp": "bash",
+            },
+        })
+    );
+    assert_eq!(
+        fixture.server.take_usage(),
+        [CliUse::ExecTerminal, CliUse::ExecTerminal]
+    );
+}
+
+#[test]
+fn a_run_that_cannot_be_typed_says_why() {
+    let fixture = fixture();
+    let exec = || {
+        let socket = fixture.socket.clone();
+        let host = id(&fixture.web);
+        std::thread::spawn(move || {
+            let request = Request::ExecInTerminal {
+                host,
+                command: "true".into(),
+            };
+            let (code, _, stderr) = run(&socket, request, false);
+            (code, String::from_utf8(stderr).unwrap())
+        })
+    };
+    let refused = |command: std::thread::JoinHandle<(i32, String)>, code: &str| {
+        let (exit, stderr) = command.join().unwrap();
+        assert_eq!(exit, 255);
+        assert!(
+            stderr.starts_with(&format!("shellrs: [{code}] ")),
+            "{stderr}"
+        );
+        stderr
+    };
+
+    // No terminal for it.
+    let command = exec();
+    take_run(&fixture.server).1.fail(RunFailure::NoTerminal);
+    refused(command, "no_terminal");
+
+    // A shell it cannot type into: nothing but the probe was typed.
+    let command = exec();
+    let terminal = answer_run(take_run(&fixture.server).1, "/usr/bin/zsh", "", 0);
+    assert!(refused(command, "unsupported_shell").contains("zsh"));
+    assert!(!terminal.join().unwrap().contains("6973;B;"));
+
+    // Nothing answers the probe.
+    let command = exec();
+    let (input, _typed) = std::sync::mpsc::channel();
+    assert!(take_run(&fixture.server).1.accept(input));
+    refused(command, "terminal_busy");
+
+    // Nobody takes it up: taken back, never typed.
+    let command = exec();
+    refused(command, "connect_failed");
+    assert!(fixture.server.take_run().is_none());
+
+    // An unknown host never gets to the app.
+    let socket = fixture.socket.clone();
+    let request = Request::ExecInTerminal {
+        host: "nope".into(),
+        command: "true".into(),
+    };
+    assert_eq!(run(&socket, request, false).0, 255);
+    assert!(fixture.server.take_run().is_none());
 }

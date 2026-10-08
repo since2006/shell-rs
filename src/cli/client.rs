@@ -15,7 +15,8 @@ use super::link::OpenLink;
 use super::protocol::{
     AuthChoice, CredentialDeleted, CredentialDetails, CredentialKindChoice, Envelope, ErrorCode,
     FrameKind, HostDeleted, HostDetails, HostInfo, PROTOCOL_VERSION, ProxyChoice, Reply, Request,
-    RouteDetails, TransferCounters, TransferSummary, parse_json, read_frame, write_json,
+    RouteDetails, TerminalContext, TransferCounters, TransferSummary, parse_json, read_frame,
+    write_json,
 };
 use crate::host::HostOs;
 use crate::i18n::{t, tn};
@@ -60,6 +61,9 @@ struct ExecResult<'a> {
     exit_code: i32,
     stdout: std::borrow::Cow<'a, str>,
     stderr: std::borrow::Cow<'a, str>,
+    /// Where an `exec --terminal` command ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context: Option<TerminalContext>,
 }
 
 /// `value` as JSON in ASCII alone: every other character escaped, which
@@ -233,6 +237,7 @@ where
     let mut progress = ProgressLine::default();
     // What `exec --json` holds until the command ends.
     let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let mut context = None;
     loop {
         let Some((kind, payload)) = read_frame(&mut reader)? else {
             return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
@@ -286,11 +291,14 @@ where
                         print_credential_deleted(&deleted, console)?;
                         return Ok(0);
                     }
+                    // Only `--json` prints where the command ran.
+                    Reply::Context(found) => context = Some(found),
                     Reply::Exit { code } if console.exec_json => {
                         let result = ExecResult {
                             exit_code: code,
                             stdout: String::from_utf8_lossy(&stdout),
                             stderr: String::from_utf8_lossy(&stderr),
+                            context: context.take(),
                         };
                         writeln!(console.stdout, "{}", ascii_json(&result))?;
                         return Ok(code);

@@ -124,7 +124,7 @@ ShellRS 同一时间只运行一个：已经开着时再打开一次，会把已
 
 在 设置 → 外部 CLI 中：
 
-- **启用外部 CLI**：默认关闭。关闭时 ShellRS 仍在监听，但拒绝所有请求，命令会提示去这里打开。开启后，本机当前用户下的任何程序都能这样使用已保存的主机，也能修改主机和凭据（没有另外的开关）。套接字只对当前用户可读写，连接时还会核对对方的用户身份；Windows 的管道同样只允许当前用户、只接受本机连接，命令在发请求之前还会确认管道属于当前用户（或管理员），防止别人抢注同名管道。
+- **启用外部 CLI**：默认关闭。关闭时 ShellRS 仍在监听，但拒绝所有请求，命令会提示去这里打开。开启后，本机当前用户下的任何程序都能这样使用已保存的主机，也能修改主机和凭据，还能在已打开的远程终端里输入命令（`exec --terminal`，包括已切到 root 的终端），都没有另外的开关。套接字只对当前用户可读写，连接时还会核对对方的用户身份；Windows 的管道同样只允许当前用户、只接受本机连接，命令在发请求之前还会确认管道属于当前用户（或管理员），防止别人抢注同名管道。
 - **CLI 二进制**：把 `shellrs` 放进 PATH。
   - macOS：链接到 `/usr/local/bin/shellrs`，目录不可写时弹系统授权框。
   - Linux：链接到 `~/.local/bin/shellrs`。
@@ -139,6 +139,7 @@ shellrs hosts list [-q <关键词>] [--json]      # 列出主机；输出不是�
 shellrs hosts show <ID> [--json]               # 一台主机的全部配置
 shellrs exec <ID> "<命令>"                     # 或 --stdin 从标准输入读命令
 shellrs exec --json                            # 从标准输入读 {"host", "command"}，输出 JSON
+shellrs exec <ID> --terminal "<命令>"          # 在 ShellRS 已打开的终端里执行，见下文
 shellrs upload <ID> <本地路径> <远程路径>
 shellrs download <ID> <远程路径> <本地路径>
 shellrs sync <ID> <本地目录> <远程目录> [--delete]
@@ -148,6 +149,11 @@ shellrs credentials list | show <ID> | create | update <ID> | delete <ID>
 
 - `<ID>` 是 16 位的主机 ID，即 `shellrs hosts list` 的 `id`，也就是主机右键「复制 ID」复制的内容。列表里还有标签开着的临时连接和外部连接（`"temporary": true`），见「临时连接」和「从堡垒机打开（外部连接）」。
 - `exec` 每次临时建立连接，执行完即断开。远程命令没有标准输入，退出码就是远程命令的退出码；被信号终止时是 128 加信号编号。
+- `exec --terminal`（`exec --json` 里写 `"terminal": true`）不重新登录，而是把命令打进这台主机在 ShellRS 里已打开的远程终端，给只允许登录一次的堡垒机用（见「从堡垒机打开（外部连接）」）。它先发 Ctrl-C，打断终端里正在运行的程序、清掉输入行里没提交的内容，再输入一行探测和一行命令；这两行和命令的输出都显示在终端里。命令在终端当前的用户、目录和机器上执行（`su`、`sudo -i`、嵌套 `ssh` 之后也是），`--json` 的结果多一项 `context`（`user`、`host`、`cwd`、`shell`、`interp`）写明在哪里。命令的输出经管道，程序看不到终端：没有颜色和分页器，stderr 并进 stdout；命令没有标准输入，要密码的程序会停在终端里等。用哪个终端：右侧栏正对着的终端是这台主机的就用它，否则用这台主机最新的、已连接的终端。
+  - 只支持 Linux 上的 bash、dash 和 busybox ash（否则报 `unsupported_shell`）。编码后的命令行，bash 和 dash 最多 4000 字节，busybox 最多 1000 字节（否则报 `too_long`）。
+  - 以下情况报 `terminal_busy`，命令没有执行：全屏程序（vim、less、top、tmux 等）占着终端；上一条 `--terminal` 命令还没结束；5 秒内 shell 没有回应（前台程序不理 Ctrl-C，如 python、mysql）；15 秒内 shell 没有开始执行（可能被堡垒机的命令过滤或复核拦下，这时会再发一次 Ctrl-C）。终端没打开或没连接报 `no_terminal`。
+  - 执行过程中没有时限；命令行工具中途被结束时（如 Agent 超时），终端里的命令收到 Ctrl-C。
+  - 那两行行首有空格，bash 设了 `ignorespace` 时不记进历史，否则会记下。停在不带提示的 `read -s`、或 vi 编辑模式的命令模式时认不出，会报「没有回应」。
 - 上传和下载沿用 SFTP 标签的传输引擎（递归、`.filepart`、断线重连），目标路径按 scp 的规则：目标是已存在的目录就放进去并保留原名，否则目标就是副本自己的路径，其父目录必须存在。已存在的文件直接覆盖；新建的文件保留源文件的可执行权限。`~` 表示登录目录。
 - `sync` 只从本机到主机：把本地目录里的内容同步进远程目录。远程目录不存在就新建（父目录必须存在），是文件就报错，不能是根目录 `/`。大小和修改时间都没变的文件、指向不变的链接跳过，摘要里计为「未变」，所以再同步一次只传改过的；其余文件直接覆盖，新文件保留可执行权限。`--delete` 先删掉远程目录里本地没有的、或类型不同的项（不跟随链接），但不删传输进行中留下的 `.filepart` 和 `.shellrs-….backup`，本地读不了的目录也不清理；删不掉的项计为失败。
 - `hosts` 和 `credentials` 管理保存的主机和凭据。`create`、`update` 从标准输入读一个 JSON 对象（`update` 只改给出的字段），字段见 `shellrs hosts create --help` 和 `shellrs credentials create --help`；`show --json` 的输出可以改了直接交回 `update`。校验和对话框一样，报错用对话框的说法：
@@ -157,7 +163,7 @@ shellrs credentials list | show <ID> | create | update <ID> | delete <ID>
   - 临时连接和外部连接能 `show`，不能修改或删除。
   - `hosts delete` 不确认，连同主机的端口转发规则一起删；主机在 ShellRS 里有打开的标签时拒绝（`host_in_use`），加 `--force` 才关掉标签再删。经它跳转的主机，那一跳变成「已删除的主机」。`credentials delete` 也不确认，用它的主机改为自己登录（同界面）。
   - 改动由 ShellRS 一条一条执行：10 秒内没轮到就撤回、不做；开始执行后会等到完成。
-- 失败时在标准错误输出 `shellrs: [错误码] 说明`，退出码 255。错误码有 `not_running`（ShellRS 未运行）、`not_enabled`（未启用外部 CLI）、`host_not_found`、`credential_not_found`、`host_key_unknown`（还没在 ShellRS 里连过这台主机）、`host_key_changed`、`missing_credential`（没有保存密码或口令）、`connect_failed`、`transfer_failed`、`bad_request`、`host_in_use`、`save_failed`（改动已做，但没能全部写进数据库或钥匙串）、`version_mismatch`（命令和正在运行的 ShellRS 版本不同，或 ShellRS 太旧、不认识这个命令）。CLI 不弹任何询问：陌生主机、缺少密码都直接失败，请先在 ShellRS 里连接一次。传输完成但有项目失败时退出码为 1。
+- 失败时在标准错误输出 `shellrs: [错误码] 说明`，退出码 255。错误码有 `not_running`（ShellRS 未运行）、`not_enabled`（未启用外部 CLI）、`host_not_found`、`credential_not_found`、`host_key_unknown`（还没在 ShellRS 里连过这台主机）、`host_key_changed`、`missing_credential`（没有保存密码或口令）、`connect_failed`、`transfer_failed`、`bad_request`、`host_in_use`、`save_failed`（改动已做，但没能全部写进数据库或钥匙串）、`version_mismatch`（命令和正在运行的 ShellRS 版本不同，或 ShellRS 太旧、不认识这个命令），以及 `exec --terminal` 才有的 `no_terminal`、`terminal_busy`、`unsupported_shell`、`too_long`。CLI 不弹任何询问：陌生主机、缺少密码都直接失败，请先在 ShellRS 里连接一次。传输完成但有项目失败时退出码为 1。
 - `exec --json` 从标准输入读 `{"host": "<ID>", "command": "<命令>"}`，命令结束后输出 `{"exit_code", "stdout", "stderr"}`，出错时输出 `{"error": {"code", "message"}}`，退出码和不加 `--json` 时一样。输出只含 ASCII，中文等字符都转成 `\uXXXX`；不是 UTF-8 的输出换成 U+FFFD。命令不经过本机 shell 的引号处理，控制台的代码页也不会把输出弄乱，适合 Windows PowerShell 和需要分开读标准输出、标准错误的 Agent。
 - 支持 macOS、Linux 和 Windows。Windows 的 PowerShell 里执行命令优先用 `exec --json`（`@{ host = '<ID>'; command = '…' } | ConvertTo-Json -Compress | shellrs exec --json`）；要边执行边看输出时（长时间构建、大量日志），改用 here-string 经 `--stdin` 传入（`@'…'@ | shellrs exec <ID> --stdin`），并和 `list`、`upload`、`download` 一样，先执行 `$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()`，否则中文会变成问号或乱码。命令文本会去掉开头的 BOM、把 CRLF 换成 LF，远程 shell 不会看到多余的回车符。
 
@@ -182,7 +188,7 @@ ShellRS /sessionname=标签名 sftp://用户[:密码]@地址[:端口]
   - Windows：安装目录里的 `shellrs.exe`（默认 `%LOCALAPPDATA%\Programs\ShellRS\shellrs.exe`）。不要用 PATH 里的 `shellrs.exe`：那是外部 CLI 的副本。
   - macOS：`/Applications/ShellRS.app/Contents/MacOS/shellrs`。不要用 `open -a ShellRS --args …`：ShellRS 已在运行时，系统会把参数丢掉。
   - Linux：AppImage 本身。
-- 外部 CLI 的 `shellrs hosts list` 也列出外部连接（JSON 里 `"temporary": true`，表格的分组一栏写「（未保存）」），标签开着时 Agent 可以用它的 ID 执行命令、传输文件，这期间 ID 不变，可以一直用。标签关掉后 ID 失效；堡垒机再拉起一次（即使是同一台资产）是新的外部连接，ID 也是新的。和保存的主机一样，每条命令都用链接里的用户名和密码重新登录一次；堡垒机给的若是只能用一次的令牌，这次登录会被拒绝。
+- 外部 CLI 的 `shellrs hosts list` 也列出外部连接（JSON 里 `"temporary": true`，表格的分组一栏写「（未保存）」），标签开着时 Agent 可以用它的 ID 执行命令、传输文件，这期间 ID 不变，可以一直用。标签关掉后 ID 失效；堡垒机再拉起一次（即使是同一台资产）是新的外部连接，ID 也是新的。和保存的主机一样，每条命令都用链接里的用户名和密码重新登录一次；堡垒机给的若是只能用一次的令牌，这次登录会被拒绝，这时改用 `shellrs exec --terminal`，在外部连接已打开的终端里执行命令（见「外部 CLI」）。
 - 命令行参数里的密码在本机的进程列表里看得到，这是堡垒机这样传参本身的问题。
 
 ## 标签页
@@ -439,7 +445,7 @@ ShellRS 不发送主机、凭据、会话内容、命令、文件名或路径，
 
 前三种附带这些设置和数量，取值都是固定的几种：CPU 架构、应用外观、界面语言、浅色和深色主题（内置主题的名字）、界面是否跟随主题、关键字高亮、外部 CLI 和自动升级是否打开、更新渠道、是否改过快捷键，以及保存的主机、凭据、端口转发、命令片段各有多少（只报档位：0、1-5、6-20、21-100、100+）。
 
-`usage` 只有次数，没有内容，计的是：SSH 终端连上（另按跳板、代理、凭据、无密码、临时连接、外部连接分别计数）、SFTP 连上（另按临时连接、外部连接计数）、本地终端、端口转发开启（本地、远程、动态）、上传和下载批次、编辑器打开本地和远程文件、预览图片和 Markdown、打开右侧栏的七个工具、命令片段和历史命令送进终端、终端查找、通知（程序、响铃、关键字），外部 CLI 的 `exec`、`upload`、`download`、`sync`、`hosts`、`credentials` 命令，以及打开和关闭关键字高亮、外部 CLI。
+`usage` 只有次数，没有内容，计的是：SSH 终端连上（另按跳板、代理、凭据、无密码、临时连接、外部连接分别计数）、SFTP 连上（另按临时连接、外部连接计数）、本地终端、端口转发开启（本地、远程、动态）、上传和下载批次、编辑器打开本地和远程文件、预览图片和 Markdown、打开右侧栏的七个工具、命令片段和历史命令送进终端、终端查找、通知（程序、响铃、关键字），外部 CLI 的 `exec`、`exec --terminal`、`upload`、`download`、`sync`、`hosts`、`credentials` 命令，以及打开和关闭关键字高亮、外部 CLI。
 
 - 计数先存在数据目录的 `analytics.json` 里，退出不会丢，之后再补发。离线或在内网里不影响使用：发不出去时等 1 分钟，之后每次加倍、最长 6 小时再试，而且只在使用 ShellRS 时顺带重试，空闲时不发任何请求。
 - Aptabase 按请求的 IP 地址推断国家和地区，但不保存 IP。它区分设备用的是 IP 和 User-Agent 加上每天更换的随机盐算出的散列，所以看不到同一台设备跨天的行为。

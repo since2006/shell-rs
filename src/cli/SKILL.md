@@ -32,6 +32,23 @@ shellrs exec <host-id> --stdin <<'EOF'
 EOF
 ```
 
+## Hosts Opened From a Bastion Host
+
+A host listed with `"temporary": true` may have been opened by a bastion host's link that allows one login. Then `exec`, `upload` and `download`, which log in again, fail with `missing_credential` or `connect_failed`, and the message says so. Run the command in the host's terminal open in ShellRS instead:
+
+```bash
+shellrs exec <host-id> --terminal "<command>"
+shellrs exec <host-id> --terminal --stdin <<'EOF'
+<command>
+EOF
+```
+
+- It types into the user's own terminal tab, in sight of the user. It sends Ctrl-C first, which interrupts whatever runs there: use it only on a tab the user handed to you, not on one they are working in.
+- The command runs where that terminal is now: its user, folder and machine, after any `su`, `sudo -i` or nested `ssh`. With `--json`, the result's `context` says where: `{"user", "host", "cwd", "shell", "interp"}`.
+- stderr comes as stdout. One command at a time per terminal. Only bash, dash and busybox ash.
+- Programs that ask for a password wait in the user's tab: use `sudo -n` and other non-interactive flags. Give your own tool a timeout; when the command is given up, it gets Ctrl-C.
+- Files cannot be transferred this way; write a small text file with a heredoc in the command.
+
 ## File Transfer
 
 ```bash
@@ -94,6 +111,12 @@ $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new()
 '@ | shellrs exec <host-id> --stdin
 ```
 
+For `--terminal`, add `terminal = $true`:
+
+```powershell
+@{ host = '<host-id>'; command = 'df -h'; terminal = $true } | ConvertTo-Json -Compress | shellrs exec --json | ConvertFrom-Json
+```
+
 The `@'` must end its line and the `'@` must start one. Set the same encodings before the other commands, or non-ASCII text (such as the Chinese names of saved hosts) turns into `?` or mojibake.
 
 To create or update a host or credential from Windows PowerShell 5.1, pipe the JSON in the same way, writing non-ASCII characters in it as `\uXXXX` escapes (`"group": "\u751f\u4ea7"` for 生产):
@@ -125,6 +148,10 @@ Errors are printed to stderr with a code in brackets, such as `[not_enabled]`. E
 - `host_in_use`: the host's tabs are open in ShellRS. Ask the user whether to close them (`--force`).
 - `save_failed`: the change was made, but not all of it could be written to disk or the keychain. Tell the user the message.
 - `version_mismatch`: the `shellrs` command and the running ShellRS are different versions. Ask the user to restart or update ShellRS.
-- `host_key_unknown`, `missing_credential`: ShellRS has not connected to this host yet, or has no saved password. Ask the user to connect to the host once in ShellRS and save the password.
+- `host_key_unknown`, `missing_credential`: ShellRS has not connected to this host yet, or has no saved password. Ask the user to connect to the host once in ShellRS and save the password. For a host opened from a bastion host, use `--terminal` (see above).
 - `host_key_changed`: the server's host key changed. Tell the user; do not try to work around it.
+- `no_terminal` (`--terminal`): the host has no connected terminal in ShellRS. Ask the user to open or reconnect it.
+- `terminal_busy` (`--terminal`): a full-screen program has the terminal, another `--terminal` command still runs there, the shell did not answer, or it did not start the command (a bastion host's command filter may hold it back). Tell the user the message.
+- `unsupported_shell` (`--terminal`): the terminal runs a shell other than bash, dash or busybox ash. Tell the user.
+- `too_long` (`--terminal`): split the command into shorter ones.
 - `connect_failed` saying there is no permission to connect to ShellRS: the agent's sandbox blocks local inter-process communication. Ask the user to allow it, or run the command outside the sandbox.

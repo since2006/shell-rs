@@ -26,13 +26,16 @@ use super::manage::{
 };
 use super::protocol::{
     CliError, CredentialDetails, Envelope, ErrorCode, FrameKind, HostDetails, HostInfo,
-    PROTOCOL_VERSION, Reply, Request, TransferCounters, TransferSummary, VersionOnly, parse_json,
-    read_frame, write_frame, write_json,
+    PROTOCOL_VERSION, Reply, Request, TerminalContext, TransferCounters, TransferSummary,
+    VersionOnly, parse_json, read_frame, write_frame, write_json,
 };
 use crate::host::{Host, HostLogin, HostStore, matches_query};
 use crate::i18n::t;
 use crate::secrets::SecretRef;
 use crate::ssh::ExecStream;
+use crate::terminal::{
+    BusyReason, RunEvent, RunFailure, RunHandle, RunProgress, RunTiming, TerminalRun,
+};
 
 /// Does what a CLI request asks. Every method blocks: each request has a
 /// thread of its own.
@@ -159,6 +162,26 @@ const QUEUE_TIMEOUT: Duration = if cfg!(test) {
     Duration::from_secs(10)
 };
 
+/// How an `exec --terminal` run is paced; quick in the tests.
+const RUN_TIMING: RunTiming = if cfg!(test) {
+    RunTiming {
+        settle: Duration::ZERO,
+        probe: Duration::from_millis(300),
+        start: Duration::from_millis(300),
+        tick: Duration::from_millis(20),
+    }
+} else {
+    RunTiming::STANDARD
+};
+
+/// An `exec --terminal` run waiting for the app to find the host's
+/// terminal.
+struct PendingRun {
+    id: u64,
+    host: String,
+    run: RunHandle,
+}
+
 /// A change waiting for the app, with where its outcome goes.
 struct PendingChange {
     id: u64,
@@ -189,6 +212,9 @@ struct Shared {
     /// Changes to hosts and credentials, oldest first, until the app takes
     /// them up: only the UI thread can change the store.
     changes: Mutex<VecDeque<PendingChange>>,
+    /// `exec --terminal` runs, oldest first, until the app takes them up:
+    /// only the UI thread can reach a terminal.
+    runs: Mutex<VecDeque<PendingRun>>,
     next_change: AtomicU64,
     /// What kinds of command were served, for 匿名使用统计, until the app
     /// takes them.
@@ -200,6 +226,7 @@ struct Shared {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CliUse {
     Exec,
+    ExecTerminal,
     Upload,
     Download,
     Sync,
@@ -211,6 +238,7 @@ impl CliUse {
     fn of(request: &Request) -> Option<Self> {
         match request {
             Request::Exec { .. } => Some(Self::Exec),
+            Request::ExecInTerminal { .. } => Some(Self::ExecTerminal),
             Request::Upload { .. } => Some(Self::Upload),
             Request::Download { .. } => Some(Self::Download),
             Request::Sync { .. } => Some(Self::Sync),
@@ -249,6 +277,7 @@ impl CliServer {
             backend,
             activation: Mutex::new(None),
             changes: Mutex::new(VecDeque::new()),
+            runs: Mutex::new(VecDeque::new()),
             next_change: AtomicU64::new(0),
             usage: Mutex::new(Vec::new()),
         });
@@ -297,6 +326,17 @@ impl CliServer {
             .map(|pending| (pending.change, pending.reply))
     }
 
+    /// The oldest `exec --terminal` run waiting, with the host it is for,
+    /// for the app to hand to that host's terminal, or say why it cannot.
+    pub fn take_run(&self) -> Option<(String, RunHandle)> {
+        self.shared
+            .runs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pop_front()
+            .map(|pending| (pending.host, pending.run))
+    }
+
     /// Whether ShellRS was opened again since this was last asked, and the
     /// links it was opened with, oldest first: `Some` and empty for a plain
     /// re-open. The request threads cannot reach the window, so the app asks
@@ -323,14 +363,23 @@ impl CliServer {
 }
 
 impl Drop for CliServer {
-    /// The app is going: whatever waits for it to take up a change hears
-    /// that it never will.
+    /// The app is going: whatever waits for it to take up a change or a
+    /// run hears that it never will.
     fn drop(&mut self) {
         self.shared
             .changes
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clear();
+        for pending in self
+            .shared
+            .runs
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .drain(..)
+        {
+            pending.run.fail(RunFailure::NotConnected);
+        }
     }
 }
 
@@ -640,6 +689,10 @@ fn respond(
                 })?;
             Ok(Reply::Exit { code })
         }
+        Request::ExecInTerminal { host, command } => {
+            let target = find(shared, &host)?;
+            run_in_terminal(shared, writer, &target.info.id, command)
+        }
         Request::Upload {
             host,
             source,
@@ -788,6 +841,105 @@ fn change(shared: &Shared, change: CliChange) -> Result<Reply, CliError> {
     }
     // Taken up just now: being made.
     outcome.recv().unwrap_or_else(|_| Err(gone()))
+}
+
+/// Hand a run to the app, which finds the host's terminal, and see it
+/// through: the command's output as stdout, its context, its exit code.
+/// Taken back, so certainly not typed, when the app does not take it up
+/// in time. While the command prints nothing, an empty frame now and then
+/// finds out whether the caller is still there; once it is not, the
+/// command gets a ^C.
+fn run_in_terminal(
+    shared: &Shared,
+    writer: &mut impl io::Write,
+    host: &str,
+    command: String,
+) -> Result<Reply, CliError> {
+    let (run, events) = TerminalRun::new(command);
+    let id = shared.next_change.fetch_add(1, Ordering::Relaxed);
+    shared
+        .runs
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push_back(PendingRun {
+            id,
+            host: host.to_owned(),
+            run: run.handle(),
+        });
+    let first = match events.recv_timeout(QUEUE_TIMEOUT) {
+        Ok(event) => event,
+        Err(_) => {
+            let mut runs = shared
+                .runs
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(index) = runs.iter().position(|pending| pending.id == id) {
+                runs.remove(index);
+                return Err(CliError::new(
+                    ErrorCode::ConnectFailed,
+                    t!("cli.terminal.timed_out"),
+                ));
+            }
+            drop(runs);
+            // Taken up just now: its answer is on the way.
+            events
+                .recv()
+                .map_err(|_| run_error(RunFailure::NotConnected, host))?
+        }
+    };
+    if let RunEvent::Failed(failure) = first {
+        return Err(run_error(failure, host));
+    }
+    let code = run
+        .drive(&events, RUN_TIMING, &mut |progress| match progress {
+            RunProgress::Context(context) => write_json(
+                writer,
+                &Reply::Context(TerminalContext {
+                    user: context.user,
+                    host: context.host,
+                    cwd: context.cwd,
+                    shell: context.shell,
+                    interp: context.interp,
+                }),
+            ),
+            RunProgress::Output(bytes) => write_frame(writer, FrameKind::Stdout, &bytes),
+            RunProgress::Idle => write_frame(writer, FrameKind::Stdout, &[]),
+        })
+        .map_err(|failure| run_error(failure, host))?;
+    Ok(Reply::Exit { code })
+}
+
+/// Why a run did not run, in the CLI's words.
+fn run_error(failure: RunFailure, host: &str) -> CliError {
+    let busy = |message| CliError::new(ErrorCode::TerminalBusy, message);
+    match failure {
+        RunFailure::HostNotFound => host_not_found(host),
+        RunFailure::NoTerminal => {
+            CliError::new(ErrorCode::NoTerminal, t!("cli.terminal.no_terminal"))
+        }
+        RunFailure::NotConnected => {
+            CliError::new(ErrorCode::NoTerminal, t!("cli.terminal.not_connected"))
+        }
+        RunFailure::UnsupportedShell(shell) if shell.is_empty() => CliError::new(
+            ErrorCode::UnsupportedShell,
+            t!("cli.terminal.unknown_shell"),
+        ),
+        RunFailure::UnsupportedShell(shell) => CliError::new(
+            ErrorCode::UnsupportedShell,
+            t!("cli.terminal.unsupported_shell", shell = shell),
+        ),
+        RunFailure::TooLong { limit } => CliError::new(
+            ErrorCode::TooLong,
+            t!("cli.terminal.too_long", limit = limit),
+        ),
+        RunFailure::Busy(BusyReason::FullScreen) => busy(t!("cli.terminal.full_screen")),
+        RunFailure::Busy(BusyReason::AnotherRun) => busy(t!("cli.terminal.another_run")),
+        RunFailure::Busy(BusyReason::NoAnswer) => busy(t!("cli.terminal.no_answer")),
+        RunFailure::Busy(BusyReason::NotStarted) => busy(t!("cli.terminal.not_started")),
+        RunFailure::Disconnected => {
+            CliError::new(ErrorCode::ConnectFailed, t!("cli.terminal.disconnected"))
+        }
+    }
 }
 
 fn find(shared: &Shared, id: &str) -> Result<CliTarget, CliError> {

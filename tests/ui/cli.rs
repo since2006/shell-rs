@@ -4,6 +4,9 @@
 //! each change over.
 
 use shellrs::cli::{CliChange, CliError, CredentialFields, ErrorCode, HostFields, Reply, Secret};
+use shellrs::terminal::{
+    BusyReason, RunEvent, RunFailure, RunProgress, RunTiming, TerminalRun, TerminalView,
+};
 
 use crate::support::*;
 
@@ -328,4 +331,207 @@ fn deleting_a_credential_lets_its_hosts_log_in_on_their_own(cx: &mut TestAppCont
         assert_eq!((host.credential, host.auth), (None, AuthKind::Password));
         assert_eq!(host.user.as_ref(), "deploy");
     });
+}
+
+/// How an `exec --terminal` run is paced against a fake shell that
+/// answers at once.
+const QUICK: RunTiming = RunTiming {
+    settle: Duration::ZERO,
+    probe: Duration::from_secs(2),
+    start: Duration::from_secs(2),
+    tick: Duration::from_millis(10),
+};
+
+/// The seed with web-01's terminal running on a transport that behaves as
+/// `behavior`.
+async fn open_terminal(
+    cx: &mut TestAppContext,
+    behavior: FakeBehavior,
+) -> (
+    WindowHandle<Root>,
+    Entity<Workspace>,
+    Arc<FakeTerminalFactory>,
+) {
+    let factory = Arc::new(FakeTerminalFactory {
+        behavior,
+        ..FakeTerminalFactory::default()
+    });
+    let (handle, workspace) =
+        open_workspace_with_remote_factory(cx, HostStore::seed(), factory.clone());
+    let terminal = RemoteTerminalId(INITIAL_WEB_TERMINAL);
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        remote_lifecycle(&workspace, terminal, cx).accepts_input()
+    })
+    .await;
+    (handle, workspace, factory)
+}
+
+fn start_run(
+    workspace: &Entity<Workspace>,
+    host: &str,
+    run: &TerminalRun,
+    cx: &mut TestAppContext,
+) -> Result<(), RunFailure> {
+    cx.update(|cx| workspace.read(cx).start_cli_run(host, run.handle(), cx))
+}
+
+fn web_terminal(workspace: &Entity<Workspace>, cx: &mut TestAppContext) -> Entity<TerminalView> {
+    cx.update(|cx| {
+        workspace
+            .read(cx)
+            .remote_terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))
+            .unwrap()
+            .read(cx)
+            .terminal()
+            .clone()
+    })
+}
+
+#[gpui_kit::test]
+async fn a_cli_run_is_typed_into_the_hosts_terminal_after_a_ctrl_c(cx: &mut TestAppContext) {
+    let (_, workspace, factory) = open_terminal(
+        cx,
+        FakeBehavior::Shell {
+            exe: "/usr/bin/bash",
+            ends: true,
+        },
+    )
+    .await;
+    let web = host_id(&workspace, 1, cx);
+    let before = factory.written_text().len();
+    let (run, events) = TerminalRun::new("uname -a".into());
+    assert_eq!(start_run(&workspace, &web, &run, cx), Ok(()));
+    assert_eq!(events.recv().unwrap(), RunEvent::Accepted);
+
+    let (mut output, mut context) = (Vec::new(), None);
+    let code = run.drive(&events, QUICK, &mut |step| {
+        match step {
+            RunProgress::Context(found) => context = Some(found),
+            RunProgress::Output(bytes) => output.extend(bytes),
+            RunProgress::Idle => {}
+        }
+        Ok(())
+    });
+    assert_eq!(code, Ok(0));
+    assert_eq!(output, b"ran\n");
+    let context = context.expect("begun");
+    assert_eq!(
+        (
+            context.user.as_str(),
+            context.cwd.as_str(),
+            context.shell.as_str()
+        ),
+        ("root", "/root", "bash")
+    );
+    // ^C, the probe, the command line; never Ctrl-E, a byte to dash.
+    let typed = factory.written_text()[before..].to_string();
+    assert!(typed.starts_with("\x03 sh -c '"), "{typed:?}");
+    assert!(typed.ends_with(" 'uname -a'\r"), "{typed:?}");
+    assert_eq!(typed.matches(" sh -c '").count(), 2);
+    assert!(!typed.contains('\x05'));
+}
+
+#[gpui_kit::test]
+async fn a_cli_run_a_terminal_cannot_take_says_why(cx: &mut TestAppContext) {
+    let (_, workspace, factory) = open_terminal(
+        cx,
+        FakeBehavior::Shell {
+            exe: "/usr/bin/zsh",
+            ends: true,
+        },
+    )
+    .await;
+    let (other, _) = TerminalRun::new("true".into());
+    assert_eq!(
+        start_run(&workspace, "nope", &other, cx),
+        Err(RunFailure::HostNotFound)
+    );
+    let db = host_id(&workspace, 3, cx);
+    assert_eq!(
+        start_run(&workspace, &db, &other, cx),
+        Err(RunFailure::NoTerminal)
+    );
+
+    // Another run has the terminal: no ^C to end it.
+    let web = host_id(&workspace, 1, cx);
+    let (first, first_events) = TerminalRun::new("sleep 9".into());
+    assert_eq!(start_run(&workspace, &web, &first, cx), Ok(()));
+    let before = factory.written_text().len();
+    let (second, _) = TerminalRun::new("true".into());
+    assert_eq!(
+        start_run(&workspace, &web, &second, cx),
+        Err(RunFailure::Busy(BusyReason::AnotherRun))
+    );
+    assert_eq!(factory.written_text().len(), before);
+
+    // A shell it cannot type into: only the probe was typed.
+    assert_eq!(first_events.recv().unwrap(), RunEvent::Accepted);
+    assert_eq!(
+        first.drive(&first_events, QUICK, &mut |_| Ok(())),
+        Err(RunFailure::UnsupportedShell("zsh".into()))
+    );
+    assert_eq!(
+        factory.written_text()[before..].matches(" sh -c '").count(),
+        1
+    );
+
+    // The terminal disconnected.
+    web_terminal(&workspace, cx).update(cx, |view, cx| view.stop("closed", cx));
+    cx.run_until_parked();
+    let (third, _) = TerminalRun::new("true".into());
+    assert_eq!(
+        start_run(&workspace, &web, &third, cx),
+        Err(RunFailure::NotConnected)
+    );
+}
+
+#[gpui_kit::test]
+async fn a_cli_run_leaves_a_full_screen_program_alone(cx: &mut TestAppContext) {
+    let (handle, workspace, factory) = open_terminal(cx, FakeBehavior::Prints("\x1b[?1049h")).await;
+    let terminal = web_terminal(&workspace, cx);
+    // The alternate screen is up: the prompt line is off it.
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        !terminal.read(cx).screen_text(cx).contains("alpha.txt")
+    })
+    .await;
+    let before = factory.written_text().len();
+    let (run, _) = TerminalRun::new("true".into());
+    let web = host_id(&workspace, 1, cx);
+    assert_eq!(
+        start_run(&workspace, &web, &run, cx),
+        Err(RunFailure::Busy(BusyReason::FullScreen))
+    );
+    assert_eq!(factory.written_text().len(), before);
+}
+
+#[gpui_kit::test]
+async fn a_cli_run_whose_terminal_goes_away_may_have_run(cx: &mut TestAppContext) {
+    let (_, workspace, factory) = open_terminal(
+        cx,
+        FakeBehavior::Shell {
+            exe: "/usr/bin/bash",
+            ends: false,
+        },
+    )
+    .await;
+    let web = host_id(&workspace, 1, cx);
+    let (run, events) = TerminalRun::new("sleep 100".into());
+    assert_eq!(start_run(&workspace, &web, &run, cx), Ok(()));
+    assert_eq!(events.recv().unwrap(), RunEvent::Accepted);
+    let (begun, begun_here) = mpsc::channel();
+    let driver = std::thread::spawn(move || {
+        run.drive(&events, QUICK, &mut |step| {
+            if matches!(step, RunProgress::Context(_)) {
+                let _ = begun.send(());
+            }
+            Ok(())
+        })
+    });
+    begun_here
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the command started");
+    web_terminal(&workspace, cx).update(cx, |view, cx| view.stop("closed", cx));
+    cx.run_until_parked();
+    assert_eq!(driver.join().unwrap(), Err(RunFailure::Disconnected));
+    assert!(factory.written_text().contains(" 'sleep 100'\r"));
 }

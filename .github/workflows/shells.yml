@@ -1,0 +1,47 @@
+# `shellrs exec --terminal` against the shells it types into: bash 4.2 to
+# 5.2, dash, busybox ash and a bash started as sh, each in a container on a
+# real terminal (`terminal::run::tests::shells`). The Macs this is
+# developed on run it only with Docker Desktop up.
+#
+# A push runs it when the run's code, the test helpers or the dependencies
+# change; run it by hand otherwise (Actions › shells › Run workflow).
+name: shells
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "src/terminal/**"
+      - "src/testing.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/shells.yml"
+  workflow_dispatch:
+
+jobs:
+  shells:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang pkg-config libfontconfig-dev \
+            libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-xcb-dev libxcb1-dev libvulkan-dev libdbus-1-dev libssl-dev
+      # Pulled first, so that no test waits on a download.
+      - name: Images
+        run: |
+          for image in bash:4.2 bash:4.4 bash:5.0 bash:5.1 bash:5.2 \
+            debian:stable-slim alpine:3 rockylinux:9; do
+            docker pull --quiet "$image"
+          done
+      # rust-toolchain.toml picks the toolchain; this installs it with the
+      # components it lists before the cache key is computed.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --lib terminal::run -- --include-ignored

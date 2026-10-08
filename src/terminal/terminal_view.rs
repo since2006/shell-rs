@@ -402,6 +402,11 @@ impl TerminalView {
         self.engine.read(cx).exec(command)
     }
 
+    /// Take up an `exec --terminal` run; see [`TerminalEngine::run_command`].
+    pub fn run_command(&self, run: super::RunHandle, cx: &App) -> Result<(), super::RunFailure> {
+        self.engine.read(cx).run_command(run)
+    }
+
     pub fn screen_text(&self, cx: &App) -> String {
         self.engine.read(cx).snapshot().visible_text()
     }

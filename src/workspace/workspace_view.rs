@@ -265,6 +265,7 @@ impl Workspace {
             Ok(server) => {
                 this.cli_server = Some(server);
                 this.serve_cli(window, cx);
+                this.serve_cli_runs(window, cx);
             }
             Err(error) => notify_once_open(
                 Notification::error(error.to_string()).title(t!("workspace.cli.start_failed")),
