@@ -63,6 +63,8 @@ pub struct TerminalSnapshot {
     pub cursor_shape: CursorShape,
     pub cursor_blinking: bool,
     pub display_offset: usize,
+    /// The lines above the screen, which the view can scroll back through.
+    pub history_size: usize,
     pub colors: [Option<Rgb>; COUNT],
     /// The addresses of the links on screen, by the cells' `link`.
     pub links: Vec<gpui_kit::SharedString>,
@@ -360,6 +362,11 @@ impl TerminalEngine {
         cx.notify();
     }
 
+    /// Scrolls the view without a context, for the scrollbar's drag.
+    pub fn scrollback(&self) -> Scrollback {
+        Scrollback(self.runtime.term.clone())
+    }
+
     pub fn start_selection(
         &mut self,
         point: Point,
@@ -588,10 +595,33 @@ impl TerminalEngine {
             cursor_shape: content.cursor.shape,
             cursor_blinking: term.cursor_style().blinking,
             display_offset: content.display_offset,
+            history_size: term.grid().history_size(),
             colors: std::array::from_fn(|index| content.colors[index]),
             links: links.into_links(),
         }
     }
+}
+
+/// A terminal's view of its history, for the scrollbar, whose drag hands
+/// over a position and no context: whoever draws the terminal is told to
+/// redraw it. Taken for each frame, as a restart replaces the terminal.
+#[derive(Clone)]
+pub struct Scrollback(Arc<FairMutex<AlacrittyTerm>>);
+
+impl Scrollback {
+    /// Show the history from `lines` below its oldest line.
+    pub fn scroll_to(&self, lines: usize) {
+        scroll_to(&mut self.0.lock(), lines);
+    }
+}
+
+/// Lines are counted from the top, which stays put while output arrives
+/// below: the view stays where the pointer let it go.
+fn scroll_to(term: &mut AlacrittyTerm, lines: usize) {
+    let grid = term.grid();
+    let offset = grid.history_size().saturating_sub(lines);
+    let delta = offset as i32 - grid.display_offset() as i32;
+    term.scroll_display(Scroll::Delta(delta));
 }
 
 /// The text of the line the cursor is on, or of the nearest line above it
@@ -1590,6 +1620,21 @@ mod tests {
         assert_eq!(cells[1].search, SearchMark::Match);
         assert_eq!(cells[3].search, SearchMark::Match);
         assert_eq!(cells[2].search, SearchMark::None);
+    }
+
+    #[test]
+    fn the_scrollbar_counts_lines_from_the_top_of_the_history() {
+        let mut term = test_term(8, 2);
+        feed(&mut term, "1\r\n2\r\n3\r\n4\r\n5".as_bytes());
+        assert_eq!(term.grid().history_size(), 3);
+
+        scroll_to(&mut term, 0);
+        assert_eq!(term.grid().display_offset(), 3);
+        scroll_to(&mut term, 2);
+        assert_eq!(term.grid().display_offset(), 1);
+        // Past the bottom is the bottom.
+        scroll_to(&mut term, 10);
+        assert_eq!(term.grid().display_offset(), 0);
     }
 
     #[test]

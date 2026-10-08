@@ -922,6 +922,25 @@ async fn programs_that_ask_for_the_mouse_hear_clicks_and_the_wheel(cx: &mut Test
 }
 
 #[gpui_kit::test]
+async fn the_scrollbar_scrolls_back_through_the_history(cx: &mut TestAppContext) {
+    let text: String = (1..=200).map(|line| format!("line {line}\r\n")).collect();
+    let (handle, workspace, _) = terminal_printing(cx, String::leak(text + "end"), "end").await;
+    let screen = |cx: &mut TestAppContext| cx.read(|cx| local_screen(&workspace, cx));
+    assert!(!screen(cx).lines().any(|line| line == "line 1"));
+
+    // A click at the top of the scrollbar's track, in the margin beside the
+    // text, goes to the oldest line.
+    in_frame(cx, handle, |window, cx| {
+        let terminal = window.find(("local-terminal", 1_u64)).bounds();
+        let top = point(terminal.right() + px(2.), terminal.top() + px(2.));
+        click_at(window, top, gpui_kit::Modifiers::none(), cx);
+    });
+    let lines = screen(cx);
+    assert!(lines.lines().any(|line| line == "line 1"), "{lines}");
+    assert!(!lines.contains("end"), "{lines}");
+}
+
+#[gpui_kit::test]
 async fn a_program_copies_to_the_local_clipboard(cx: &mut TestAppContext) {
     // 「你好」 in base64.
     let (handle, _, _) = terminal_printing(cx, "\x1b]52;c;5L2g5aW9\x07copied", "copied").await;

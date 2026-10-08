@@ -11,6 +11,7 @@ mod model;
 mod mouse;
 mod notices;
 mod run;
+mod scrollbar;
 mod search;
 mod terminal_panel;
 mod terminal_view;

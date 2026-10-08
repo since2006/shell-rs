@@ -14,6 +14,7 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::PopupMenu,
+    scroll::Scrollbar,
     tooltip::Tooltip,
     v_flex,
 };
@@ -29,6 +30,7 @@ use crate::connection::{ConnectionPromptReply, Latency};
 use crate::i18n::{UiLocale, t};
 
 use super::mouse::{self, MouseReport, ReportButton, ReportKind};
+use super::scrollbar::ScrollbackHandle;
 use super::search::SearchMark;
 use super::{
     SearchDirection, SharedTerminalTransportFactory, TerminalColors, TerminalEngine, TerminalEvent,
@@ -915,6 +917,12 @@ impl EntityInputHandler for TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.engine.read(cx).snapshot();
+        let font = TerminalFont::current(cx);
+        let scrollback = ScrollbackHandle::new(
+            self.engine.read(cx).scrollback(),
+            &snapshot,
+            font.row_height(window),
+        );
         let view = cx.entity();
         let context_menu = self.context_menu.clone();
         let element = TerminalElement {
@@ -927,7 +935,6 @@ impl Render for TerminalView {
             requested_size: self.requested_size,
         };
 
-        let font = TerminalFont::current(cx);
         let terminal = div()
             .id(self.element_id.clone())
             .test_support()
@@ -984,6 +991,26 @@ impl Render for TerminalView {
             // the terminal's too.
             .bg(TerminalColors::current(cx).background())
             .child(terminal)
+            // Over the whole margin, so the thumb lies mostly beside the text.
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(
+                        canvas(
+                            {
+                                let scrollback = scrollback.clone();
+                                move |bounds, _, _| scrollback.set_viewport(bounds)
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full(),
+                    )
+                    .child(Scrollbar::vertical(&scrollback).id("terminal-scrollbar")),
+            )
             .when_some(self.find.as_ref(), |container, find| {
                 container.child(self.render_find_bar(find, cx))
             })
