@@ -444,7 +444,11 @@ mod sh {
 
         // Several lines, and a command killed by a signal.
         let (found, _) = run_line("cd /\npwd\nkill -TERM $$");
-        assert_eq!(found[1], Scanned::Output(b"/\n".to_vec()));
+        // dash, as the sh that waits for it, also says "Terminated" there.
+        let Scanned::Output(output) = &found[1] else {
+            panic!("{found:?}");
+        };
+        assert!(output.starts_with(b"/\n"), "{found:?}");
         assert_eq!(found[2], Scanned::End(143));
         let (found, _) = run_line("kill -INT $$");
         assert_eq!(found.last(), Some(&Scanned::End(130)));
