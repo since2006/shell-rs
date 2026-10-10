@@ -132,7 +132,7 @@ pub struct PathChoice {
     title: SharedString,
     path: SharedString,
     depth: usize,
-    home: bool,
+    place: Option<Place>,
     side: PaneSide,
 }
 impl SearchableListItem for PathChoice {
@@ -144,10 +144,10 @@ impl SearchableListItem for PathChoice {
         &self.path
     }
     fn render(&self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let icon = if self.home {
-            Icon::new(CatalogIcon::House)
-        } else {
-            Icon::new(IconName::Folder)
+        let icon = match self.place {
+            Some(Place::Home) => Icon::new(CatalogIcon::House),
+            Some(Place::Drive(..)) => Icon::new(IconName::HardDrive),
+            _ => Icon::new(IconName::Folder),
         };
         h_flex()
             .gap_2()
@@ -182,7 +182,8 @@ pub struct FilePane {
     host_id: HostId,
     pub(super) path: String,
     home: String,
-    /// Well-known local places for the 目录列表 select; empty for remote.
+    /// Well-known local places for the 目录列表 select, read with each
+    /// local listing; empty for remote.
     places: Vec<(Place, String)>,
     table: Entity<TableState<FileListing>>,
     /// The path label part under the pointer, by the directory it opens.
@@ -236,7 +237,6 @@ impl FilePane {
         explorer: ExplorerId,
         host_id: HostId,
         home: String,
-        places: Vec<(Place, String)>,
         store: Entity<HostStore>,
         dispatch: FocusHandle,
         window: &mut Window,
@@ -290,7 +290,7 @@ impl FilePane {
             host_id,
             path: home.clone(),
             home,
-            places,
+            places: Vec::new(),
             table,
             hovered_part: None,
             label_width: Rc::default(),
@@ -495,6 +495,10 @@ impl FilePane {
     }
     pub fn is_busy(&self) -> bool {
         self.busy
+    }
+    /// The places the 目录列表 select offers, as of the last local listing.
+    pub fn places(&self) -> &[(Place, String)] {
+        &self.places
     }
     /// Select this row once the next listing arrives.
     pub fn select_after_load(&mut self, name: String) {
@@ -935,7 +939,7 @@ impl FilePane {
                         title: title.into(),
                         path: path.into(),
                         depth,
-                        home: false,
+                        place: None,
                         side,
                     }),
             ),
@@ -947,7 +951,7 @@ impl FilePane {
                         title: place.title(),
                         path: path.clone().into(),
                         depth: 0,
-                        home: *place == Place::Home,
+                        place: Some(*place),
                         side,
                     }),
                 ),
@@ -969,14 +973,21 @@ impl FilePane {
     ) {
         let id = self.begin_load(intent, cx);
         self.load_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = cx
+            let (result, places) = cx
                 .background_spawn(async move {
-                    provider
+                    let result = provider
                         .list(&PathBuf::from(path))
-                        .map_err(|e| t!("explorer.list.read_failed", error = e).to_string())
+                        .map_err(|e| t!("explorer.list.read_failed", error = e).to_string());
+                    let places = provider
+                        .places()
+                        .into_iter()
+                        .map(|(place, path)| (place, path.to_string_lossy().into_owned()))
+                        .collect();
+                    (result, places)
                 })
                 .await;
             let _ = this.update_in(cx, |this, window, cx| {
+                this.places = places;
                 this.apply_listing(id, result, window, cx)
             });
         }));

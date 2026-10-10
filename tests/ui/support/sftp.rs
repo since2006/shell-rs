@@ -271,6 +271,8 @@ pub struct FakeLocalDirectory {
     pub calls: Arc<Mutex<Vec<String>>>,
     /// The files the editor reads and writes, in memory.
     pub files: Arc<Mutex<std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>>>,
+    /// The places it offers, such as a drive plugged in.
+    pub places: Arc<Mutex<Vec<(shellrs::sftp::Place, std::path::PathBuf)>>>,
 }
 
 impl FakeLocalDirectory {
@@ -286,6 +288,9 @@ impl LocalDirectoryProvider for FakeLocalDirectory {
     }
     fn list(&self, path: &std::path::Path) -> anyhow::Result<DirectoryListing> {
         Ok(fake_listing(path.to_str().unwrap()))
+    }
+    fn places(&self) -> Vec<(shellrs::sftp::Place, std::path::PathBuf)> {
+        self.places.lock().unwrap().clone()
     }
     fn trash(&self, paths: &[std::path::PathBuf]) -> anyhow::Result<()> {
         self.record(format!("trash {paths:?}"))

@@ -926,6 +926,41 @@ fn paths_and_journals_reject_unsafe_identity() {
     });
 }
 
+/// Drives are titled as WinSCP does: the letter, then what kind it is.
+#[test]
+fn drives_are_titled_by_letter_and_kind() {
+    assert_eq!(Place::Drive('C', DriveKind::Local).title(), "C: 本地磁盘");
+    assert_eq!(
+        Place::Drive('E', DriveKind::Removable).title(),
+        "E: 可移动磁盘"
+    );
+    assert_eq!(
+        Place::Drive('Z', DriveKind::Network).title(),
+        "Z: 网络驱动器"
+    );
+    assert_eq!(
+        Place::Drive('F', DriveKind::Optical).title(),
+        "F: CD 驱动器"
+    );
+    assert_eq!(Place::Drive('G', DriveKind::Other).title(), "G:");
+}
+
+/// Without the drives, the local pane could not leave the one it started on.
+#[cfg(windows)]
+#[test]
+fn local_listing_places_include_the_system_drive() {
+    let system = std::env::var("SystemDrive").unwrap();
+    let letter = system.chars().next().unwrap().to_ascii_uppercase();
+    let places = SystemLocalDirectoryProvider.places();
+    assert!(
+        places.contains(&(
+            Place::Drive(letter, DriveKind::Local),
+            std::path::PathBuf::from(format!("{letter}:\\"))
+        )),
+        "{places:?}"
+    );
+}
+
 /// On Windows std canonicalizes to `\\?\C:\…`, which the pane showed as is.
 #[test]
 fn local_listing_reports_the_path_people_type() {

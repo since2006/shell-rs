@@ -251,7 +251,7 @@ Open a host’s “SFTP” tab to browse local and remote folders. As with termi
 Each pane has two rows of toolbar, with the path label below them. When a pane is too narrow, buttons hide whole, from right to left, rather than wrapping (their commands are still in the context menus and shortcuts). A new SFTP tab splits evenly between the local and remote sides; wherever you drag the dividers between the sides and the queue, they stay there until the tab closes, even when you switch to another tab and back:
 
 - First row (navigation):
-  - The folder list: lists every level from the root to the current folder, plus Home, Desktop, Documents and Downloads on the local side; choose one to go there.
+  - The folder list: lists every level from the root to the current folder, plus Home, Desktop, Documents and Downloads on the local side, and on Windows every drive (such as “C: Local disk” and “D: Local disk”); choose one to go there.
   - Bookmarks: the button opens the “Open folder” dialog (see below); the drop-down arrow next to it lists this host’s bookmarks for this side, which you click to go there, and can also add or remove the current path. Bookmarks are saved in the local database and deleted along with the host.
   - Parent folder, Root folder, Home folder, Refresh, Back, Forward.
   - Show / hide hidden files: files and folders whose names start with `.`. An open eye means they’re shown, a crossed-out eye that they’re hidden. Local and remote each have their own switch, independent of each other; each side’s choice applies to every SFTP tab and is saved in the settings; both are hidden by default. While they’re hidden, the bottom of the pane says “N hidden”; while they’re shown, hidden files’ text is lighter.

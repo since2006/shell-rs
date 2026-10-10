@@ -1271,6 +1271,50 @@ async fn sftp_tab_reconnects_from_its_tab_bar_and_reports_at_the_bottom_left(
     cx.update(|cx| assert_eq!(workspace.read(cx).explorers_of(HostId(DB_01), cx).len(), 2));
 }
 
+/// The 目录列表 select's places, Windows drives among them, are read again
+/// with each local listing: a drive plugged in shows up on the next refresh.
+#[gpui_kit::test]
+async fn local_places_are_read_again_with_each_listing(cx: &mut TestAppContext) {
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
+    use shellrs::sftp::{DriveKind, Place};
+    let local = FakeLocalDirectory::default();
+    let system = (Place::Drive('C', DriveKind::Local), "/c".to_string());
+    local
+        .places
+        .lock()
+        .unwrap()
+        .push((system.0, system.1.clone().into()));
+    let (handle, workspace) =
+        open_workspace_with_services(cx, Arc::new(FakeSftpProvider::default()), local.clone());
+    open_test_explorer(cx, handle).await;
+    let places = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            let explorer = workspace.read(cx).explorer(ExplorerId(SFTP_TAB)).unwrap();
+            explorer.read(cx).local().read(cx).places().to_vec()
+        })
+    };
+    assert_eq!(places(cx), std::slice::from_ref(&system));
+
+    let stick = (Place::Drive('E', DriveKind::Removable), "/e".to_string());
+    local
+        .places
+        .lock()
+        .unwrap()
+        .push((stick.0, stick.1.clone().into()));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::Refresh { remote: false },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(places(cx), [system, stick]);
+}
+
 #[gpui_kit::test]
 async fn sftp_file_commands_confirm_validate_and_send_one_operation(cx: &mut TestAppContext) {
     use shellrs::app::{ExplorerAction, ExplorerCommand};

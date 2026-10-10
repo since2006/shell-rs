@@ -15,6 +15,18 @@ sftp.place.documents:
 sftp.place.downloads:
   zh-CN: 下载
   en: Downloads
+sftp.place.drive_local:
+  zh-CN: "%{drive} 本地磁盘"
+  en: "%{drive} Local disk"
+sftp.place.drive_removable:
+  zh-CN: "%{drive} 可移动磁盘"
+  en: "%{drive} Removable disk"
+sftp.place.drive_network:
+  zh-CN: "%{drive} 网络驱动器"
+  en: "%{drive} Network drive"
+sftp.place.drive_optical:
+  zh-CN: "%{drive} CD 驱动器"
+  en: "%{drive} CD drive"
 
 sftp.error.remote_path_invalid:
   zh-CN: 远程路径不能为空或包含空字符

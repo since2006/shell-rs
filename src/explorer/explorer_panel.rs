@@ -117,18 +117,12 @@ impl ExplorerPanel {
             .expect("workspace checked host");
         let endpoint = login.endpoint();
         let home = local_provider.home().to_string_lossy().into_owned();
-        let places = local_provider
-            .places()
-            .into_iter()
-            .map(|(place, path)| (place, path.to_string_lossy().into_owned()))
-            .collect();
         let local = cx.new(|cx| {
             FilePane::new(
                 PaneSide::Local,
                 id,
                 host_id,
                 home.clone(),
-                places,
                 store.clone(),
                 dispatch.clone(),
                 window,
@@ -141,7 +135,6 @@ impl ExplorerPanel {
                 id,
                 host_id,
                 String::new(),
-                Vec::new(),
                 store.clone(),
                 dispatch.clone(),
                 window,

@@ -693,6 +693,18 @@ pub enum Place {
     Desktop,
     Documents,
     Downloads,
+    /// A Windows drive by its letter, as WinSCP lists them: `C: 本地磁盘`.
+    Drive(char, DriveKind),
+}
+
+/// What a Windows drive is, which its title says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DriveKind {
+    Local,
+    Removable,
+    Network,
+    Optical,
+    Other,
 }
 
 impl Place {
@@ -702,6 +714,16 @@ impl Place {
             Self::Desktop => t!("sftp.place.desktop"),
             Self::Documents => t!("sftp.place.documents"),
             Self::Downloads => t!("sftp.place.downloads"),
+            Self::Drive(letter, kind) => {
+                let drive = format!("{letter}:");
+                match kind {
+                    DriveKind::Local => t!("sftp.place.drive_local", drive = drive),
+                    DriveKind::Removable => t!("sftp.place.drive_removable", drive = drive),
+                    DriveKind::Network => t!("sftp.place.drive_network", drive = drive),
+                    DriveKind::Optical => t!("sftp.place.drive_optical", drive = drive),
+                    DriveKind::Other => drive.into(),
+                }
+            }
         }
     }
 }
@@ -710,8 +732,9 @@ impl Place {
 pub trait LocalDirectoryProvider: Send + Sync + 'static {
     fn home(&self) -> PathBuf;
     fn list(&self, path: &Path) -> Result<DirectoryListing>;
-    /// Well-known folders for the 目录列表 select, home first. Looked up
-    /// from the platform, without touching the file system.
+    /// Well-known folders for the 目录列表 select, home first, then the
+    /// drives on Windows. Read again with each listing, on the same
+    /// background executor, so a drive plugged in since shows up.
     fn places(&self) -> Vec<(Place, PathBuf)> {
         Vec::new()
     }
@@ -746,6 +769,41 @@ pub trait LocalDirectoryProvider: Send + Sync + 'static {
     ) -> Result<FileStamp>;
 }
 pub type SharedLocalDirectoryProvider = std::sync::Arc<dyn LocalDirectoryProvider>;
+
+/// Every drive letter in use, `A:\` to `Z:\`: without them the local pane
+/// could not leave the drive it started on.
+#[cfg(windows)]
+fn drives() -> Vec<(Place, PathBuf)> {
+    use windows_sys::Win32::{
+        Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives},
+        System::WindowsProgramming::{
+            DRIVE_CDROM, DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOTE, DRIVE_REMOVABLE,
+        },
+    };
+    // SAFETY: takes nothing and returns a bit mask, bit 0 for `A:`.
+    let letters = unsafe { GetLogicalDrives() };
+    (b'A'..=b'Z')
+        .filter(|letter| letters & (1 << (letter - b'A')) != 0)
+        .map(|letter| {
+            let root = format!("{}:\\", char::from(letter));
+            let wide: Vec<u16> = root.encode_utf16().chain([0]).collect();
+            // SAFETY: `wide` is a null-terminated UTF-16 string that outlives
+            // the call.
+            let kind = match unsafe { GetDriveTypeW(wide.as_ptr()) } {
+                DRIVE_FIXED | DRIVE_RAMDISK => DriveKind::Local,
+                DRIVE_REMOVABLE => DriveKind::Removable,
+                DRIVE_REMOTE => DriveKind::Network,
+                DRIVE_CDROM => DriveKind::Optical,
+                _ => DriveKind::Other,
+            };
+            (Place::Drive(char::from(letter), kind), PathBuf::from(root))
+        })
+        .collect()
+}
+#[cfg(not(windows))]
+fn drives() -> Vec<(Place, PathBuf)> {
+    Vec::new()
+}
 #[derive(Default)]
 pub struct SystemLocalDirectoryProvider;
 impl LocalDirectoryProvider for SystemLocalDirectoryProvider {
@@ -761,6 +819,7 @@ impl LocalDirectoryProvider for SystemLocalDirectoryProvider {
         ]
         .into_iter()
         .filter_map(|(place, path)| Some((place, path?)))
+        .chain(drives())
         .collect()
     }
     fn list(&self, path: &Path) -> Result<DirectoryListing> {
