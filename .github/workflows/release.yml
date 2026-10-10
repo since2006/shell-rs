@@ -1,7 +1,7 @@
 # A release: push a tag `v<version>` matching Cargo.toml's version.
 #
 #   verify   the tag, the CHANGELOG section, the update keys
-#   macos    universal app: signed, notarized, stapled; update zip and DMG
+#   macos    per-architecture apps: signed, notarized, stapled; update zip and DMG
 #   windows  per-user Inno Setup installer (unsigned for now)
 #   linux    AppImage
 #   publish  (environment `release`, approved by hand) uploads to R2 behind
@@ -83,8 +83,13 @@ jobs:
   macos:
     needs: verify
     runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, x86_64]
     timeout-minutes: 120
     env:
+      ARCH: ${{ matrix.arch }}
       VERSION: ${{ needs.verify.outputs.version }}
       SHELLRS_UPDATE_CHANNEL: ${{ needs.verify.outputs.channel }}
       SHELLRS_COMMIT: ${{ github.sha }}
@@ -92,18 +97,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install
-      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - run: rustup target add "$ARCH-apple-darwin"
       - uses: Swatinem/rust-cache@v2
-      - name: Build both halves and join them
+        with:
+          key: macos-${{ matrix.arch }}
+      - name: Build the architecture-specific app
         run: |
           export SHELLRS_BUILD_DATE=$(date -u +%Y-%m-%d)
-          cargo build --release --locked --bin shellrs --target aarch64-apple-darwin
-          cargo build --release --locked --bin shellrs --target x86_64-apple-darwin
+          cargo build --release --locked --bin shellrs --target "$ARCH-apple-darwin"
           mkdir -p dist build
-          lipo -create -output build/shellrs \
-            target/aarch64-apple-darwin/release/shellrs \
-            target/x86_64-apple-darwin/release/shellrs
-          packaging/macos/bundle.sh build/shellrs "$VERSION" "$GITHUB_RUN_NUMBER" build
+          lipo -verify_arch "${ARCH/aarch64/arm64}" "target/$ARCH-apple-darwin/release/shellrs"
+          packaging/macos/bundle.sh "target/$ARCH-apple-darwin/release/shellrs" "$VERSION" "$GITHUB_RUN_NUMBER" build
       - name: Sign
         env:
           CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 }}
@@ -147,12 +151,12 @@ jobs:
           xcrun stapler staple build/ShellRS.app
           # The update package: the stapled bundle, zipped the way the
           # updater unzips it (ditto keeps the signature intact).
-          ditto -c -k --keepParent build/ShellRS.app "dist/ShellRS-$VERSION-macos-universal.app.zip"
+          ditto -c -k --keepParent build/ShellRS.app "dist/ShellRS-$VERSION-macos-$ARCH.app.zip"
           # The first-install disk image, with the Applications shortcut.
           mkdir -p "$RUNNER_TEMP/dmg"
           cp -R build/ShellRS.app "$RUNNER_TEMP/dmg/"
           ln -s /Applications "$RUNNER_TEMP/dmg/Applications"
-          dmg="dist/ShellRS-$VERSION-macos-universal.dmg"
+          dmg="dist/ShellRS-$VERSION-macos-$ARCH.dmg"
           # hdiutil's own estimate of the image size once came out too small
           # for the app ("No space left on device"), so the size is given,
           # with room to spare; the compressed image is about half the app.
@@ -171,7 +175,7 @@ jobs:
           spctl -a -vv -t install "$dmg"
       - uses: actions/upload-artifact@v4
         with:
-          name: macos
+          name: macos-${{ matrix.arch }}
           path: dist/*
 
   windows:
@@ -265,7 +269,7 @@ jobs:
       - name: Collect
         run: |
           mkdir -p dist
-          cp artifacts/macos/* artifacts/windows/* artifacts/linux/* dist/
+          cp artifacts/macos-aarch64/* artifacts/macos-x86_64/* artifacts/windows/* artifacts/linux/* dist/
           cp artifacts/notes/notes.md notes.md
           ls -l dist
       - name: Signing key
