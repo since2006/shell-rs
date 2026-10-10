@@ -17,6 +17,7 @@ use crate::update::Channel;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
+    pub ssh_agent: crate::ssh_agent::AgentSelection,
     pub language: InterfaceLanguage,
     pub appearance: Appearance,
     /// 外观 → 终端主题.

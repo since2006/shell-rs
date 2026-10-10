@@ -32,6 +32,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
 use zeroize::Zeroizing;
 
+use super::agent_forwarding::{AgentForwarding, AgentOpens};
 use super::proxy::{ProxyAuth, handshake};
 use super::tester::describe_login_error;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -67,8 +68,10 @@ impl SshConnectionConfig {
 /// Where the SSH agent listens.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum AgentLocation {
-    /// The user's own agent: the socket `SSH_AUTH_SOCK` names on macOS and
-    /// Linux, the OpenSSH agent service's pipe on Windows.
+    /// Try environment then known sockets, skipping unreachable or empty agents.
+    Auto,
+    /// Only SSH_AUTH_SOCK on Unix or the OpenSSH service pipe on Windows.
+    /// No discovery or fallback for an explicitly selected environment agent.
     #[default]
     System,
     /// An agent at this socket or pipe. Tests use it rather than change the
@@ -82,7 +85,7 @@ pub struct SshConnector {
     known_hosts_path: PathBuf,
     known_hosts_lock: Arc<Mutex<()>>,
     secrets: SharedSecretStore,
-    agent: AgentLocation,
+    agent: Option<AgentLocation>,
 }
 impl SshConnector {
     pub fn new(path: impl Into<PathBuf>, secrets: SharedSecretStore) -> Self {
@@ -90,15 +93,25 @@ impl SshConnector {
             known_hosts_path: path.into(),
             known_hosts_lock: Arc::new(Mutex::new(())),
             secrets,
-            agent: AgentLocation::System,
+            agent: None,
         }
     }
 
     /// Use the agent at `agent` instead of the user's own.
     pub fn with_agent(mut self, agent: AgentLocation) -> Self {
-        self.agent = agent;
+        self.agent = Some(agent);
         self
     }
+    fn agent_for(&self, login: &HostLogin) -> AgentLocation {
+        self.agent
+            .clone()
+            .unwrap_or_else(|| match &login.ssh_agent {
+                crate::ssh_agent::AgentSelection::Auto => AgentLocation::Auto,
+                crate::ssh_agent::AgentSelection::Environment => AgentLocation::System,
+                crate::ssh_agent::AgentSelection::Path(path) => AgentLocation::At(path.clone()),
+            })
+    }
+
     /// Must run on a worker: keychain and private-key reads are blocking.
     pub async fn connect(
         &self,
@@ -120,9 +133,51 @@ impl SshConnector {
     ) -> Result<(SshHandle, String, mpsc::UnboundedReceiver<ForwardedTcpip>)> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let (handle, fingerprint) = self
-            .connect_inner(config, broker, &self.secrets, Some(sender))
+            .connect_inner(
+                config,
+                broker,
+                &self.secrets,
+                ServerChannels {
+                    tcp: Some(sender),
+                    agent: None,
+                    agent_location: None,
+                },
+            )
             .await?;
         Ok((handle, fingerprint, receiver))
+    }
+
+    /// Only terminal connections receive permission to open agent channels.
+    pub(super) async fn connect_terminal(
+        &self,
+        config: &SshConnectionConfig,
+        broker: Arc<SshPrompts>,
+    ) -> Result<(SshHandle, Option<AgentForwarding>)> {
+        let (forwarding, agent, agent_location) = if config.login.agent_forwarding {
+            let (agent, location) = step(&broker, async {
+                resolve_agent(&self.agent_for(&config.login))
+                    .await
+                    .map_err(|error| anyhow!(error.to_string()))
+            })
+            .await?;
+            let (forwarding, opens) = AgentForwarding::new(agent, location.clone());
+            (Some(forwarding), Some(opens), Some(location))
+        } else {
+            (None, None, None)
+        };
+        let (handle, _) = self
+            .connect_inner(
+                config,
+                broker,
+                &self.secrets,
+                ServerChannels {
+                    tcp: None,
+                    agent,
+                    agent_location,
+                },
+            )
+            .await?;
+        Ok((handle, forwarding))
     }
 
     /// The keychain this connector reads saved secrets from.
@@ -137,7 +192,8 @@ impl SshConnector {
         broker: Arc<SshPrompts>,
         secrets: &SharedSecretStore,
     ) -> Result<(client::Handle<SshClientHandler>, String)> {
-        self.connect_inner(config, broker, secrets, None).await
+        self.connect_inner(config, broker, secrets, ServerChannels::default())
+            .await
     }
 
     async fn connect_inner(
@@ -145,7 +201,7 @@ impl SshConnector {
         config: &SshConnectionConfig,
         broker: Arc<SshPrompts>,
         secrets: &SharedSecretStore,
-        forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+        channels: ServerChannels,
     ) -> Result<(client::Handle<SshClientHandler>, String)> {
         let login = &config.login;
         let tunnel = match &login.route {
@@ -157,7 +213,7 @@ impl SshConnector {
             }
             LoginRoute::Jump(hops) => self.through_jumps(hops, login, &broker, secrets).await?,
         };
-        self.log_in(tunnel, login, None, &broker, secrets, forwarded)
+        self.log_in(tunnel, login, None, &broker, secrets, channels)
             .await
     }
 
@@ -170,8 +226,12 @@ impl SshConnector {
         jump_host: Option<&str>,
         broker: &Arc<SshPrompts>,
         secrets: &SharedSecretStore,
-        forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+        channels: ServerChannels,
     ) -> Result<(SshHandle, String)> {
+        let agent = channels
+            .agent_location
+            .clone()
+            .unwrap_or_else(|| self.agent_for(login));
         let fingerprint = Arc::new(Mutex::new(String::new()));
         let handler = SshClientHandler {
             host: login.host.clone(),
@@ -181,7 +241,7 @@ impl SshConnector {
             known_hosts_lock: self.known_hosts_lock.clone(),
             broker: broker.clone(),
             fingerprint: fingerprint.clone(),
-            forwarded,
+            channels,
         };
         let connect = async {
             client::connect_stream(ssh_config(), tunnel, handler)
@@ -195,7 +255,7 @@ impl SshConnector {
         };
         let mut shutdown = broker.shutdown_receiver();
         tokio::select! {
-            result = authenticate(&mut handle, login, secrets, &self.agent, prompts) => result?,
+            result = authenticate(&mut handle, login, secrets, &agent, prompts) => result?,
             _ = shutdown.changed() => bail!(t!("ssh.connect.cancelled")),
         }
         let fingerprint = lock(&fingerprint).clone();
@@ -273,7 +333,14 @@ impl SshConnector {
             None => Box::new(step(broker, tcp(&hop.host, hop.port)).await?),
         };
         let (handle, _) = self
-            .log_in(tunnel, hop, Some(name), broker, secrets, None)
+            .log_in(
+                tunnel,
+                hop,
+                Some(name),
+                broker,
+                secrets,
+                ServerChannels::default(),
+            )
             .await?;
         let (next_host, next_port) = next;
         let open = async {
@@ -684,6 +751,13 @@ pub struct ForwardedTcpip {
     pub originator_port: u32,
 }
 
+#[derive(Default)]
+struct ServerChannels {
+    agent_location: Option<AgentLocation>,
+    tcp: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+    agent: Option<AgentOpens>,
+}
+
 pub struct SshClientHandler {
     host: String,
     port: u16,
@@ -693,9 +767,8 @@ pub struct SshClientHandler {
     known_hosts_lock: Arc<Mutex<()>>,
     broker: Arc<SshPrompts>,
     fingerprint: Arc<Mutex<String>>,
-    /// Where channels for a remote forward go. Only a forwarding connection
-    /// has one; every other connection refuses such channels.
-    forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+    /// Capabilities granted explicitly by the connection owner.
+    channels: ServerChannels,
 }
 
 impl client::Handler for SshClientHandler {
@@ -764,6 +837,22 @@ impl client::Handler for SshClientHandler {
         Ok(true)
     }
 
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        reply: client::ChannelOpenHandle,
+        _: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        if let Some(opens) = &self.channels.agent {
+            opens.open(channel, reply);
+        } else {
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+        }
+        Ok(())
+    }
+
     /// The server only opens these after a `tcpip-forward` request, which
     /// nothing but a forwarding connection sends. One that arrives anyway is
     /// refused rather than accepted and left dangling.
@@ -778,7 +867,7 @@ impl client::Handler for SshClientHandler {
         reply: client::ChannelOpenHandle,
         _: &mut client::Session,
     ) -> Result<(), Self::Error> {
-        match &self.forwarded {
+        match &self.channels.tcp {
             // The forward decides: it accepts once it has reached its target.
             // Should it be gone already, the undelivered `reply` is dropped
             // with the message, which refuses the channel.
@@ -895,7 +984,11 @@ async fn authenticate(
                     partial = is_partial(&result);
                     methods = remaining_methods(result);
                 }
-                Err(problem) if method == LoginMethod::Agent => bail!(problem.to_string()),
+                Err(problem)
+                    if method == LoginMethod::Agent || !matches!(agent, AgentLocation::Auto) =>
+                {
+                    bail!(problem.to_string())
+                }
                 Err(_) => {}
             }
             if method == LoginMethod::Agent && !partial {
@@ -1035,7 +1128,7 @@ struct KeyboardPassword {
     rejected: bool,
 }
 
-type Agent = russh::keys::agent::client::AgentClient<
+pub(super) type Agent = russh::keys::agent::client::AgentClient<
     Box<dyn russh::keys::agent::client::AgentStream + Send + Unpin>,
 >;
 
@@ -1043,7 +1136,7 @@ type Agent = russh::keys::agent::client::AgentClient<
 /// person reads. The cause is folded into the words rather than chained, so
 /// a missing agent is never mistaken for a network failure worth retrying.
 #[derive(Debug)]
-enum AgentProblem {
+pub(super) enum AgentProblem {
     Unreachable(String),
     Empty,
     /// Every key failed to sign: a locked agent, or one that asked to
@@ -1099,19 +1192,96 @@ async fn try_agent(
 }
 
 #[cfg(unix)]
-async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
+pub(super) async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
+    resolve_agent(location).await.map(|(agent, _)| agent)
+}
+
+#[cfg(unix)]
+async fn resolve_agent(location: &AgentLocation) -> Result<(Agent, AgentLocation), AgentProblem> {
+    resolve_discovered_agent(
+        location,
+        std::env::var_os("SSH_AUTH_SOCK"),
+        system_agent_candidates(),
+    )
+    .await
+}
+
+#[cfg(unix)]
+fn system_agent_candidates() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_agent_candidates(dirs::home_dir().as_deref())
+    }
+    #[cfg(not(target_os = "macos"))]
+    Vec::new()
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn macos_agent_candidates(home: Option<&Path>) -> Vec<PathBuf> {
+    crate::ssh_agent::macos_agents(home)
+        .into_iter()
+        .map(|(_, path)| path)
+        .collect()
+}
+
+/// Explicit paths and environment selection never fall back. Automatic
+/// selection skips unavailable or empty agents and keeps the chosen connection.
+#[cfg(unix)]
+async fn resolve_discovered_agent(
+    location: &AgentLocation,
+    auth_sock: Option<std::ffi::OsString>,
+    candidates: Vec<PathBuf>,
+) -> Result<(Agent, AgentLocation), AgentProblem> {
+    if let AgentLocation::At(path) = location {
+        return connect_agent_socket(path, AGENT_TIMEOUT)
+            .await
+            .map(|agent| (agent, AgentLocation::At(path.clone())));
+    }
+    if matches!(location, AgentLocation::Auto) {
+        let mut paths = Vec::new();
+        if let Some(path) = auth_sock.filter(|path| !path.is_empty()) {
+            paths.push(PathBuf::from(path));
+        }
+        for path in candidates {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        let mut empty = false;
+        for path in paths {
+            if let Ok(mut agent) = connect_agent_socket(&path, Duration::from_millis(200)).await {
+                // No signatures during discovery. An empty system agent must not
+                // hide the user's password manager. Bound unresponsive agents.
+                if let Ok(Ok(keys)) =
+                    tokio::time::timeout(AGENT_TIMEOUT, agent.request_identities()).await
+                {
+                    if !keys.is_empty() {
+                        return Ok((agent, AgentLocation::At(path)));
+                    }
+                    empty = true;
+                }
+            }
+        }
+        return Err(if empty {
+            AgentProblem::Empty
+        } else {
+            AgentProblem::Unreachable(t!("ssh.agent.no_socket").into())
+        });
+    }
+    if let Some(path) = auth_sock.filter(|path| !path.is_empty()) {
+        let path = PathBuf::from(path);
+        return connect_agent_socket(&path, AGENT_TIMEOUT)
+            .await
+            .map(|agent| (agent, AgentLocation::At(path)));
+    }
+    Err(AgentProblem::Unreachable(t!("ssh.agent.no_socket").into()))
+}
+
+#[cfg(unix)]
+async fn connect_agent_socket(path: &Path, timeout: Duration) -> Result<Agent, AgentProblem> {
     use russh::keys::agent::client::AgentClient;
 
-    let path = match location {
-        AgentLocation::At(path) => path.clone(),
-        AgentLocation::System => match std::env::var_os("SSH_AUTH_SOCK") {
-            Some(path) if !path.is_empty() => PathBuf::from(path),
-            _ => {
-                return Err(AgentProblem::Unreachable(t!("ssh.agent.no_socket").into()));
-            }
-        },
-    };
-    match tokio::time::timeout(AGENT_TIMEOUT, AgentClient::connect_uds(&path)).await {
+    match tokio::time::timeout(timeout, AgentClient::connect_uds(path)).await {
         Ok(Ok(agent)) => Ok(agent.dynamic()),
         Ok(Err(russh::keys::Error::IO(error))) if error.kind() == std::io::ErrorKind::NotFound => {
             Err(AgentProblem::Unreachable(
@@ -1126,14 +1296,14 @@ async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> 
 }
 
 #[cfg(windows)]
-async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
+pub(super) async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
     use russh::keys::agent::client::AgentClient;
 
     /// Where the OpenSSH Authentication Agent service listens.
     const SYSTEM_PIPE: &str = r"\\.\pipe\openssh-ssh-agent";
     let pipe = match location {
         AgentLocation::At(path) => path.as_os_str().to_owned(),
-        AgentLocation::System => SYSTEM_PIPE.into(),
+        AgentLocation::System | AgentLocation::Auto => SYSTEM_PIPE.into(),
     };
     match tokio::time::timeout(AGENT_TIMEOUT, AgentClient::connect_named_pipe(&pipe)).await {
         Ok(Ok(agent)) => Ok(agent.dynamic()),
@@ -1150,7 +1320,7 @@ async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> 
 }
 
 #[cfg(not(any(unix, windows)))]
-async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
+pub(super) async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
     let _ = location;
     Err(AgentProblem::Unreachable(
         t!("ssh.agent.unsupported").into(),
@@ -1366,8 +1536,201 @@ fn is_partial(result: &AuthResult) -> bool {
     )
 }
 
+#[cfg(all(test, unix))]
+async fn connect_discovered_agent(
+    location: &AgentLocation,
+    auth_sock: Option<std::ffi::OsString>,
+    candidates: Vec<PathBuf>,
+) -> Result<Agent, AgentProblem> {
+    resolve_discovered_agent(location, auth_sock, candidates)
+        .await
+        .map(|(agent, _)| agent)
+}
+
+#[cfg(not(unix))]
+async fn resolve_agent(location: &AgentLocation) -> Result<(Agent, AgentLocation), AgentProblem> {
+    connect_agent(location)
+        .await
+        .map(|agent| (agent, location.clone()))
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    mod agent_discovery {
+        use super::super::{
+            AgentLocation, connect_discovered_agent, macos_agent_candidates,
+            resolve_discovered_agent,
+        };
+        use std::{path::Path, time::Duration};
+        use tokio::net::UnixListener;
+
+        async fn agent_with_keys(path: &Path, count: usize) -> tokio::task::JoinHandle<()> {
+            let listener = UnixListener::bind(path).unwrap();
+            let task = tokio::spawn(async move {
+                let incoming = futures::stream::poll_fn(move |cx| {
+                    listener
+                        .poll_accept(cx)
+                        .map(|result| Some(result.map(|(stream, _)| stream)))
+                });
+                let _ = russh::keys::agent::server::serve(incoming, ()).await;
+            });
+            let mut client = russh::keys::agent::client::AgentClient::connect_uds(path)
+                .await
+                .unwrap();
+            for _ in 0..count {
+                let key = russh::keys::PrivateKey::random(
+                    &mut russh::keys::key::safe_rng(),
+                    russh::keys::Algorithm::Ed25519,
+                )
+                .unwrap();
+                client.add_identity(&key, &[]).await.unwrap();
+            }
+            task
+        }
+
+        #[tokio::test]
+        async fn automatic_skips_empty_system_agent_but_explicit_environment_does_not() {
+            let dir = tempfile::tempdir_in("/tmp").unwrap();
+            let empty = dir.path().join("empty");
+            let full = dir.path().join("full");
+            let empty_task = agent_with_keys(&empty, 0).await;
+            let full_task = agent_with_keys(&full, 1).await;
+            let (mut agent, selected) = resolve_discovered_agent(
+                &AgentLocation::Auto,
+                Some(empty.clone().into_os_string()),
+                vec![empty.clone(), full.clone()],
+            )
+            .await
+            .unwrap();
+            assert_eq!(selected, AgentLocation::At(full.clone()));
+            assert_eq!(agent.request_identities().await.unwrap().len(), 1);
+            let (mut agent, selected) = resolve_discovered_agent(
+                &AgentLocation::System,
+                Some(empty.clone().into_os_string()),
+                vec![full.clone()],
+            )
+            .await
+            .unwrap();
+            assert_eq!(selected, AgentLocation::At(empty));
+            assert!(agent.request_identities().await.unwrap().is_empty());
+            assert!(
+                resolve_discovered_agent(&AgentLocation::System, None, vec![full.clone()])
+                    .await
+                    .is_err()
+            );
+            assert!(
+                resolve_discovered_agent(
+                    &AgentLocation::At(dir.path().join("missing")),
+                    None,
+                    vec![full.clone()]
+                )
+                .await
+                .is_err()
+            );
+            let (_, selected) = resolve_discovered_agent(
+                &AgentLocation::Auto,
+                Some(full.clone().into_os_string()),
+                vec![dir.path().join("missing")],
+            )
+            .await
+            .unwrap();
+            assert_eq!(selected, AgentLocation::At(full.clone()));
+            let (_, selected) = resolve_discovered_agent(
+                &AgentLocation::Auto,
+                Some(dir.path().join("missing").into_os_string()),
+                vec![full.clone()],
+            )
+            .await
+            .unwrap();
+            assert_eq!(selected, AgentLocation::At(full));
+            empty_task.abort();
+            full_task.abort();
+        }
+
+        #[tokio::test]
+        async fn explicit_path_and_environment_are_authoritative() {
+            let dir = tempfile::tempdir_in("/tmp").unwrap();
+            let explicit = dir.path().join("explicit");
+            let environment = dir.path().join("environment");
+            let fallback = dir.path().join("fallback");
+            let explicit_listener = UnixListener::bind(&explicit).unwrap();
+            let environment_listener = UnixListener::bind(&environment).unwrap();
+            let _fallback_listener = UnixListener::bind(&fallback).unwrap();
+            let agent = connect_discovered_agent(
+                &AgentLocation::At(explicit.clone()),
+                Some(environment.clone().into_os_string()),
+                vec![fallback.clone()],
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(1), explicit_listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            drop(agent);
+            let agent = connect_discovered_agent(
+                &AgentLocation::System,
+                Some(environment.clone().into_os_string()),
+                vec![fallback.clone()],
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(1), environment_listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            drop(agent);
+            let missing = dir.path().join("missing");
+            assert!(
+                connect_discovered_agent(
+                    &AgentLocation::At(missing.clone()),
+                    Some(environment.into_os_string()),
+                    vec![fallback.clone()],
+                )
+                .await
+                .is_err()
+            );
+            assert!(
+                connect_discovered_agent(
+                    &AgentLocation::System,
+                    Some(missing.into_os_string()),
+                    vec![fallback],
+                )
+                .await
+                .is_err()
+            );
+        }
+
+        #[tokio::test]
+        async fn discovery_reports_no_reachable_agent() {
+            let dir = tempfile::tempdir_in("/tmp").unwrap();
+            for candidates in [vec![], vec![dir.path().join("missing")]] {
+                assert!(
+                    connect_discovered_agent(&AgentLocation::Auto, None, candidates)
+                        .await
+                        .is_err()
+                );
+            }
+        }
+
+        #[test]
+        fn macos_paths_require_a_home_directory() {
+            assert!(macos_agent_candidates(None).is_empty());
+            let home = Path::new("/Users/test");
+            assert_eq!(
+                macos_agent_candidates(Some(home)),
+                vec![
+                    home.join(".bitwarden-ssh-agent.sock"),
+                    home.join(
+                        "Library/Containers/com.bitwarden.desktop/Data/.bitwarden-ssh-agent.sock"
+                    ),
+                    home.join("Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"),
+                ]
+            );
+        }
+    }
+
     use super::read_known_keys;
     #[test]
     fn malformed_known_hosts_is_blocked() {

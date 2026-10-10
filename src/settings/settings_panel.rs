@@ -54,6 +54,7 @@ pub enum SettingsPanelEvent {
 /// changes.
 pub struct SettingsPanel {
     store: Entity<SettingsStore>,
+    agent_picker: Entity<crate::ssh_agent::AgentPicker>,
     /// What of the external CLI is installed, for 外部 CLI.
     integration: Entity<CliIntegration>,
     /// Where updating stands, for 关于.
@@ -72,7 +73,7 @@ pub struct SettingsPanel {
     shown_category: Rc<Cell<usize>>,
     focus_handle: FocusHandle,
     tab_group: Option<WeakEntity<TabGroup>>,
-    _subscriptions: [Subscription; 4],
+    _subscriptions: Vec<Subscription>,
     _font_scan: Task<()>,
 }
 
@@ -86,7 +87,26 @@ impl SettingsPanel {
     ) -> Self {
         let highlight_rules = cx.new(|cx| HighlightRulesEditor::new(store.clone(), window, cx));
         let shortcuts = cx.new(|cx| ShortcutsEditor::new(store.clone(), window, cx));
-        let subscriptions = [
+        let agent_picker = cx.new(|cx| {
+            crate::ssh_agent::AgentPicker::new(
+                Some(store.read(cx).settings().ssh_agent),
+                false,
+                window,
+                cx,
+            )
+        });
+        let subscriptions = vec![
+            cx.subscribe(
+                &agent_picker,
+                |this, _, event: &crate::ssh_agent::AgentPickerEvent, cx| {
+                    let crate::ssh_agent::AgentPickerEvent::Changed(Some(agent)) = event else {
+                        return;
+                    };
+                    this.store.update(cx, |store, cx| {
+                        store.update(|settings| settings.ssh_agent = agent.clone(), cx)
+                    });
+                },
+            ),
             cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe(&shortcuts, |_, _, cx| cx.notify()),
             cx.observe(&integration, |_, _, cx| cx.notify()),
@@ -109,6 +129,7 @@ impl SettingsPanel {
             integration,
             updater,
             highlight_rules,
+            agent_picker,
             shortcuts,
             font_families: &[],
             shown_category: Rc::default(),
@@ -238,7 +259,7 @@ struct Category {
 type CategoryGroups = fn(&SettingsPanel, &App) -> Vec<SettingGroup>;
 
 /// The categories, in the order the left column lists them.
-const CATEGORIES: [Category; 7] = [
+const CATEGORIES: [Category; 8] = [
     Category {
         title: "settings.category.appearance",
         icon: CatalogIcon::Palette,
@@ -273,6 +294,11 @@ const CATEGORIES: [Category; 7] = [
         title: "settings.category.about",
         icon: CatalogIcon::Info,
         groups: about_groups,
+    },
+    Category {
+        title: "agent.title",
+        icon: CatalogIcon::Terminal,
+        groups: agent_groups,
     },
 ];
 
@@ -1244,4 +1270,14 @@ fn tab_menu(
     cx: &App,
 ) -> PopupMenu {
     close_tab_items(menu, CenterTab::Settings, group, panel, cx)
+}
+
+fn agent_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
+    let picker = panel.agent_picker.clone();
+    vec![
+        SettingGroup::new()
+            .title(t!("agent.default"))
+            .description(t!("agent.default_help"))
+            .items([SettingItem::render(move |_, _, _| picker.clone())]),
+    ]
 }

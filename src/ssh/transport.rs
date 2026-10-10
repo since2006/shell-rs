@@ -150,9 +150,9 @@ impl SshTerminalTransport {
         });
 
         // Said in the terminal: down to the cause, which says what to fix.
-        let (handle, _) = self
+        let (handle, mut forwarding) = self
             .connector
-            .connect(&self.config, broker.clone())
+            .connect_terminal(&self.config, broker.clone())
             .await
             .map_err(|error| anyhow!(describe_login_error(&error)))?;
         let mut shutdown = broker.shutdown_receiver();
@@ -162,6 +162,12 @@ impl SshTerminalTransport {
             }
             _ = shutdown.changed() => bail!(t!("ssh.connect.cancelled")),
         };
+        if let Some(forwarding) = forwarding.as_mut() {
+            tokio::select! {
+                result = forwarding.request(&mut channel) => result?,
+                _ = shutdown.changed() => bail!(t!("ssh.connect.cancelled")),
+            }
+        }
         tokio::select! {
             result = channel.request_pty(
                 true,
@@ -1301,13 +1307,13 @@ mod tests {
     /// `agent`.
     #[cfg(unix)]
     fn agent_login(port: u16, agent: std::path::PathBuf, known_hosts: &Path) -> Result<(), String> {
-        let login = HostLogin::with_credential(
+        let mut login = HostLogin::with_credential(
             "127.0.0.1",
             port,
             &credential(crate::host::CredentialKind::Agent),
         );
-        let connector = SshConnector::new(known_hosts, Arc::new(NoSecretStore))
-            .with_agent(crate::ssh::AgentLocation::At(agent));
+        login.ssh_agent = crate::ssh_agent::AgentSelection::Path(agent);
+        let connector = SshConnector::new(known_hosts, Arc::new(NoSecretStore));
         test_through(connector, crate::connection::LoginTest::saved(login))
     }
 
@@ -2137,3 +2143,7 @@ mod tests {
         worker.join().unwrap();
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "agent_forwarding_tests.rs"]
+mod agent_forwarding_tests;

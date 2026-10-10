@@ -4,6 +4,7 @@ use std::time::Duration;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
     combobox::{Combobox, ComboboxEvent, ComboboxState},
     dialog::{Cancel, Confirm, DialogButtonProps, DialogFooter},
     form::{Field, Form},
@@ -198,6 +199,8 @@ pub struct HostForm {
     /// The proxy's password.
     proxy_secret: Entity<SecretFields>,
     notes: Entity<TextareaState>,
+    agent_forwarding: bool,
+    agent_picker: Entity<crate::ssh_agent::AgentPicker>,
     testing_connection: bool,
     /// Logs in with the form's current values for 「测试连接」.
     tester: SharedConnectionTester,
@@ -394,7 +397,11 @@ impl HostForm {
                 fields.load_saved(Some(draft.password_secret()), None, cx)
             });
         }
+        let agent_picker = cx.new(|cx| {
+            crate::ssh_agent::AgentPicker::new(draft.ssh_agent.clone(), true, window, cx)
+        });
         Self {
+            agent_picker,
             store,
             editing,
             temporary: false,
@@ -423,6 +430,7 @@ impl HostForm {
             proxy_user,
             proxy_secret,
             notes,
+            agent_forwarding: draft.agent_forwarding,
             testing_connection: false,
             tester,
             editing_connected,
@@ -548,23 +556,32 @@ impl HostForm {
         let (host, port) = self.endpoint(cx)?;
         let route = self.committed_route(cx)?;
         let route_login = self.store.read(cx).route_login(&route);
+        let agent = self
+            .agent_picker
+            .read(cx)
+            .value(cx)?
+            .unwrap_or_else(|| self.store.read(cx).default_agent().clone());
+        let configure = |mut login: HostLogin| {
+            login.ssh_agent = agent.clone();
+            login
+        };
         let request = match self.source.auth() {
             None => {
                 let credential = self
                     .selected_credential(cx)
                     .ok_or_else(|| t!("host.dialog.choose_credential"))?;
-                LoginTest::saved(
+                LoginTest::saved(configure(
                     HostLogin::with_credential(host, port, credential).with_route(route_login),
-                )
+                ))
             }
             Some(auth) => {
                 let user = self.user.read(cx).value().trim().to_string();
                 if user.is_empty() {
                     return Err(t!("host.dialog.enter_user"));
                 }
-                let mut request = LoginTest::typed(
+                let mut request = LoginTest::typed(configure(
                     HostLogin::manual(host, port, user, auth).with_route(route_login),
-                );
+                ));
                 // Only what the chosen way uses, which is also what the form
                 // shows.
                 let password = self.fields.read(cx).password(cx);
@@ -676,6 +693,13 @@ impl HostForm {
 
     /// Validate and write to the store. Returns whether the dialog may close.
     pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let agent = match self.agent_picker.read(cx).value(cx) {
+            Ok(agent) => agent,
+            Err(error) => {
+                window.push_notification(form_error_notification(error), cx);
+                return false;
+            }
+        };
         let name = self.name.read(cx).value().trim().to_string();
         let checked = if name.is_empty() {
             Err(HostDraftError::Name.message())
@@ -738,7 +762,11 @@ impl HostForm {
             _ => None,
         };
         let notes = self.notes.read(cx).value().trim().to_string();
-        let draft = draft.with_route(route).with_notes(notes);
+        let draft = draft
+            .with_route(route)
+            .with_notes(notes)
+            .with_agent_forwarding(!self.temporary && self.agent_forwarding)
+            .with_ssh_agent(agent);
 
         let editing = self.editing;
         self.store.update(cx, |store, cx| {
@@ -804,6 +832,14 @@ impl HostForm {
                 HostDraft::new(name, host, port, user, auth, None)
             }
         };
+        let agent = match self.agent_picker.read(cx).value(cx) {
+            Ok(agent) => agent,
+            Err(error) => {
+                window.push_notification(form_error_notification(error), cx);
+                return None;
+            }
+        };
+        let draft = draft.with_ssh_agent(agent);
         let id = self
             .store
             .update(cx, |store, cx| store.insert_temporary(draft, password, cx));
@@ -1211,17 +1247,36 @@ impl Render for HostForm {
             Some(auth) => self.own_fields(form, auth, cx),
             None => form.child(self.credential_field(cx)),
         };
+        let agent_field = Field::new()
+            .label(t!("agent.title"))
+            .col_span(if self.temporary { 4 } else { 2 })
+            .child(self.agent_picker.clone());
         // What only a saved host has.
         let form = if self.temporary {
-            form
+            form.child(agent_field)
         } else {
             form.child(
                 Field::new()
                     .label(t!("host.dialog.group"))
-                    .col_span(4)
+                    .col_span(2)
                     .child(Select::new(&self.group).small()),
             )
+            .child(agent_field)
             .child(self.route_field(cx))
+            .child(
+                Field::new()
+                    .col_span(4)
+                    .description(t!("host.dialog.agent_forwarding_note"))
+                    .child(
+                        Checkbox::new("host-agent-forwarding")
+                            .label(t!("host.dialog.agent_forwarding"))
+                            .checked(self.agent_forwarding)
+                            .on_change(cx.listener(|this, checked, _, cx| {
+                                this.agent_forwarding = *checked;
+                                cx.notify();
+                            })),
+                    ),
+            )
             .child(
                 Field::new()
                     .label(t!("host.dialog.notes"))
