@@ -7,7 +7,7 @@ use crate::explorer::{FileSizeFormat, ShowHiddenFiles};
 use crate::i18n::t;
 use crate::terminal::{
     DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, HighlightRule, LINE_HEIGHT_RANGE,
-    TerminalTheme, default_rules,
+    RightClick, TerminalInteraction, TerminalTheme, default_rules,
 };
 use crate::update::Channel;
 
@@ -22,6 +22,8 @@ pub struct AppSettings {
     /// 外观 → 终端主题.
     pub terminal_theme: TerminalThemeSettings,
     pub terminal_font: TerminalFontSettings,
+    /// 终端 → 终端交互.
+    pub terminal_interaction: TerminalInteraction,
     pub external_cli: ExternalCliSettings,
     pub update: UpdateSettings,
     /// 关于 → 隐私.
@@ -245,6 +247,26 @@ impl Choice for Channel {
     }
 }
 
+impl Choice for RightClick {
+    const ALL: &'static [Self] = &[Self::Nothing, Self::Paste, Self::Menu];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Nothing => "nothing",
+            Self::Paste => "paste",
+            Self::Menu => "menu",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Nothing => t!("settings.right_click.nothing"),
+            Self::Paste => t!("settings.right_click.paste"),
+            Self::Menu => t!("settings.right_click.menu"),
+        }
+    }
+}
+
 impl AppSettings {
     /// The settings with every number in the range the app accepts. Applied
     /// to what the file holds and to every change, so neither a hand-edited
@@ -435,6 +457,7 @@ mod tests {
         }
         check::<InterfaceLanguage>();
         check::<Appearance>();
+        check::<RightClick>();
         assert_eq!(Appearance::from_key("sepia"), None);
     }
 
@@ -585,6 +608,17 @@ mod tests {
         let settings: AppSettings =
             serde_json::from_str(r#"{"window":{"remember_position":false}}"#).unwrap();
         assert!(settings.window.remember_size && !settings.window.remember_position);
+    }
+
+    #[test]
+    fn terminals_show_the_menu_and_copy_only_on_command_unless_the_file_says_otherwise() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(!settings.terminal_interaction.copy_on_select);
+        assert_eq!(settings.terminal_interaction.right_click, RightClick::Menu);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"terminal_interaction":{"right_click":"paste"}}"#).unwrap();
+        assert!(!settings.terminal_interaction.copy_on_select);
+        assert_eq!(settings.terminal_interaction.right_click, RightClick::Paste);
     }
 
     #[test]

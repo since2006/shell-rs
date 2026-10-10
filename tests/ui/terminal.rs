@@ -2,6 +2,7 @@
 //! the font and the size, links, the mouse for programs and their copies.
 
 use crate::support::*;
+use shellrs::terminal::RightClick;
 
 fn open_workspace_with_factory(
     cx: &mut TestAppContext,
@@ -361,6 +362,93 @@ async fn terminal_selection_copies_only_on_command_and_finishes_outside_view(
     })
     .unwrap();
     cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+async fn copy_on_select_puts_what_the_mouse_selects_on_the_clipboard(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory).await;
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        local_screen(&workspace, cx).contains("会议纪要")
+    })
+    .await;
+
+    // 终端交互 is the second group of 终端: 选中复制, off, then 右键行为.
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-1", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        let mut settings = window.within("settings");
+        let mut group = settings.within("group-1");
+        assert_eq!(group.within("item-0").find("check").checked(), Some(false));
+        assert_eq!(group.within("item-1").find("btn").label(), Some("显示菜单"));
+        group.within("item-0").click("check", cx);
+    });
+    cx.update(|cx| {
+        assert!(
+            settings
+                .read(cx)
+                .settings()
+                .terminal_interaction
+                .copy_on_select
+        )
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal-tab", 1_u64), cx)
+    });
+
+    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("原剪贴板".into())));
+    in_frame(cx, handle, |window, cx| {
+        let bounds = window.find(("local-terminal", 1_u64)).bounds();
+        let from = point(bounds.left() + px(1.), bounds.top() + px(8.));
+        let to = point(bounds.right() - px(1.), bounds.top() + px(8.));
+        // A click selects nothing, and the clipboard keeps what it had.
+        click_at(window, from, gpui_kit::Modifiers::none(), cx);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("原剪贴板".into())
+        );
+        window.drag(from, to, cx);
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("run:1$ alpha.txt 会议纪要.md".into())
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn right_click_pastes_or_does_nothing_when_set_to(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    let right_click = |cx: &mut TestAppContext, action: RightClick, clipboard: &str| {
+        cx.update(|cx| {
+            settings.update(cx, |settings, cx| {
+                settings.update(
+                    |settings| settings.terminal_interaction.right_click = action,
+                    cx,
+                )
+            });
+            cx.write_to_clipboard(ClipboardItem::new_string(clipboard.into()));
+        });
+        in_frame(cx, handle, |window, cx| {
+            window.right_click(("local-terminal", 1_u64), cx)
+        });
+        in_frame(cx, handle, |window, _| {
+            assert!(window.try_find("popup-menu").is_none())
+        });
+    };
+
+    right_click(cx, RightClick::Paste, "粘贴一次");
+    take_written(cx, handle, &factory, "粘贴一次").await;
+
+    // Nothing is pasted: had it been, the next paste would follow it.
+    right_click(cx, RightClick::Nothing, "不该粘贴");
+    right_click(cx, RightClick::Paste, "再粘贴");
+    take_written(cx, handle, &factory, "再粘贴").await;
 }
 
 #[gpui_kit::test]

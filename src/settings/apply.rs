@@ -3,14 +3,16 @@ use gpui_kit::*;
 
 use crate::explorer::{FileSizeFormat, ShowHiddenFiles};
 use crate::i18n::UiLocale;
-use crate::terminal::{TerminalColors, TerminalFont, TerminalHighlights, is_font_installed};
+use crate::terminal::{
+    TerminalColors, TerminalFont, TerminalHighlights, TerminalInteraction, is_font_installed,
+};
 
 use super::AppSettings;
 use super::app_theme::{ui_theme, ui_theme_name};
 
 /// Bring the window in line with the settings: the theme chosen for the
-/// appearance, in the app and its terminals, the locale, the terminal font
-/// and highlight rules, the keyboard shortcuts, the SFTP size format and
+/// appearance, in the app and its terminals, the locale, the terminal font,
+/// mouse and highlight rules, the keyboard shortcuts, the SFTP size format and
 /// whether SFTP shows hidden files.
 /// Does nothing where they already agree, so it can run on every settings
 /// change and every change of the system appearance.
@@ -61,6 +63,11 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     if cx.try_global::<TerminalFont>() != Some(&font) {
         cx.set_global(font);
         window.refresh();
+    }
+
+    // Read when the mouse acts, so nothing is redrawn.
+    if cx.try_global::<TerminalInteraction>() != Some(&settings.terminal_interaction) {
+        cx.set_global(settings.terminal_interaction);
     }
 
     // Compiled once here for every terminal, which observe it; only when

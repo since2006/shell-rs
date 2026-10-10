@@ -385,8 +385,49 @@ fn terminal_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
                 })
                 .keywords(keywords(t!("settings.terminal.preview_keywords"))),
             ]),
+        interaction_group(store),
         notification_group(store),
     ]
+}
+
+/// 终端 → 终端交互: what the mouse does besides selecting.
+fn interaction_group(store: &Entity<SettingsStore>) -> SettingGroup {
+    let (reader, writer) = (store.clone(), store.clone());
+    SettingGroup::new()
+        .title(t!("settings.interaction.title"))
+        .items([
+            SettingItem::new(
+                t!("settings.interaction.copy_on_select"),
+                SettingField::switch(
+                    move |cx| {
+                        reader
+                            .read(cx)
+                            .settings()
+                            .terminal_interaction
+                            .copy_on_select
+                    },
+                    move |on, cx| {
+                        writer.update(cx, |store, cx| {
+                            store.update(
+                                |settings| settings.terminal_interaction.copy_on_select = on,
+                                cx,
+                            )
+                        });
+                    },
+                )
+                .default_value(false),
+            )
+            .description(t!("settings.interaction.copy_on_select_description")),
+            SettingItem::new(
+                t!("settings.interaction.right_click"),
+                choice_field(
+                    store,
+                    |settings| settings.terminal_interaction.right_click,
+                    |settings, action| settings.terminal_interaction.right_click = action,
+                ),
+            )
+            .description(t!("settings.interaction.right_click_description")),
+        ])
 }
 
 /// 终端 → 通知: when the window is not in front, the system's notification;

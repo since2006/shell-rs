@@ -30,7 +30,8 @@ pub use highlight::{
 pub use local_pty::LocalPtyTransportFactory;
 pub use local_terminal_panel::{LocalTerminalPanel, LocalTerminalPanelEvent};
 pub use model::{
-    LocalTerminalId, RemoteTerminalId, TerminalLifecycle, TerminalSize, TerminalStatus,
+    LocalTerminalId, RemoteTerminalId, RightClick, TerminalInteraction, TerminalLifecycle,
+    TerminalSize, TerminalStatus,
 };
 pub use notices::TerminalNotice;
 pub use run::{

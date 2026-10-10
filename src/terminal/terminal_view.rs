@@ -33,8 +33,9 @@ use super::mouse::{self, MouseReport, ReportButton, ReportKind};
 use super::scrollbar::ScrollbackHandle;
 use super::search::SearchMark;
 use super::{
-    SearchDirection, SharedTerminalTransportFactory, TerminalColors, TerminalEngine, TerminalEvent,
-    TerminalFont, TerminalLifecycle, TerminalSize, TerminalSnapshot, TerminalStatus, TerminalTheme,
+    RightClick, SearchDirection, SharedTerminalTransportFactory, TerminalColors, TerminalEngine,
+    TerminalEvent, TerminalFont, TerminalInteraction, TerminalLifecycle, TerminalSize,
+    TerminalSnapshot, TerminalStatus, TerminalTheme,
 };
 
 pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";
@@ -641,6 +642,15 @@ impl TerminalView {
             .update(cx, |engine, cx| engine.update_selection(point, side, cx));
     }
 
+    /// The mouse let go of a selection. With 选中复制 on, what it took in
+    /// goes to the clipboard; a click that selected nothing leaves it be.
+    fn finish_selection(&mut self, cx: &mut Context<Self>) {
+        self.selecting = false;
+        if TerminalInteraction::current(cx).copy_on_select {
+            self.copy_selection(cx);
+        }
+    }
+
     /// Tell the program of the mouse, if it asked to hear of it. Shift keeps
     /// the mouse for selecting text, unless a reported button is down.
     /// Whether the program was told.
@@ -734,6 +744,18 @@ impl TerminalView {
         self.scroll_accumulator.reset();
         self.cursor_visible = true;
         self.engine.read(cx).prepare_for_user_input();
+    }
+
+    /// Right-clicking does what 右键行为 says.
+    fn right_click(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match TerminalInteraction::current(cx).right_click {
+            RightClick::Nothing => {}
+            RightClick::Paste => {
+                self.focus(window, cx);
+                self.paste_clipboard(cx);
+            }
+            RightClick::Menu => self.open_context_menu(event, window, cx),
+        }
     }
 
     fn open_context_menu(
@@ -951,7 +973,7 @@ impl Render for TerminalView {
                 this.send_user_input(b"\x1b[Z".to_vec(), cx);
             }))
             .on_key_down(cx.listener(Self::on_key_down))
-            .on_mouse_down(MouseButton::Right, cx.listener(Self::open_context_menu))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::right_click))
             .child(element)
             .when_some(context_menu, |terminal, (menu, position)| {
                 terminal.child(
@@ -1591,7 +1613,8 @@ impl Element for TerminalElement {
                 let (point, side) = viewport.grid_point(event.position);
                 view.update(cx, |view, cx| view.update_selection(point, side, cx));
             } else {
-                view.update(cx, |view, _| view.selecting = false);
+                // Let go where the window did not hear it.
+                view.update(cx, |view, cx| view.finish_selection(cx));
             }
         });
 
@@ -1603,7 +1626,7 @@ impl Element for TerminalElement {
             let (point, side) = viewport.grid_point(event.position);
             view.update(cx, |view, cx| {
                 view.update_selection(point, side, cx);
-                view.selecting = false;
+                view.finish_selection(cx);
             });
         });
 

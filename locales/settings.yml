@@ -97,6 +97,31 @@ settings.terminal.preview_keywords:
   zh-CN: 预览,字体,字号,行高
   en: preview,font,size,line height
 
+settings.interaction.title:
+  zh-CN: 终端交互
+  en: Interaction
+settings.interaction.copy_on_select:
+  zh-CN: 选中复制
+  en: Copy on select
+settings.interaction.copy_on_select_description:
+  zh-CN: 选中文本自动进入系统剪贴板，无需按快捷键。
+  en: Selected text is copied to the clipboard without pressing a shortcut.
+settings.interaction.right_click:
+  zh-CN: 右键行为
+  en: Right-click
+settings.interaction.right_click_description:
+  zh-CN: 设置鼠标右键在终端中的行为。
+  en: What right-clicking in a terminal does.
+settings.right_click.nothing:
+  zh-CN: 无动作
+  en: Do nothing
+settings.right_click.paste:
+  zh-CN: 粘贴
+  en: Paste
+settings.right_click.menu:
+  zh-CN: 显示菜单
+  en: Show menu
+
 settings.notifications.title:
   zh-CN: 通知
   en: Notifications
