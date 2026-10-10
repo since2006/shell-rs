@@ -150,9 +150,9 @@ impl SshTerminalTransport {
         });
 
         // Said in the terminal: down to the cause, which says what to fix.
-        let (handle, _) = self
+        let (handle, mut forwarding) = self
             .connector
-            .connect(&self.config, broker.clone())
+            .connect_terminal(&self.config, broker.clone())
             .await
             .map_err(|error| anyhow!(describe_login_error(&error)))?;
         let mut shutdown = broker.shutdown_receiver();
@@ -162,6 +162,12 @@ impl SshTerminalTransport {
             }
             _ = shutdown.changed() => bail!(t!("ssh.connect.cancelled")),
         };
+        if let Some(forwarding) = forwarding.as_mut() {
+            tokio::select! {
+                result = forwarding.request(&mut channel) => result?,
+                _ = shutdown.changed() => bail!(t!("ssh.connect.cancelled")),
+            }
+        }
         tokio::select! {
             result = channel.request_pty(
                 true,
@@ -2137,3 +2143,7 @@ mod tests {
         worker.join().unwrap();
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "agent_forwarding_tests.rs"]
+mod agent_forwarding_tests;

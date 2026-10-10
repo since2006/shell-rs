@@ -972,3 +972,44 @@ async fn a_dialogs_choices_are_equal_segments_of_one_track(cx: &mut TestAppConte
         assert!(window.find("host-credential").visible());
     });
 }
+
+#[gpui_kit::test]
+async fn agent_forwarding_is_opt_in_and_can_be_edited(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("host-agent-forwarding").checked(), Some(false));
+        window.click("host-name", cx);
+        window.input("trusted", cx);
+        window.click("host-address", cx);
+        window.input("10.0.0.9", cx);
+        window.click("host-agent-forwarding", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("host-agent-forwarding").checked(), Some(true));
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    let id = cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let host = &store.hosts()[0];
+        assert!(host.agent_forwarding);
+        assert!(store.login(host.id).unwrap().agent_forwarding);
+        host.id
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("host-row", id.0), cx);
+        window.dispatch_action(Box::new(EditHost(id)), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("host-agent-forwarding").checked(), Some(true));
+        window.click("host-agent-forwarding", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert!(!store.host(id).unwrap().agent_forwarding);
+        assert!(!store.login(id).unwrap().agent_forwarding);
+    });
+}
