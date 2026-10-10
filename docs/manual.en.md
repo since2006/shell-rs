@@ -16,7 +16,7 @@ Each item saved in the left sidebar is a host: an address, a port and a way to a
 
 The host dialog’s “Authentication” has three options:
 
-- **Password**: enter a username and password; the password is kept in the system keychain. Leave the password empty to be asked at each connection. Only the password is used: the SSH agent and private keys aren’t tried first.
+- **Password**: enter a username and password; the password is kept in the system keychain. Leave the password empty to be asked at each connection. Only the password is used: the SSH agent and private keys aren’t tried first. When the server takes passwords only through keyboard-interactive authentication (ESXi, for one), the saved password answers its single hidden question; other questions, such as a verification code, are still asked.
 - **Credential**: choose a saved credential. The username and the way to log in both come from the credential (see “Credentials” below), so the dialog no longer asks for a username or password. “Test connection” also uses the password saved in the credential. To log in with a private key, create a key credential.
 - **No password**: enter only the username. ShellRS tries logging in without authentication, then the SSH agent, then the default private keys in `~/.ssh` (`id_ed25519`, `id_ecdsa`, `id_rsa`), the same as the `ssh` command does by default. If the server asks for a password, the connection fails with the reason instead of asking; if the server asks for a verification code after the key, you’re still asked for it.
 

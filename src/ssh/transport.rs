@@ -416,6 +416,9 @@ mod tests {
         auth: TestAuth,
         /// What an exec channel writes back for a given command.
         probe_reply: fn(&str) -> Option<&'static str>,
+        /// This connection answered [`TestAuth::KeyboardPassword`]'s
+        /// password question correctly.
+        password_answered: bool,
     }
 
     #[derive(Clone)]
@@ -423,6 +426,8 @@ mod tests {
         Password,
         PublicKey(PublicKey),
         KeyboardInteractive,
+        /// The password, through keyboard-interactive only, as ESXi takes it.
+        KeyboardPassword,
     }
 
     impl TestAuth {
@@ -430,9 +435,47 @@ mod tests {
             let method = match self {
                 Self::Password => MethodKind::Password,
                 Self::PublicKey(_) => MethodKind::PublicKey,
-                Self::KeyboardInteractive => MethodKind::KeyboardInteractive,
+                Self::KeyboardInteractive | Self::KeyboardPassword => {
+                    MethodKind::KeyboardInteractive
+                }
             };
             MethodSet::from(&[method][..])
+        }
+    }
+
+    impl TestServer {
+        /// One round of ESXi's exchange: the password as a single hidden
+        /// question, then, as OpenSSH's PAM can, a round with nothing to
+        /// answer.
+        fn password_question(&mut self, response: Option<server::Response<'_>>) -> server::Auth {
+            let Some(response) = response else {
+                self.password_answered = false;
+                return server::Auth::Partial {
+                    name: Cow::Borrowed(""),
+                    instructions: Cow::Borrowed(""),
+                    prompts: Cow::Owned(vec![(Cow::Borrowed("Password: "), false)]),
+                };
+            };
+            let answers: Vec<_> = response.collect();
+            match answers.as_slice() {
+                [answer] if answer.as_ref() == TEST_PASSWORD.as_bytes() => {
+                    self.password_answered = true;
+                    server::Auth::Partial {
+                        name: Cow::Borrowed(""),
+                        instructions: Cow::Borrowed("Password expires in 7 days"),
+                        prompts: Cow::Owned(Vec::new()),
+                    }
+                }
+                [] if self.password_answered => server::Auth::Accept,
+                // Refused, with keyboard-interactive still on offer, as
+                // OpenSSH does.
+                _ => server::Auth::Reject {
+                    proceed_with_methods: Some(MethodSet::from(
+                        &[MethodKind::KeyboardInteractive][..],
+                    )),
+                    partial_success: false,
+                },
+            }
         }
     }
 
@@ -486,8 +529,10 @@ mod tests {
             _: &str,
             response: Option<server::Response<'a>>,
         ) -> Result<server::Auth, Self::Error> {
-            if !matches!(self.auth, TestAuth::KeyboardInteractive) {
-                return Ok(server::Auth::UnsupportedMethod);
+            match self.auth {
+                TestAuth::KeyboardInteractive => {}
+                TestAuth::KeyboardPassword => return Ok(self.password_question(response)),
+                _ => return Ok(server::Auth::UnsupportedMethod),
             }
             let Some(mut response) = response else {
                 return Ok(server::Auth::Partial {
@@ -693,6 +738,7 @@ mod tests {
                     state: server_state,
                     auth,
                     probe_reply,
+                    password_answered: false,
                 };
                 let running = server.run_on_socket(config, &listener);
                 ready_tx.send(Ok((port, running.handle()))).unwrap();
@@ -1917,6 +1963,111 @@ mod tests {
             },
         );
         assert!(saw_challenge);
+    }
+
+    #[test]
+    fn a_connection_test_answers_a_keyboard_interactive_password_question() {
+        let Some(server) = start_server(TestAuth::KeyboardPassword) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        let test = |request| {
+            test_login(
+                request,
+                &known_hosts,
+                Arc::new(InMemorySecretStore::default()),
+                true,
+            )
+            .0
+        };
+
+        assert_eq!(
+            test(login_request(server.port).with_password(TEST_PASSWORD)),
+            Ok(())
+        );
+        assert_eq!(
+            test(login_request(server.port).with_password("wrong")),
+            Err("用户名或密码错误".to_string())
+        );
+        assert_eq!(
+            test(login_request(server.port)),
+            Err("未填写密码".to_string())
+        );
+    }
+
+    #[test]
+    fn exec_answers_a_keyboard_interactive_password_question_with_the_saved_password() {
+        let Some(server) = start_server(TestAuth::KeyboardPassword) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        trust_server(server.port, &known_hosts);
+        let host = password_host(server.port);
+        let saved = |password: Option<&str>| {
+            let keychain = Arc::new(InMemorySecretStore::default());
+            if let Some(password) = password {
+                keychain.set(&host.password_secret(), password).unwrap();
+            }
+            keychain
+        };
+
+        let (result, stdout, _) = run_cli_command(&host, &known_hosts, saved(Some(TEST_PASSWORD)));
+        assert_eq!(result, Ok(crate::ssh::ExecExit::Code(3)));
+        assert_eq!(stdout, b"out");
+
+        for (password, message) in [
+            (None, "没有保存密码"),
+            (Some("wrong"), "保存的密码被服务器拒绝"),
+        ] {
+            let (result, _, _) = run_cli_command(&host, &known_hosts, saved(password));
+            let error = result.unwrap_err();
+            assert_eq!(error.kind, crate::ssh::ExecErrorKind::MissingCredential);
+            assert!(error.message.contains(message), "{}", error.message);
+        }
+    }
+
+    #[test]
+    fn a_rejected_saved_password_asks_the_keyboard_interactive_question_again() {
+        let Some(server) = start_server(TestAuth::KeyboardPassword) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let host = password_host(server.port);
+        let keychain = Arc::new(InMemorySecretStore::default());
+        keychain.set(&host.password_secret(), "wrong").unwrap();
+
+        let report = connect_with_secrets(
+            host,
+            &directory.path().join("known_hosts"),
+            keychain,
+            |prompt| match prompt {
+                ConnectionPromptKind::UnknownHost(_) => ConnectionPromptReply::TrustAndSave,
+                ConnectionPromptKind::Authentication(authentication) => {
+                    assert_eq!(
+                        authentication.instructions(),
+                        "已保存的密码被服务器拒绝，请重新输入"
+                    );
+                    assert_eq!(authentication.fields().len(), 1);
+                    assert_eq!(authentication.fields()[0].label(), "Password: ");
+                    assert!(!authentication.fields()[0].echo());
+                    ConnectionPromptReply::Answers(vec![ConnectionSecret::new(TEST_PASSWORD)])
+                }
+                other => panic!("unexpected prompt: {other:?}"),
+            },
+        );
+        // Asked once, for the password; the round with nothing to answer
+        // after it is answered without asking.
+        let asked = report
+            .prompts
+            .iter()
+            .filter(|prompt| matches!(prompt, ConnectionPromptKind::Authentication(_)))
+            .count();
+        assert_eq!(asked, 1);
     }
 
     #[test]

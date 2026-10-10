@@ -365,5 +365,5 @@ ssh.exec.saved_passphrase_rejected:
   zh-CN: 保存的私钥口令不正确：请先在 ShellRS 中连接一次这台主机并保存密码
   en: The saved private key passphrase is incorrect. Connect to this host in ShellRS once and save the right one
 ssh.exec.keyboard_interactive:
-  zh-CN: 服务器要求键盘交互式认证：请先在 ShellRS 中连接一次这台主机并保存密码
-  en: The server asks for keyboard-interactive authentication. Connect to this host in ShellRS once and save the password
+  zh-CN: 服务器在键盘交互式认证中提出了密码以外的问题（如验证码），外部 CLI 无法回答
+  en: The server asks keyboard-interactive questions besides the password (such as a verification code), which the external CLI can’t answer

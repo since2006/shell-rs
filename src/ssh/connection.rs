@@ -950,10 +950,14 @@ async fn authenticate(
     }
 
     if method == LoginMethod::Password || partial {
+        // The saved password goes to the server once, by whichever method
+        // asks for it first.
+        let mut saved_offered = false;
+        let mut saved_rejected = false;
         if methods.contains(&MethodKind::Password) {
             // Try what the host has saved before bothering anyone.
-            let mut saved_rejected = false;
             if let Some(saved) = saved_secret(secrets, &login.password) {
+                saved_offered = true;
                 let result = handle
                     .authenticate_password(user, saved.to_string())
                     .await
@@ -1001,14 +1005,34 @@ async fn authenticate(
             }
         }
         if methods.contains(&MethodKind::KeyboardInteractive) {
+            // A password login whose server takes passwords only this way
+            // (ESXi) is asked for it as a single hidden question. After a
+            // password that got partway, the question is a second factor.
+            let mut password =
+                (method == LoginMethod::Password && !partial).then(|| KeyboardPassword {
+                    saved: if saved_offered {
+                        None
+                    } else {
+                        saved_secret(secrets, &login.password)
+                    },
+                    rejected: saved_rejected,
+                });
             for _ in 0..AUTH_RETRIES {
-                if keyboard_interactive(handle, user, broker).await? {
+                if keyboard_interactive(handle, user, broker, password.as_mut()).await? {
                     return Ok(());
                 }
             }
         }
     }
     bail!(t!("ssh.auth.failed"))
+}
+
+/// What a password login brings to keyboard-interactive authentication.
+struct KeyboardPassword {
+    /// The saved password, until it is sent.
+    saved: Option<Zeroizing<String>>,
+    /// The server refused the saved password.
+    rejected: bool,
 }
 
 type Agent = russh::keys::agent::client::AgentClient<
@@ -1234,44 +1258,88 @@ async fn ask_one_secret(
     }
 }
 
+/// One keyboard-interactive exchange, `false` when the server refuses it.
+///
+/// For a password login, the exchange's first single hidden question asks
+/// for the password: the saved one answers it unasked, as WinSCP's does,
+/// and a connection that cannot ask says the password is what it lacks.
 async fn keyboard_interactive(
     handle: &mut SshHandle,
     user: &str,
     broker: Asker<'_>,
+    mut password: Option<&mut KeyboardPassword>,
 ) -> Result<bool> {
     let mut response = handle
         .authenticate_keyboard_interactive_start(user, None)
         .await
         .map_err(|_| anyhow!(t!("ssh.auth.keyboard_start_failed")))?;
+    let mut password_asked = false;
+    let mut saved_sent = false;
     loop {
         match response {
             KeyboardInteractiveAuthResponse::Success => return Ok(true),
-            KeyboardInteractiveAuthResponse::Failure { .. } => return Ok(false),
+            KeyboardInteractiveAuthResponse::Failure { .. } => {
+                if saved_sent && let Some(password) = password.as_deref_mut() {
+                    password.rejected = true;
+                }
+                return Ok(false);
+            }
             KeyboardInteractiveAuthResponse::InfoRequest {
                 name,
                 instructions,
                 prompts,
             } => {
-                let fields = prompts
-                    .into_iter()
-                    .map(|prompt| ConnectionPromptField::new(prompt.prompt, prompt.echo))
-                    .collect();
-                let reply = broker
-                    .ask_credential(
-                        MissingCredential::KeyboardInteractive,
-                        ConnectionPromptKind::authentication(name, instructions, fields),
-                    )
-                    .await?;
-                let ConnectionPromptReply::Answers(answers) = reply else {
-                    bail!(t!("ssh.auth.keyboard_cancelled"))
+                let asks_password = password.is_some()
+                    && !password_asked
+                    && matches!(prompts.as_slice(), [prompt] if !prompt.echo);
+                password_asked |= asks_password;
+                let saved = password
+                    .as_deref_mut()
+                    .filter(|_| asks_password)
+                    .and_then(|password| password.saved.take());
+                let answers = if prompts.is_empty() {
+                    // Only something to read, which OpenSSH passes on from
+                    // PAM this way; the server waits for the empty reply.
+                    Vec::new()
+                } else if let Some(saved) = saved {
+                    saved_sent = true;
+                    vec![saved.to_string()]
+                } else {
+                    let rejected = password
+                        .as_deref()
+                        .is_some_and(|password| password.rejected);
+                    let need = if asks_password {
+                        MissingCredential::Password { rejected }
+                    } else {
+                        MissingCredential::KeyboardInteractive
+                    };
+                    let instructions = if !(asks_password && rejected) {
+                        instructions
+                    } else if instructions.trim().is_empty() {
+                        t!("ssh.auth.saved_password_rejected").to_string()
+                    } else {
+                        format!("{}\n{instructions}", t!("ssh.auth.saved_password_rejected"))
+                    };
+                    let fields = prompts
+                        .into_iter()
+                        .map(|prompt| ConnectionPromptField::new(prompt.prompt, prompt.echo))
+                        .collect();
+                    let reply = broker
+                        .ask_credential(
+                            need,
+                            ConnectionPromptKind::authentication(name, instructions, fields),
+                        )
+                        .await?;
+                    let ConnectionPromptReply::Answers(answers) = reply else {
+                        bail!(t!("ssh.auth.keyboard_cancelled"))
+                    };
+                    answers
+                        .into_iter()
+                        .map(|answer| answer.into_inner())
+                        .collect()
                 };
                 response = handle
-                    .authenticate_keyboard_interactive_respond(
-                        answers
-                            .into_iter()
-                            .map(|answer| answer.into_inner())
-                            .collect(),
-                    )
+                    .authenticate_keyboard_interactive_respond(answers)
                     .await
                     .map_err(|_| anyhow!(t!("ssh.auth.keyboard_failed")))?;
             }
