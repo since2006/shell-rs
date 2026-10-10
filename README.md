@@ -119,7 +119,8 @@ Download from [shellrs.com/download](https://shellrs.com/download), which offers
 
 | System | Package | Notes |
 | --- | --- | --- |
-| macOS 11+ (Apple Silicon and Intel) | `ShellRS-<version>-macos-universal.dmg` | Signed and notarized. Open the DMG and drag ShellRS into Applications |
+| macOS 11+ (Apple Silicon) | `ShellRS-<version>-macos-aarch64.dmg` | Signed and notarized. Open the DMG and drag ShellRS into Applications |
+| macOS 11+ (Intel) | `ShellRS-<version>-macos-x86_64.dmg` | Signed and notarized. Open the DMG and drag ShellRS into Applications |
 | Windows x64 | `ShellRS-<version>-windows-x86_64-setup.exe` | Installs per user, no administrator rights needed. The installer is not signed yet; if SmartScreen stops it, choose "More info › Run anyway" |
 | Linux x64 | `ShellRS-<version>-linux-x86_64.AppImage` | `chmod +x` and run. Needs glibc 2.35 or newer (Ubuntu 22.04, Debian 12 and later) |
 

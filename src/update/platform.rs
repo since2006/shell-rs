@@ -1,10 +1,9 @@
 //! Which package of a release fits this machine.
 //!
-//! The keys are part of the manifest format, so they never change. A
-//! universal macOS build runs its native half, so an Apple Silicon Mac asks
-//! for `macos-aarch64` even though both keys point at the same package; an
-//! Intel-only build under Rosetta would ask for `macos-x86_64` and keep
-//! getting Intel builds, which is why macOS ships universal.
+//! The keys are part of the manifest format, so they never change. macOS
+//! packages match the running binary's architecture. Existing universal
+//! builds select their native half's package; an Intel build under Rosetta
+//! keeps receiving Intel packages until the user installs the ARM build.
 
 /// The manifest's key for this build's platform.
 pub fn platform_key() -> &'static str {

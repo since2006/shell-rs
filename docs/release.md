@@ -5,7 +5,7 @@
 在 `CHANGELOG.md` 里写好 `## [x.y.z]` 一节，把 `Cargo.toml` 的版本改成 `x.y.z`，提交后推送 tag `vx.y.z`。`.github/workflows/release.yml` 依次：
 
 1. 核对 tag 与 `Cargo.toml` 一致，截出更新说明，确认代码里有发布公钥；
-2. 构建并打包：macOS 合成 universal，签名、公证、staple，产出升级用的 `.app.zip` 和首次安装用的 `.dmg`；Windows 用 Inno Setup 打安装程序；Linux 打 AppImage；
+2. 构建并打包：macOS 按 `aarch64`（Apple Silicon）和 `x86_64`（Intel）分别构建、签名、公证、staple，各自产出升级用的 `.app.zip` 和首次安装用的 `.dmg`；Windows 用 Inno Setup 打安装程序；Linux 打 AppImage；
 3. 在 `release` 环境里人工批准后：给每个包签名，上传到 R2（`dl.shellrs.com/releases/<版本>/`），建 GitHub Release，**最后**才替换更新清单 `dl.shellrs.com/update/v1/<通道>.json` 并清 CDN 缓存，然后调用官网的部署挂钩重新构建 shellrs.com（官网的下载页和更新日志在构建时读这份清单）。清单里每个包有两个下载地址：先 R2，下载失败时客户端接着试 GitHub Release（仓库是公开的，下载不用登录）。
 
 版本号带 `-` 的（如 `0.3.0-beta.1`）只发到 beta 通道；正式版同时成为 beta 通道的最新版。在 Actions 里手动运行这个 workflow 只构建打包、不发布，用来演练。客户端只接受比自己新的版本，所以发错的版本撤不回来：把清单改回上一版能阻止更多人升级，修复要发新的补丁版。
@@ -19,3 +19,5 @@
 - **GitHub secrets**：仓库级的 `APPLE_CERTIFICATE_P12`（base64）、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`、`APPLE_TEAM_ID`、`APPLE_API_KEY_P8`（base64）、`APPLE_API_KEY_ID`、`APPLE_API_ISSUER`；`release` 环境（设为需要审批）里的 `MINISIGN_SECRET_KEY`、`MINISIGN_PASSWORD`、`R2_ACCOUNT_ID`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY`、`R2_BUCKET`、`CF_ZONE_ID`、`CF_API_TOKEN`、`SITE_DEPLOY_HOOK`（官网部署挂钩的地址，拿到它的人能触发官网重新构建，泄露了就删掉重建）。
 
 清单格式见 `packaging/manifest.example.json`，由 `packaging/make-manifest.sh` 生成：一个文件里是清单原文和它的 minisign 签名，签名的 trusted comment 写明通道和版本。格式只增加字段、不改已有的；已发出去的 ShellRS 一直按 `/update/v1/` 这个地址检查。
+
+macOS 产物名分别为 `ShellRS-<版本>-macos-aarch64.{app.zip,dmg}` 和 `ShellRS-<版本>-macos-x86_64.{app.zip,dmg}`。更新清单保留原有的两个平台键，分别记录对应架构包的地址、大小和 SHA-256；已有 universal 客户端按当前运行的架构升级。Apple Silicon 上通过 Rosetta 运行 Intel 版时仍会收到 Intel 包，需要手动安装 ARM 版才能切换。官网在独立仓库中，下载页也需提供 Apple Silicon / Intel 两个入口，读取清单中各自的 installer 地址。
