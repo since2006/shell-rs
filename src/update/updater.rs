@@ -507,7 +507,7 @@ impl Updater {
             return;
         };
         cx.background_spawn(async move {
-            services.installer.clean_up();
+            services.installer.clean_up(&services.current);
             clean_downloads(&services.folder, &services.current);
         })
         .detach();

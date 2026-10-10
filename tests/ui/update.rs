@@ -99,7 +99,7 @@ impl Installer for FakeInstaller {
         })
     }
 
-    fn clean_up(&self) {}
+    fn clean_up(&self, _: &Version) {}
 }
 
 /// A copy of ShellRS that can install updates itself.

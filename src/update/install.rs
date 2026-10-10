@@ -207,8 +207,9 @@ pub trait Installer: Send + Sync {
 
     /// Remove what earlier updates left next to the installed copy. Called a
     /// while after start, so a version that crashes right away leaves the
-    /// previous one's backup behind.
-    fn clean_up(&self);
+    /// previous one's backup behind. An update newer than `current` stays:
+    /// it may have been staged since start and be waiting for the restart.
+    fn clean_up(&self, current: &Version);
 }
 
 /// For copies that cannot replace themselves.
@@ -237,7 +238,7 @@ impl Installer for NoInstaller {
         ))
     }
 
-    fn clean_up(&self) {}
+    fn clean_up(&self, _: &Version) {}
 }
 
 /// The installer for this copy of ShellRS. `bundle` is `cx.app_path()`.
@@ -294,6 +295,14 @@ fn is_writable(path: &Path) -> bool {
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) fn sibling(path: &Path, name: &str) -> PathBuf {
     path.with_file_name(name)
+}
+
+/// Whether `name` is an update staged as `<prefix><version>` that this copy
+/// no longer needs: one not newer than `current`, or not named by a version.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+pub(crate) fn is_stale_update(name: &str, prefix: &str, current: &Version) -> bool {
+    name.strip_prefix(prefix)
+        .is_some_and(|version| Version::parse(version).map_or(true, |version| version <= *current))
 }
 
 #[cfg(test)]

@@ -14,9 +14,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use semver::Version;
+
 use super::build_info::APPLE_TEAM_ID;
 use super::error::UpdateError;
-use super::install::{InstallKind, Installer, Relaunch, Staged, sibling};
+use super::install::{InstallKind, Installer, Relaunch, Staged, is_stale_update, sibling};
 use super::manifest::Release;
 use crate::i18n::t;
 
@@ -217,7 +219,7 @@ impl Installer for MacInstaller {
         })
     }
 
-    fn clean_up(&self) {
+    fn clean_up(&self, current: &Version) {
         let Some(folder) = self.bundle.parent() else {
             return;
         };
@@ -227,7 +229,7 @@ impl Installer for MacInstaller {
         );
         for entry in fs::read_dir(folder).into_iter().flatten().flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with(&old) || name.starts_with(&update) {
+            if name.starts_with(&old) || is_stale_update(&name, &update, current) {
                 let _ = fs::remove_dir_all(entry.path());
             }
         }
@@ -349,8 +351,38 @@ mod tests {
         assert_eq!(names.len(), 2, "{names:?}");
         assert!(names[0].starts_with(".ShellRS.app.old-"), "{names:?}");
 
-        installer.clean_up();
+        // Run by 0.2.0, once it has started.
+        installer.clean_up(&Version::new(0, 2, 0));
         assert_eq!(names_in(folder.path()), ["ShellRS.app"]);
+    }
+
+    /// The clean-up runs a while after start; an update downloaded and
+    /// staged before then is still there to install on restart.
+    #[test]
+    fn the_clean_up_keeps_an_update_staged_for_the_restart() {
+        let (folder, bundle) = installed();
+        let installer = MacInstaller::new(bundle.clone(), FakeTools::new("0.2.0", None));
+        for stale in [
+            ".ShellRS.app.update-0.1.0",
+            ".ShellRS.app.update-later",
+            ".ShellRS.app.old-1",
+        ] {
+            fs::create_dir(folder.path().join(stale)).unwrap();
+        }
+        let staged = installer
+            .stage(Path::new("package.zip"), &release("0.2.0"))
+            .unwrap();
+
+        installer.clean_up(&Version::new(0, 1, 0));
+        assert_eq!(
+            names_in(folder.path()),
+            [".ShellRS.app.update-0.2.0", "ShellRS.app"]
+        );
+        assert_eq!(
+            installer.apply(&staged, true),
+            Ok(Relaunch::Restart(bundle.clone()))
+        );
+        assert_eq!(version_at(&bundle), "0.2.0");
     }
 
     #[test]
@@ -367,8 +399,12 @@ mod tests {
             Err(UpdateError::Install(_))
         ));
         assert_eq!(version_at(&bundle), "0.1.0");
-        installer.clean_up();
-        assert_eq!(names_in(folder.path()), ["ShellRS.app"]);
+        installer.clean_up(&Version::new(0, 1, 0));
+        assert!(
+            !names_in(folder.path())
+                .iter()
+                .any(|name| name.starts_with(".ShellRS.app.old-"))
+        );
     }
 
     #[test]
@@ -484,7 +520,7 @@ mod tests {
                 .check_signature(&bundle, Some("SHELLRS"))
                 .is_err()
         );
-        installer.clean_up();
+        installer.clean_up(&Version::new(0, 2, 0));
         assert_eq!(names_in(&installed), ["ShellRS.app"]);
     }
 }

@@ -10,7 +10,9 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use super::error::UpdateError;
-use super::install::{InstallKind, Installer, Relaunch, Staged, sibling};
+use semver::Version;
+
+use super::install::{InstallKind, Installer, Relaunch, Staged, is_stale_update, sibling};
 use super::manifest::Release;
 
 pub struct AppImageInstaller {
@@ -59,13 +61,13 @@ impl Installer for AppImageInstaller {
         })
     }
 
-    fn clean_up(&self) {
+    fn clean_up(&self, current: &Version) {
         let Some(folder) = self.file.parent() else {
             return;
         };
         let prefix = self.prefix();
         for entry in fs::read_dir(folder).into_iter().flatten().flatten() {
-            if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            if is_stale_update(&entry.file_name().to_string_lossy(), &prefix, current) {
                 let _ = fs::remove_file(entry.path());
             }
         }
@@ -115,13 +117,26 @@ mod tests {
             "stale",
         )
         .unwrap();
-        installer.clean_up();
-        let left: Vec<_> = fs::read_dir(folder.path())
+        // Staged since start and waiting for the restart: kept.
+        fs::write(
+            sibling(&file, ".ShellRS-x86_64.AppImage.update-0.3.0"),
+            "next",
+        )
+        .unwrap();
+        installer.clean_up(&Version::new(0, 2, 0));
+        let mut left: Vec<_> = fs::read_dir(folder.path())
             .unwrap()
             .flatten()
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(left.len(), 2, "{left:?}");
-        assert!(left.contains(&"ShellRS-x86_64.AppImage".to_string()));
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                ".ShellRS-x86_64.AppImage.update-0.3.0",
+                "ShellRS-x86_64.AppImage",
+                "downloaded"
+            ]
+        );
     }
 }

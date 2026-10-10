@@ -11,6 +11,8 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use semver::Version;
+
 use super::error::UpdateError;
 use super::install::{InstallKind, Installer, Launch, Relaunch, Staged};
 use super::manifest::Release;
@@ -99,7 +101,8 @@ impl Installer for SetupInstaller {
     }
 
     /// The setup program removes what the previous version left.
-    fn clean_up(&self) {}
+    // The package waits in the downloads folder, which the updater tidies.
+    fn clean_up(&self, _: &Version) {}
 }
 
 #[cfg(test)]
