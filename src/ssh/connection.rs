@@ -68,7 +68,8 @@ impl SshConnectionConfig {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum AgentLocation {
     /// The user's own agent: the socket `SSH_AUTH_SOCK` names on macOS and
-    /// Linux, the OpenSSH agent service's pipe on Windows.
+    /// Linux (with known macOS sockets as a fallback when unset), and the
+    /// OpenSSH agent service's pipe on Windows.
     #[default]
     System,
     /// An agent at this socket or pipe. Tests use it rather than change the
@@ -1100,18 +1101,70 @@ async fn try_agent(
 
 #[cfg(unix)]
 async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
+    connect_discovered_agent(
+        location,
+        std::env::var_os("SSH_AUTH_SOCK"),
+        system_agent_candidates(),
+    )
+    .await
+}
+
+#[cfg(unix)]
+fn system_agent_candidates() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_agent_candidates(dirs::home_dir().as_deref())
+    }
+    #[cfg(not(target_os = "macos"))]
+    Vec::new()
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn macos_agent_candidates(home: Option<&Path>) -> Vec<PathBuf> {
+    let Some(home) = home else {
+        return Vec::new();
+    };
+    // Vendor-documented defaults; do not guess a relative path if HOME is unavailable.
+    // https://bitwarden.com/help/ssh-agent/
+    // https://developer.1password.com/docs/ssh/agent/compatibility/
+    [
+        ".bitwarden-ssh-agent.sock",
+        "Library/Containers/com.bitwarden.desktop/Data/.bitwarden-ssh-agent.sock",
+        "Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock",
+    ]
+    .into_iter()
+    .map(|path| home.join(path))
+    .collect()
+}
+
+/// Explicit configuration is authoritative, even when unreachable. Only
+/// discovery skips failed sockets. Keep the successful connection instead
+/// of probing and reconnecting, which races agent restarts.
+#[cfg(unix)]
+async fn connect_discovered_agent(
+    location: &AgentLocation,
+    auth_sock: Option<std::ffi::OsString>,
+    candidates: Vec<PathBuf>,
+) -> Result<Agent, AgentProblem> {
+    if let AgentLocation::At(path) = location {
+        return connect_agent_socket(path, AGENT_TIMEOUT).await;
+    }
+    if let Some(path) = auth_sock.filter(|path| !path.is_empty()) {
+        return connect_agent_socket(Path::new(&path), AGENT_TIMEOUT).await;
+    }
+    for path in candidates {
+        if let Ok(agent) = connect_agent_socket(&path, Duration::from_millis(200)).await {
+            return Ok(agent);
+        }
+    }
+    Err(AgentProblem::Unreachable(t!("ssh.agent.no_socket").into()))
+}
+
+#[cfg(unix)]
+async fn connect_agent_socket(path: &Path, timeout: Duration) -> Result<Agent, AgentProblem> {
     use russh::keys::agent::client::AgentClient;
 
-    let path = match location {
-        AgentLocation::At(path) => path.clone(),
-        AgentLocation::System => match std::env::var_os("SSH_AUTH_SOCK") {
-            Some(path) if !path.is_empty() => PathBuf::from(path),
-            _ => {
-                return Err(AgentProblem::Unreachable(t!("ssh.agent.no_socket").into()));
-            }
-        },
-    };
-    match tokio::time::timeout(AGENT_TIMEOUT, AgentClient::connect_uds(&path)).await {
+    match tokio::time::timeout(timeout, AgentClient::connect_uds(path)).await {
         Ok(Ok(agent)) => Ok(agent.dynamic()),
         Ok(Err(russh::keys::Error::IO(error))) if error.kind() == std::io::ErrorKind::NotFound => {
             Err(AgentProblem::Unreachable(
@@ -1368,6 +1421,148 @@ fn is_partial(result: &AuthResult) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    mod agent_discovery {
+        use super::super::{AgentLocation, connect_discovered_agent, macos_agent_candidates};
+        use std::{ffi::OsString, path::Path, time::Duration};
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::UnixListener,
+        };
+
+        #[tokio::test]
+        async fn explicit_path_and_environment_are_authoritative() {
+            let dir = tempfile::tempdir_in("/tmp").unwrap();
+            let explicit = dir.path().join("explicit");
+            let environment = dir.path().join("environment");
+            let fallback = dir.path().join("fallback");
+            let explicit_listener = UnixListener::bind(&explicit).unwrap();
+            let environment_listener = UnixListener::bind(&environment).unwrap();
+            let _fallback_listener = UnixListener::bind(&fallback).unwrap();
+            let agent = connect_discovered_agent(
+                &AgentLocation::At(explicit.clone()),
+                Some(environment.clone().into_os_string()),
+                vec![fallback.clone()],
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(1), explicit_listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            drop(agent);
+            let agent = connect_discovered_agent(
+                &AgentLocation::System,
+                Some(environment.clone().into_os_string()),
+                vec![fallback.clone()],
+            )
+            .await
+            .unwrap();
+            tokio::time::timeout(Duration::from_secs(1), environment_listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            drop(agent);
+            let missing = dir.path().join("missing");
+            assert!(
+                connect_discovered_agent(
+                    &AgentLocation::At(missing.clone()),
+                    Some(environment.into_os_string()),
+                    vec![fallback.clone()],
+                )
+                .await
+                .is_err()
+            );
+            assert!(
+                connect_discovered_agent(
+                    &AgentLocation::System,
+                    Some(missing.into_os_string()),
+                    vec![fallback],
+                )
+                .await
+                .is_err()
+            );
+        }
+
+        #[tokio::test]
+        async fn discovery_skips_missing_stale_and_regular_files_and_reuses_connection() {
+            let dir = tempfile::tempdir_in("/tmp").unwrap();
+            let missing = dir.path().join("missing");
+            let stale = dir.path().join("stale");
+            drop(UnixListener::bind(&stale).unwrap());
+            let file = dir.path().join("file");
+            std::fs::write(&file, "not a socket").unwrap();
+            let live = dir.path().join("live");
+            let listener = UnixListener::bind(&live).unwrap();
+            let later = dir.path().join("later");
+            let _later_listener = UnixListener::bind(&later).unwrap();
+            for auth_sock in [None, Some(OsString::new())] {
+                let mut agent = connect_discovered_agent(
+                    &AgentLocation::System,
+                    auth_sock,
+                    vec![
+                        missing.clone(),
+                        stale.clone(),
+                        file.clone(),
+                        live.clone(),
+                        later.clone(),
+                    ],
+                )
+                .await
+                .unwrap();
+                let (mut stream, _) =
+                    tokio::time::timeout(Duration::from_secs(1), listener.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                // Answer REQUEST_IDENTITIES on the very connection discovery opened.
+                let server = async move {
+                    let mut request = [0; 5];
+                    stream.read_exact(&mut request).await.unwrap();
+                    assert_eq!(request, [0, 0, 0, 1, 11]);
+                    stream
+                        .write_all(&[0, 0, 0, 5, 12, 0, 0, 0, 0])
+                        .await
+                        .unwrap();
+                };
+                let (identities, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+                    tokio::join!(agent.request_identities(), server)
+                })
+                .await
+                .unwrap();
+                assert!(identities.unwrap().is_empty());
+            }
+        }
+
+        #[tokio::test]
+        async fn discovery_reports_no_reachable_agent() {
+            let dir = tempfile::tempdir_in("/tmp").unwrap();
+            for candidates in [vec![], vec![dir.path().join("missing")]] {
+                assert!(
+                    connect_discovered_agent(&AgentLocation::System, None, candidates)
+                        .await
+                        .is_err()
+                );
+            }
+        }
+
+        #[test]
+        fn macos_paths_require_a_home_directory() {
+            assert!(macos_agent_candidates(None).is_empty());
+            let home = Path::new("/Users/test");
+            assert_eq!(
+                macos_agent_candidates(Some(home)),
+                vec![
+                    home.join(".bitwarden-ssh-agent.sock"),
+                    home.join(
+                        "Library/Containers/com.bitwarden.desktop/Data/.bitwarden-ssh-agent.sock"
+                    ),
+                    home.join("Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"),
+                ]
+            );
+        }
+    }
+
     use super::read_known_keys;
     #[test]
     fn malformed_known_hosts_is_blocked() {

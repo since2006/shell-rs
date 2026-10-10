@@ -211,8 +211,8 @@ ssh.agent.hash:
   zh-CN: 无法协商 SSH Agent 签名算法
   en: Couldn’t agree on a signature algorithm for the SSH agent
 ssh.agent.no_socket:
-  zh-CN: 没有设置 SSH_AUTH_SOCK
-  en: SSH_AUTH_SOCK isn’t set
+  zh-CN: 没有设置 SSH_AUTH_SOCK，也未发现可连接的 SSH Agent
+  en: SSH_AUTH_SOCK isn’t set and no reachable SSH agent was discovered
 ssh.agent.missing_socket:
   zh-CN: "%{path} 不存在"
   en: "%{path} doesn’t exist"
