@@ -521,3 +521,26 @@ async fn forwarding_closes_local_stream_when_remote_connection_ends() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn forwarding_uses_the_host_agent_selection_without_connector_override() {
+    timeout(Duration::from_secs(10), async {
+        let mut fixture = Fixture::new(true, Answer::Accept).await;
+        fixture.connector = SshConnector::new(
+            fixture._dir.path().join("known_hosts"),
+            Arc::new(NoSecretStore),
+        );
+        fixture.login.ssh_agent =
+            crate::ssh_agent::AgentSelection::Path(fixture._dir.path().join("agent"));
+        let (send, events, task) = fixture.start();
+        started(&events).await;
+        let server = fixture.server.await.unwrap();
+        let first = fixture.agent.accept().await.unwrap().0;
+        let _ = agent_exchange(&server, &fixture.agent, Some(first)).await;
+        let _ = agent_exchange(&server, &fixture.agent, None).await;
+        send.send(TerminalTransportCommand::Shutdown).unwrap();
+        task.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}

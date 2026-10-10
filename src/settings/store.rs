@@ -140,6 +140,25 @@ mod tests {
     use crate::settings::{AppSettings, Appearance, InterfaceLanguage};
 
     #[test]
+    fn agent_default_is_backward_compatible_and_persistent() {
+        use crate::ssh_agent::AgentSelection;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(&path, "{}").unwrap();
+        let (mut store, problem) = SettingsStore::load(path.clone());
+        assert!(problem.is_none());
+        assert_eq!(store.settings().ssh_agent, AgentSelection::Auto);
+        let agent = AgentSelection::Path("/tmp/my agent.sock".into());
+        store
+            .update_unnotified(|settings| settings.ssh_agent = agent.clone())
+            .unwrap()
+            .unwrap();
+        let (loaded, problem) = SettingsStore::load(path);
+        assert!(problem.is_none());
+        assert_eq!(loaded.settings().ssh_agent, agent);
+    }
+
+    #[test]
     fn a_first_start_has_the_defaults_and_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");

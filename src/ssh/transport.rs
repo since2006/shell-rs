@@ -1307,13 +1307,13 @@ mod tests {
     /// `agent`.
     #[cfg(unix)]
     fn agent_login(port: u16, agent: std::path::PathBuf, known_hosts: &Path) -> Result<(), String> {
-        let login = HostLogin::with_credential(
+        let mut login = HostLogin::with_credential(
             "127.0.0.1",
             port,
             &credential(crate::host::CredentialKind::Agent),
         );
-        let connector = SshConnector::new(known_hosts, Arc::new(NoSecretStore))
-            .with_agent(crate::ssh::AgentLocation::At(agent));
+        login.ssh_agent = crate::ssh_agent::AgentSelection::Path(agent);
+        let connector = SshConnector::new(known_hosts, Arc::new(NoSecretStore));
         test_through(connector, crate::connection::LoginTest::saved(login))
     }
 

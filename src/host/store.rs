@@ -55,6 +55,7 @@ mod snippets;
 /// `sftp://` link (外部连接, see [`SshLink`]) and whose terminals get one
 /// channel alone.
 pub struct HostStore {
+    default_agent: crate::ssh_agent::AgentSelection,
     groups: Vec<HostGroup>,
     hosts: Vec<Host>,
     /// Hosts connected to without saving them: not listed. Their ids come
@@ -254,6 +255,7 @@ impl HostStore {
             secrets: Arc::new(TemporarySecretStore::new(Arc::new(NoSecretStore))),
             key_dir: None,
             capturing: RefCell::new(None),
+            default_agent: Default::default(),
         }
     }
 
@@ -324,6 +326,7 @@ impl HostStore {
             secrets: Arc::new(TemporarySecretStore::new(Arc::new(NoSecretStore))),
             key_dir: None,
             capturing: RefCell::new(None),
+            default_agent: Default::default(),
         })
     }
 
@@ -1064,8 +1067,29 @@ impl HostStore {
     }
 
     /// How `host` logs in once the connection has reached it.
+    pub fn default_agent(&self) -> &crate::ssh_agent::AgentSelection {
+        &self.default_agent
+    }
+
+    /// New connections use this snapshot; existing connections keep their agent.
+    pub fn set_default_agent(
+        &mut self,
+        agent: crate::ssh_agent::AgentSelection,
+        cx: &mut Context<Self>,
+    ) {
+        if self.default_agent != agent {
+            self.default_agent = agent;
+            cx.notify();
+        }
+    }
+
     fn direct_login(&self, host: &Host) -> HostLogin {
-        HostLogin::of(host, host.credential.and_then(|id| self.credential(id)))
+        let mut login = HostLogin::of(host, host.credential.and_then(|id| self.credential(id)));
+        login.ssh_agent = host
+            .ssh_agent
+            .clone()
+            .unwrap_or_else(|| self.default_agent.clone());
+        login
     }
 
     /// `route` with every jump host's login looked up. A jump host is
@@ -2449,6 +2473,34 @@ mod tests {
         let id = store.insert_unnotified(draft("db", None).with_route(jump_through(&[jump])));
         let copy = store.duplicate_unnotified(id).unwrap();
         assert_eq!(store.host(copy).unwrap().route, jump_through(&[jump]));
+    }
+
+    #[test]
+    fn agent_preferences_resolve_inheritance_overrides_and_jumps() {
+        use crate::ssh_agent::AgentSelection;
+        let mut store = HostStore::empty();
+        let jump = store.insert_unnotified(
+            draft("jump", None).with_ssh_agent(Some(AgentSelection::Environment)),
+        );
+        let target = store
+            .insert_unnotified(draft("target", None).with_route(Route::Jump(vec![Some(jump)])));
+        store.default_agent = AgentSelection::Path("/tmp/global.sock".into());
+        let login = store.login(target).unwrap();
+        assert_eq!(login.ssh_agent, store.default_agent);
+        let crate::host::LoginRoute::Jump(hops) = login.route else {
+            panic!("jump")
+        };
+        let crate::host::JumpLogin::Host { login, .. } = &hops[0] else {
+            panic!("host")
+        };
+        assert_eq!(login.ssh_agent, AgentSelection::Environment);
+        let mut changed = store.host(target).unwrap().draft();
+        changed.ssh_agent = Some(AgentSelection::Auto);
+        store.update_unnotified(target, changed);
+        store.default_agent = AgentSelection::Environment;
+        assert_eq!(store.login(target).unwrap().ssh_agent, AgentSelection::Auto);
+        let copy = store.duplicate_unnotified(target).unwrap();
+        assert_eq!(store.login(copy).unwrap().ssh_agent, AgentSelection::Auto);
     }
 
     #[test]

@@ -1,0 +1,34 @@
+_version: 2
+agent.title:
+  zh-CN: SSH Agent
+  en: SSH Agent
+agent.default:
+  zh-CN: 默认 Agent
+  en: Default agent
+agent.default_help:
+  zh-CN: 用于未单独指定 Agent 的主机，认证与终端转发使用同一选择。更改后在下次连接时生效。重新打开此页面可刷新检测结果；检测不会请求密钥授权。
+  en: Used by hosts without an override, for both authentication and terminal forwarding. Changes apply to new connections. Reopen this page to refresh detected sockets; discovery does not request key authorization.
+agent.inherit:
+  zh-CN: 使用全局设置
+  en: Use global setting
+agent.auto:
+  zh-CN: 自动
+  en: Automatic
+agent.environment:
+  zh-CN: 系统环境 Agent
+  en: System environment agent
+agent.custom:
+  zh-CN: 自定义路径
+  en: Custom path
+agent.path_invalid:
+  zh-CN: 请填写 socket 或命名管道的绝对路径。
+  en: Enter an absolute socket or named pipe path.
+agent.path_help:
+  zh-CN: 填写绝对路径，不使用 ~ 或环境变量。按回车或移开焦点应用路径。
+  en: Enter an absolute path without ~ or environment variables. Press Enter or leave the field to apply.
+agent.saved_path:
+  zh-CN: '已保存路径：%{path}'
+  en: 'Saved path: %{path}'
+agent.detecting:
+  zh-CN: 正在检测 Agent…
+  en: Detecting agents…

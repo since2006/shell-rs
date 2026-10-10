@@ -38,7 +38,7 @@ fn from_sql(id: i64) -> u64 {
 /// 13 is the schema as it was rebuilt before the first release. Versions up
 /// to 12 were development builds, and their files are refused. 14 adds the
 /// command snippets. 15 adds opt-in terminal SSH agent forwarding.
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -118,6 +118,7 @@ CREATE TABLE hosts (
     os                TEXT,
     last_connected_at INTEGER,
     agent_forwarding  INTEGER NOT NULL DEFAULT 0 CHECK (agent_forwarding IN (0, 1)),
+    ssh_agent         TEXT,
     CHECK ((auth = 'credential') = (credential_id IS NOT NULL)),
     CHECK ((auth = 'credential') = (username IS NULL)),
     CHECK ((route = 'proxy') = (proxy_kind IS NOT NULL)),
@@ -193,7 +194,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 2] = [(
+const STEPS: [(i64, Step); 3] = [(
     13,
     // The command snippets.
     Step::Sql(
@@ -221,6 +222,9 @@ COMMIT;",
 ), (14, Step::Sql("BEGIN;
 ALTER TABLE hosts ADD COLUMN agent_forwarding INTEGER NOT NULL DEFAULT 0 CHECK (agent_forwarding IN (0, 1));
 PRAGMA user_version = 15;
+COMMIT;")), (15, Step::Sql("BEGIN;
+ALTER TABLE hosts ADD COLUMN ssh_agent TEXT;
+PRAGMA user_version = 16;
 COMMIT;"))];
 
 /// Everything one launch reads back from disk.
@@ -294,7 +298,7 @@ impl HostDatabase {
             .prepare(
                 "SELECT id, public_id, group_id, sort_order, name, address, port, auth, username, \
                  credential_id, route, proxy_kind, proxy_host, proxy_port, proxy_username, \
-                 notes, os, agent_forwarding FROM hosts ORDER BY id",
+                 notes, os, agent_forwarding, ssh_agent FROM hosts ORDER BY id",
             )?
             .query_map([], |row| {
                 let id: i64 = row.get(0)?;
@@ -328,6 +332,18 @@ impl HostDatabase {
                 host.public_id = PublicId::from_stored(public_id.unwrap_or_default());
                 host.sort_order = row.get(3)?;
                 host.agent_forwarding = row.get(17)?;
+                let agent: Option<String> = row.get(18)?;
+                host.ssh_agent = agent
+                    .map(|value| {
+                        serde_json::from_str(&value).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                18,
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })
+                    })
+                    .transpose()?;
                 host.credential = credential.map(|id| CredentialId(from_sql(id)));
                 // The table's CHECKs keep the proxy's columns whole.
                 host.route = match (route.as_str(), proxy_kind, proxy_host, proxy_port) {
@@ -584,8 +600,8 @@ impl HostDatabase {
         transaction.execute(
             "INSERT INTO hosts (id, public_id, group_id, sort_order, name, address, port, auth, \
              username, credential_id, route, proxy_kind, proxy_host, proxy_port, \
-             proxy_username, notes, os, agent_forwarding) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+             proxy_username, notes, os, agent_forwarding, ssh_agent) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 to_sql(host.id.0),
                 host.public_id.as_str(),
@@ -605,6 +621,8 @@ impl HostDatabase {
                 host.notes.as_ref(),
                 host.os.map(HostOs::as_str),
                 host.agent_forwarding,
+                host.ssh_agent.as_ref().map(serde_json::to_string).transpose()
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
             ],
         )?;
         write_jumps(&transaction, host)?;
@@ -622,7 +640,7 @@ impl HostDatabase {
             "UPDATE hosts SET group_id = ?2, sort_order = ?3, name = ?4, address = ?5, \
              port = ?6, auth = ?7, username = ?8, credential_id = ?9, route = ?10, \
              proxy_kind = ?11, proxy_host = ?12, proxy_port = ?13, proxy_username = ?14, \
-             notes = ?15, agent_forwarding = ?16 WHERE id = ?1",
+             notes = ?15, agent_forwarding = ?16, ssh_agent = ?17 WHERE id = ?1",
             params![
                 to_sql(host.id.0),
                 host.group.map(|group| to_sql(group.0)),
@@ -640,6 +658,11 @@ impl HostDatabase {
                 row.proxy_username,
                 host.notes.as_ref(),
                 host.agent_forwarding,
+                host.ssh_agent
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
             ],
         )?;
         write_jumps(&transaction, host)?;
@@ -1438,6 +1461,36 @@ CREATE INDEX forwards_host_id ON forwards(host_id);";
             .unwrap();
         assert_eq!(version, 12);
         assert!(!dir.path().join("shellrs.db.v12.bak").exists());
+    }
+
+    #[test]
+    fn agent_selection_migrates_inherited_and_round_trips() {
+        use crate::ssh_agent::AgentSelection;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hosts.db");
+        let db = HostDatabase::open(&path).unwrap();
+        let mut host = Host::new(
+            HostId(1),
+            HostDraft::new("test", "host", 22, "root", AuthKind::NoPassword, None),
+        );
+        db.insert_host(&host).unwrap();
+        // Reconstruct the previous schema, including a real existing host.
+        db.connection
+            .execute_batch("ALTER TABLE hosts DROP COLUMN ssh_agent; PRAGMA user_version = 15;")
+            .unwrap();
+        drop(db);
+        let db = HostDatabase::open(&path).unwrap();
+        assert!(db.load().unwrap().hosts[0].ssh_agent.is_none());
+        for selection in [
+            Some(AgentSelection::Environment),
+            Some(AgentSelection::Auto),
+            Some(AgentSelection::Path("/tmp/custom agent.sock".into())),
+            None,
+        ] {
+            host.ssh_agent = selection.clone();
+            db.update_host(&host).unwrap();
+            assert_eq!(db.load().unwrap().hosts[0].ssh_agent, selection);
+        }
     }
 
     #[test]

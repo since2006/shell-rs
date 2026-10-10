@@ -52,6 +52,7 @@ pub struct HostLogin {
     pub shell_only: bool,
     /// Only the final remote terminal may use this permission.
     pub agent_forwarding: bool,
+    pub ssh_agent: crate::ssh_agent::AgentSelection,
 }
 
 /// How a connection reaches a host, with every jump host's login looked up.
@@ -159,6 +160,7 @@ impl HostLogin {
             route: LoginRoute::Direct,
             shell_only: false,
             agent_forwarding: false,
+            ssh_agent: Default::default(),
         }
     }
 
@@ -189,6 +191,7 @@ impl HostLogin {
             route: LoginRoute::Direct,
             shell_only: false,
             agent_forwarding: false,
+            ssh_agent: Default::default(),
         }
     }
 
@@ -214,6 +217,7 @@ impl HostLogin {
             ),
         };
         login.agent_forwarding = host.agent_forwarding;
+        login.ssh_agent = host.ssh_agent.clone().unwrap_or_default();
         login
     }
 

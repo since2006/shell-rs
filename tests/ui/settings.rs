@@ -716,3 +716,35 @@ fn the_interface_language_changes_the_window_at_once(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn global_agent_selection_updates_inherited_logins(cx: &mut TestAppContext) {
+    use shellrs::ssh_agent::AgentSelection;
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::seed());
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-7", cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("agent-choice", cx));
+    in_frame(cx, handle, |window, cx| window.input("自定义", cx));
+    in_frame(cx, handle, |window, cx| window.press("enter", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("agent-path", cx);
+        window.input("/tmp/global-agent.sock", cx);
+        window.press("enter", cx);
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        let selection = AgentSelection::Path("/tmp/global-agent.sock".into());
+        assert_eq!(
+            workspace.settings().read(cx).settings().ssh_agent,
+            selection
+        );
+        let store = workspace.store().read(cx);
+        assert_eq!(
+            store.login(store.hosts()[0].id).unwrap().ssh_agent,
+            selection
+        );
+    });
+}

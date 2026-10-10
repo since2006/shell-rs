@@ -416,6 +416,8 @@ pub struct Host {
     pub notes: SharedString,
     /// Allow the remote terminal to use the local SSH agent. Off by default.
     pub agent_forwarding: bool,
+    /// None inherits the global default at connection time.
+    pub ssh_agent: Option<crate::ssh_agent::AgentSelection>,
     /// Order among hosts in the same group.
     pub sort_order: i64,
     pub state: ConnectionState,
@@ -442,6 +444,7 @@ impl Host {
             group: draft.group,
             notes: draft.notes,
             agent_forwarding: draft.agent_forwarding,
+            ssh_agent: draft.ssh_agent,
             sort_order: 0,
             state: ConnectionState::Disconnected,
             os: None,
@@ -479,6 +482,7 @@ impl Host {
             group: self.group,
             notes: self.notes.clone(),
             agent_forwarding: self.agent_forwarding,
+            ssh_agent: self.ssh_agent.clone(),
         }
     }
 }
@@ -543,6 +547,8 @@ pub struct HostDraft {
     pub notes: SharedString,
     /// Allow the remote terminal to use the local SSH agent. Off by default.
     pub agent_forwarding: bool,
+    /// None inherits the global default at connection time.
+    pub ssh_agent: Option<crate::ssh_agent::AgentSelection>,
 }
 
 impl HostDraft {
@@ -565,6 +571,7 @@ impl HostDraft {
             group,
             notes: SharedString::default(),
             agent_forwarding: false,
+            ssh_agent: None,
         }
     }
 
@@ -578,6 +585,11 @@ impl HostDraft {
     /// Reach the host some other way than directly.
     pub fn with_route(mut self, route: Route) -> Self {
         self.route = route;
+        self
+    }
+
+    pub fn with_ssh_agent(mut self, agent: Option<crate::ssh_agent::AgentSelection>) -> Self {
+        self.ssh_agent = agent;
         self
     }
 

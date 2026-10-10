@@ -1013,3 +1013,68 @@ async fn agent_forwarding_is_opt_in_and_can_be_edited(cx: &mut TestAppContext) {
         assert!(!store.login(id).unwrap().agent_forwarding);
     });
 }
+
+#[gpui_kit::test]
+async fn host_agent_override_validates_and_survives_editing(cx: &mut TestAppContext) {
+    use shellrs::ssh_agent::AgentSelection;
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-name", cx);
+        window.input("agent-host", cx);
+        window.click("host-address", cx);
+        window.input("10.0.0.9", cx);
+        window.click("agent-choice", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.input("自定义", cx);
+    });
+    in_frame(cx, handle, |window, cx| window.press("enter", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("agent-path", cx);
+        window.input("relative.sock", cx);
+        window.click("commit", cx);
+    });
+    cx.update(|cx| assert!(workspace.read(cx).store().read(cx).hosts().is_empty()));
+    in_frame(cx, handle, |window, cx| {
+        window.click("agent-path", cx);
+        window.press("secondary-a", cx);
+        window.input("/tmp/test-agent.sock", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    let id = cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let host = &store.hosts()[0];
+        assert_eq!(
+            host.ssh_agent,
+            Some(AgentSelection::Path("/tmp/test-agent.sock".into()))
+        );
+        assert_eq!(
+            store.login(host.id).unwrap().ssh_agent,
+            host.ssh_agent.clone().unwrap()
+        );
+        host.id
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("host-row", id.0), cx);
+        window.dispatch_action(Box::new(EditHost(id)), cx);
+    });
+    in_frame(cx, handle, |window, cx| window.click("agent-choice", cx));
+    in_frame(cx, handle, |window, cx| window.input("使用全局", cx));
+    in_frame(cx, handle, |window, cx| window.press("enter", cx));
+    in_frame(cx, handle, |window, cx| window.click("commit", cx));
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        assert!(
+            workspace
+                .read(cx)
+                .store()
+                .read(cx)
+                .host(id)
+                .unwrap()
+                .ssh_agent
+                .is_none()
+        )
+    });
+}

@@ -30,6 +30,7 @@ pub mod sftp;
 pub mod shared;
 pub mod snippets;
 pub mod ssh;
+pub mod ssh_agent;
 pub mod terminal;
 pub mod update;
 pub mod workspace;

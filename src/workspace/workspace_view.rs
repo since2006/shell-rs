@@ -351,6 +351,8 @@ impl Workspace {
         // dialog's focus trap from taking focus.
         let panel_focus = host_panel.read(cx).focus_handle(cx);
         window.focus(&panel_focus, cx);
+        let agent = settings.read(cx).settings().ssh_agent;
+        store.update(cx, |store, cx| store.set_default_agent(agent, cx));
         // Before the first frame, so a dark theme never starts out light.
         crate::settings::apply(settings.read(cx).settings(), window, cx);
 
@@ -398,6 +400,9 @@ impl Workspace {
                 },
             ),
             cx.observe_in(&settings, window, |this, settings, window, cx| {
+                let agent = settings.read(cx).settings().ssh_agent;
+                this.store
+                    .update(cx, |store, cx| store.set_default_agent(agent, cx));
                 crate::settings::apply(settings.read(cx).settings(), window, cx);
                 this.sync_cli_server(cx);
                 this.sync_updater(cx);
