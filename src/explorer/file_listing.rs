@@ -199,6 +199,43 @@ impl FileListing {
         }
     }
 
+    /// Keep the widths the columns were dragged to: the table takes the
+    /// columns again on each `refresh`, every listing among them.
+    pub(super) fn set_widths(&mut self, widths: &[Pixels]) {
+        for (column, width) in self.columns.iter_mut().zip(widths) {
+            column.width = *width;
+        }
+    }
+
+    /// A click on a column's title sorts as one on its arrow does:
+    /// descending, then ascending, then back to by name.
+    fn cycle_sort(&mut self, col_ix: usize) {
+        let sort = match self.sort {
+            Some((ix, ColumnSort::Descending)) if ix == col_ix => ColumnSort::Ascending,
+            Some((ix, ColumnSort::Ascending)) if ix == col_ix => ColumnSort::Default,
+            _ => ColumnSort::Descending,
+        };
+        self.set_sort(col_ix, sort);
+    }
+
+    /// Sort by a column, marking it on the columns too, which the table
+    /// takes again on each `refresh`: otherwise the arrows would go back to
+    /// unsorted with the next listing while the rows stayed sorted.
+    fn set_sort(&mut self, col_ix: usize, sort: ColumnSort) {
+        self.sort = match sort {
+            ColumnSort::Default => None,
+            sort => Some((col_ix, sort)),
+        };
+        for (ix, column) in self.columns.iter_mut().enumerate() {
+            column.sort = Some(if ix == col_ix {
+                sort
+            } else {
+                ColumnSort::Default
+            });
+        }
+        self.apply_sort();
+    }
+
     /// The rows shown, in display order.
     pub fn rows(&self) -> &[FileEntry] {
         &self.rows
@@ -406,13 +443,14 @@ impl TableDelegate for FileListing {
     }
 
     /// `Column::text_right` is not applied by `DataTable`, so the size
-    /// column aligns itself. A right-click on a title is recorded for the
-    /// list's menu, which offers the size formats on 大小's, as WinSCP does.
+    /// column aligns itself. A click on a title sorts by the column, as in
+    /// WinSCP, rather than only one on the arrow. A right-click is recorded
+    /// for the list's menu, which offers the size formats on 大小's.
     fn render_th(
         &mut self,
         col_ix: usize,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let column = &self.columns[col_ix];
         let key = column.key.clone();
@@ -428,6 +466,14 @@ impl TableDelegate for FileListing {
                 *menu_hit.borrow_mut() = Some(MenuHit::Column(key.clone()));
             })
             .on_any_mouse_down(move |_, _, _| geometry.pressed.set(Pressed::Title))
+            // The table keeps the arrows in its columns, which only a
+            // `refresh` gives it again.
+            .on_click(cx.listener(move |table, _, _, cx| {
+                cx.stop_propagation();
+                table.delegate_mut().cycle_sort(col_ix);
+                table.refresh(cx);
+                cx.notify();
+            }))
             .child(column.name.clone())
     }
 
@@ -593,11 +639,7 @@ impl TableDelegate for FileListing {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        self.sort = match sort {
-            ColumnSort::Default => None,
-            sort => Some((col_ix, sort)),
-        };
-        self.apply_sort();
+        self.set_sort(col_ix, sort);
         cx.notify();
     }
 

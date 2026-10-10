@@ -28,7 +28,7 @@ use gpui_kit::component::{
     searchable_list::{SearchableGroup, SearchableListItem, SearchableVec},
     select::{Select, SelectEvent, SelectState},
     separator::Separator,
-    table::{DataTable, TableDelegate as _, TableState},
+    table::{DataTable, TableDelegate as _, TableEvent, TableState},
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -272,6 +272,11 @@ impl FilePane {
                     }
                 },
             ),
+            cx.subscribe(&table, |_, table, event: &TableEvent, cx| {
+                if let TableEvent::ColumnWidthsChanged(widths) = event {
+                    table.update(cx, |table, _| table.delegate_mut().set_widths(widths));
+                }
+            }),
             cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe_global::<ShowHiddenFiles>(|pane, cx| pane.sync_hidden_files(cx)),
             // The column titles and the select's groups are kept by

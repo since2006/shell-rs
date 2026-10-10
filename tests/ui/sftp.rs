@@ -1558,6 +1558,139 @@ async fn sftp_dragging_outside_the_names_selects_the_rows_crossed(cx: &mut TestA
     cx.update(|cx| assert_eq!(pane_selection(&workspace, true, cx), ["目录", "链接目录"]));
 }
 
+/// A click on a column title sorts by the column, as one on its arrow does:
+/// descending, ascending, then back to by name. The order outlives a
+/// refresh, after which the next click carries on from it.
+#[gpui_kit::test]
+async fn sftp_clicking_a_column_title_sorts_by_it(cx: &mut TestAppContext) {
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let pane = ("local-pane", SFTP_TAB);
+    let names = |cx: &mut TestAppContext| {
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let explorer = workspace.read(cx).explorer(ExplorerId(SFTP_TAB)).unwrap();
+            let entries = explorer.read(cx).local().read(cx).entries(cx);
+            entries
+                .into_iter()
+                .map(|entry| entry.name.to_string())
+                .collect::<Vec<_>>()
+        })
+    };
+    let click_size = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within(pane).click("column:size", cx);
+        })
+        .unwrap();
+    };
+    let by_name = ["..", "目录", "链接目录", "文件 乙.txt", "文件 甲.txt"];
+    assert_eq!(names(cx), by_name);
+
+    // Folders stay ahead of files whichever way.
+    click_size(cx);
+    let descending = ["..", "链接目录", "目录", "文件 乙.txt", "文件 甲.txt"];
+    assert_eq!(names(cx), descending);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::Refresh { remote: false },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    assert_eq!(names(cx), descending);
+
+    click_size(cx);
+    assert_eq!(
+        names(cx),
+        ["..", "目录", "链接目录", "文件 甲.txt", "文件 乙.txt"]
+    );
+    click_size(cx);
+    assert_eq!(names(cx), by_name);
+}
+
+/// A column dragged wider stays so with the next listing, which gives the
+/// table its columns again.
+#[gpui_kit::test]
+async fn sftp_column_widths_outlive_a_refresh(cx: &mut TestAppContext) {
+    use gpui_kit::{Modifiers, MouseDownEvent, MouseUpEvent};
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, _workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let pane = ("local-pane", SFTP_TAB);
+    let width = |cx: &mut TestAppContext| {
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .within(pane)
+                .find(("col-header", 1usize))
+                .bounds()
+                .size
+                .width
+        })
+        .unwrap()
+    };
+    let before = width(cx);
+    // Drag the boundary right of 大小 by 60 pixels.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let bounds = window.within(pane).find(("col-header", 1usize)).bounds();
+        let start = point(bounds.right() - px(1.), bounds.center().y);
+        let event = |x: f32| MouseMoveEvent {
+            position: point(start.x + px(x), start.y),
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        };
+        window.dispatch_event(
+            MouseDownEvent {
+                button: MouseButton::Left,
+                position: start,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        for x in [10., 30., 60.] {
+            window.dispatch_event(event(x).to_platform_input(), cx);
+            window.render_frame(cx);
+        }
+        window.dispatch_event(
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position: point(start.x + px(60.), start.y),
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    })
+    .unwrap();
+    let dragged = width(cx);
+    assert!(dragged > before + px(40.), "{before:?} -> {dragged:?}");
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::Refresh { remote: false },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    assert_eq!(width(cx), dragged);
+}
+
 /// As in WinSCP without full row select, only the name cell is the item: a
 /// click on the rest of a row, or below the rows, is a click on empty space
 /// and clears the selection. A ⌘ click there, or a click on a column title,
