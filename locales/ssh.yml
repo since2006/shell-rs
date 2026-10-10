@@ -367,3 +367,10 @@ ssh.exec.saved_passphrase_rejected:
 ssh.exec.keyboard_interactive:
   zh-CN: 服务器在键盘交互式认证中提出了密码以外的问题（如验证码），外部 CLI 无法回答
   en: The server asks keyboard-interactive questions besides the password (such as a verification code), which the external CLI can’t answer
+
+ssh.agent.forward_refused:
+  zh-CN: 服务器未接受 SSH Agent 转发。请检查服务器设置，或关闭此主机的代理转发后重试。
+  en: The server did not accept SSH agent forwarding. Check its settings or disable forwarding for this host and try again.
+ssh.agent.forward_timeout:
+  zh-CN: 请求 SSH Agent 转发超时。
+  en: The SSH agent forwarding request timed out.

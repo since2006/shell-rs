@@ -4,6 +4,7 @@ use std::time::Duration;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
+    checkbox::Checkbox,
     combobox::{Combobox, ComboboxEvent, ComboboxState},
     dialog::{Cancel, Confirm, DialogButtonProps, DialogFooter},
     form::{Field, Form},
@@ -198,6 +199,7 @@ pub struct HostForm {
     /// The proxy's password.
     proxy_secret: Entity<SecretFields>,
     notes: Entity<TextareaState>,
+    agent_forwarding: bool,
     testing_connection: bool,
     /// Logs in with the form's current values for 「测试连接」.
     tester: SharedConnectionTester,
@@ -423,6 +425,7 @@ impl HostForm {
             proxy_user,
             proxy_secret,
             notes,
+            agent_forwarding: draft.agent_forwarding,
             testing_connection: false,
             tester,
             editing_connected,
@@ -738,7 +741,10 @@ impl HostForm {
             _ => None,
         };
         let notes = self.notes.read(cx).value().trim().to_string();
-        let draft = draft.with_route(route).with_notes(notes);
+        let draft = draft
+            .with_route(route)
+            .with_notes(notes)
+            .with_agent_forwarding(!self.temporary && self.agent_forwarding);
 
         let editing = self.editing;
         self.store.update(cx, |store, cx| {
@@ -1222,6 +1228,20 @@ impl Render for HostForm {
                     .child(Select::new(&self.group).small()),
             )
             .child(self.route_field(cx))
+            .child(
+                Field::new()
+                    .col_span(4)
+                    .description(t!("host.dialog.agent_forwarding_note"))
+                    .child(
+                        Checkbox::new("host-agent-forwarding")
+                            .label(t!("host.dialog.agent_forwarding"))
+                            .checked(self.agent_forwarding)
+                            .on_change(cx.listener(|this, checked, _, cx| {
+                                this.agent_forwarding = *checked;
+                                cx.notify();
+                            })),
+                    ),
+            )
             .child(
                 Field::new()
                     .label(t!("host.dialog.notes"))

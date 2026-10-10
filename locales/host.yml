@@ -611,3 +611,10 @@ host.store.secret.proxy_delete:
 host.store.secret.temporary:
   zh-CN: 这次连接的密码未能记下：%{error}
   en: "Couldn’t keep the password for this connection: %{error}"
+
+host.dialog.agent_forwarding:
+  zh-CN: 转发 SSH Agent
+  en: Forward SSH agent
+host.dialog.agent_forwarding_note:
+  zh-CN: 仅用于此主机的远程终端。启用后，此主机可请求本地代理进行签名，请仅对可信主机开启。
+  en: Applies only to this host's remote terminal. This host can request signatures from your local agent. Enable only for trusted hosts.
