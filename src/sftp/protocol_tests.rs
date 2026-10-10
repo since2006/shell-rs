@@ -29,6 +29,7 @@ struct TestServer {
     interrupts: Arc<AtomicUsize>,
     hangup: Arc<tokio::sync::Notify>,
     unsupported: bool,
+    bastion: bool,
 }
 struct Handler {
     directory: PathBuf,
@@ -39,6 +40,8 @@ struct Handler {
     /// Ends an SFTP session while nothing is asked of it.
     hangup: Arc<tokio::sync::Notify>,
     unsupported: bool,
+    /// Ends the SFTP session on what a bastion host refuses.
+    bastion: bool,
     channels: HashMap<ChannelId, russh::Channel<server::Msg>>,
 }
 impl server::Server for TestServer {
@@ -52,6 +55,7 @@ impl server::Server for TestServer {
             interrupts: self.interrupts.clone(),
             hangup: self.hangup.clone(),
             unsupported: self.unsupported,
+            bastion: self.bastion,
             channels: HashMap::new(),
         }
     }
@@ -120,6 +124,7 @@ impl server::Handler for Handler {
         let directory = self.directory.clone();
         let interrupts = self.interrupts.clone();
         let hangup = self.hangup.clone();
+        let bastion = self.bastion;
         tokio::spawn(async move {
             let executable = if cfg!(target_os = "macos") {
                 "/usr/libexec/sftp-server"
@@ -149,6 +154,9 @@ impl server::Handler for Handler {
                     }
                     let mut bytes = vec![0; size as usize];
                     reader.read_exact(&mut bytes).await?;
+                    if bastion && refused_by_bastion(&bytes) {
+                        return Err::<(), _>(std::io::Error::other("refused by the bastion host"));
+                    }
                     // SSH_FXP_WRITE (6) for uploads, SSH_FXP_READ (5) for downloads.
                     if matches!(bytes.first(), Some(&5) | Some(&6)) {
                         writes += 1;
@@ -192,7 +200,27 @@ impl Drop for Running {
         self.task.abort();
     }
 }
+/// What a bastion host in front of OpenSSH was seen to refuse, though it
+/// passes on OpenSSH's offer of extensions: `SSH_FXP_FSETSTAT` (10), which it
+/// answered with a failure, and `fsync@openssh.com`, on which it ended the
+/// session. Here every `SSH_FXP_EXTENDED` (200) is refused: like WinSCP,
+/// ShellRS uses none to transfer or save a file.
+fn refused_by_bastion(packet: &[u8]) -> bool {
+    matches!(packet.first(), Some(10 | 200))
+}
 async fn server(directory: PathBuf, interrupts: usize, unsupported: bool) -> Option<Running> {
+    serve(directory, interrupts, unsupported, false).await
+}
+/// A server that ends the SFTP session on what a bastion host refuses.
+async fn bastion_server(directory: PathBuf) -> Option<Running> {
+    serve(directory, 0, false, true).await
+}
+async fn serve(
+    directory: PathBuf,
+    interrupts: usize,
+    unsupported: bool,
+    bastion: bool,
+) -> Option<Running> {
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", 0)).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -215,6 +243,7 @@ async fn server(directory: PathBuf, interrupts: usize, unsupported: bool) -> Opt
         interrupts: interrupts.clone(),
         hangup: hangup.clone(),
         unsupported,
+        bastion,
     };
     let key = russh::keys::PrivateKey::random(
         &mut russh::keys::key::safe_rng(),
@@ -694,5 +723,111 @@ fn scp_style_transfers_land_where_scp_would_put_them() {
         let done = transfer(&worker, SftpCommand::Upload(request)).await;
         assert_ne!(done.phase(), TransferPhase::Completed);
         assert!(!remote.join("missing").exists());
+    });
+}
+
+/// Behind a bastion host that refuses `fsetstat` and extensions, an upload,
+/// an upload over that file and an editor's save all finish on the one
+/// connection, and the upload keeps the local file's modification time.
+#[test]
+fn uploads_and_saves_get_past_a_bastion_host_that_refuses_fsetstat_and_extensions() {
+    runtime().block_on(async {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote");
+        std::fs::create_dir(&remote).unwrap();
+        let Some(server) = bastion_server(remote.clone()).await else {
+            return;
+        };
+        let worker = worker(server.port, temp.path());
+        let home = loop {
+            match next(&worker).await {
+                SftpEvent::Connected { home } => break home,
+                SftpEvent::Disconnected(e) => panic!("connect failed: {e}"),
+                _ => {}
+            }
+        };
+        let source = temp.path().join("README.md");
+        let modified = std::time::UNIX_EPOCH + Duration::from_secs(1_500_000_000);
+        let write_source = |bytes: &[u8]| {
+            std::fs::write(&source, bytes).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&source)
+                .unwrap()
+                .set_modified(modified)
+                .unwrap();
+        };
+        let upload =
+            || SftpCommand::Upload(UploadRequest::new(vec![source.clone()], home.clone()).unwrap());
+        let uploaded = remote.join("README.md");
+
+        write_source(b"first");
+        let done = transfer(&worker, upload()).await;
+        assert_eq!(done.phase(), TransferPhase::Completed);
+        assert_eq!(std::fs::read(&uploaded).unwrap(), b"first");
+        assert_eq!(
+            std::fs::metadata(&uploaded).unwrap().modified().unwrap(),
+            modified
+        );
+
+        write_source(b"second");
+        worker.commands.send(upload()).await.unwrap();
+        loop {
+            match next(&worker).await {
+                SftpEvent::Question(question) => {
+                    assert_eq!(question.kind(), TransferQuestionKind::Conflict);
+                    worker
+                        .commands
+                        .send(SftpCommand::Answer {
+                            request_id: question.id(),
+                            answer: TransferAnswer::new(TransferChoice::Overwrite, false),
+                        })
+                        .await
+                        .unwrap();
+                }
+                SftpEvent::Progress(p) if p.phase() == TransferPhase::Completed => {
+                    assert_eq!(p.succeeded(), 1);
+                    break;
+                }
+                SftpEvent::Progress(p)
+                    if matches!(
+                        p.phase(),
+                        TransferPhase::Stopped | TransferPhase::Reconnecting
+                    ) =>
+                {
+                    panic!("the upload over the file broke off: {p:?}")
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(std::fs::read(&uploaded).unwrap(), b"second");
+        assert_eq!(
+            std::fs::metadata(&uploaded).unwrap().modified().unwrap(),
+            modified
+        );
+
+        worker
+            .commands
+            .send(SftpCommand::WriteFile {
+                request_id: 7,
+                path: home.join("README.md").unwrap(),
+                bytes: b"edited".to_vec(),
+                expected: None,
+            })
+            .await
+            .unwrap();
+        loop {
+            match next(&worker).await {
+                SftpEvent::FileWritten { request_id, result } => {
+                    assert_eq!(request_id, 7);
+                    result.unwrap();
+                    break;
+                }
+                SftpEvent::Disconnected(e) => panic!("the save broke off: {e}"),
+                _ => {}
+            }
+        }
+        assert_eq!(std::fs::read(&uploaded).unwrap(), b"edited");
+        assert_eq!(server.connections.load(Ordering::SeqCst), 1);
     });
 }

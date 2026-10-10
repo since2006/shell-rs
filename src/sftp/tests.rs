@@ -41,11 +41,10 @@ struct Remote {
     reads: Cell<usize>,
     short_reads: Cell<bool>,
     renames: Cell<usize>,
-    atomic: bool,
     denied: RefCell<Option<String>>,
 }
 impl Remote {
-    fn new(atomic: bool) -> Self {
+    fn new() -> Self {
         Self {
             nodes: RefCell::new(BTreeMap::new()),
             fault: Cell::new(None),
@@ -55,7 +54,6 @@ impl Remote {
             reads: Cell::new(0),
             short_reads: Cell::new(false),
             renames: Cell::new(0),
-            atomic,
             denied: RefCell::new(None),
         }
     }
@@ -225,9 +223,6 @@ impl RemoteFs for Remote {
         self.writes.set(self.writes.get() + 1);
         self.fail(Fault::Write(self.writes.get()))
     }
-    async fn sync(&self, _: &str) -> Result<()> {
-        Ok(())
-    }
     async fn close(&self, _: &str) -> Result<()> {
         if self.fault.get() == Some(Fault::ChangeTargetOnClose) {
             self.fault.set(None);
@@ -241,12 +236,12 @@ impl RemoteFs for Remote {
     }
     async fn attributes(
         &self,
-        handle: &str,
+        path: &RemotePath,
         modified: Option<u32>,
         permissions: Option<u32>,
     ) -> Result<()> {
         let mut nodes = self.nodes.borrow_mut();
-        let n = nodes.get_mut(handle).unwrap();
+        let n = nodes.get_mut(path.as_str()).unwrap();
         n.metadata = FileMetadata::new(
             EntryKind::File,
             n.data.len() as u64,
@@ -283,13 +278,13 @@ impl RemoteFs for Remote {
     async fn readlink(&self, path: &RemotePath) -> Result<String> {
         Ok(self.nodes.borrow()[path.as_str()].link.clone())
     }
-    async fn rename(&self, from: &RemotePath, to: &RemotePath, replace: bool) -> Result<()> {
+    async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<()> {
         if self.fault.get() == Some(Fault::RejectRename(self.renames.get() + 1)) {
             self.fault.set(None);
             bail!("publish denied");
         }
         let mut nodes = self.nodes.borrow_mut();
-        if !replace && nodes.contains_key(to.as_str()) {
+        if nodes.contains_key(to.as_str()) {
             bail!("target exists");
         }
         let node = nodes
@@ -330,9 +325,6 @@ impl RemoteFs for Remote {
             Some((m.permissions().unwrap_or(0) & !0o7777) | permissions),
         );
         Ok(())
-    }
-    fn atomic_replace(&self) -> bool {
-        self.atomic
     }
 }
 impl Remote {
@@ -496,7 +488,7 @@ fn recursive_upload_deduplicates_sources_and_preserves_empty_directories_and_lin
         )
         .await
         .unwrap();
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         run(&mut batch, &remote, &answers.control).await.unwrap();
         assert_eq!(remote.bytes("/dest/中文 目录/large.bin"), data);
         assert_eq!(remote.bytes("/dest/中文 目录/零 字节"), Vec::<u8>::new());
@@ -540,7 +532,7 @@ fn winscp_style_upload_finishes_without_a_verification_phase() {
             &answers.control,
         )
         .await;
-        let remote = Remote::new(true);
+        let remote = Remote::new();
 
         run(&mut batch, &remote, &answers.control).await.unwrap();
         tokio::task::yield_now().await;
@@ -583,7 +575,7 @@ fn resume_uses_remote_filepart_size_and_preserves_old_target() {
         let data = vec![71; 150_000];
         std::fs::write(&source, &data).unwrap();
         let journal = Journal::new(tmp.path().join("journal"));
-        let remote = Remote::new(false);
+        let remote = Remote::new();
         remote.file("/dest/file", b"old file intact");
         remote.fault.set(Some(Fault::Write(2)));
         let answers = Answers::new(vec![TransferChoice::Overwrite]);
@@ -633,7 +625,7 @@ fn filepart_larger_than_source_requires_explicit_restart() {
         let source = tmp.path().join("file");
         std::fs::write(&source, vec![1; 100_000]).unwrap();
         let journal = Journal::new(tmp.path().join("journal"));
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.fault.set(Some(Fault::Write(2)));
         let answers = Answers::new(vec![]);
         let mut first = batch(&source, journal.clone(), &answers.control).await;
@@ -663,7 +655,7 @@ fn winscp_style_resume_does_not_prevalidate_the_source_version() {
         let data = vec![1; 100_000];
         std::fs::write(&source, &data).unwrap();
         let journal = Journal::new(tmp.path().join("journal"));
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.fault.set(Some(Fault::Write(2)));
         let answers = Answers::new(vec![]);
         let mut first = batch(&source, journal.clone(), &answers.control).await;
@@ -700,7 +692,7 @@ fn winscp_style_resume_detects_filepart_without_a_local_record() {
         let source = tmp.path().join("file");
         let data = vec![3; 100_000];
         std::fs::write(&source, &data).unwrap();
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.file("/dest/file.filepart", &data[..32_768]);
         let answers = Answers::new(vec![TransferChoice::Resume]);
         let mut upload = batch(
@@ -724,17 +716,12 @@ fn winscp_style_resume_detects_filepart_without_a_local_record() {
 #[test]
 fn lost_replies_at_backup_publish_and_close_are_reconciled() {
     runtime().block_on(async {
-        for (atomic, fault) in [
-            (true, Fault::Rename(1)),
-            (false, Fault::Rename(1)),
-            (false, Fault::Rename(2)),
-            (false, Fault::Close),
-        ] {
+        for fault in [Fault::Rename(1), Fault::Rename(2), Fault::Close] {
             let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
             let source = tmp.path().join("file");
             std::fs::write(&source, b"new contents").unwrap();
             let journal = Journal::new(tmp.path().join("journal"));
-            let remote = Remote::new(atomic);
+            let remote = Remote::new();
             remote.file("/dest/file", b"original");
             remote.fault.set(Some(fault));
             let answers = Answers::new(vec![TransferChoice::Overwrite]);
@@ -756,7 +743,7 @@ fn cancellation_retains_journal_and_skip_does_not_overwrite() {
         let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let source = tmp.path().join("file");
         std::fs::write(&source, b"new").unwrap();
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.file("/dest/file", b"old");
         let answers = Answers::new(vec![TransferChoice::Skip]);
         let journal = Journal::new(tmp.path().join("journal"));
@@ -783,7 +770,7 @@ fn directory_permission_error_is_reported_as_failure() {
         let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let source = tmp.path().join("blocked");
         std::fs::create_dir(&source).unwrap();
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         *remote.denied.borrow_mut() = Some("/dest/blocked".into());
         let answers = Answers::new(vec![TransferChoice::Skip]);
         let mut batch = batch(
@@ -842,7 +829,7 @@ fn retrying_an_unreadable_folder_adds_only_its_files_to_the_upload() {
         set_mode(0o755);
         assert_eq!(batch.meter.progress.total_bytes(), 10_000);
 
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         run(&mut batch, &remote, &answers.control).await.unwrap();
         assert_eq!(batch.meter.progress.failed(), 0);
         assert_eq!(batch.meter.progress.total_bytes(), 10_300);
@@ -859,7 +846,7 @@ fn retrying_an_unreadable_folder_adds_only_its_files_to_the_download() {
         let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let out = tmp.path().join("out");
         std::fs::create_dir(&out).unwrap();
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.nodes.borrow_mut().insert(
             "/srv/folder".into(),
             Node {
@@ -1066,7 +1053,7 @@ fn failed_compatibility_publish_restores_old_target_and_reports_failure() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("file");
         std::fs::write(&source, b"new").unwrap();
-        let remote = Remote::new(false);
+        let remote = Remote::new();
         remote.file("/dest/file", b"original");
         remote.fault.set(Some(Fault::RejectRename(2)));
         let answers = Answers::new(vec![TransferChoice::Overwrite, TransferChoice::Skip]);
@@ -1097,7 +1084,7 @@ fn target_changed_during_upload_requires_another_conflict_answer() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("file");
         std::fs::write(&source, b"new").unwrap();
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.file("/dest/file", b"original");
         remote.fault.set(Some(Fault::ChangeTargetOnClose));
         let answers = Answers::new(vec![TransferChoice::Overwrite, TransferChoice::Skip]);
@@ -1140,7 +1127,7 @@ fn target_removed_during_upload_still_requires_confirmation() {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("file");
         std::fs::write(&source, b"new").unwrap();
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.file("/dest/file", b"old");
         remote.fault.set(Some(Fault::RemoveTargetOnClose));
         let answers = Answers::new(vec![TransferChoice::Overwrite, TransferChoice::Skip]);
@@ -1170,7 +1157,7 @@ fn remote_path(path: &str) -> RemotePath {
 #[test]
 fn deleting_a_tree_removes_links_but_never_what_they_point_to() {
     runtime().block_on(async {
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.dir("/keep", 0o755);
         remote.file("/keep/important", b"data");
         remote.dir("/gone", 0o755);
@@ -1198,7 +1185,7 @@ fn deleting_a_tree_removes_links_but_never_what_they_point_to() {
 #[test]
 fn recursive_permissions_skip_links_and_can_keep_directories_searchable() {
     runtime().block_on(async {
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.dir("/site", 0o700);
         remote.dir("/site/css", 0o700);
         remote.file("/site/css/a.css", b"a");
@@ -1231,7 +1218,7 @@ fn recursive_permissions_skip_links_and_can_keep_directories_searchable() {
 #[test]
 fn rename_and_create_refuse_existing_names() {
     runtime().block_on(async {
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.file("/a", b"a");
         remote.file("/b", b"b");
         let error = super::operations::run(
@@ -1329,7 +1316,7 @@ fn download_copies_trees_links_and_empty_directories_in_order() {
         for short_reads in [false, true] {
             let out = tmp.path().join(format!("out-{short_reads}"));
             std::fs::create_dir(&out).unwrap();
-            let remote = Remote::new(true);
+            let remote = Remote::new();
             remote.short_reads.set(short_reads);
             remote.dir("/srv/中文 目录", 0o755);
             remote.file("/srv/中文 目录/large.bin", &data);
@@ -1385,7 +1372,7 @@ fn download_resumes_from_the_partial_file_after_a_lost_connection() {
     runtime().block_on(async {
         let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let data: Vec<u8> = (0..300_000).map(|i| (i % 253) as u8).collect();
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.file("/big", &data);
         remote.fault.set(Some(Fault::Read(5)));
         let journal = DownloadJournal::new(tmp.path().join("journal"));
@@ -1440,7 +1427,7 @@ fn download_asks_before_overwriting_and_keeps_the_replaced_permissions() {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.file("/file", b"new contents");
         let journal = DownloadJournal::new(tmp.path().join("journal"));
         let answers = Answers::new(vec![TransferChoice::Skip]);
@@ -1484,7 +1471,7 @@ fn download_asks_before_overwriting_and_keeps_the_replaced_permissions() {
 fn a_changed_remote_file_is_not_resumed_and_discard_cleans_up() {
     runtime().block_on(async {
         let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.file("/file", &vec![7; 200_000]);
         remote.fault.set(Some(Fault::Read(4)));
         let journal = DownloadJournal::new(tmp.path().join("journal"));
@@ -1554,7 +1541,7 @@ fn a_changed_remote_file_is_not_resumed_and_discard_cleans_up() {
 fn download_cancellation_keeps_the_partial_file() {
     runtime().block_on(async {
         let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.file("/file", &vec![1; 100_000]);
         let answers = Answers::new(vec![]);
         let mut batch = download_batch(
@@ -1745,7 +1732,7 @@ fn an_scp_upload_takes_the_destination_name_and_keeps_the_execute_bits() {
         let source = tmp.path().join("build.sh");
         std::fs::write(&source, b"#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let remote = Remote::new(true);
+        let remote = Remote::new();
 
         let request = UploadRequest::scp(source.clone(), remote_path("/dest/deploy.sh"))
             .resolved(remote_path("/dest"), Some("deploy.sh".into()));
@@ -1797,7 +1784,7 @@ fn an_scp_download_takes_the_destination_name_and_keeps_the_execute_bits() {
         let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let out = tmp.path().join("out");
         std::fs::create_dir(&out).unwrap();
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.file("/srv/run.sh", b"#!/bin/sh\n");
         remote
             .nodes
@@ -1856,7 +1843,7 @@ fn an_scp_download_takes_the_destination_name_and_keeps_the_execute_bits() {
 #[test]
 fn a_text_file_is_read_whole_through_short_and_reordered_reads() {
     runtime().block_on(async {
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         let text: String = (0..40_000).map(|i| format!("line {i}\n")).collect();
         remote.file("/etc/app.conf", text.as_bytes());
         remote.short_reads.set(true);
@@ -1875,7 +1862,7 @@ fn a_text_file_is_read_whole_through_short_and_reordered_reads() {
 #[test]
 fn a_link_is_followed_to_the_file_it_points_at() {
     runtime().block_on(async {
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.file("/srv/real.conf", b"old\n");
         remote.link("/etc/app.conf", "/srv/real.conf");
         let path = remote_path("/etc/app.conf");
@@ -1896,7 +1883,7 @@ fn a_link_is_followed_to_the_file_it_points_at() {
 #[test]
 fn directories_large_files_and_binary_files_are_refused() {
     runtime().block_on(async {
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.dir("/etc", 0o755);
         remote.file("/var/big.log", &vec![b'x'; EDIT_LIMIT as usize + 1]);
         let mut binary = vec![b'a'; 1_000_000];
@@ -1924,7 +1911,7 @@ fn directories_large_files_and_binary_files_are_refused() {
 #[test]
 fn a_save_writes_in_place_and_keeps_the_permissions() {
     runtime().block_on(async {
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         let long: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8 + 1).collect();
         remote.file("/etc/app.conf", &long);
         let path = remote_path("/etc/app.conf");
@@ -1952,7 +1939,7 @@ fn a_save_writes_in_place_and_keeps_the_permissions() {
 #[test]
 fn a_save_over_a_file_changed_or_removed_since_is_refused() {
     runtime().block_on(async {
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.file("/etc/app.conf", b"mine\n");
         let path = remote_path("/etc/app.conf");
         let file = read_text(&remote, &path).await.unwrap();
@@ -1980,7 +1967,7 @@ fn a_save_over_a_file_changed_or_removed_since_is_refused() {
 #[test]
 fn a_save_that_fails_after_truncating_is_interrupted() {
     runtime().block_on(async {
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.file("/etc/app.conf", &vec![b'a'; 200_000]);
         remote.fault.set(Some(Fault::Write(2)));
         let error = write_in_place(
@@ -2123,7 +2110,7 @@ fn local_files_are_edited_in_place_through_links() {
 #[test]
 fn a_binary_file_is_read_whole_for_a_preview_within_its_limit() {
     runtime().block_on(async {
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         let image: Vec<u8> = (0..300_000u32).map(|i| (i % 256) as u8).collect();
         remote.file("/srv/photo.png", &image);
         remote.short_reads.set(true);
@@ -2169,7 +2156,7 @@ fn a_sync_copies_only_what_changed_since_the_last() {
             .unwrap();
         std::fs::write(dist.join("assets/logo.png"), b"png").unwrap();
         std::os::unix::fs::symlink("index.html", dist.join("home.html")).unwrap();
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.dir("/srv", 0o755);
 
         let answers = Answers::new(vec![]);
@@ -2217,7 +2204,7 @@ fn a_sync_with_delete_removes_what_is_not_here_and_nothing_it_cannot_see() {
         std::fs::set_permissions(dist.join("locked"), std::fs::Permissions::from_mode(0o000))
             .unwrap();
 
-        let remote = Remote::new(true);
+        let remote = Remote::new();
         remote.dir("/srv/app", 0o755);
         remote.file("/srv/app/keep.txt", b"k");
         remote.file("/srv/app/extra.txt", b"x");

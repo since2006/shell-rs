@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow, bail};
 use futures::StreamExt as _;
 use russh_sftp::{
     client::{RawSftpSession, error::Error},
-    protocol::{FileAttributes, OpenFlags, Packet, StatusCode},
+    protocol::{FileAttributes, OpenFlags, StatusCode},
 };
 use std::{
     pin::Pin,
@@ -34,25 +34,29 @@ pub(crate) trait RemoteFs {
     async fn open_read(&self, path: &RemotePath) -> Result<String>;
     /// Up to `len` bytes at `offset`; may return fewer. `None` at end of file.
     async fn read(&self, handle: &str, offset: u64, len: u32) -> Result<Option<Vec<u8>>>;
-    async fn sync(&self, handle: &str) -> Result<()>;
     async fn write(&self, handle: &str, offset: u64, bytes: Vec<u8>) -> Result<()>;
     async fn close(&self, handle: &str) -> Result<()>;
+    /// Set the modification time and permission bits of a closed file by its
+    /// path (`setstat`), as WinSCP does: a bastion host has been seen to
+    /// refuse `fsetstat` on a file still open.
     async fn attributes(
         &self,
-        handle: &str,
+        path: &RemotePath,
         modified: Option<u32>,
         permissions: Option<u32>,
     ) -> Result<()>;
     async fn mkdir(&self, path: &RemotePath) -> Result<()>;
     async fn symlink(&self, target: &str, path: &RemotePath) -> Result<()>;
     async fn readlink(&self, path: &RemotePath) -> Result<String>;
-    async fn rename(&self, from: &RemotePath, to: &RemotePath, replace: bool) -> Result<()>;
+    /// A plain `rename`, which fails when `to` is there: replacing a file
+    /// moves the old one aside first, as WinSCP never sends
+    /// `posix-rename@openssh.com` either.
+    async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<()>;
     async fn remove(&self, path: &RemotePath) -> Result<()>;
     /// Remove an empty directory.
     async fn rmdir(&self, path: &RemotePath) -> Result<()>;
     /// Set the permission bits of a path (`setstat`, which follows links).
     async fn set_permissions(&self, path: &RemotePath, permissions: u32) -> Result<()>;
-    fn atomic_replace(&self) -> bool;
 }
 
 pub(crate) struct SftpClient {
@@ -61,8 +65,6 @@ pub(crate) struct SftpClient {
     /// Turns true once the server side of the SFTP stream has ended.
     closed: watch::Receiver<bool>,
     fingerprint: String,
-    atomic_replace: bool,
-    fsync: bool,
 }
 impl SftpClient {
     pub async fn connect(
@@ -92,21 +94,14 @@ impl SftpClient {
         if version.version != 3 {
             bail!(t!("sftp.client.no_v3"));
         }
-        let atomic_replace = version
-            .extensions
-            .get("posix-rename@openssh.com")
-            .is_some_and(|v| v == "1");
-        let fsync = version
-            .extensions
-            .get("fsync@openssh.com")
-            .is_some_and(|v| v == "1");
+        // No extension is used, even when offered: a bastion host that offers
+        // `fsync@openssh.com` has been seen to end the whole session on it.
+        // WinSCP sends none of them for a transfer.
         Ok(Self {
             raw,
             ssh,
             closed,
             fingerprint,
-            atomic_replace,
-            fsync,
         })
     }
     /// Only the Unix tests have a local `sftp-server` to talk to.
@@ -281,12 +276,6 @@ impl RemoteFs for SftpClient {
             Err(error) => Err(error.into()),
         }
     }
-    async fn sync(&self, handle: &str) -> Result<()> {
-        if self.fsync {
-            self.raw.fsync(handle).await?;
-        }
-        Ok(())
-    }
     async fn write(&self, handle: &str, offset: u64, bytes: Vec<u8>) -> Result<()> {
         self.raw.write(handle, offset, bytes).await?;
         Ok(())
@@ -298,13 +287,13 @@ impl RemoteFs for SftpClient {
 
     async fn attributes(
         &self,
-        handle: &str,
+        path: &RemotePath,
         modified: Option<u32>,
         permissions: Option<u32>,
     ) -> Result<()> {
         self.raw
-            .fsetstat(
-                handle,
+            .setstat(
+                path.as_str(),
                 FileAttributes {
                     mtime: modified,
                     atime: modified,
@@ -337,25 +326,8 @@ impl RemoteFs for SftpClient {
                 .filename,
         )
     }
-    async fn rename(&self, from: &RemotePath, to: &RemotePath, replace: bool) -> Result<()> {
-        if replace {
-            let mut payload = Vec::new();
-            for value in [from.as_str(), to.as_str()] {
-                payload.extend_from_slice(&(value.len() as u32).to_be_bytes());
-                payload.extend_from_slice(value.as_bytes());
-            }
-            match self
-                .raw
-                .extended("posix-rename@openssh.com", payload)
-                .await?
-            {
-                Packet::Status(status) if status.status_code == StatusCode::Ok => {}
-                Packet::Status(status) => return Err(Error::Status(status).into()),
-                _ => bail!(t!("sftp.client.bad_rename_reply")),
-            }
-        } else {
-            self.raw.rename(from.as_str(), to.as_str()).await?;
-        }
+    async fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<()> {
+        self.raw.rename(from.as_str(), to.as_str()).await?;
         Ok(())
     }
     async fn remove(&self, path: &RemotePath) -> Result<()> {
@@ -380,9 +352,6 @@ impl RemoteFs for SftpClient {
             )
             .await?;
         Ok(())
-    }
-    fn atomic_replace(&self) -> bool {
-        self.atomic_replace
     }
 }
 fn metadata(attrs: &FileAttributes) -> FileMetadata {

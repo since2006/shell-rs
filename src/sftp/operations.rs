@@ -18,7 +18,7 @@ pub(crate) async fn run<F: RemoteFs>(fs: &F, operation: &RemoteOperation) -> Res
             if fs.metadata(to).await?.is_some() {
                 bail!(t!("sftp.error.exists", name = to.file_name()));
             }
-            fs.rename(from, to, false).await
+            fs.rename(from, to).await
         }
         RemoteOperation::CreateDirectory { path } => {
             if fs.metadata(path).await?.is_some() {

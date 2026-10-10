@@ -532,25 +532,6 @@ impl UploadBatch {
                 uploaded += length;
                 self.meter.advance(length, uploaded, control);
             }
-            control
-                .run(
-                    fs.attributes(
-                        &handle,
-                        u32::try_from(source_metadata.modified_ns / 1_000_000_000).ok(),
-                        record
-                            .original
-                            .as_ref()
-                            .and_then(FileMetadata::permissions)
-                            .or_else(|| {
-                                self.preserve_mode
-                                    .then(|| item.metadata.permissions())
-                                    .flatten()
-                                    .map(|mode| mode & 0o777)
-                            }),
-                    ),
-                )
-                .await?;
-            control.run(fs.sync(&handle)).await?;
             Ok(())
         }
         .await;
@@ -559,7 +540,24 @@ impl UploadBatch {
         let close = fs.close(&handle).await;
         result?;
         close?;
-        Ok(())
+        control
+            .run(
+                fs.attributes(
+                    &record.temporary,
+                    u32::try_from(source_metadata.modified_ns / 1_000_000_000).ok(),
+                    record
+                        .original
+                        .as_ref()
+                        .and_then(FileMetadata::permissions)
+                        .or_else(|| {
+                            self.preserve_mode
+                                .then(|| item.metadata.permissions())
+                                .flatten()
+                                .map(|mode| mode & 0o777)
+                        }),
+                ),
+            )
+            .await
     }
     async fn matches_expected_item<F: RemoteFs>(
         &self,
@@ -603,7 +601,7 @@ impl UploadBatch {
             if fs.metadata(&record.target).await?.is_none()
                 && fs.metadata(&record.backup).await?.is_some()
             {
-                fs.rename(&record.backup, &record.target, false).await?;
+                fs.rename(&record.backup, &record.target).await?;
             }
             bail!(t!("sftp.upload.publish_unconfirmed"));
         }
@@ -635,24 +633,22 @@ impl UploadBatch {
             record.original = current;
             self.journal.save(record).await?;
             if let Some(source_metadata) = &record.source_metadata {
-                let handle = control.run(fs.open(&record.temporary, false)).await?;
-                let result = control
+                control
                     .run(fs.attributes(
-                        &handle,
+                        &record.temporary,
                         u32::try_from(source_metadata.modified_ns / 1_000_000_000).ok(),
                         record.original.as_ref().and_then(FileMetadata::permissions),
                     ))
-                    .await;
-                let closed = fs.close(&handle).await;
-                result?;
-                closed?;
+                    .await?;
             }
         }
-        if backup.is_none() && record.original.is_some() && !fs.atomic_replace() {
+        // Over a file, the old one is moved aside first and removed once
+        // the new one is in its place: no `posix-rename@openssh.com`.
+        if backup.is_none() && record.original.is_some() {
             record.phase = PublishPhase::BackingUp;
             self.journal.save(record).await?;
             control
-                .run(fs.rename(&record.target, &record.backup, false))
+                .run(fs.rename(&record.target, &record.backup))
                 .await?;
             record.phase = PublishPhase::BackedUp;
             self.journal.save(record).await?;
@@ -660,11 +656,7 @@ impl UploadBatch {
         record.phase = PublishPhase::Publishing;
         self.journal.save(record).await?;
         let result = control
-            .run(fs.rename(
-                &record.temporary,
-                &record.target,
-                fs.atomic_replace() && record.original.is_some() && backup.is_none(),
-            ))
+            .run(fs.rename(&record.temporary, &record.target))
             .await;
         if let Err(error) = result {
             if !super::client::is_network_error(&error)
@@ -672,7 +664,7 @@ impl UploadBatch {
                 && fs.metadata(&record.target).await?.is_none()
                 && fs.metadata(&record.backup).await?.is_some()
             {
-                fs.rename(&record.backup, &record.target, false).await?;
+                fs.rename(&record.backup, &record.target).await?;
                 record.phase = PublishPhase::Ready;
                 self.journal.save(record).await?;
             }
@@ -701,7 +693,7 @@ impl UploadBatch {
         )?;
         if fs.metadata(&record.backup).await?.is_some() {
             if fs.metadata(&record.target).await?.is_none() {
-                fs.rename(&record.backup, &record.target, false).await?;
+                fs.rename(&record.backup, &record.target).await?;
             } else {
                 bail!(t!("sftp.upload.backup_and_target"));
             }

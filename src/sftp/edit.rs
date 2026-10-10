@@ -381,10 +381,7 @@ pub(crate) async fn write_in_place<F: RemoteFs>(
         let message = format!("{error:#}");
         error.context(SaveFailure::Interrupted(message))
     };
-    let written = match write_all(fs, &handle, bytes).await {
-        Ok(()) => fs.sync(&handle).await,
-        Err(error) => Err(error),
-    };
+    let written = write_all(fs, &handle, bytes).await;
     let close = fs.close(&handle).await;
     written.map_err(interrupted)?;
     close.map_err(interrupted)?;

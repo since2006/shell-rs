@@ -305,9 +305,6 @@ sftp.client.no_path:
 sftp.client.no_link_target:
   zh-CN: 无法读取链接目标
   en: Couldn’t read the link target
-sftp.client.bad_rename_reply:
-  zh-CN: 服务器返回了无效的重命名响应
-  en: The server sent an invalid reply to the rename
 sftp.client.ambiguous_name:
   zh-CN: 远端名称包含无法可靠表示的字符，已停止操作
   en: A remote name has characters that can’t be shown reliably, so the operation stopped

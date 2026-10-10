@@ -280,6 +280,7 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 - **每个标签独立连接、独立传输引擎。** 引擎一次只跑一批，其余在 `TransferQueue` 里排队，引擎的 `Idle` 推动队列前进；进度只归队首；停止的批次挡在队首，等用户继续或移出。
 - **SFTP 独立于终端。** 关闭终端不停传输；断开或删除主机会停止传输，并保留续传数据。
 - **下载严格按偏移顺序写 `.filepart`**，因为续传只信它的长度。
+- **只发 WinSCP 也发的请求**：用户的堡垒机对 `fsetstat` 回 Failure，收到 `fsync@openssh.com`（即使宣称支持）就断开整个会话。所以上传关闭文件后才按路径 `setstat` 设时间和权限；不用任何扩展：不发 fsync，覆盖也不用 `posix-rename@openssh.com`，而是先把旧文件改名成备份、发布后再删（不是原子的）。`protocol_tests` 的 `bastion_server` 对 `fsetstat` 和所有扩展请求都断开会话，守着这条。
 - **文件操作从不跟随符号链接**：删除只删链接本身，改权限跳过链接，传输原样创建链接。
 - **空闲时也要发现断网**：通道流包一层 `WatchedStream`。等待时只持有 `Weak`，不能攥着 `Arc<SftpClient>`，否则「断开」关不掉连接。
 - **选择归面板，不归表格。** `DataTable` 设成 `row_selectable(false)`，`FilePane` 持有按名称保存的 `Selection`。「名称」单元格才是项目，拖文件只从图标和文件名开始，其余地方按下拖动是框选。
