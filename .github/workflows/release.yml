@@ -106,7 +106,7 @@ jobs:
           export SHELLRS_BUILD_DATE=$(date -u +%Y-%m-%d)
           cargo build --release --locked --bin shellrs --target "$ARCH-apple-darwin"
           mkdir -p dist build
-          lipo -verify_arch "${ARCH/aarch64/arm64}" "target/$ARCH-apple-darwin/release/shellrs"
+          lipo "target/$ARCH-apple-darwin/release/shellrs" -verify_arch "${ARCH/aarch64/arm64}"
           packaging/macos/bundle.sh "target/$ARCH-apple-darwin/release/shellrs" "$VERSION" "$GITHUB_RUN_NUMBER" build
       - name: Sign
         env:
