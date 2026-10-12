@@ -28,6 +28,7 @@ pub enum LocalTerminalPanelEvent {
     Closed(LocalTerminalId),
     StatusChanged(LocalTerminalId),
     Notice(LocalTerminalId, TerminalNotice),
+    PasteProblem(SharedString),
 }
 
 /// A local login-shell Dock tab backed by the shared terminal view.
@@ -46,24 +47,36 @@ impl LocalTerminalPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let terminal = cx.new(|cx| {
-            TerminalView::new(
+            let mut terminal = TerminalView::new(
                 ("local-terminal", id.0),
                 move |_| default_title(id),
                 factory,
                 window,
                 cx,
-            )
+            );
+            terminal.set_image_paste(super::ImagePaste::Local);
+            terminal
         });
         let subscriptions = vec![
             cx.observe(&terminal, move |_, _, cx| {
                 cx.emit(LocalTerminalPanelEvent::StatusChanged(id));
                 cx.notify();
             }),
-            cx.subscribe(&terminal, move |_, _, event: &TerminalEvent, cx| {
-                if let TerminalEvent::Notice(notice) = event {
-                    cx.emit(LocalTerminalPanelEvent::Notice(id, notice.clone()));
-                }
-            }),
+            cx.subscribe(
+                &terminal,
+                move |_, _, event: &TerminalEvent, cx| match event {
+                    TerminalEvent::Notice(notice) => {
+                        cx.emit(LocalTerminalPanelEvent::Notice(id, notice.clone()));
+                    }
+                    TerminalEvent::PasteProblem(error) => {
+                        cx.emit(LocalTerminalPanelEvent::PasteProblem(error.clone()));
+                    }
+                    TerminalEvent::Started
+                    | TerminalEvent::PromptRequested(_)
+                    | TerminalEvent::HostOsDetected(_)
+                    | TerminalEvent::PasteImage { .. } => {}
+                },
+            ),
         ];
 
         Self {

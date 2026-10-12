@@ -701,6 +701,13 @@ pub enum TerminalEvent {
     HostOsDetected(HostOs),
     /// Something to show the user while they look elsewhere.
     Notice(TerminalNotice),
+    /// A screenshot to put on a saved host, then paste as a path.
+    PasteImage {
+        bytes: Vec<u8>,
+        extension: &'static str,
+    },
+    /// Why a screenshot could not be pasted.
+    PasteProblem(SharedString),
 }
 
 struct TerminalRuntime {

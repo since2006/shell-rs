@@ -32,6 +32,12 @@ pub enum TerminalPanelEvent {
     PromptRequested(RemoteTerminalId, HostId, ConnectionPrompt),
     HostOsDetected(HostId, HostOs),
     Notice(RemoteTerminalId, TerminalNotice),
+    /// A screenshot to write on the host, then paste as a path.
+    PasteImage {
+        bytes: Vec<u8>,
+        extension: &'static str,
+    },
+    PasteProblem(SharedString),
 }
 
 /// A remote-host Dock panel backed by the shared terminal engine. The
@@ -78,6 +84,11 @@ impl TerminalPanel {
             );
             terminal.set_menu_items(connection_menu_items(id, host_id));
             terminal.set_reconnect_action(ReconnectTerminal(id), cx);
+            // Saved hosts can take another SFTP channel. External and
+            // quick connections cannot, or were not asked for yet.
+            if !store.read(cx).is_temporary(host_id) {
+                terminal.set_image_paste(super::ImagePaste::Remote);
+            }
             terminal
         });
         let subscriptions = vec![
@@ -104,6 +115,15 @@ impl TerminalPanel {
                     }
                     TerminalEvent::Notice(notice) => {
                         cx.emit(TerminalPanelEvent::Notice(this.id, notice.clone()));
+                    }
+                    TerminalEvent::PasteImage { bytes, extension } => {
+                        cx.emit(TerminalPanelEvent::PasteImage {
+                            bytes: bytes.clone(),
+                            extension,
+                        });
+                    }
+                    TerminalEvent::PasteProblem(error) => {
+                        cx.emit(TerminalPanelEvent::PasteProblem(error.clone()));
                     }
                 },
             ),

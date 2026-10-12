@@ -11,6 +11,7 @@ mod local_terminal_panel;
 mod model;
 mod mouse;
 mod notices;
+mod paste_image;
 mod run;
 mod scrollbar;
 mod search;
@@ -36,6 +37,10 @@ pub use model::{
     TerminalSize, TerminalStatus,
 };
 pub use notices::TerminalNotice;
+pub use paste_image::{
+    ClipboardImage, ClipboardPaste, ImagePaste, MAX_BYTES, clipboard_paste, paste_file_name,
+    save_local,
+};
 pub use run::{
     BusyReason, RunContext, RunEvent, RunFailure, RunHandle, RunProgress, RunShell, RunTiming,
     TerminalRun,

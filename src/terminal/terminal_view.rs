@@ -30,6 +30,7 @@ use crate::connection::{ConnectionPromptReply, Latency};
 use crate::i18n::{UiLocale, t};
 
 use super::mouse::{self, MouseReport, ReportButton, ReportKind};
+use super::paste_image::{ClipboardPaste, ImagePaste, clipboard_paste, save_local};
 use super::scrollbar::ScrollbackHandle;
 use super::search::SearchMark;
 use super::{
@@ -239,6 +240,8 @@ pub struct TerminalView {
     reported_button: Option<ReportButton>,
     /// The cell the program last heard of: motion is reported once a cell.
     reported_cell: Option<(usize, usize)>,
+    /// What a screenshot on the clipboard does in this terminal.
+    image_paste: ImagePaste,
     _subscriptions: Vec<Subscription>,
     _blink_task: Task<()>,
 }
@@ -328,6 +331,7 @@ impl TerminalView {
             link_tooltip_task: None,
             reported_button: None,
             reported_cell: None,
+            image_paste: ImagePaste::Off,
             _subscriptions: subscriptions,
             _blink_task: blink_task,
         }
@@ -449,17 +453,50 @@ impl TerminalView {
     }
 
     pub fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        self.paste_item(item, cx);
+    }
+
+    /// What a screenshot on the clipboard does in this terminal.
+    pub fn set_image_paste(&mut self, image_paste: ImagePaste) {
+        self.image_paste = image_paste;
+    }
+
+    fn paste_item(&mut self, item: ClipboardItem, cx: &mut Context<Self>) {
         if !self.engine.read(cx).lifecycle().accepts_input() {
             return;
         }
-        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-            return;
-        };
-        self.engine.read(cx).paste(&text);
+        match clipboard_paste(&item) {
+            ClipboardPaste::Text(text) => self.paste_text(&text, cx),
+            ClipboardPaste::Image(image) => self.paste_image(image, cx),
+            ClipboardPaste::Empty => {}
+        }
+    }
+
+    pub fn paste_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.engine.read(cx).paste(text);
         self.selecting = false;
         self.scroll_accumulator.reset();
         self.cursor_visible = true;
         cx.notify();
+    }
+
+    fn paste_image(&mut self, image: super::ClipboardImage, cx: &mut Context<Self>) {
+        match self.image_paste {
+            ImagePaste::Local => match save_local(&image.bytes, image.extension) {
+                Ok(path) => self.paste_text(&path.to_string_lossy(), cx),
+                Err(error) => cx.emit(TerminalEvent::PasteProblem(error)),
+            },
+            ImagePaste::Remote => cx.emit(TerminalEvent::PasteImage {
+                bytes: image.bytes,
+                extension: image.extension,
+            }),
+            ImagePaste::Off => cx.emit(TerminalEvent::PasteProblem(t!(
+                "terminal.paste.image_unsupported"
+            ))),
+        }
     }
 
     /// Put `command` on the shell's input line, with `replace` in place of
@@ -907,12 +944,7 @@ impl EntityInputHandler for TerminalView {
     }
 
     fn paste(&mut self, item: ClipboardItem, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = item.text() {
-            self.engine.read(cx).paste(&text);
-            self.selecting = false;
-            self.scroll_accumulator.reset();
-            cx.notify();
-        }
+        self.paste_item(item, cx);
     }
 
     fn replace_text_in_range(

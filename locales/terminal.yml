@@ -71,6 +71,26 @@ terminal.command.multiline:
   zh-CN: 这是一条多行命令，在这个终端里只能直接执行
   en: This is a multi-line command, which this terminal can only run directly
 
+# A screenshot pasted for an agent in the terminal
+terminal.paste.image_empty:
+  zh-CN: 剪贴板里的图片是空的
+  en: The image on the clipboard is empty
+terminal.paste.image_too_large:
+  zh-CN: 图片太大，粘贴不了
+  en: The image is too large to paste
+terminal.paste.image_save_failed:
+  zh-CN: 没法把图片存到本机：%{error}
+  en: "Couldn’t save the image on this computer: %{error}"
+terminal.paste.image_upload_failed:
+  zh-CN: 没法把图片传到主机：%{error}
+  en: "Couldn’t send the image to the host: %{error}"
+terminal.paste.image_unsupported:
+  zh-CN: 外部连接和未保存的主机不能粘贴图片
+  en: External connections and unsaved hosts can’t paste images
+terminal.paste.image_title:
+  zh-CN: 粘贴图片
+  en: Paste image
+
 # State of a terminal
 terminal.lifecycle.starting:
   zh-CN: 正在启动

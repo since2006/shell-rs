@@ -1358,3 +1358,113 @@ async fn a_matching_line_notifies_from_a_terminal_out_of_sight(cx: &mut TestAppC
     let shown = system_notifications(cx, 2).await;
     assert_eq!(shown[1].body.as_ref(), "12:05 ERROR later");
 }
+
+/// A 1×1 PNG.
+const PASTE_PNG: &[u8] = b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0d\x49\x44\x41\x54\x78\x9c\x63\xf8\xcf\xc0\xf0\x1f\x00\x05\x00\x01\xff\x89\x99\x3d\x1d\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82";
+
+fn screenshot_on_clipboard(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.write_to_clipboard(ClipboardItem::new_image(&gpui_kit::Image {
+            format: gpui_kit::ImageFormat::Png,
+            bytes: PASTE_PNG.to_vec(),
+            id: 1,
+        }));
+    });
+}
+
+#[gpui_kit::test]
+async fn pasting_a_screenshot_into_a_local_terminal_writes_a_file_and_its_path(
+    cx: &mut TestAppContext,
+) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (_handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    screenshot_on_clipboard(cx);
+    cx.update(|cx| {
+        let terminal = workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(1))
+            .expect("the terminal is open")
+            .read(cx)
+            .terminal()
+            .clone();
+        terminal.update(cx, |terminal, cx| terminal.paste_clipboard(cx));
+    });
+    let written = factory.written_text();
+    let path = written
+        .lines()
+        .find(|line| line.contains("shellrs-paste-") && line.ends_with(".png"))
+        .unwrap_or_else(|| panic!("expected a paste path, got {written:?}"));
+    let path = path.trim();
+    assert_eq!(std::fs::read(path).expect(path), PASTE_PNG);
+    let _ = std::fs::remove_file(path);
+}
+
+#[gpui_kit::test]
+async fn pasting_a_screenshot_onto_a_saved_host_writes_it_over_sftp(cx: &mut TestAppContext) {
+    init_app(cx);
+    cx.update(|cx| cx.set_reduce_motion(true));
+    let remote = Arc::new(FakeTerminalFactory::default());
+    let sftp = Arc::new(FakeSftpProvider::default());
+    let mut workspace = None;
+    let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
+        let store = cx.new(|_| HostStore::seed());
+        let view = cx.new(|cx| {
+            Workspace::new_with_services(
+                store,
+                cx.new(|_| settings_store()),
+                Arc::new(FixedRemoteTerminalTransportProvider::new(remote.clone())),
+                Arc::new(FixedLocalTerminalTransportProvider::new(Arc::new(
+                    FakeTerminalFactory::default(),
+                ))),
+                sftp.clone(),
+                Arc::new(FakeLocalDirectory::default()),
+                Arc::new(FakeConnectionTester::default()),
+                Arc::new(FakeForwardProvider::default()),
+                window,
+                cx,
+            )
+        });
+        workspace = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let workspace = workspace.expect("workspace created");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("status-connection").is_some_and(|element| {
+            element
+                .label()
+                .is_some_and(|label| label.contains("已连接"))
+        })
+    })
+    .await;
+
+    screenshot_on_clipboard(cx);
+    cx.update(|cx| {
+        let terminal = workspace
+            .read(cx)
+            .remote_terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))
+            .expect("web-01 is open")
+            .read(cx)
+            .terminal()
+            .clone();
+        terminal.update(cx, |terminal, cx| terminal.paste_clipboard(cx));
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        !sftp.writes.lock().unwrap().is_empty()
+    })
+    .await;
+    cx.run_until_parked();
+
+    let writes = sftp.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 1);
+    let (path, bytes, _) = &writes[0];
+    assert!(
+        path.starts_with("/tmp/shellrs-paste-") && path.ends_with(".png"),
+        "{path}"
+    );
+    assert_eq!(bytes, PASTE_PNG);
+    assert!(
+        remote.written_text().contains(path),
+        "{}",
+        remote.written_text()
+    );
+}

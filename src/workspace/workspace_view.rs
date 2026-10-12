@@ -62,16 +62,16 @@ use crate::settings::{
     WindowSettings,
 };
 use crate::sftp::{
-    SharedLocalDirectoryProvider, SharedSftpTransportProvider, SshSftpTransportProvider,
-    SystemLocalDirectoryProvider, TransferDirection,
+    RemotePath, SharedLocalDirectoryProvider, SharedSftpTransportProvider,
+    SshSftpTransportProvider, SystemLocalDirectoryProvider, TransferDirection, put_bytes,
 };
 use crate::shared::{commit_footer, confirm_danger, open_rename_tab_dialog};
 use crate::terminal::{
     DEFAULT_FONT_SIZE, LocalPtyTransportProvider, LocalShell, LocalTerminalId, LocalTerminalPanel,
-    LocalTerminalPanelEvent, RemoteTerminalId, SearchDirection,
+    LocalTerminalPanelEvent, MAX_BYTES, RemoteTerminalId, SearchDirection,
     SharedLocalTerminalTransportProvider, SharedRemoteTerminalTransportProvider,
     SharedTerminalTransportFactory, TerminalLifecycle, TerminalPanel, TerminalPanelEvent,
-    TerminalView,
+    TerminalView, paste_file_name,
 };
 use crate::update::{UpdateServices, Updater, UpdaterEvent};
 
@@ -1782,6 +1782,89 @@ impl Workspace {
         }
     }
 
+    /// Write a screenshot onto a saved host over SFTP, then paste the path.
+    fn paste_image_to_saved_host(
+        &mut self,
+        terminal_id: RemoteTerminalId,
+        host_id: HostId,
+        bytes: Vec<u8>,
+        extension: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let fail = |window: &mut Window, cx: &mut Context<Self>, error: SharedString| {
+            window.push_notification(
+                Notification::error(error).title(t!("terminal.paste.image_title")),
+                cx,
+            );
+        };
+        if bytes.len() > MAX_BYTES {
+            fail(window, cx, t!("terminal.paste.image_too_large"));
+            return;
+        }
+        if self.store.read(cx).saved_host(host_id).is_none() {
+            fail(window, cx, t!("terminal.paste.image_unsupported"));
+            return;
+        }
+        let Some(login) = self.store.read(cx).login(host_id) else {
+            fail(window, cx, t!("terminal.paste.image_unsupported"));
+            return;
+        };
+        let Some(terminal) = self
+            .terminals
+            .get(&terminal_id)
+            .map(|panel| panel.read(cx).terminal().clone())
+        else {
+            return;
+        };
+        if !terminal.read(cx).lifecycle(cx).accepts_input() {
+            fail(window, cx, t!("terminal.command.not_connected"));
+            return;
+        }
+        let name = paste_file_name(extension);
+        let path = match RemotePath::new(format!("/tmp/{name}")) {
+            Ok(path) => path,
+            Err(error) => {
+                fail(
+                    window,
+                    cx,
+                    t!(
+                        "terminal.paste.image_upload_failed",
+                        error = error.to_string()
+                    ),
+                );
+                return;
+            }
+        };
+        let pasted = path.to_string();
+        let provider = self.sftp_provider.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { put_bytes(&provider, &login, &path, bytes) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| match result {
+                Ok(()) => {
+                    if let Some(terminal) = this
+                        .terminals
+                        .get(&terminal_id)
+                        .map(|panel| panel.read(cx).terminal().clone())
+                    {
+                        terminal.update(cx, |terminal, cx| {
+                            terminal.paste_text(&pasted, cx);
+                        });
+                    }
+                }
+                Err(error) => {
+                    window.push_notification(
+                        Notification::error(error).title(t!("terminal.paste.image_title")),
+                        cx,
+                    );
+                }
+            });
+        })
+        .detach();
+    }
+
     fn on_find_in_terminal(
         &mut self,
         _: &FindInTerminal,
@@ -2278,7 +2361,7 @@ fn new_terminal_panel(
     let subscription = cx.subscribe_in(
         &panel,
         window,
-        |this, _, event: &TerminalPanelEvent, window, cx| match event {
+        |this, panel, event: &TerminalPanelEvent, window, cx| match event {
             TerminalPanelEvent::Activated(terminal_id, _) => {
                 this.set_active_tab(Some(CenterTab::Terminal(*terminal_id)), window, cx)
             }
@@ -2317,6 +2400,24 @@ fn new_terminal_panel(
             }
             TerminalPanelEvent::Notice(terminal_id, notice) => {
                 this.on_terminal_notice(CenterTab::Terminal(*terminal_id), notice, window, cx)
+            }
+            TerminalPanelEvent::PasteImage { bytes, extension } => {
+                let host_id = panel.read(cx).host_id();
+                let terminal_id = panel.read(cx).id();
+                this.paste_image_to_saved_host(
+                    terminal_id,
+                    host_id,
+                    bytes.clone(),
+                    extension,
+                    window,
+                    cx,
+                );
+            }
+            TerminalPanelEvent::PasteProblem(error) => {
+                window.push_notification(
+                    Notification::error(error.clone()).title(t!("terminal.paste.image_title")),
+                    cx,
+                );
             }
         },
     );
@@ -2479,6 +2580,12 @@ fn new_local_terminal_panel(
             LocalTerminalPanelEvent::StatusChanged(_) => cx.notify(),
             LocalTerminalPanelEvent::Notice(id, notice) => {
                 this.on_terminal_notice(CenterTab::LocalTerminal(*id), notice, window, cx)
+            }
+            LocalTerminalPanelEvent::PasteProblem(error) => {
+                window.push_notification(
+                    Notification::error(error.clone()).title(t!("terminal.paste.image_title")),
+                    cx,
+                );
             }
         },
     );

@@ -30,6 +30,7 @@ on:
       - "src/settings/settings_panel.rs"
       - "src/terminal/local_shell.rs"
       - "src/app/shortcuts.rs"
+      - "src/terminal/paste_image.rs"
       - "src/workspace/window_state.rs"
       - "src/testing.rs"
       - "tests/cli_bin.rs"

@@ -11,10 +11,12 @@ mod download;
 mod journal;
 mod meter;
 mod operations;
+mod put;
 mod speed;
 mod sync;
 mod upload;
 mod worker;
+pub use put::put_bytes;
 pub use worker::SshSftpTransportProvider;
 #[cfg(all(test, unix))]
 mod protocol_tests;
