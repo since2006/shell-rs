@@ -1,5 +1,6 @@
 //! 终端: shared terminal emulation, transports and Dock panels.
 
+mod compose_pane;
 mod engine;
 mod exec;
 mod font;

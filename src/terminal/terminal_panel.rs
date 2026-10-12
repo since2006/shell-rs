@@ -5,17 +5,20 @@ use gpui_kit::component::{
     button::Button,
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     menu::PopupMenu,
+    resizable::{ResizableState, resizable_panel, v_resizable},
 };
 use gpui_kit::*;
 
 use crate::app::{
     CatalogIcon, CenterTab, CloseTerminal, ConnectHost, CopyHostAddress, DisconnectTerminal,
-    EditHost, OpenExplorer, ReconnectTerminal, RenameTerminal,
+    EditHost, OpenExplorer, ReconnectTerminal, RenameTerminal, ToggleTerminalCompose,
 };
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::host::{HostId, HostOs, HostStore};
 use crate::i18n::t;
 use crate::shared::{ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items};
+
+use super::compose_pane::ComposePane;
 
 use super::{
     RemoteTerminalId, SharedRemoteTerminalTransportProvider, TerminalEvent, TerminalLifecycle,
@@ -42,6 +45,9 @@ pub struct TerminalPanel {
     store: Entity<HostStore>,
     terminal: Entity<TerminalView>,
     remote_provider: SharedRemoteTerminalTransportProvider,
+    compose: Option<Entity<ComposePane>>,
+    compose_visible: bool,
+    compose_split: Entity<ResizableState>,
     tab_group: Option<WeakEntity<TabGroup>>,
     /// A title the user gave this tab, to tell apart several connections to
     /// the same host. Lives as long as the tab, like the rest of the layout.
@@ -108,7 +114,11 @@ impl TerminalPanel {
             ),
         ];
 
+        let compose = cx.new(|cx| ComposePane::new(id, terminal.clone(), window, cx));
         Self {
+            compose: Some(compose),
+            compose_visible: false,
+            compose_split: cx.new(|_| ResizableState::default()),
             id,
             host_id,
             store,
@@ -118,6 +128,31 @@ impl TerminalPanel {
             custom_title: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    pub(crate) fn toggle_compose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(compose) = &self.compose else { return };
+        self.compose_visible = !self.compose_visible;
+        let focus = if self.compose_visible {
+            compose.focus_handle(cx)
+        } else {
+            self.terminal.read(cx).focus_handle()
+        };
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn submit_draft(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), SharedString> {
+        if self.compose_visible
+            && let Some(compose) = &self.compose
+        {
+            compose.update(cx, |compose, cx| compose.submit(window, cx))?;
+        }
+        Ok(())
     }
 
     pub fn id(&self) -> RemoteTerminalId {
@@ -229,6 +264,10 @@ impl BasePanel for TerminalPanel {
 
     fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.tab_group = None;
+        // Drop the editor (including its undo history), even if a caller
+        // still holds the removed panel. Drafts never enter the store.
+        self.compose = None;
+        self.compose_visible = false;
         self.terminal
             .update(cx, |terminal, cx| terminal.shutdown(cx));
         let id = self.host_id;
@@ -262,10 +301,21 @@ impl Panel for TerminalPanel {
         Some(LatencyLabel::new(("terminal-latency", self.id.0), latency))
     }
 
-    fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
+    fn toolbar_buttons(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Option<Vec<Button>> {
         let host_id = self.host_id;
         let terminal_id = self.id;
+        let compose_dispatch = self.focus_handle(cx);
         Some(vec![
+            Button::new(("toggle-terminal-compose", terminal_id.0))
+                .label(t!("terminal.compose.title"))
+                .tooltip(t!("terminal.compose.toggle"))
+                .on_click(move |_, window, cx| {
+                    compose_dispatch.dispatch_action(
+                        &ToggleTerminalCompose(terminal_id),
+                        window,
+                        cx,
+                    )
+                }),
             Button::new(("sftp", terminal_id.0))
                 .icon(Icon::new(CatalogIcon::FolderTree))
                 .label("SFTP")
@@ -411,6 +461,21 @@ impl TabMenu {
 
 impl Render for TerminalPanel {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(self.terminal.clone())
+        div().size_full().min_w_0().min_h_0().child(
+            v_resizable(("terminal-compose-split", self.id.0))
+                .with_state(&self.compose_split)
+                .child(
+                    resizable_panel()
+                        .size_range(px(80.)..Pixels::MAX)
+                        .child(self.terminal.clone()),
+                )
+                .child(
+                    resizable_panel()
+                        .size(px(200.))
+                        .size_range(px(80.)..px(480.))
+                        .visible(self.compose_visible)
+                        .children(self.compose.clone()),
+                ),
+        )
     }
 }

@@ -9,6 +9,7 @@ mod support;
 
 mod analytics;
 mod cli;
+mod compose;
 mod connection;
 mod credential;
 mod docker;

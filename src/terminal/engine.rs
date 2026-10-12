@@ -339,6 +339,16 @@ impl TerminalEngine {
         Ok(())
     }
 
+    /// Submit a compose draft with exactly one final Enter. Reject unsafe
+    /// controls and non-bracketed multiline input before sending any bytes.
+    pub(super) fn submit_draft(&self, draft: &str) -> Result<(), SharedString> {
+        if self.lifecycle != TerminalLifecycle::Running {
+            return Err(t!("terminal.command.not_connected"));
+        }
+        self.send_user_input(encode_draft(draft, self.mode())?);
+        Ok(())
+    }
+
     pub fn resize(&mut self, size: TerminalSize, cx: &mut gpui_kit::Context<Self>) {
         if size == self.size {
             return;
@@ -1084,6 +1094,26 @@ fn encode_paste(text: &str, mode: TermMode) -> Vec<u8> {
     }
 }
 
+/// Compose submits with one explicit Enter: no line replacement, no
+/// escape/control injection, and no fallback
+/// that could execute the first line when bracketed paste is unavailable.
+fn encode_draft(draft: &str, mode: TermMode) -> Result<Vec<u8>, SharedString> {
+    let normalized = draft.replace("\r\n", "\n").replace('\r', "\n");
+    if normalized.trim().is_empty() {
+        return Err(t!("terminal.compose.empty"));
+    }
+    if normalized
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return Err(t!("terminal.compose.controls"));
+    }
+    if !mode.contains(TermMode::BRACKETED_PASTE) && normalized.contains(['\n', '\t']) {
+        return Err(t!("terminal.compose.multiline"));
+    }
+    encode_command(&normalized, true, false, mode)
+}
+
 /// What `TerminalEngine::enter_command` types: with `replace` Ctrl-E and
 /// Ctrl-U first, to the line's end and everything before it away (the
 /// emacs keys of bash, zsh and fish alike), then the command as a paste,
@@ -1654,6 +1684,41 @@ mod tests {
 
         assert_eq!(term.grid().display_offset(), 0);
         assert!(term.selection.is_none());
+    }
+
+    #[test]
+    fn compose_draft_submits_once_without_replacing_the_terminal_line() {
+        assert_eq!(
+            encode_draft("echo 中文", TermMode::default()).unwrap(),
+            "echo 中文\r".as_bytes()
+        );
+        assert_eq!(
+            encode_draft("echo one\r\necho two\r", TermMode::BRACKETED_PASTE).unwrap(),
+            b"\x1b[200~echo one\necho two\n\x1b[201~\r"
+        );
+        assert_eq!(
+            encode_draft("\techo one", TermMode::BRACKETED_PASTE).unwrap(),
+            b"\x1b[200~\techo one\x1b[201~\r"
+        );
+    }
+
+    #[test]
+    fn compose_draft_rejects_unsafe_paste_without_sending_a_prefix() {
+        for text in ["one\ntwo", "one\rtwo", "one\r\ntwo", "one\tmore", "one\n"] {
+            assert!(encode_draft(text, TermMode::default()).is_err());
+        }
+        for text in [
+            "",
+            " \n\t",
+            "echo\x03",
+            "echo\x1b[201~\r",
+            "echo\0",
+            "echo\x7f",
+            "echo\u{85}",
+        ] {
+            assert!(encode_draft(text, TermMode::BRACKETED_PASTE).is_err());
+        }
+        assert!(encode_draft("echo hi", TermMode::ALT_SCREEN | TermMode::BRACKETED_PASTE).is_err());
     }
 
     #[test]

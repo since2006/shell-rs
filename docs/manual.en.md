@@ -192,6 +192,8 @@ Remote terminal tabs and SFTP tabs use the host’s system badge as their icon (
 
 ## Terminal
 
+“Compose pane” in a remote terminal’s toolbar opens a draft belonging to that tab. Enter sends and executes it; Shift+Enter inserts a new line. Successful submission clears the draft and keeps editing focus. IME candidate confirmation, held Enter and a deferred submission after focus moves do not send commands. Drafts stay in memory, survive hiding the pane and are discarded when the tab closes. Submission does not replace the terminal’s current input line. Multiple lines or tabs require bracketed paste; disconnected terminals keep the draft without sending it.
+
 The terminal’s context menu has “Copy”, “Paste”, “Find…” and “Clear screen”; a remote terminal’s also has “Open SFTP”, “Reconnect” and “Disconnect”. “Disconnect” disconnects only this tab: the tab stays and can reconnect at any time, and other tabs and SFTP for the same host aren’t affected. Settings › Terminal › Interaction can make right-click paste or do nothing instead, and can turn on “Copy on select”.
 
 - **Scrollback**: each terminal keeps the last 10,000 lines. Scroll up with the wheel or trackpad and a scrollbar appears on the right (as in the app’s other lists, following the system’s “Show scroll bars” setting); drag it, or click the track to jump there. Full-screen programs such as vim, less and top have no scrollback and show no scrollbar.

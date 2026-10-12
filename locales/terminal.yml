@@ -198,3 +198,22 @@ terminal.pty.resize_error:
 terminal.pty.exit_status:
   zh-CN: 无法读取 shell 退出状态
   en: Couldn’t read the shell’s exit status
+
+terminal.compose.title:
+  zh-CN: 撰写窗格
+  en: Compose pane
+terminal.compose.toggle:
+  zh-CN: 显示或隐藏此标签的撰写窗格
+  en: Show or hide this tab’s compose pane
+terminal.compose.placeholder:
+  zh-CN: Enter 发送，Shift+Enter 换行
+  en: Enter to send, Shift+Enter for a new line
+terminal.compose.empty:
+  zh-CN: 请先撰写命令
+  en: Compose a command first
+terminal.compose.controls:
+  zh-CN: 草稿包含终端控制字符，请删除后再发送
+  en: Remove terminal control characters from the draft before sending
+terminal.compose.multiline:
+  zh-CN: 当前终端未启用括号粘贴，不能安全发送多行或制表符。请逐行输入，或先在 shell 中启用括号粘贴。
+  en: This terminal has not enabled bracketed paste, so multiple lines or tabs cannot be sent safely. Enter one line at a time, or enable bracketed paste in the shell first.
