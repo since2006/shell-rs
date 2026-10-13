@@ -50,6 +50,8 @@ pub struct HostLogin {
     /// session per connection and ends it when another channel comes and
     /// goes, as Xshell and OpenSSH never make it do.
     pub shell_only: bool,
+    /// Only the final remote terminal may use this permission.
+    pub agent_forwarding: bool,
 }
 
 /// How a connection reaches a host, with every jump host's login looked up.
@@ -156,6 +158,7 @@ impl HostLogin {
             key_path: None,
             route: LoginRoute::Direct,
             shell_only: false,
+            agent_forwarding: false,
         }
     }
 
@@ -185,6 +188,7 @@ impl HostLogin {
             password,
             route: LoginRoute::Direct,
             shell_only: false,
+            agent_forwarding: false,
         }
     }
 
@@ -199,7 +203,8 @@ impl HostLogin {
     /// is ignored unless it is the one the host names, so a host whose
     /// credential has gone logs in with what the form holds.
     pub fn of(host: &Host, credential: Option<&Credential>) -> Self {
-        match credential.filter(|credential| host.credential == Some(credential.id)) {
+        let mut login = match credential.filter(|credential| host.credential == Some(credential.id))
+        {
             Some(credential) => Self::with_credential(host.address.as_ref(), host.port, credential),
             None => Self::manual(
                 host.address.as_ref(),
@@ -207,7 +212,9 @@ impl HostLogin {
                 host.user.as_ref(),
                 host.auth,
             ),
-        }
+        };
+        login.agent_forwarding = host.agent_forwarding;
+        login
     }
 
     /// `user@host:port`, for messages and as the key of resumable transfers.

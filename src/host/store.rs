@@ -2452,6 +2452,22 @@ mod tests {
     }
 
     #[test]
+    fn agent_forwarding_is_off_by_default_and_follows_saved_edits_and_copies() {
+        let mut store = HostStore::empty();
+        let id = store.insert_unnotified(draft("db", None));
+        assert!(!store.login(id).unwrap().agent_forwarding);
+        let before = store.login(id).unwrap();
+        store.update_unnotified(id, draft("db", None).with_agent_forwarding(true));
+        assert!(store.login(id).unwrap().agent_forwarding);
+        assert_ne!(store.login(id).unwrap(), before);
+        let copy = store.duplicate_unnotified(id).unwrap();
+        assert!(store.login(copy).unwrap().agent_forwarding);
+        store.update_unnotified(id, draft("db", None));
+        assert!(!store.login(id).unwrap().agent_forwarding);
+        assert!(store.login(copy).unwrap().agent_forwarding);
+    }
+
+    #[test]
     fn notes_stay_through_an_edit_and_go_with_a_copy() {
         let mut store = HostStore::empty();
         let id = store.insert_unnotified(draft("db", None).with_notes("只读副本"));

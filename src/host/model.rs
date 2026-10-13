@@ -414,6 +414,8 @@ pub struct Host {
     pub group: Option<GroupId>,
     /// Whatever the user wants to remember about it; empty for none.
     pub notes: SharedString,
+    /// Allow the remote terminal to use the local SSH agent. Off by default.
+    pub agent_forwarding: bool,
     /// Order among hosts in the same group.
     pub sort_order: i64,
     pub state: ConnectionState,
@@ -439,6 +441,7 @@ impl Host {
             route: draft.route,
             group: draft.group,
             notes: draft.notes,
+            agent_forwarding: draft.agent_forwarding,
             sort_order: 0,
             state: ConnectionState::Disconnected,
             os: None,
@@ -475,6 +478,7 @@ impl Host {
             route: self.route.clone(),
             group: self.group,
             notes: self.notes.clone(),
+            agent_forwarding: self.agent_forwarding,
         }
     }
 }
@@ -537,6 +541,8 @@ pub struct HostDraft {
     pub route: Route,
     pub group: Option<GroupId>,
     pub notes: SharedString,
+    /// Allow the remote terminal to use the local SSH agent. Off by default.
+    pub agent_forwarding: bool,
 }
 
 impl HostDraft {
@@ -558,6 +564,7 @@ impl HostDraft {
             route: Route::Direct,
             group,
             notes: SharedString::default(),
+            agent_forwarding: false,
         }
     }
 
@@ -571,6 +578,11 @@ impl HostDraft {
     /// Reach the host some other way than directly.
     pub fn with_route(mut self, route: Route) -> Self {
         self.route = route;
+        self
+    }
+
+    pub fn with_agent_forwarding(mut self, enabled: bool) -> Self {
+        self.agent_forwarding = enabled;
         self
     }
 
