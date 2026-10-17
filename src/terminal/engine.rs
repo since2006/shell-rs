@@ -1,9 +1,10 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use alacritty_terminal::Term;
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
@@ -30,10 +31,11 @@ use super::highlight::{
     HighlightColor, KeywordHit, LineWatcher, SharedHighlights, TerminalHighlights,
     advance_watching, current,
 };
-use super::links::{LinkMarker, url_search, visible_links};
+use super::links::url_search;
 use super::notices::{NoticeScanner, ProgramNotice, TerminalNotice};
 use super::run::{BusyReason, RunFailure, RunHandle};
-use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
+use super::search::{SearchDirection, SearchMark, SearchPosition, TerminalSearch};
+use super::snapshot::SnapshotCache;
 use super::zmodem::{Fed, Shown, Zmodem, ZmodemControl, ZmodemDirection, ZmodemReply};
 use super::{
     ExecRequest, ExecResult, SharedTerminalTransportFactory, TerminalChannels, TerminalColors,
@@ -43,7 +45,7 @@ use super::{
 
 pub type AlacrittyTerm = Term<TerminalEventProxy>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TerminalCell {
     pub character: String,
     pub foreground: Color,
@@ -58,10 +60,12 @@ pub struct TerminalCell {
 }
 
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct TerminalSnapshot {
     pub columns: usize,
     pub rows: usize,
-    pub cells: Vec<TerminalCell>,
+    /// Unchanged rows share their storage across frames.
+    pub lines: Vec<Rc<[TerminalCell]>>,
     pub cursor_row: Option<usize>,
     pub cursor_column: usize,
     pub cursor_shape: CursorShape,
@@ -71,13 +75,13 @@ pub struct TerminalSnapshot {
     pub history_size: usize,
     pub colors: [Option<Rgb>; COUNT],
     /// The addresses of the links on screen, by the cells' `link`.
-    pub links: Vec<gpui_kit::SharedString>,
+    pub links: Rc<[gpui_kit::SharedString]>,
 }
 
 impl TerminalSnapshot {
     pub fn visible_text(&self) -> String {
-        self.cells
-            .chunks(self.columns)
+        self.lines
+            .iter()
             .map(|row| {
                 row.iter()
                     .filter(|cell| !cell.flags.contains(Flags::WIDE_CHAR_SPACER))
@@ -103,6 +107,7 @@ pub struct TerminalEngine {
     search: RefCell<Option<TerminalSearch>>,
     /// Finds the web addresses on screen, built once.
     url_search: RefCell<RegexSearch>,
+    snapshot_cache: RefCell<SnapshotCache>,
     /// The 关键字高亮 rules, shared with the parser thread, which checks new
     /// lines against them; swapped when the settings change them.
     highlights: SharedHighlights,
@@ -120,6 +125,7 @@ pub struct TerminalEngine {
     generation: u64,
     size: TerminalSize,
     event_sender: mpsc::Sender<TerminalUiEvent>,
+    poll: Rc<super::poll::PollSchedule>,
     event_task: Option<gpui_kit::Task<()>>,
 }
 
@@ -131,6 +137,8 @@ impl TerminalEngine {
         // threads therefore never wake GPUI's local executor directly, and a
         // burst of terminal bytes results in a single render notification.
         let (event_sender, event_receiver) = mpsc::channel();
+        let (poll, wake) = super::poll::PollSchedule::new();
+        let poll = Rc::new(poll);
         let highlights = Arc::new(Mutex::new(TerminalHighlights::current(cx)));
         let theme = Arc::new(Mutex::new(TerminalColors::current(cx)));
         let runtime = TerminalRuntime::start(
@@ -148,6 +156,7 @@ impl TerminalEngine {
                 .highlights
                 .lock()
                 .unwrap_or_else(|error| error.into_inner()) = TerminalHighlights::current(cx);
+            this.snapshot_cache.borrow_mut().invalidate();
             cx.notify();
         });
         let theme_observer = cx.observe_global::<TerminalColors>(|this, cx| {
@@ -162,6 +171,7 @@ impl TerminalEngine {
             latency: None,
             search: RefCell::new(None),
             url_search: RefCell::new(url_search()),
+            snapshot_cache: RefCell::default(),
             highlights,
             _highlights_observer: highlights_observer,
             theme,
@@ -172,50 +182,50 @@ impl TerminalEngine {
             generation,
             size,
             event_sender,
+            poll: poll.clone(),
             event_task: None,
         };
-        this.event_task = Some(Self::listen(event_receiver, cx));
+        this.event_task = Some(Self::listen(event_receiver, poll, wake, cx));
         this
     }
 
     fn listen(
         events: mpsc::Receiver<TerminalUiEvent>,
+        poll: Rc<super::poll::PollSchedule>,
+        wake: async_channel::Receiver<()>,
         cx: &mut gpui_kit::Context<Self>,
     ) -> gpui_kit::Task<()> {
         cx.spawn(async move |this, cx| {
-            // When the last frame was drawn, and whether output came in
-            // since: with the processor drawing, frames are spaced out
-            // (`crate::app::frame_due`).
-            let mut drawn: Option<Instant> = None;
-            let mut undrawn = false;
+            let mut empty_polls: u32 = 0;
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                let batch: Vec<_> = events.try_iter().collect();
-                if batch.is_empty() && !undrawn {
+                let timer = cx.background_executor().timer(poll.delay(empty_polls));
+                if matches!(
+                    select(Box::pin(timer), Box::pin(wake.recv())).await,
+                    Either::Right(_)
+                ) {
+                    empty_polls = 0;
+                }
+                // Bound semantic events as well as the already coalesced output
+                // wakeup, so a noisy program cannot monopolize the UI thread.
+                let batch: Vec<_> = events.try_iter().take(256).collect();
+                if batch.is_empty() {
+                    empty_polls = empty_polls.saturating_add(1);
                     continue;
                 }
-                let now = Instant::now();
-                let draw = crate::app::frame_due(drawn, now);
-                if this
-                    .update(cx, |this, cx| {
-                        for event in batch {
-                            if let Some(event) = this.handle_event(event, cx) {
-                                cx.emit(event);
+                empty_polls = 0;
+                if !batch.is_empty()
+                    && this
+                        .update(cx, |this, cx| {
+                            for event in batch {
+                                if let Some(event) = this.handle_event(event, cx) {
+                                    cx.emit(event);
+                                }
                             }
-                        }
-                        if draw {
                             cx.notify();
-                        }
-                    })
-                    .is_err()
+                        })
+                        .is_err()
                 {
                     break;
-                }
-                undrawn = !draw;
-                if draw {
-                    drawn = Some(now);
                 }
             }
         })
@@ -312,6 +322,7 @@ impl TerminalEngine {
         self.directory = None;
         // The new emulator starts empty; matches in the old one mean nothing.
         self.search.replace(None);
+        self.snapshot_cache.borrow_mut().invalidate();
         self.runtime = TerminalRuntime::start(
             self.generation,
             self.size,
@@ -370,6 +381,7 @@ impl TerminalEngine {
 
     pub fn write(&self, bytes: impl Into<Vec<u8>>) {
         if self.lifecycle.accepts_input() {
+            self.poll.interactive();
             self.runtime.write(bytes.into());
         }
     }
@@ -382,6 +394,7 @@ impl TerminalEngine {
             return;
         }
 
+        self.poll.interactive();
         let mut term = self.runtime.term.lock();
         prepare_term_for_user_input(&mut term);
         drop(term);
@@ -502,6 +515,7 @@ impl TerminalEngine {
     /// Open the find, or search the open one for `query`, focusing the newest
     /// match at or above the bottom of the viewport.
     pub fn set_search_query(&mut self, query: &str, cx: &mut gpui_kit::Context<Self>) {
+        self.snapshot_cache.borrow_mut().invalidate();
         let mut term = self.runtime.term.lock();
         self.search
             .borrow_mut()
@@ -513,6 +527,7 @@ impl TerminalEngine {
 
     /// Focus the next match up (older output) or down (newer output).
     pub fn step_search(&mut self, direction: SearchDirection, cx: &mut gpui_kit::Context<Self>) {
+        self.snapshot_cache.borrow_mut().invalidate();
         let mut term = self.runtime.term.lock();
         if let Some(search) = self.search.borrow_mut().as_mut() {
             search.step(direction, &mut term);
@@ -522,6 +537,7 @@ impl TerminalEngine {
     }
 
     pub fn clear_search(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        self.snapshot_cache.borrow_mut().invalidate();
         if self.search.replace(None).is_some() {
             cx.notify();
         }
@@ -546,6 +562,7 @@ impl TerminalEngine {
     /// the emulator alone; the shell is not told, and carries on writing from
     /// the cursor, which stays beside its prompt.
     pub fn clear_keeping_prompt(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        self.snapshot_cache.borrow_mut().invalidate();
         let mut term = self.runtime.term.lock();
         if !clear_keeping_cursor_line(&mut term) {
             return;
@@ -570,6 +587,9 @@ impl TerminalEngine {
     }
 
     pub fn set_focused(&self, focused: bool) {
+        if focused {
+            self.poll.interactive();
+        }
         let mut term = self.runtime.term.lock();
         if term.is_focused == focused {
             return;
@@ -584,6 +604,10 @@ impl TerminalEngine {
 
     pub fn lifecycle(&self) -> &TerminalLifecycle {
         &self.lifecycle
+    }
+
+    pub(super) fn set_visible(&self, visible: bool) {
+        self.poll.set_visible(visible);
     }
 
     pub fn title(&self) -> Option<&str> {
@@ -693,66 +717,15 @@ impl TerminalEngine {
     }
 
     pub fn snapshot(&self) -> TerminalSnapshot {
-        let term = self.runtime.term.lock();
-        let content = term.renderable_content();
-        let selection = content.selection;
-        let display_offset = content.display_offset as i32;
-        let cursor_row = content.cursor.point.line.0 + display_offset;
-        let cursor_point = content.cursor.point;
-        let cursor_shape = content.cursor.shape;
-        let columns = term.grid().columns();
-        let (matches, focused) = self
-            .search
-            .borrow_mut()
-            .as_mut()
-            .map(|search| search.visible(&term))
-            .unwrap_or_default();
-        let mut marker = MatchMarker::new(&matches, focused.as_ref());
-        let mut links = LinkMarker::new(visible_links(&term, &mut self.url_search.borrow_mut()));
-        let highlights = current(&self.highlights).screen(&term);
-        let mut cells: Vec<_> = content
-            .display_iter
-            .map(|indexed| {
-                let mut character = indexed.cell.c.to_string();
-                if let Some(zerowidth) = indexed.cell.zerowidth() {
-                    character.extend(zerowidth);
-                }
-                TerminalCell {
-                    character,
-                    foreground: indexed.cell.fg,
-                    background: indexed.cell.bg,
-                    flags: indexed.cell.flags,
-                    selected: selection.is_some_and(|range| {
-                        range.contains_cell(&indexed, cursor_point, cursor_shape)
-                    }),
-                    search: marker.mark(indexed.point),
-                    link: links.mark(indexed.point, indexed.cell.hyperlink()),
-                    highlight: highlights.color(
-                        (indexed.point.line.0 + display_offset) as usize,
-                        indexed.point.column.0,
-                    ),
-                }
-            })
-            .collect();
-        normalize_wide_character_selection(&mut cells, columns);
-        TerminalSnapshot {
-            columns,
-            rows: term.grid().screen_lines(),
-            cells,
-            cursor_row: (0..term.grid().screen_lines() as i32)
-                .contains(&cursor_row)
-                .then_some(cursor_row as usize),
-            cursor_column: content.cursor.point.column.0,
-            cursor_shape: content.cursor.shape,
-            cursor_blinking: term.cursor_style().blinking,
-            display_offset: content.display_offset,
-            history_size: term.grid().history_size(),
-            colors: std::array::from_fn(|index| content.colors[index]),
-            links: links.into_links(),
-        }
+        self.snapshot_cache.borrow_mut().read(
+            &mut self.runtime.term.lock(),
+            &mut self.search.borrow_mut(),
+            &mut self.url_search.borrow_mut(),
+            &current(&self.highlights),
+            self.generation,
+        )
     }
 }
-
 /// A terminal's view of its history, for the scrollbar, whose drag hands
 /// over a position and no context: whoever draws the terminal is told to
 /// redraw it. Taken for each frame, as a restart replaces the terminal.
@@ -799,7 +772,7 @@ fn cursor_line_text(term: &AlacrittyTerm) -> String {
 /// Alacritty stores CJK glyphs in one `WIDE_CHAR` cell followed by a
 /// `WIDE_CHAR_SPACER`; painting only one half produces a one-column highlight
 /// that cannot line up with the two-column glyph.
-fn normalize_wide_character_selection(cells: &mut [TerminalCell], columns: usize) {
+pub(super) fn normalize_wide_character_selection(cells: &mut [TerminalCell], columns: usize) {
     if columns == 0 {
         return;
     }
@@ -1511,8 +1484,11 @@ fn prepare_term_for_user_input(term: &mut AlacrittyTerm) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::links::{LinkMarker, visible_links};
+    use crate::terminal::search::MatchMarker;
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::vte::ansi::NamedColor;
+    use std::time::Duration;
 
     fn test_term(columns: usize, rows: usize) -> AlacrittyTerm {
         test_term_with_channels(columns, rows).0

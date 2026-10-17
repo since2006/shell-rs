@@ -64,6 +64,7 @@ impl Workspace {
     /// one with the focus, or to one that shows; then the right sidebar
     /// follows.
     pub(super) fn sync_front(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_terminal_visibility(cx);
         let visible = self.visible_center_tabs(cx);
         if let Some(tab) = self.active_tab
             && !visible.contains(&tab)
@@ -78,6 +79,24 @@ impl Workspace {
                 .or_else(|| visible.first().copied());
         }
         self.sync_tool_sidebar(window, cx);
+    }
+
+    pub(super) fn sync_terminal_visibility(&self, cx: &App) {
+        let visible = self.visible_center_tabs(cx);
+        for (id, panel) in &self.terminals {
+            panel
+                .read(cx)
+                .terminal()
+                .read(cx)
+                .set_visible(visible.contains(&CenterTab::Terminal(*id)), cx);
+        }
+        for (id, panel) in &self.local_terminals {
+            panel
+                .read(cx)
+                .terminal()
+                .read(cx)
+                .set_visible(visible.contains(&CenterTab::LocalTerminal(*id)), cx);
+        }
     }
 }
 

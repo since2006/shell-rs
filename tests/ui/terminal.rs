@@ -16,6 +16,83 @@ fn open_workspace_with_factory(
     )
 }
 
+#[gpui_kit::test]
+async fn terminal_redraws_do_not_report_panel_status_changes(cx: &mut TestAppContext) {
+    use shellrs::terminal::{LocalTerminalId, LocalTerminalPanelEvent};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let (handle, workspace) =
+        open_workspace_with_factory(cx, Arc::new(FakeTerminalFactory::default()));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("new-local-terminal", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(1))
+            .is_some_and(|panel| panel.read(cx).status(cx).lifecycle().accepts_input())
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.run_until_parked();
+    let (panel, terminal) = cx.update(|cx| {
+        let panel = workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(1))
+            .unwrap()
+            .clone();
+        let terminal = panel.read(cx).terminal().clone();
+        (panel, terminal)
+    });
+    let changes = Rc::new(Cell::new(0));
+    let observed = changes.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&panel, move |_, event: &LocalTerminalPanelEvent, _| {
+            if matches!(event, LocalTerminalPanelEvent::StatusChanged(_)) {
+                observed.set(observed.get() + 1);
+            }
+        })
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        terminal.update(cx, |terminal, cx| {
+            terminal.select_all(cx);
+            cx.notify(); // The same view notification as cursor blinking.
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(changes.get(), 0);
+    cx.update_window(handle.into(), |_, window, cx| {
+        let focus = terminal.read(cx).focus_handle();
+        window.focus(&focus, cx);
+        window.input("ordinary output", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        terminal
+            .read(cx)
+            .screen_text(cx)
+            .contains("ordinary output")
+    })
+    .await;
+    assert_eq!(
+        changes.get(),
+        0,
+        "output must not invalidate the panel metadata"
+    );
+    cx.update(|cx| terminal.update(cx, |terminal, cx| terminal.stop("stopped", cx)));
+    cx.run_until_parked();
+    assert!(
+        changes.get() > 0,
+        "a lifecycle change must still reach the workspace"
+    );
+}
+
 /// With `local` asked for each local terminal's start.
 fn open_workspace_with_local_terminals(
     cx: &mut TestAppContext,

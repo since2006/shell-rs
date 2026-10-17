@@ -51,6 +51,7 @@ pub struct TerminalPanel {
     host_id: HostId,
     store: Entity<HostStore>,
     terminal: Entity<TerminalView>,
+    presentation: super::terminal_view::PanelPresentation,
     transports: HostTerminalTransports,
     /// The host as it was when the tab opened: what the tab shows, what
     /// it offers (only SSH has SFTP, only a serial port no address to copy)
@@ -108,9 +109,15 @@ impl TerminalPanel {
             terminal.take_dropped_files();
             terminal
         });
+        let presentation = terminal.read(cx).presentation(cx);
         let subscriptions = vec![
             cx.observe(&store, |_, _, cx| cx.notify()),
-            cx.observe(&terminal, |this, _, cx| {
+            cx.observe(&terminal, |this, terminal, cx| {
+                let presentation = terminal.read(cx).presentation(cx);
+                if this.presentation == presentation {
+                    return;
+                }
+                this.presentation = presentation;
                 cx.emit(TerminalPanelEvent::StatusChanged(this.id, this.host_id));
                 cx.notify();
             }),
@@ -158,6 +165,7 @@ impl TerminalPanel {
             host_id,
             store,
             terminal,
+            presentation,
             transports,
             host,
             connection,

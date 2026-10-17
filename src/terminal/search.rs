@@ -259,10 +259,27 @@ fn all_matches<'a, T>(
 /// The matches that touch the viewport. The search reaches back along a line
 /// wrapped across the top edge, so a match that starts above it still shows.
 pub fn visible_matches<T>(term: &Term<T>, regex: &mut RegexSearch) -> Vec<Match> {
-    let top = viewport_top(term);
+    matches_in_rows(term, regex, 0, term.screen_lines() - 1)
+}
+
+/// Complete logical lines touching a range of viewport rows, including a
+/// wrapped match beginning above it. Used by incremental link detection.
+pub(super) fn matches_in_rows<T>(
+    term: &Term<T>,
+    regex: &mut RegexSearch,
+    first: usize,
+    last: usize,
+) -> Vec<Match> {
+    let top = Point::new(viewport_top(term).line + first as i32, Column(0));
     let start = term.line_search_left(top);
-    let start = Point::new(start.line.max(top.line - MAX_WRAPPED_LINES), Column(0));
-    let end = term.line_search_right(viewport_bottom(term));
+    let start = Point::new(
+        start.line.max(viewport_top(term).line - MAX_WRAPPED_LINES),
+        Column(0),
+    );
+    let end = term.line_search_right(Point::new(
+        viewport_top(term).line + last as i32,
+        term.last_column(),
+    ));
     RegexIter::new(start, end, Direction::Right, term, regex).collect()
 }
 

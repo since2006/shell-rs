@@ -6,9 +6,8 @@
 //! already applied, never the bytes: it cannot break a control sequence, and
 //! the server's output and copied text stay as they were.
 //!
-//! The rows in view are matched again every frame, as find and links are, so
-//! nothing has to follow scrolling, a resize's reflow or new output. The
-//! rows a line wraps over are joined into one logical line first, so a word
+//! The snapshot cache updates changed logical lines, and rebuilds on scrolling
+//! or resize. The rows a line wraps over are joined into one logical line first, so a word
 //! wrapped onto the next row is still one match, before and after a resize.
 //!
 //! The `regex` crate matches, not Alacritty's grid search that find and
@@ -295,16 +294,26 @@ impl HighlightSet {
     /// has the alternate screen: it redraws itself, and an editor's `error`
     /// identifier is not news.
     pub fn screen<T>(&self, term: &Term<T>) -> ScreenHighlights {
+        let mut screen = ScreenHighlights::default();
+        self.update_screen(term, &mut screen, &vec![true; term.screen_lines()]);
+        screen
+    }
+
+    /// Re-evaluate only complete logical lines intersecting changed rows.
+    pub(super) fn update_screen<T>(
+        &self,
+        term: &Term<T>,
+        screen: &mut ScreenHighlights,
+        changed: &[bool],
+    ) {
         let columns = term.columns();
         let rows = term.screen_lines();
-        let mut screen = ScreenHighlights {
-            columns,
-            colors: Vec::new(),
-        };
+        screen.columns = columns;
         if self.active().next().is_none() || term.mode().contains(TermMode::ALT_SCREEN) {
-            return screen;
+            screen.colors.clear();
+            return;
         }
-        screen.colors = vec![None; columns * rows];
+        screen.colors.resize(columns * rows, None);
         let top = Line(-(term.grid().display_offset() as i32));
         let bottom = Line(top.0 + rows as i32 - 1);
         // From where the line the top row is part of starts, so a match that
@@ -312,13 +321,17 @@ impl HighlightSet {
         let mut line = line_start(term, top);
         while line <= bottom {
             let end = line_end(term, line);
-            let text = LineText::read(term, line, end);
-            for (span, color) in self.spans(&text.text) {
-                screen.mark(&text, span, color, top);
+            let first = (line.0 - top.0).max(0) as usize;
+            let last = ((end.0 - top.0) as usize).min(rows - 1);
+            if changed[first..=last].iter().any(|changed| *changed) {
+                screen.colors[first * columns..(last + 1) * columns].fill(None);
+                let text = LineText::read(term, line, end);
+                for (span, color) in self.spans(&text.text) {
+                    screen.mark(&text, span, color, top);
+                }
             }
             line = Line(end.0 + 1);
         }
-        screen
     }
 }
 
@@ -358,6 +371,7 @@ pub(super) fn current(shared: &SharedHighlights) -> Arc<HighlightSet> {
 }
 
 /// The color of each cell in view, by its row on screen and column.
+#[derive(Default)]
 pub struct ScreenHighlights {
     columns: usize,
     /// Row by row; empty when nothing is highlighted.
