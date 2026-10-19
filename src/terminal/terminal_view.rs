@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -266,6 +267,7 @@ struct HoveredLink {
 
 pub struct TerminalView {
     engine: Entity<TerminalEngine>,
+    row_cache: Rc<RefCell<RowPaintCache>>,
     element_id: ElementId,
     label: TerminalLabel,
     focus_handle: FocusHandle,
@@ -352,10 +354,7 @@ impl TerminalView {
                     .await;
                 if this
                     .update(cx, |this, cx| {
-                        // Every blink is a frame, which costs the processor
-                        // where it draws: the cursor stays on there.
-                        let blinking = this.engine.read(cx).cursor_blinking()
-                            && !crate::app::software_rendering();
+                        let blinking = this.engine.read(cx).cursor_blinking();
                         if this.focused && blinking {
                             this.cursor_visible = !this.cursor_visible;
                             cx.notify();
@@ -373,6 +372,7 @@ impl TerminalView {
 
         Self {
             engine,
+            row_cache: Rc::default(),
             element_id: element_id.into(),
             label: Rc::new(label),
             focus_handle,
@@ -483,6 +483,11 @@ impl TerminalView {
 
     pub fn status(&self, cx: &App) -> TerminalStatus {
         self.engine.read(cx).status()
+    }
+
+    /// Visibility includes every shown split, not only the focused terminal.
+    pub(crate) fn set_visible(&self, visible: bool, cx: &App) {
+        self.engine.read(cx).set_visible(visible);
     }
 
     pub fn lifecycle(&self, cx: &App) -> TerminalLifecycle {
@@ -1196,6 +1201,28 @@ impl EntityInputHandler for TerminalView {
     }
 }
 
+/// Only metadata that a panel's title, toolbar and workspace status consume.
+/// Cursor, selection and output redraws stay inside the terminal view.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct PanelPresentation {
+    status: TerminalStatus,
+    title: Option<String>,
+    latency: Option<Latency>,
+    generation: u64,
+}
+
+impl TerminalView {
+    pub(super) fn presentation(&self, cx: &App) -> PanelPresentation {
+        let engine = self.engine.read(cx);
+        PanelPresentation {
+            status: engine.status(),
+            title: engine.title().map(str::to_owned),
+            latency: engine.latency(),
+            generation: engine.generation(),
+        }
+    }
+}
+
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.engine.read(cx).snapshot();
@@ -1209,6 +1236,7 @@ impl Render for TerminalView {
         let context_menu = self.context_menu.clone();
         let element = TerminalElement {
             view: view.clone(),
+            row_cache: self.row_cache.clone(),
             snapshot,
             focus_handle: self.focus_handle.clone(),
             cursor_visible: self.cursor_visible,
@@ -1404,6 +1432,7 @@ impl TerminalView {
 
 struct TerminalElement {
     view: Entity<TerminalView>,
+    row_cache: Rc<RefCell<RowPaintCache>>,
     snapshot: TerminalSnapshot,
     focus_handle: FocusHandle,
     cursor_visible: bool,
@@ -1420,6 +1449,36 @@ struct TerminalPaintState {
     preedit: Vec<PreeditPaintCell>,
     cursor: Option<PaintQuad>,
     ime_cursor_bounds: Bounds<Pixels>,
+}
+
+/// Geometry and colors are part of the cache key, including display scale and
+/// interface zoom. A cursor blink does not invalidate shaped text.
+#[derive(PartialEq)]
+struct RowPaintKey {
+    bounds: Bounds<Pixels>,
+    font: Font,
+    font_size: Pixels,
+    cell_width: Pixels,
+    line_height: Pixels,
+    rem_size: Pixels,
+    scale_factor: f32,
+    theme: &'static TerminalTheme,
+    colors: [Option<Rgb>; COUNT],
+    warning: Hsla,
+    warning_foreground: Hsla,
+}
+
+#[derive(Default)]
+struct RowPaintCache {
+    key: Option<RowPaintKey>,
+    rows: Vec<Option<CachedRow>>,
+}
+
+struct CachedRow {
+    cells: Rc<[super::TerminalCell]>,
+    hovered_link: Option<usize>,
+    line: ShapedLine,
+    backgrounds: Vec<PaintQuad>,
 }
 
 struct PreeditPaintCell {
@@ -1503,20 +1562,40 @@ impl Element for TerminalElement {
             self.snapshot.rows,
             window.mouse_position(),
         )
-        .and_then(|(column, row)| {
-            self.snapshot
-                .cells
-                .get(row * self.snapshot.columns + column)?
-                .link
-        });
+        .and_then(|(column, row)| self.snapshot.lines.get(row)?.get(column)?.link);
+        let key = RowPaintKey {
+            bounds,
+            font: text_style.font(),
+            font_size,
+            cell_width,
+            line_height,
+            rem_size: window.rem_size(),
+            scale_factor: window.scale_factor(),
+            theme: palette.theme,
+            colors: self.snapshot.colors,
+            warning: cx.theme().warning,
+            warning_foreground: cx.theme().warning_foreground,
+        };
+        let mut cache = self.row_cache.borrow_mut();
+        if !super::snapshot::cache_enabled() || cache.key.as_ref() != Some(&key) {
+            cache.rows.clear();
+            cache.key = Some(key);
+        }
+        cache.rows.resize_with(self.snapshot.rows, || None);
         let mut lines = Vec::with_capacity(self.snapshot.rows);
         let mut backgrounds = Vec::new();
-        for (row_index, row) in self
-            .snapshot
-            .cells
-            .chunks(self.snapshot.columns)
-            .enumerate()
-        {
+        for (row_index, row) in self.snapshot.lines.iter().enumerate() {
+            let hovered_link =
+                hovered_link.filter(|link| row.iter().any(|cell| cell.link == Some(*link)));
+            if let Some(cached) = &cache.rows[row_index]
+                && Rc::ptr_eq(&cached.cells, row)
+                && cached.hovered_link == hovered_link
+            {
+                lines.push(cached.line.clone());
+                backgrounds.extend(cached.backgrounds.iter().cloned());
+                continue;
+            }
+            let background_index = backgrounds.len();
             let mut text = String::new();
             let mut runs = Vec::new();
             let mut background_start = 0;
@@ -1624,6 +1703,12 @@ impl Element for TerminalElement {
                 // every character after the first one towards the right edge.
                 Some(cell_width),
             );
+            cache.rows[row_index] = Some(CachedRow {
+                cells: row.clone(),
+                hovered_link,
+                line: line.clone(),
+                backgrounds: backgrounds[background_index..].to_vec(),
+            });
             lines.push(line);
         }
 
@@ -2136,22 +2221,20 @@ fn screen_cell(
 
 /// Which link each cell on screen belongs to, for the pointer's handlers.
 struct ScreenLinks {
-    columns: usize,
-    cells: Vec<Option<usize>>,
-    links: Vec<SharedString>,
+    rows: Vec<Rc<[super::TerminalCell]>>,
+    links: Rc<[SharedString]>,
 }
 
 impl ScreenLinks {
     fn new(snapshot: &TerminalSnapshot) -> Self {
         Self {
-            columns: snapshot.columns,
-            cells: snapshot.cells.iter().map(|cell| cell.link).collect(),
+            rows: snapshot.lines.clone(),
             links: snapshot.links.clone(),
         }
     }
 
     fn at(&self, (column, row): (usize, usize)) -> Option<(usize, &SharedString)> {
-        let link = (*self.cells.get(row * self.columns + column)?)?;
+        let link = self.rows.get(row)?.get(column)?.link?;
         Some((link, self.links.get(link)?))
     }
 }

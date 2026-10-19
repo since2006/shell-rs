@@ -12,7 +12,7 @@ use alacritty_terminal::term::cell::Hyperlink;
 use alacritty_terminal::term::search::{Match, RegexSearch};
 use gpui_kit::SharedString;
 
-use super::search::visible_matches;
+use super::search::{matches_in_rows, visible_matches};
 
 /// A web address in the text: the characters RFC 3986 allows after
 /// `http://` or `https://`. Written in lower case, so the search ignores
@@ -50,7 +50,20 @@ fn trim_url(text: &str) -> Option<&str> {
 /// The web addresses on screen, in reading order, each with the cells it
 /// covers. One that wraps onto the next line is one link.
 pub fn visible_links<T>(term: &Term<T>, regex: &mut RegexSearch) -> Vec<(Match, SharedString)> {
-    visible_matches(term, regex)
+    links_from_matches(term, visible_matches(term, regex))
+}
+
+pub(super) fn links_in_rows<T>(
+    term: &Term<T>,
+    regex: &mut RegexSearch,
+    first: usize,
+    last: usize,
+) -> Vec<(Match, SharedString)> {
+    links_from_matches(term, matches_in_rows(term, regex, first, last))
+}
+
+fn links_from_matches<T>(term: &Term<T>, matches: Vec<Match>) -> Vec<(Match, SharedString)> {
+    matches
         .into_iter()
         .filter_map(|found| {
             let text = term.bounds_to_string(*found.start(), *found.end());

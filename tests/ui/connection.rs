@@ -451,7 +451,12 @@ async fn disconnecting_one_tab_leaves_the_other_tabs_of_its_host(cx: &mut TestAp
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
-        remote_lifecycle(&workspace, second, cx) == TerminalLifecycle::Running
+        // A hidden terminal polls less often than the newly focused tab.
+        // Both connections must be ready before comparing their marks or
+        // asserting that disconnecting one leaves the other running.
+        [RemoteTerminalId(INITIAL_WEB_TERMINAL), second]
+            .into_iter()
+            .all(|id| remote_lifecycle(&workspace, id, cx) == TerminalLifecycle::Running)
     })
     .await;
 

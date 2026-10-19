@@ -18,7 +18,7 @@ pub use paths::{
     window_state_path,
 };
 pub use quit::{quit_held_back, set_quit_guard};
-pub use rendering::{SOFTWARE_FRAME_INTERVAL, frame_due, note_renderer, software_rendering};
+pub use rendering::{note_renderer, software_rendering};
 pub use shortcuts::{
     Refusal, SHORTCUTS, Shortcut, ShortcutGroup, ShortcutOverrides, apply_shortcuts, check,
     fixed_bindings, key_caps, key_text,

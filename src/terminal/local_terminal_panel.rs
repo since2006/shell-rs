@@ -38,6 +38,7 @@ pub enum LocalTerminalPanelEvent {
 pub struct LocalTerminalPanel {
     id: LocalTerminalId,
     terminal: Entity<TerminalView>,
+    presentation: super::terminal_view::PanelPresentation,
     tab_group: Option<WeakEntity<TabGroup>>,
     broadcast: Option<super::BroadcastSelection>,
     _subscriptions: Vec<Subscription>,
@@ -59,8 +60,14 @@ impl LocalTerminalPanel {
                 cx,
             )
         });
+        let presentation = terminal.read(cx).presentation(cx);
         let subscriptions = vec![
-            cx.observe(&terminal, move |_, _, cx| {
+            cx.observe(&terminal, move |this, terminal, cx| {
+                let presentation = terminal.read(cx).presentation(cx);
+                if this.presentation == presentation {
+                    return;
+                }
+                this.presentation = presentation;
                 cx.emit(LocalTerminalPanelEvent::StatusChanged(id));
                 cx.notify();
             }),
@@ -84,6 +91,7 @@ impl LocalTerminalPanel {
         Self {
             id,
             terminal,
+            presentation,
             tab_group: None,
             broadcast: None,
             _subscriptions: subscriptions,

@@ -165,6 +165,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.active_tab = tab;
+        self.sync_terminal_visibility(cx);
         if let Some(CenterTab::Terminal(id)) = tab {
             self.tool_terminal_choice = Some(id);
         }
