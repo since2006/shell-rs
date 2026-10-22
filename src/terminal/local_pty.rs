@@ -7,14 +7,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
 use async_channel::Sender;
-use portable_pty::{PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use crate::i18n::t;
 
 use super::{
-    LocalLaunch, LocalTerminalTransportProvider, SharedTerminalTransportFactory, TerminalSize,
-    TerminalTransport, TerminalTransportCommand, TerminalTransportEvent, TerminalTransportFactory,
-    send_event,
+    LocalLaunch, LocalShell, LocalTerminalTransportProvider, SharedTerminalTransportFactory,
+    TerminalSize, TerminalTransport, TerminalTransportCommand, TerminalTransportEvent,
+    TerminalTransportFactory, send_event, strip_launcher_vars,
 };
 
 /// Local terminals in a PTY of this computer.
@@ -70,10 +70,7 @@ impl TerminalTransport for LocalPtyTransport {
             .openpty(to_pty_size(initial_size))
             .context(t!("terminal.pty.open_failed"))?;
 
-        let mut command = shell.command_builder()?;
-        command.env("TERM", "xterm-256color");
-        command.env("COLORTERM", "truecolor");
-        command.env("TERM_PROGRAM", "ShellRS");
+        let mut command = shell_command(&shell)?;
         // A folder gone since leaves the home folder, as with none.
         if let Some(directory) = directory.filter(|directory| directory.is_dir()) {
             command.cwd(directory);
@@ -218,6 +215,20 @@ impl TerminalTransport for LocalPtyTransport {
     }
 }
 
+/// The command a local terminal's shell runs: the shell the settings name,
+/// in the environment ShellRS itself was started in, with the few
+/// variables a terminal needs and none of the packaging's.
+fn shell_command(shell: &LocalShell) -> Result<CommandBuilder> {
+    let mut command = shell.command_builder()?;
+    // The packaging that put ShellRS on this computer left variables in
+    // the environment; they are none of the user's shell's business.
+    strip_launcher_vars(&mut command);
+    command.env("TERM", "xterm-256color");
+    command.env("COLORTERM", "truecolor");
+    command.env("TERM_PROGRAM", "ShellRS");
+    Ok(command)
+}
+
 /// The folder process `pid` is in, where the system tells it.
 #[cfg(target_os = "linux")]
 fn working_directory(pid: u32) -> Option<PathBuf> {
@@ -268,7 +279,7 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::terminal::LocalShell;
+    use crate::terminal::environment::LAUNCHER_VARS;
 
     /// `/bin/sh -c script`, through the command line the settings hold.
     fn shell_transport(script: &str) -> Box<dyn TerminalTransport> {
@@ -311,6 +322,70 @@ mod tests {
             let _ = commands.send(TerminalTransportCommand::Shutdown);
         }
         (String::from_utf8_lossy(&output).into_owned(), code)
+    }
+
+    /// The command a local terminal's shell runs in: the environment
+    /// ShellRS was started in, without what the packaging left in it.
+    #[test]
+    fn the_shell_starts_without_the_packaging() {
+        let command = shell_command(&LocalShell::new("/bin/sh")).unwrap();
+        for name in LAUNCHER_VARS {
+            assert_eq!(command.get_env(name), None, "{name} is left in");
+        }
+        // The rest of the environment is still there.
+        assert!(command.get_env("PATH").is_some());
+    }
+
+    /// The same test in a child process whose environment holds what the
+    /// AppImage runtime leaves in it.
+    ///
+    /// The parent cannot put a variable into its own environment while
+    /// the other tests run, and the variable has to be in the environment
+    /// before the shell starts for the shell to find it at all.
+    #[test]
+    fn the_shell_does_not_see_the_packaging() {
+        const CHILD: &str = "SHELLRS_TEST_WITH_THE_PACKAGING";
+        if std::env::var_os(CHILD).is_some() {
+            // The child: the shell runs and says what it sees.
+            let (commands, command_receiver) = mpsc::channel();
+            let (events, event_receiver) = async_channel::unbounded();
+            let transport = shell_transport(
+                "printf '%s' \"${ARGV0-gone}|${APPIMAGE-gone}|${APPDIR-gone}|${OWD-gone}\"",
+            );
+            let worker = thread::spawn(move || {
+                transport.run(TerminalSize::DEFAULT, command_receiver, events)
+            });
+            let (output, code) = drain_until_exit(&event_receiver, &commands);
+            assert_eq!(code, Some(0), "{output}");
+            assert_eq!(
+                output, "gone|gone|gone|gone",
+                "the shell sees the packaging: {output}"
+            );
+            worker.join().unwrap().unwrap();
+            // The parent looks for this line, to know the test really ran.
+            println!("the shell did not see the packaging");
+            return;
+        }
+        // The parent: the same test, in a child whose environment has them.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "terminal::local_pty::tests::the_shell_does_not_see_the_packaging",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("ARGV0", "/tmp/ShellRS-0.1.14-linux-x86_64.AppImage")
+            .env("APPIMAGE", "/tmp/ShellRS-0.1.14-linux-x86_64.AppImage")
+            .env("APPDIR", "/tmp/.mount_ShellRSxxxx")
+            .env("OWD", "/tmp")
+            .output()
+            .expect("the test runs again");
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "the shell saw them:\n{text}");
+        assert!(
+            text.contains("the shell did not see the packaging"),
+            "the test did not run in the child:\n{text}"
+        );
     }
 
     #[test]
