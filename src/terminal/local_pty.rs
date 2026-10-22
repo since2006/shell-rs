@@ -371,6 +371,9 @@ mod tests {
             });
             let (output, code) = drain_until_exit(&event_receiver, &commands);
             assert_eq!(code, Some(0), "{output}");
+            // What the shell saw, said out loud: this is the acceptance,
+            // readable without a window.
+            println!("the shell saw: {output}");
             assert!(
                 output.starts_with("gone|gone|gone|gone|"),
                 "the shell sees the packaging: {output}"
@@ -411,6 +414,13 @@ mod tests {
             .output()
             .expect("the test runs again");
         let text = String::from_utf8_lossy(&output.stdout);
+        // What the shell saw, said out loud: this is the acceptance,
+        // readable without a window.
+        for line in text.lines() {
+            if let Some(report) = line.trim().strip_prefix("the shell saw: ") {
+                println!("{report}");
+            }
+        }
         assert!(output.status.success(), "the shell saw them:\n{text}");
         assert!(
             text.contains("the shell did not see the packaging"),
