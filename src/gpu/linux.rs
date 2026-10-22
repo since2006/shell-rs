@@ -724,6 +724,20 @@ GPU-5b2f0c1e-0000-1111-2222-333344445555, 4243, 1000, /usr/bin/python3
             .unwrap()
     }
 
+    /// The real `cut` and `sh`: the tools the script uses that the test
+    /// does not stand in for.
+    #[cfg(unix)]
+    fn real_tool(name: &str) -> std::path::PathBuf {
+        std::env::var_os("PATH")
+            .as_deref()
+            .map(std::env::split_paths)
+            .into_iter()
+            .flatten()
+            .map(|dir| dir.join(name))
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| std::path::PathBuf::from("/bin").join(name))
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_command_is_valid_sh() {
@@ -785,8 +799,24 @@ GPU-5b2f0c1e-0000-1111-2222-333344445555, 4243, 1000, /usr/bin/python3
         );
         let uptime = root.path().join("uptime");
         std::fs::write(&uptime, "5359162.33 1.00\n").unwrap();
-        let command = command().replace("/proc/uptime", &uptime.display().to_string());
-        let path = format!("{}:/usr/bin:/bin", bin.display());
+        // The PATH is the test's own: the machine's tools must not answer
+        // for themselves, or a machine with an NVIDIA card of its own
+        // would say the tool is there when the test means it is not. The
+        // tools the test does not stand in for are `cut`, which the
+        // script uses to read the processes' numbers out of the table,
+        // and the `sh` that runs it.
+        let tools = root.path().join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        for name in ["cut", "sh"] {
+            std::os::unix::fs::symlink(real_tool(name), tools.join(name)).unwrap();
+        }
+        let command = command()
+            .replace("/proc/uptime", &uptime.display().to_string())
+            .replace(
+                "/usr/local/sbin:/usr/sbin:/sbin",
+                &tools.display().to_string(),
+            );
+        let path = format!("{}:{}", bin.display(), tools.display());
         let output = crate::testing::sh(script(&command), Some(&path));
         let output = String::from_utf8(output.stdout).unwrap();
 
