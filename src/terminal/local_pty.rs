@@ -356,17 +356,15 @@ mod tests {
             } else {
                 "/bin/sh"
             };
-            let script = format!(
-                "printf '%s' \"${{ARGV0-gone}}|${{APPIMAGE-gone}}|${{APPDIR-gone}}|${{OWD-gone}}\"; \
+            let script = "printf '%s' \"${ARGV0-gone}|${APPIMAGE-gone}|${APPDIR-gone}|${OWD-gone}\"; \
                  printf '|argv0=%s' \"$0\"; \
                  if command -v rustup >/dev/null 2>&1; then \
-                 printf '|rustup=%s' \"$(rustup --version 2>&1 | head -1)\"; fi"
-            );
+                 printf '|rustup=%s' \"$(rustup --version 2>&1 | head -1)\"; fi";
             let (commands, command_receiver) = mpsc::channel();
             let (events, event_receiver) = async_channel::unbounded();
             let transport = shell_transport(&format!(
                 "{shell} -c {}",
-                crate::terminal::quote_word(&script)
+                crate::terminal::quote_word(script)
             ));
             let worker = thread::spawn(move || {
                 transport.run(TerminalSize::DEFAULT, command_receiver, events)
