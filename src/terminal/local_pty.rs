@@ -342,24 +342,56 @@ mod tests {
     /// The parent cannot put a variable into its own environment while
     /// the other tests run, and the variable has to be in the environment
     /// before the shell starts for the shell to find it at all.
+    ///
+    /// The shell is zsh, the one that takes `ARGV0` for a special
+    /// parameter and writes it into the argv[0] of every command it runs.
     #[test]
     fn the_shell_does_not_see_the_packaging() {
         const CHILD: &str = "SHELLRS_TEST_WITH_THE_PACKAGING";
+        const APPIMAGE: &str = "/tmp/ShellRS-0.1.14-linux-x86_64.AppImage";
         if std::env::var_os(CHILD).is_some() {
             // The child: the shell runs and says what it sees.
+            let shell = if PathBuf::from("/bin/zsh").exists() {
+                "/bin/zsh"
+            } else {
+                "/bin/sh"
+            };
+            let script = format!(
+                "printf '%s' \"${{ARGV0-gone}}|${{APPIMAGE-gone}}|${{APPDIR-gone}}|${{OWD-gone}}\"; \
+                 printf '|argv0=%s' \"$0\"; \
+                 if command -v rustup >/dev/null 2>&1; then \
+                 printf '|rustup=%s' \"$(rustup --version 2>&1 | head -1)\"; fi"
+            );
             let (commands, command_receiver) = mpsc::channel();
             let (events, event_receiver) = async_channel::unbounded();
-            let transport = shell_transport(
-                "printf '%s' \"${ARGV0-gone}|${APPIMAGE-gone}|${APPDIR-gone}|${OWD-gone}\"",
-            );
+            let transport = shell_transport(&format!(
+                "{shell} -c {}",
+                crate::terminal::quote_word(&script)
+            ));
             let worker = thread::spawn(move || {
                 transport.run(TerminalSize::DEFAULT, command_receiver, events)
             });
             let (output, code) = drain_until_exit(&event_receiver, &commands);
             assert_eq!(code, Some(0), "{output}");
-            assert_eq!(
-                output, "gone|gone|gone|gone",
+            assert!(
+                output.starts_with("gone|gone|gone|gone|"),
                 "the shell sees the packaging: {output}"
+            );
+            // The shell's own name, not the AppImage's: zsh would take
+            // ARGV0 for its argv[0] if it were there.
+            let argv0 = output
+                .split_once("|argv0=")
+                .and_then(|(_, rest)| rest.split('|').next())
+                .unwrap_or_default();
+            assert!(
+                !argv0.contains("ShellRS") && !argv0.contains("AppImage"),
+                "the shell's argv[0] is the AppImage's: {output}"
+            );
+            // And rustup, which is one binary that tells its tools apart
+            // by its own argv[0], still knows what it is.
+            assert!(
+                !output.contains("unknown proxy name"),
+                "rustup does not know itself: {output}"
             );
             worker.join().unwrap().unwrap();
             // The parent looks for this line, to know the test really ran.
@@ -374,8 +406,8 @@ mod tests {
                 "--nocapture",
             ])
             .env(CHILD, "1")
-            .env("ARGV0", "/tmp/ShellRS-0.1.14-linux-x86_64.AppImage")
-            .env("APPIMAGE", "/tmp/ShellRS-0.1.14-linux-x86_64.AppImage")
+            .env("ARGV0", APPIMAGE)
+            .env("APPIMAGE", APPIMAGE)
             .env("APPDIR", "/tmp/.mount_ShellRSxxxx")
             .env("OWD", "/tmp")
             .output()
