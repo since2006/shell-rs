@@ -10,7 +10,7 @@ use crate::i18n::t;
 use crate::sftp::{DEFAULT_PARALLEL_TRANSFERS, PARALLEL_TRANSFERS_RANGE};
 use crate::terminal::{
     DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, HighlightRule, LINE_HEIGHT_RANGE,
-    RightClick, TerminalInteraction, TerminalTheme, default_rules,
+    LocalEnvironment, RightClick, TerminalInteraction, TerminalTheme, default_rules,
 };
 use crate::update::Channel;
 
@@ -336,6 +336,8 @@ pub struct LocalTerminalSettings {
     /// 保留终端内容: a 项目 terminal's last lines of output, kept when it
     /// closes and drawn again when it opens. On until the user turns it off.
     pub keep_output: bool,
+    /// 本地终端的环境变量: what the shell may see of the environment.
+    pub environment: LocalEnvironment,
 }
 
 impl Default for LocalTerminalSettings {
@@ -343,6 +345,7 @@ impl Default for LocalTerminalSettings {
         Self {
             shell: None,
             keep_output: true,
+            environment: LocalEnvironment::default(),
         }
     }
 }
@@ -856,6 +859,24 @@ mod tests {
             ..AppSettings::default()
         };
         assert_eq!(blank.normalized(), AppSettings::default());
+    }
+
+    #[test]
+    fn a_settings_file_without_the_environment_keeps_the_defaults() {
+        // A file written before the environment was there.
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"local_terminal":{"shell":"/bin/zsh"}}"#).unwrap();
+        let environment = settings.local_terminal.environment;
+        assert!(environment.term_program);
+        assert!(environment.color_term);
+        assert!(environment.term);
+        assert!(environment.inherit);
+        // And the clean mode is written and read back.
+        let mut settings = AppSettings::default();
+        settings.local_terminal.environment = LocalEnvironment::clean();
+        let json = serde_json::to_string(&settings).unwrap();
+        let read: AppSettings = serde_json::from_str(&json).unwrap();
+        assert_eq!(read.local_terminal.environment, LocalEnvironment::clean());
     }
 
     #[test]

@@ -12,9 +12,9 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use crate::i18n::t;
 
 use super::{
-    LocalLaunch, LocalShell, LocalTerminalTransportProvider, SharedTerminalTransportFactory,
-    TerminalSize, TerminalTransport, TerminalTransportCommand, TerminalTransportEvent,
-    TerminalTransportFactory, send_event, strip_launcher_vars,
+    LocalEnvironment, LocalLaunch, LocalShell, LocalTerminalTransportProvider,
+    SharedTerminalTransportFactory, TerminalSize, TerminalTransport, TerminalTransportCommand,
+    TerminalTransportEvent, TerminalTransportFactory, send_event,
 };
 
 /// Local terminals in a PTY of this computer.
@@ -60,6 +60,7 @@ impl TerminalTransport for LocalPtyTransport {
             shell,
             directory,
             replay,
+            environment,
         } = self.launch;
         // Before the shell can write anything.
         if let Some(replay) = replay {
@@ -70,7 +71,7 @@ impl TerminalTransport for LocalPtyTransport {
             .openpty(to_pty_size(initial_size))
             .context(t!("terminal.pty.open_failed"))?;
 
-        let mut command = shell_command(&shell)?;
+        let mut command = shell_command(&shell, environment)?;
         // A folder gone since leaves the home folder, as with none.
         if let Some(directory) = directory.filter(|directory| directory.is_dir()) {
             command.cwd(directory);
@@ -216,16 +217,10 @@ impl TerminalTransport for LocalPtyTransport {
 }
 
 /// The command a local terminal's shell runs: the shell the settings name,
-/// in the environment ShellRS itself was started in, with the few
-/// variables a terminal needs and none of the packaging's.
-fn shell_command(shell: &LocalShell) -> Result<CommandBuilder> {
+/// in the environment the settings ask for.
+fn shell_command(shell: &LocalShell, environment: LocalEnvironment) -> Result<CommandBuilder> {
     let mut command = shell.command_builder()?;
-    // The packaging that put ShellRS on this computer left variables in
-    // the environment; they are none of the user's shell's business.
-    strip_launcher_vars(&mut command);
-    command.env("TERM", "xterm-256color");
-    command.env("COLORTERM", "truecolor");
-    command.env("TERM_PROGRAM", "ShellRS");
+    environment.apply(&mut command);
     Ok(command)
 }
 
@@ -328,7 +323,8 @@ mod tests {
     /// ShellRS was started in, without what the packaging left in it.
     #[test]
     fn the_shell_starts_without_the_packaging() {
-        let command = shell_command(&LocalShell::new("/bin/sh")).unwrap();
+        let command =
+            shell_command(&LocalShell::new("/bin/sh"), LocalEnvironment::default()).unwrap();
         for name in LAUNCHER_VARS {
             assert_eq!(command.get_env(name), None, "{name} is left in");
         }

@@ -31,8 +31,8 @@ use crate::i18n::t;
 use crate::sftp::{DEFAULT_PARALLEL_TRANSFERS, PARALLEL_TRANSFERS_RANGE};
 use crate::shared::{ClosableTabTitle, close_tab_items};
 use crate::terminal::{
-    FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalColors, TerminalFont, TerminalFontPreview,
-    TerminalHighlights, is_font_installed, monospace_font_families,
+    FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, LocalEnvironment, TerminalColors, TerminalFont,
+    TerminalFontPreview, TerminalHighlights, is_font_installed, monospace_font_families,
 };
 use crate::update::{Phase, Tone, UpdateSnapshot, UpdateStep, Updater, build_info, platform};
 
@@ -425,6 +425,7 @@ fn terminal_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
         sidebar_tools_group(store),
         notification_group(store),
         local_terminal_group(panel),
+        local_environment_group(store),
     ]
 }
 
@@ -465,6 +466,81 @@ fn local_terminal_group(panel: &SettingsPanel) -> SettingGroup {
             )
             .description(t!("settings.local_terminal.keep_output_description"))
             .keywords(keywords(t!("settings.local_terminal.keep_output_keywords"))),
+        ])
+}
+
+/// 终端 › 本地终端 › 环境变量: what the shell a local terminal starts may
+/// see of the environment, and how much of ShellRS's own it keeps.
+fn local_environment_group(store: &Entity<SettingsStore>) -> SettingGroup {
+    let switch = |read: fn(&AppSettings) -> bool, write: fn(&mut AppSettings, bool)| {
+        let (reader, writer) = (store.clone(), store.clone());
+        SettingField::switch(
+            move |cx| read(&reader.read(cx).settings()),
+            move |on, cx| {
+                writer.update(cx, |store, cx| {
+                    store.update(|settings| write(settings, on), cx)
+                });
+            },
+        )
+        .default_value(true)
+    };
+    let clean = store.clone();
+    SettingGroup::new()
+        .title(t!("settings.local_environment.title"))
+        .items([
+            SettingItem::new(
+                t!("settings.local_environment.term_program"),
+                switch(
+                    |settings| settings.local_terminal.environment.term_program,
+                    |settings, on| settings.local_terminal.environment.term_program = on,
+                ),
+            )
+            .description(t!("settings.local_environment.term_program_description"))
+            .keywords(keywords(t!("settings.local_environment.keywords"))),
+            SettingItem::new(
+                t!("settings.local_environment.color_term"),
+                switch(
+                    |settings| settings.local_terminal.environment.color_term,
+                    |settings, on| settings.local_terminal.environment.color_term = on,
+                ),
+            )
+            .description(t!("settings.local_environment.color_term_description")),
+            SettingItem::new(
+                t!("settings.local_environment.term"),
+                switch(
+                    |settings| settings.local_terminal.environment.term,
+                    |settings, on| settings.local_terminal.environment.term = on,
+                ),
+            )
+            .description(t!("settings.local_environment.term_description")),
+            SettingItem::new(
+                t!("settings.local_environment.inherit"),
+                switch(
+                    |settings| settings.local_terminal.environment.inherit,
+                    |settings, on| settings.local_terminal.environment.inherit = on,
+                ),
+            )
+            .description(t!("settings.local_environment.inherit_description")),
+            SettingItem::new(
+                t!("settings.local_environment.clean"),
+                SettingField::render(move |_, _, _| {
+                    let store = clean.clone();
+                    Button::new("settings-clean-environment")
+                        .label(t!("settings.local_environment.clean_action"))
+                        .on_click(move |_, _, cx| {
+                            store.update(cx, |store, cx| {
+                                store.update(
+                                    |settings| {
+                                        settings.local_terminal.environment =
+                                            LocalEnvironment::clean();
+                                    },
+                                    cx,
+                                )
+                            })
+                        })
+                }),
+            )
+            .description(t!("settings.local_environment.clean_description")),
         ])
 }
 

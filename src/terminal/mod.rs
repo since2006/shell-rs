@@ -35,7 +35,7 @@ pub use directory_setup::{
     parse_check as parse_directory_check,
 };
 pub use engine::{TerminalCell, TerminalEngine, TerminalEvent, TerminalSnapshot};
-pub(crate) use environment::strip_launcher_vars;
+pub use environment::LocalEnvironment;
 pub use exec::{ExecTarget, exec_answer};
 pub use font::{
     DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalFont,
