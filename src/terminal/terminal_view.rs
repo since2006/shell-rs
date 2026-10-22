@@ -36,9 +36,10 @@ use super::mouse::{self, MouseReport, ReportButton, ReportKind};
 use super::scrollbar::ScrollbackHandle;
 use super::search::SearchMark;
 use super::{
-    RightClick, SearchDirection, SharedTerminalTransportFactory, TerminalColors, TerminalEngine,
-    TerminalEvent, TerminalFont, TerminalInput, TerminalInputEvent, TerminalInteraction,
-    TerminalLifecycle, TerminalSize, TerminalSnapshot, TerminalStatus, TerminalTheme, ZmodemReply,
+    RightClick, SearchDirection, SendDelay, SessionLogIdentity, SharedTerminalTransportFactory,
+    TerminalColors, TerminalEngine, TerminalEvent, TerminalFont, TerminalInput, TerminalInputEvent,
+    TerminalInteraction, TerminalLifecycle, TerminalSize, TerminalSnapshot, TerminalStatus,
+    TerminalTheme, ZmodemReply, delayed_steps,
 };
 
 pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";
@@ -304,6 +305,9 @@ pub struct TerminalView {
     reported_button: Option<ReportButton>,
     /// The cell the program last heard of: motion is reported once a cell.
     reported_cell: Option<(usize, usize)>,
+    /// A paste or script being sent a line or a character at a time; a new
+    /// one takes its place.
+    send_queue: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
     _blink_task: Task<()>,
 }
@@ -312,11 +316,12 @@ impl TerminalView {
     pub fn new(
         element_id: impl Into<ElementId>,
         label: impl Fn(&App) -> SharedString + 'static,
+        identity: SessionLogIdentity,
         factory: SharedTerminalTransportFactory,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let engine = cx.new(|cx| TerminalEngine::new(factory, cx));
+        let engine = cx.new(|cx| TerminalEngine::new(factory, identity, cx));
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
             cx.observe(&engine, |_, _, cx| cx.notify()),
@@ -401,6 +406,7 @@ impl TerminalView {
             link_tooltip_task: None,
             reported_button: None,
             reported_cell: None,
+            send_queue: None,
             _subscriptions: subscriptions,
             _blink_task: blink_task,
         }
@@ -470,6 +476,7 @@ impl TerminalView {
         self.link_tooltip_task = None;
         self.reported_button = None;
         self.reported_cell = None;
+        self.send_queue = None;
     }
 
     pub fn shutdown(&mut self, cx: &mut Context<Self>) {
@@ -980,23 +987,83 @@ impl TerminalView {
         if !self.lifecycle(cx).accepts_input() {
             return false;
         }
-        let engine = self.engine.read(cx);
         match input {
             TerminalInput::Key(key) => {
-                let Some(bytes) = encode_key(key, engine.mode()) else {
+                let mode = self.engine.read(cx).mode();
+                let Some(bytes) = encode_key(key, mode) else {
                     return false;
                 };
-                engine.send_user_input(bytes);
+                self.engine.read(cx).send_user_input(bytes);
             }
-            TerminalInput::Bytes(bytes) => engine.send_user_input(bytes.clone()),
-            TerminalInput::Paste(text) => engine.paste(text),
+            TerminalInput::Bytes(bytes) => self.engine.read(cx).send_user_input(bytes.clone()),
+            TerminalInput::Paste(text) => {
+                let delay = SendDelay::current(cx);
+                if delay.idle() {
+                    self.engine.read(cx).paste(text);
+                } else {
+                    // A device that needs waits to hear a script is not
+                    // taking a bracketed paste: the lines go one by one.
+                    self.queue_steps(delayed_steps(text, delay), cx);
+                }
+            }
         }
+        self.begin_user_input(cx);
+        true
+    }
+
+    /// Send `text` to the shell with the waits the settings name, which is
+    /// what 发送命令 does. Every line ends as Enter does; the last one too
+    /// only when the text ends with a line break.
+    pub fn send_lines(&mut self, text: &str, cx: &mut Context<Self>) {
+        if !self.lifecycle(cx).accepts_input() {
+            return;
+        }
+        let delay = SendDelay::current(cx);
+        let steps = delayed_steps(text, delay);
+        if delay.idle() {
+            let bytes: Vec<u8> = steps.into_iter().flat_map(|(_, bytes)| bytes).collect();
+            if !bytes.is_empty() {
+                self.engine.read(cx).send_user_input(bytes);
+            }
+        } else {
+            self.queue_steps(steps, cx);
+        }
+        self.begin_user_input(cx);
+    }
+
+    fn begin_user_input(&mut self, cx: &mut Context<Self>) {
         self.hover_link(None, cx);
         self.selecting = false;
         self.scroll_accumulator.reset();
         self.cursor_visible = true;
         cx.notify();
-        true
+    }
+
+    /// Send `steps` in order, waiting before each on the background clock.
+    /// A new queue takes the place of the one still running.
+    fn queue_steps(&mut self, steps: Vec<(u64, Vec<u8>)>, cx: &mut Context<Self>) {
+        if steps.is_empty() {
+            self.send_queue = None;
+            return;
+        }
+        self.send_queue = Some(cx.spawn(async move |this, cx| {
+            for (wait, bytes) in steps {
+                if wait > 0 {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(wait))
+                        .await;
+                }
+                let alive = this
+                    .update(cx, |this, cx| {
+                        this.engine.read(cx).send_user_input(bytes);
+                        cx.notify();
+                    })
+                    .is_ok();
+                if !alive {
+                    break;
+                }
+            }
+        }));
     }
 
     fn prepare_for_user_input(&mut self, cx: &mut Context<Self>) {

@@ -10,7 +10,7 @@ use crate::i18n::t;
 use crate::sftp::{DEFAULT_PARALLEL_TRANSFERS, PARALLEL_TRANSFERS_RANGE};
 use crate::terminal::{
     DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, HighlightRule, LINE_HEIGHT_RANGE,
-    RightClick, TerminalInteraction, TerminalTheme, default_rules,
+    RightClick, SendDelay, SessionLogSettings, TerminalInteraction, TerminalTheme, default_rules,
 };
 use crate::update::Channel;
 
@@ -29,6 +29,10 @@ pub struct AppSettings {
     pub terminal_font: TerminalFontSettings,
     /// 终端 → 终端交互.
     pub terminal_interaction: TerminalInteraction,
+    /// 终端 → 发送延迟.
+    pub send_delay: SendDelay,
+    /// 终端 → 会话日志.
+    pub session_log: SessionLogSettings,
     /// 终端 → 侧栏功能: which tools the right sidebar offers.
     pub sidebar_tools: SidebarTools,
     /// The right sidebar beside local terminals, switched from its tool
@@ -465,6 +469,8 @@ impl AppSettings {
     /// file nor a typed value can give the terminal a size of zero.
     pub fn normalized(mut self) -> Self {
         self.terminal_font = self.terminal_font.normalized();
+        self.send_delay = self.send_delay.normalized();
+        self.session_log = self.session_log.normalized();
         // Whole pixels in range; what is not a number gives the default.
         let size = self.interface.font_size;
         self.interface.font_size = if size.is_finite() {

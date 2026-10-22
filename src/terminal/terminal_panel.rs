@@ -13,6 +13,7 @@ use gpui_kit::*;
 use crate::app::{
     CatalogIcon, CenterTab, CloseTerminal, ConnectHost, CopyHostAddress, CopyHostId,
     DisconnectTerminal, EditHost, OpenExplorer, ReconnectTerminal, RenameTerminal, SendBreak,
+    SendCommands,
 };
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::host::{ConnectionState, Host, HostConnection, HostId, HostOs, HostStore, ProtocolKind};
@@ -20,8 +21,9 @@ use crate::i18n::t;
 use crate::shared::{ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items};
 
 use super::{
-    HostTerminalTransports, RemoteTerminalId, ReportedDirectory, TerminalEvent, TerminalLifecycle,
-    TerminalMenuItems, TerminalNotice, TerminalStatus, TerminalView, ZmodemDirection, ZmodemReply,
+    HostTerminalTransports, RemoteTerminalId, ReportedDirectory, SessionLogIdentity, TerminalEvent,
+    TerminalLifecycle, TerminalMenuItems, TerminalNotice, TerminalStatus, TerminalView,
+    ZmodemDirection, ZmodemReply,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,11 +90,16 @@ impl TerminalPanel {
             (host, connection, store.is_external(host_id))
         };
         let protocol = host.kind();
+        let identity = SessionLogIdentity {
+            name: host.name.clone(),
+            address: host.address.clone(),
+        };
         let terminal = cx.new(|cx| {
             let name = host.name.clone();
             let mut terminal = TerminalView::new(
                 ("terminal", id.0),
                 move |_| t!("terminal.remote.label", host = name),
+                identity,
                 transports.factory_for(&connection),
                 window,
                 cx,
@@ -468,6 +475,12 @@ fn remote_menu_items(
                 Box::new(OpenExplorer(host_id)),
             )
         })
+        .menu_with_icon_and_disabled(
+            t!("terminal.menu.send_commands"),
+            Icon::new(CatalogIcon::Send),
+            Box::new(SendCommands(id)),
+            !connected,
+        )
         .menu_with_icon(
             t!("terminal.remote.reconnect"),
             Icon::new(CatalogIcon::RefreshCw),

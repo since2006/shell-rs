@@ -14,12 +14,15 @@ mod links;
 mod local_pty;
 mod local_shell;
 mod local_terminal_panel;
+mod log;
 mod model;
 mod mouse;
 mod notices;
 mod run;
 mod scrollbar;
 mod search;
+mod send;
+mod send_commands;
 mod terminal_panel;
 mod terminal_view;
 mod theme;
@@ -47,6 +50,11 @@ pub use kept_output::KEPT_LINES;
 pub use local_pty::LocalPtyTransportProvider;
 pub use local_shell::{LocalLaunch, LocalShell, default_shell_name, installed_shells, quote_word};
 pub use local_terminal_panel::{LocalTerminalPanel, LocalTerminalPanelEvent, SavedName};
+pub use log::{
+    DEFAULT_LOG_TEMPLATE, DEFAULT_LOG_TIMESTAMP_FORMAT, SessionLog, SessionLogIdentity,
+    SessionLogPlan, SessionLogSettings, default_log_directory, expand_template, log_path,
+    valid_timestamp_format,
+};
 pub use model::{
     LocalTerminalId, RemoteTerminalId, RightClick, TerminalInteraction, TerminalLifecycle,
     TerminalSize, TerminalStatus,
@@ -57,6 +65,8 @@ pub use run::{
     TerminalRun,
 };
 pub use search::{SearchDirection, SearchMark, SearchPosition};
+pub use send::{CHARACTER_DELAY_RANGE, LINE_DELAY_RANGE, SendDelay, delayed_steps};
+pub use send_commands::open_send_commands_dialog;
 pub use terminal_panel::{TerminalPanel, TerminalPanelEvent};
 pub(crate) use terminal_view::terminal_key_bindings;
 pub use terminal_view::{

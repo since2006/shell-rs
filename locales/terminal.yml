@@ -62,6 +62,9 @@ terminal.notice.exited:
 terminal.notice.error:
   zh-CN: 终端错误：%{error}
   en: "Terminal error: %{error}"
+terminal.notice.log_failed:
+  zh-CN: 会话日志无法写入：%{error}
+  en: "Couldn’t write the session log: %{error}"
 
 # A command put on the input line (history, snippets)
 terminal.command.not_connected:
@@ -116,6 +119,29 @@ terminal.menu.find:
 terminal.menu.clear:
   zh-CN: 清屏
   en: Clear screen
+terminal.menu.send_commands:
+  zh-CN: 发送命令…
+  en: Send commands…
+
+# Send commands dialog
+terminal.send_commands.title:
+  zh-CN: 发送命令
+  en: Send commands
+terminal.send_commands.lines:
+  zh-CN: 命令
+  en: Commands
+terminal.send_commands.description:
+  zh-CN: 每一行按回车执行；行与字符之间的等待见「设置 › 终端 › 发送延迟」。
+  en: Every line is run as if Enter were pressed; see Settings › Terminal › Send delays for the waits between lines and characters.
+terminal.send_commands.placeholder:
+  zh-CN: 每行一条命令
+  en: One command per line
+terminal.send_commands.send:
+  zh-CN: 发送
+  en: Send
+terminal.send_commands.empty:
+  zh-CN: 请输入要发送的命令
+  en: Type the commands to send
 
 # Links
 terminal.link.open_hint:

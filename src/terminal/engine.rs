@@ -18,6 +18,7 @@ use alacritty_terminal::term::{ClipboardType, Config, Osc52, TermMode};
 use alacritty_terminal::vte::ansi::{
     Color, CursorShape, CursorStyle, Processor, Rgb, Timeout as _,
 };
+use chrono::Local;
 use futures::future::{Either, select};
 use gpui_kit::SharedString;
 
@@ -31,6 +32,7 @@ use super::highlight::{
     advance_watching, current,
 };
 use super::links::{LinkMarker, url_search, visible_links};
+use super::log::{SessionLog, SessionLogIdentity, SessionLogPlan, SessionLogSettings};
 use super::notices::{NoticeScanner, ProgramNotice, TerminalNotice};
 use super::run::{BusyReason, RunFailure, RunHandle};
 use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
@@ -93,6 +95,8 @@ impl TerminalSnapshot {
 
 pub struct TerminalEngine {
     factory: SharedTerminalTransportFactory,
+    /// Who this terminal is, for the session log's file name.
+    identity: SessionLogIdentity,
     runtime: TerminalRuntime,
     lifecycle: TerminalLifecycle,
     title: Option<String>,
@@ -124,7 +128,11 @@ pub struct TerminalEngine {
 }
 
 impl TerminalEngine {
-    pub fn new(factory: SharedTerminalTransportFactory, cx: &mut gpui_kit::Context<Self>) -> Self {
+    pub fn new(
+        factory: SharedTerminalTransportFactory,
+        identity: SessionLogIdentity,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> Self {
         let size = TerminalSize::DEFAULT;
         let generation = 1;
         // A timer drains this standard channel on the UI thread. Parser
@@ -133,14 +141,18 @@ impl TerminalEngine {
         let (event_sender, event_receiver) = mpsc::channel();
         let highlights = Arc::new(Mutex::new(TerminalHighlights::current(cx)));
         let theme = Arc::new(Mutex::new(TerminalColors::current(cx)));
-        let runtime = TerminalRuntime::start(
+        let (runtime, log_error) = TerminalRuntime::start(
             generation,
             size,
             factory.create(),
             event_sender.clone(),
             highlights.clone(),
             theme.clone(),
+            log_plan(&identity, cx),
         );
+        if let Some(error) = log_error {
+            append_message(&runtime.term, &error);
+        }
         let channels = TerminalChannels::default();
         channels.attach(runtime.commands.clone());
         let highlights_observer = cx.observe_global::<TerminalHighlights>(|this, cx| {
@@ -156,6 +168,7 @@ impl TerminalEngine {
         });
         let mut this = Self {
             factory,
+            identity,
             runtime,
             lifecycle: TerminalLifecycle::Starting,
             title: None,
@@ -315,14 +328,20 @@ impl TerminalEngine {
         self.directory = None;
         // The new emulator starts empty; matches in the old one mean nothing.
         self.search.replace(None);
-        self.runtime = TerminalRuntime::start(
+        // A reconnection is a new session, with a log of its own.
+        let (runtime, log_error) = TerminalRuntime::start(
             self.generation,
             self.size,
             self.factory.create(),
             self.event_sender.clone(),
             self.highlights.clone(),
             self.theme.clone(),
+            log_plan(&self.identity, cx),
         );
+        if let Some(error) = log_error {
+            append_message(&runtime.term, &error);
+        }
+        self.runtime = runtime;
         self.channels.attach(self.runtime.commands.clone());
         cx.notify();
     }
@@ -878,6 +897,7 @@ struct TerminalRuntime {
 }
 
 impl TerminalRuntime {
+    #[allow(clippy::too_many_arguments)]
     fn start(
         generation: u64,
         size: TerminalSize,
@@ -885,7 +905,8 @@ impl TerminalRuntime {
         ui_events: mpsc::Sender<TerminalUiEvent>,
         highlights: SharedHighlights,
         theme: SharedTheme,
-    ) -> Self {
+        log: Option<SessionLogPlan>,
+    ) -> (Self, Option<SharedString>) {
         let (commands, command_receiver) = mpsc::channel();
         let (transport_events, transport_receiver) = async_channel::unbounded();
         let shared_size = Arc::new(Mutex::new(size));
@@ -906,6 +927,18 @@ impl TerminalRuntime {
         let run: Arc<Mutex<Option<RunHandle>>> = Arc::default();
         let (zmodem, zmodem_controls) = async_channel::unbounded();
         let transferring = Arc::new(AtomicBool::new(false));
+        // A log that cannot be made is said in the terminal, not swallowed:
+        // the session goes on without one.
+        let (log, log_error) = match log {
+            Some(plan) => match SessionLog::open(&plan.settings, &plan.identity, Local::now()) {
+                Ok(log) => (Some(log), None),
+                Err(error) => (
+                    None,
+                    Some(t!("terminal.notice.log_failed", error = error.to_string())),
+                ),
+            },
+            None => (None, None),
+        };
         let mut parser = Parser {
             term: term.clone(),
             processor: Processor::new(),
@@ -916,6 +949,7 @@ impl TerminalRuntime {
             run: run.clone(),
             zmodem: Zmodem::default(),
             transferring: transferring.clone(),
+            log,
         };
         thread::Builder::new()
             .name("shellrs-terminal-parser".into())
@@ -1038,15 +1072,18 @@ impl TerminalRuntime {
             })
             .expect("terminal transport thread");
 
-        Self {
-            term,
-            commands,
-            size: shared_size,
-            wakeup_pending,
-            run,
-            zmodem,
-            transferring,
-        }
+        (
+            Self {
+                term,
+                commands,
+                size: shared_size,
+                wakeup_pending,
+                run,
+                zmodem,
+                transferring,
+            },
+            log_error,
+        )
     }
 
     fn write(&self, bytes: Vec<u8>) {
@@ -1264,6 +1301,15 @@ enum TerminalUiEventKind {
     ZmodemAsk(ZmodemDirection),
 }
 
+/// The log a connection starting now keeps, when the settings ask for one.
+fn log_plan(identity: &SessionLogIdentity, cx: &gpui_kit::App) -> Option<SessionLogPlan> {
+    let settings = SessionLogSettings::current(cx);
+    settings.enabled.then(|| SessionLogPlan {
+        settings,
+        identity: identity.clone(),
+    })
+}
+
 fn append_message(term: &Arc<FairMutex<AlacrittyTerm>>, message: &str) {
     let mut processor = Processor::new();
     append_message_with_processor(term, &mut processor, message);
@@ -1344,6 +1390,8 @@ struct Parser {
     /// Takes the output first: `rz` and `sz`'s is not for the screen.
     zmodem: Zmodem,
     transferring: Arc<AtomicBool>,
+    /// The connection's 会话日志, when the settings ask for one.
+    log: Option<SessionLog>,
 }
 
 impl Parser {
@@ -1378,6 +1426,11 @@ impl Parser {
     /// Output for the emulator, and for what reads it beside: 关键字高亮,
     /// the programs' notifications and folders, an `exec --terminal` run.
     fn output(&mut self, bytes: &[u8]) {
+        // What the screen is about to show, as text, before the emulator
+        // takes it.
+        if let Some(log) = &self.log {
+            log.write(bytes);
+        }
         self.watcher.sync(current(&self.highlights));
         // The lines are only read under the lock; the rules match them
         // once it is let go.
@@ -2204,7 +2257,9 @@ mod tests {
             Arc::new(Mutex::new(TerminalTheme::default_for(
                 gpui_kit::component::ThemeMode::Light,
             ))),
+            None,
         )
+        .0
     }
 
     /// The screen's text once it holds `text`, or what it holds after two
@@ -2353,7 +2408,9 @@ mod tests {
             Arc::new(Mutex::new(TerminalTheme::default_for(
                 gpui_kit::component::ThemeMode::Light,
             ))),
-        );
+            None,
+        )
+        .0;
         events.send(TerminalTransportEvent::Started).unwrap();
         (runtime, events, commands, ui)
     }

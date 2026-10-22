@@ -261,6 +261,91 @@ settings.local_terminal.keep_output_keywords:
   zh-CN: 保留,内容,输出,回滚,历史,恢复,项目
   en: keep,output,scrollback,history,restore,projects
 
+# 终端 › 发送延迟.
+settings.send_delay.title:
+  zh-CN: 发送延迟
+  en: Send delays
+settings.send_delay.description:
+  zh-CN: 粘贴多行文本或用「发送命令」时，按这里等待后再发下一行、下一个字符，慢速设备才不会丢字。都是 0 时整段一次发出，与以前一样；键盘输入不受影响。
+  en: When pasting several lines or using Send Commands, wait this long before the next line or character so slow equipment hears every one. At 0 the text goes in one write, as before; typing is never delayed.
+settings.send_delay.line:
+  zh-CN: 行延迟
+  en: Line delay
+settings.send_delay.line_description:
+  zh-CN: 每行发送后等待的毫秒数。
+  en: Milliseconds to wait after each line’s Enter.
+settings.send_delay.line_keywords:
+  zh-CN: 行延迟,粘贴,脚本,慢,设备,毫秒
+  en: line delay,paste,script,slow,device,milliseconds
+settings.send_delay.character:
+  zh-CN: 字符延迟
+  en: Character delay
+settings.send_delay.character_description:
+  zh-CN: 同一行里每个字符之间等待的毫秒数。
+  en: Milliseconds to wait between two characters of a line.
+settings.send_delay.character_keywords:
+  zh-CN: 字符延迟,逐字,粘贴,慢,设备,毫秒
+  en: character delay,per character,paste,slow,device,milliseconds
+
+# 终端 › 会话日志.
+settings.session_log.title:
+  zh-CN: 会话日志
+  en: Session log
+settings.session_log.description:
+  zh-CN: 把连接建立的会话输出去掉颜色和光标控制后写入文件。设置只对之后新建或重连的会话生效。
+  en: A connection’s output is written to a file without colours or cursor control. Changes apply to terminals opened or reconnected from then on.
+settings.session_log.enabled:
+  zh-CN: 记录会话日志
+  en: Log sessions
+settings.session_log.enabled_description:
+  zh-CN: 新建立或重连的每个会话都记录，包括本地终端。
+  en: Every session started or reconnected from now on is logged, local terminals included.
+settings.session_log.enabled_keywords:
+  zh-CN: 日志,记录,保存,会话,输出
+  en: log,record,save,session,output
+settings.session_log.directory:
+  zh-CN: 保存目录
+  en: Folder
+settings.session_log.directory_description:
+  zh-CN: 日志放在哪里。留空时用数据目录下的 logs。
+  en: Where logs go. Empty uses the logs folder in the data folder.
+settings.session_log.directory_keywords:
+  zh-CN: 目录,文件夹,路径,保存
+  en: folder,directory,path,save
+settings.session_log.browse:
+  zh-CN: 选择目录…
+  en: Choose folder…
+settings.session_log.browse_prompt:
+  zh-CN: 选择日志保存目录
+  en: Choose a folder for logs
+settings.session_log.template:
+  zh-CN: 文件名模板
+  en: File name
+settings.session_log.template_description:
+  zh-CN: 相对保存目录的路径，可用子目录。占位符：%Y 年、%M 月、%D 日、%h 时、%m 分、%s 秒、%H 地址、%S 主机名、%% 百分号。注意 %M 是月，%m 是分。
+  en: "The path under the folder; it may hold subfolders. Placeholders: %Y year, %M month, %D day, %h hour, %m minute, %s second, %H address, %S host name, %% percent sign. Note %M is the month and %m the minute."
+settings.session_log.template_keywords:
+  zh-CN: 文件名,模板,占位符,年月日,时间,主机名,地址,命名
+  en: file name,template,placeholder,date,time,host name,address,naming
+settings.session_log.timestamp:
+  zh-CN: 每行时间戳
+  en: Line timestamps
+settings.session_log.timestamp_description:
+  zh-CN: 每行开头写上这一行开始的时间。
+  en: Each line starts with the time it began.
+settings.session_log.timestamp_keywords:
+  zh-CN: 时间戳,时间,每行
+  en: timestamp,time,line
+settings.session_log.timestamp_format:
+  zh-CN: 时间戳格式
+  en: Timestamp format
+settings.session_log.timestamp_format_description:
+  zh-CN: chrono 的时间格式，例如 [%Y-%m-%d %H:%M:%S] ，这里的 %M 是分钟。格式无效时用默认值。
+  en: "A chrono format, such as [%Y-%m-%d %H:%M:%S] ; here %M is the minute. An invalid format falls back to the default."
+settings.session_log.timestamp_format_keywords:
+  zh-CN: 时间戳,格式,年月日,时分秒
+  en: timestamp,format,date,time
+
 settings.sftp.transfers:
   zh-CN: 传输
   en: Transfers

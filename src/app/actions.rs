@@ -260,11 +260,17 @@ id_actions! {
     RenameTerminal(RemoteTerminalId);
     /// Hold a serial host's line in the break condition for a moment.
     SendBreak(RemoteTerminalId);
+    /// Open the dialog that sends several lines to one remote terminal,
+    /// with the waits 发送延迟 names.
+    SendCommands(RemoteTerminalId);
 
     /// Close a local terminal tab and terminate its child process.
     CloseLocalTerminal(LocalTerminalId);
     /// Restart a local terminal with a fresh emulator and PTY.
     RestartLocalTerminal(LocalTerminalId);
+    /// Open the dialog that sends several lines to one local terminal, with
+    /// the waits 发送延迟 names.
+    SendCommandsLocal(LocalTerminalId);
 
     /// Close one SFTP tab.
     CloseExplorer(ExplorerId);

@@ -31,13 +31,17 @@ use crate::i18n::t;
 use crate::sftp::{DEFAULT_PARALLEL_TRANSFERS, PARALLEL_TRANSFERS_RANGE};
 use crate::shared::{ClosableTabTitle, close_tab_items};
 use crate::terminal::{
-    FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalColors, TerminalFont, TerminalFontPreview,
-    TerminalHighlights, is_font_installed, monospace_font_families,
+    CHARACTER_DELAY_RANGE, DEFAULT_LOG_TEMPLATE, DEFAULT_LOG_TIMESTAMP_FORMAT, FONT_SIZE_RANGE,
+    LINE_DELAY_RANGE, LINE_HEIGHT_RANGE, SendDelay, TerminalColors, TerminalFont,
+    TerminalFontPreview, TerminalHighlights, is_font_installed, monospace_font_families,
 };
 use crate::update::{Phase, Tone, UpdateSnapshot, UpdateStep, Updater, build_info, platform};
 
 use super::highlight_rules::HighlightRulesEditor;
 use super::local_shell_editor::{LocalShellEditor, local_shell_field};
+use super::session_log_editor::{
+    SessionLogEditor, directory_field, template_field, timestamp_format_field,
+};
 use super::shortcuts_editor::{ShortcutsEditor, shortcut_groups};
 use super::sidebar_tools::sidebar_tools_group;
 use super::terminal_themes::{app_follows_item, terminal_theme_item};
@@ -72,6 +76,8 @@ pub struct SettingsPanel {
     shortcuts: Entity<ShortcutsEditor>,
     /// 终端 › 本地终端's field, with the shells installed here.
     local_shell: Entity<LocalShellEditor>,
+    /// 终端 › 会话日志's text fields.
+    session_log: Entity<SessionLogEditor>,
     /// The monospace families to choose the terminal font from; empty until
     /// the scan in the background comes back.
     font_families: &'static [SharedString],
@@ -81,7 +87,7 @@ pub struct SettingsPanel {
     shown_category: Rc<Cell<usize>>,
     focus_handle: FocusHandle,
     tab_group: Option<WeakEntity<TabGroup>>,
-    _subscriptions: [Subscription; 5],
+    _subscriptions: [Subscription; 6],
     _font_scan: Task<()>,
 }
 
@@ -96,12 +102,14 @@ impl SettingsPanel {
         let highlight_rules = cx.new(|cx| HighlightRulesEditor::new(store.clone(), window, cx));
         let shortcuts = cx.new(|cx| ShortcutsEditor::new(store.clone(), window, cx));
         let local_shell = cx.new(|cx| LocalShellEditor::new(store.clone(), window, cx));
+        let session_log = cx.new(|cx| SessionLogEditor::new(store.clone(), window, cx));
         let subscriptions = [
             cx.observe(&store, |_, _, cx| cx.notify()),
             cx.observe(&shortcuts, |_, _, cx| cx.notify()),
             cx.observe(&local_shell, |_, _, cx| cx.notify()),
             cx.observe(&integration, |_, _, cx| cx.notify()),
             cx.observe(&updater, |_, _, cx| cx.notify()),
+            cx.observe(&session_log, |_, _, cx| cx.notify()),
         ];
         // Loading every family takes a moment the first time; the process
         // keeps the answer, so later tabs have it at once.
@@ -122,6 +130,7 @@ impl SettingsPanel {
             highlight_rules,
             shortcuts,
             local_shell,
+            session_log,
             font_families: &[],
             shown_category: Rc::default(),
             focus_handle: cx.focus_handle(),
@@ -425,6 +434,8 @@ fn terminal_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
         sidebar_tools_group(store),
         notification_group(store),
         local_terminal_group(panel),
+        send_delay_group(store),
+        session_log_group(panel),
     ]
 }
 
@@ -465,6 +476,167 @@ fn local_terminal_group(panel: &SettingsPanel) -> SettingGroup {
             )
             .description(t!("settings.local_terminal.keep_output_description"))
             .keywords(keywords(t!("settings.local_terminal.keep_output_keywords"))),
+        ])
+}
+
+/// 终端 → 发送延迟: how long a paste or a script waits between its lines and
+/// its characters.
+fn send_delay_group(store: &Entity<SettingsStore>) -> SettingGroup {
+    let defaults = SendDelay::default();
+    SettingGroup::new()
+        .title(t!("settings.send_delay.title"))
+        .description(t!("settings.send_delay.description"))
+        .items([
+            SettingItem::new(
+                t!("settings.send_delay.line"),
+                number_field(
+                    store,
+                    NumberFieldOptions {
+                        min: *LINE_DELAY_RANGE.start() as f64,
+                        max: *LINE_DELAY_RANGE.end() as f64,
+                        step: 10.0,
+                    },
+                    |settings| settings.send_delay.line_ms as f32,
+                    |settings, line| settings.send_delay.line_ms = line.round() as u32,
+                )
+                .default_value(defaults.line_ms as f64),
+            )
+            .description(t!("settings.send_delay.line_description"))
+            .keywords(keywords(t!("settings.send_delay.line_keywords"))),
+            SettingItem::new(
+                t!("settings.send_delay.character"),
+                number_field(
+                    store,
+                    NumberFieldOptions {
+                        min: *CHARACTER_DELAY_RANGE.start() as f64,
+                        max: *CHARACTER_DELAY_RANGE.end() as f64,
+                        step: 5.0,
+                    },
+                    |settings| settings.send_delay.character_ms as f32,
+                    |settings, character| {
+                        settings.send_delay.character_ms = character.round() as u32
+                    },
+                )
+                .default_value(defaults.character_ms as f64),
+            )
+            .description(t!("settings.send_delay.character_description"))
+            .keywords(keywords(t!("settings.send_delay.character_keywords"))),
+        ])
+}
+
+/// 终端 → 会话日志: the switch, the folder and the name, and the time each
+/// line starts with.
+fn session_log_group(panel: &SettingsPanel) -> SettingGroup {
+    let store = panel.store.clone();
+    let (directory_store, template_store, format_store) =
+        (store.clone(), store.clone(), store.clone());
+    let (directory_editor, directory_reset) =
+        (panel.session_log.clone(), panel.session_log.clone());
+    let (template_editor, template_reset) = (panel.session_log.clone(), panel.session_log.clone());
+    let (format_editor, format_reset) = (panel.session_log.clone(), panel.session_log.clone());
+    let (reader, writer) = (store.clone(), store.clone());
+    let (timestamp_reader, timestamp_writer) = (store.clone(), store.clone());
+    SettingGroup::new()
+        .title(t!("settings.session_log.title"))
+        .description(t!("settings.session_log.description"))
+        .items([
+            SettingItem::new(
+                t!("settings.session_log.enabled"),
+                SettingField::switch(
+                    move |cx| reader.read(cx).settings().session_log.enabled,
+                    move |on, cx| {
+                        writer.update(cx, |store, cx| {
+                            store.update(|settings| settings.session_log.enabled = on, cx)
+                        });
+                    },
+                )
+                .default_value(false),
+            )
+            .description(t!("settings.session_log.enabled_description"))
+            .keywords(keywords(t!("settings.session_log.enabled_keywords"))),
+            SettingItem::new(
+                t!("settings.session_log.directory"),
+                SettingField::render(move |options, _, cx| {
+                    directory_field(&directory_editor, options, cx)
+                })
+                .on_reset(
+                    move |cx| {
+                        directory_store
+                            .read(cx)
+                            .settings()
+                            .session_log
+                            .directory
+                            .is_some()
+                    },
+                    move |window, cx| {
+                        directory_reset
+                            .update(cx, |editor, cx| editor.set_directory(None, window, cx));
+                    },
+                ),
+            )
+            .description(t!("settings.session_log.directory_description"))
+            .layout(Axis::Vertical)
+            .keywords(keywords(t!("settings.session_log.directory_keywords"))),
+            SettingItem::new(
+                t!("settings.session_log.template"),
+                SettingField::render(move |options, _, cx| {
+                    template_field(&template_editor, options, cx)
+                })
+                .on_reset(
+                    move |cx| {
+                        template_store.read(cx).settings().session_log.template
+                            != DEFAULT_LOG_TEMPLATE
+                    },
+                    move |window, cx| {
+                        template_reset.update(cx, |editor, cx| {
+                            editor.set_template(DEFAULT_LOG_TEMPLATE, window, cx)
+                        });
+                    },
+                ),
+            )
+            .description(t!("settings.session_log.template_description"))
+            .layout(Axis::Vertical)
+            .keywords(keywords(t!("settings.session_log.template_keywords"))),
+            SettingItem::new(
+                t!("settings.session_log.timestamp"),
+                SettingField::switch(
+                    move |cx| timestamp_reader.read(cx).settings().session_log.timestamp,
+                    move |on, cx| {
+                        timestamp_writer.update(cx, |store, cx| {
+                            store.update(|settings| settings.session_log.timestamp = on, cx)
+                        });
+                    },
+                )
+                .default_value(true),
+            )
+            .description(t!("settings.session_log.timestamp_description"))
+            .keywords(keywords(t!("settings.session_log.timestamp_keywords"))),
+            SettingItem::new(
+                t!("settings.session_log.timestamp_format"),
+                SettingField::render(move |options, _, cx| {
+                    timestamp_format_field(&format_editor, options, cx)
+                })
+                .on_reset(
+                    move |cx| {
+                        format_store
+                            .read(cx)
+                            .settings()
+                            .session_log
+                            .timestamp_format
+                            != DEFAULT_LOG_TIMESTAMP_FORMAT
+                    },
+                    move |window, cx| {
+                        format_reset.update(cx, |editor, cx| {
+                            editor.set_timestamp_format(DEFAULT_LOG_TIMESTAMP_FORMAT, window, cx)
+                        });
+                    },
+                ),
+            )
+            .description(t!("settings.session_log.timestamp_format_description"))
+            .layout(Axis::Vertical)
+            .keywords(keywords(t!(
+                "settings.session_log.timestamp_format_keywords"
+            ))),
         ])
 }
 
