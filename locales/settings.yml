@@ -261,6 +261,47 @@ settings.local_terminal.keep_output_keywords:
   zh-CN: 保留,内容,输出,回滚,历史,恢复,项目
   en: keep,output,scrollback,history,restore,projects
 
+# 终端 › 本地终端 › 环境变量.
+settings.local_environment.title:
+  zh-CN: 环境变量
+  en: Environment
+settings.local_environment.term_program:
+  zh-CN: 设置 TERM_PROGRAM
+  en: Set TERM_PROGRAM
+settings.local_environment.term_program_description:
+  zh-CN: 让程序知道自己在 ShellRS 里。关掉后这个变量在 shell 里不存在。
+  en: Lets programs know they run in ShellRS. Turning it off leaves the variable out of the shell.
+settings.local_environment.color_term:
+  zh-CN: 设置 COLORTERM
+  en: Set COLORTERM
+settings.local_environment.color_term_description:
+  zh-CN: 告诉程序可以用真彩色。关掉后这个变量在 shell 里不存在。
+  en: Tells programs they may use true color. Turning it off leaves the variable out of the shell.
+settings.local_environment.term:
+  zh-CN: 设置 TERM
+  en: Set TERM
+settings.local_environment.term_description:
+  zh-CN: 告诉程序终端是什么。关掉后这个变量在 shell 里不存在，命令不上色、clear 也不能用。
+  en: Tells programs what terminal they run in. Turning it off leaves the variable out of the shell, so commands lose their color and clear stops working.
+settings.local_environment.inherit:
+  zh-CN: 继承 ShellRS 的环境变量
+  en: Inherit ShellRS’s environment
+settings.local_environment.inherit_description:
+  zh-CN: 关掉后本地终端只留下必要的那几个变量，不再有 ShellRS 启动时带着的东西。
+  en: With this off, a local terminal keeps only the variables it needs, and nothing of what ShellRS was started with.
+settings.local_environment.clean:
+  zh-CN: 干净模式
+  en: Clean mode
+settings.local_environment.clean_action:
+  zh-CN: 全部关掉
+  en: Turn them all off
+settings.local_environment.clean_description:
+  zh-CN: 一次把上面四项全关掉，回到最原始的 shell 环境。
+  en: Turns all four off at once, back to a plain shell environment.
+settings.local_environment.keywords:
+  zh-CN: 环境,变量,污染,TERM,COLORTERM,继承,干净,shell
+  en: environment,variables,TERM,COLORTERM,inherit,clean,shell
+
 settings.sftp.transfers:
   zh-CN: 传输
   en: Transfers

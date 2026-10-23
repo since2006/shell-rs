@@ -6,9 +6,9 @@ ShellRS（crate 与二进制都叫 `shellrs`）是一个类似 Xshell / WinSCP �
 
 **保存的一项叫「主机」，代码里叫 `Host`。** 左侧列表里保存的一项（地址、端口、用户、认证方式）在界面上叫「主机」，量词用「台」，代码和数据库里一律叫 host（`Host`、`HostId`、`HostStore`、`host/` 模块、`hosts` 表）。它以前叫「会话」/ `Session`，界面、代码和表名都已改掉，新写的文案和标识符不要再用「会话」/ session 指它。填 IP / 域名的那个字段叫「地址」（`Host.address`、`hosts.address`），不叫「主机」（「主机密钥」「首次连接此主机」这些照旧）。SSH 协议里的 session 不在此列：「SSH 会话通道」、russh 的 `client::Session` / `server::Session`、`channel_open_session`、SFTP 会话照旧。
 
-主机和分组是**真实持久化**的，存在一个 SQLite 文件里（`~/Library/Application Support/shellrs/shellrs.db`，`SHELLRS_DATA_DIR` 可覆盖目录）。本地终端（`portable-pty` + `alacritty_terminal`）和 SSH 远程连接（`russh`）也都是真的。密码与私钥口令存在系统钥匙串里（`keyring`），**数据库里永远不出现秘密**。SFTP 双栏浏览与上传也已接入真实文件系统，支持断点续传；下载、目录同步和传输队列尚未实现。详见 `docs/manual.zh.md`。
+主机和分组是**真实持久化**的，存在一个 SQLite 文件里（macOS 是 `~/Library/Application Support/shellrs/shellrs.db`，Linux 是 `~/.local/share/shellrs/`，`SHELLRS_DATA_DIR` 可覆盖目录；Windows 便携版在 `shellrs.exe` 旁边的 `data` 里）。本地终端（`portable-pty` + `alacritty_terminal`）和 SSH 远程连接（`russh`）也都是真的。密码与私钥口令存在系统钥匙串里（`keyring`），**数据库里永远不出现秘密**。SFTP 双栏浏览、上传和下载都已接入真实文件系统，支持断点续传，传输在标签底部的队列里排队；SFTP 标签里的目录同步、过滤、目录树和 Dock 布局持久化尚未实现（外部 CLI 的 `shellrs sync` 能同步）。详见 `docs/manual.zh.md`。
 
-已确认的产品决定：WinSCP 式双栏文件浏览器是每个主机独立的「SFTP」Dock 标签页；暂不做传输队列和 Dock 布局持久化；首次启动是空库，不预置任何分组或主机；分组支持任意层级嵌套，主机也可以不属于任何分组（渲染在树的根层级）；删除分组会连同其子分组和里面的主机一起删，删除前确认并写明数量。
+已确认的产品决定：WinSCP 式双栏文件浏览器是每个主机独立的「SFTP」Dock 标签页；首次启动是空库，不预置任何分组或主机；分组支持任意层级嵌套，主机也可以不属于任何分组（渲染在树的根层级）；删除分组会连同其子分组和里面的主机一起删，删除前确认并写明数量。
 
 做 UI 之前先读 `gpui-kit` 与 `gpui-kit-design-guides` 两个技能（其中的 Coding Guides 和 Design Guides 在本仓库是规范，不是参考）。不要凭记忆臆造 gpui-kit API：以 `~/.cargo/registry/src/*/gpui-component-0.6.1/`、`gpui-base-0.6.1/` 的源码或 `https://gpui-kit.com/component/<name>.md` 为准。
 
@@ -21,6 +21,9 @@ cargo test                                  # 单元测试（模块内）+ tests
 cargo test --lib                            # 只跑单元测试
 cargo test --test ui                        # 只跑 UI 集成测试
 cargo test --test ui new_host -- --nocapture   # 按名称片段跑单个 UI 测试
+cargo test --test cli_bin                   # 外部 CLI 的端到端测试
+cargo test --lib terminal::run -- --include-ignored     # exec --terminal 对真 shell
+cargo test --lib terminal::zmodem -- --include-ignored  # ZMODEM 对真 lrzsz
 cargo clippy --all-targets -- -D warnings   # 必须无警告
 cargo fmt --check
 
@@ -47,11 +50,26 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 - `workspace/` — `workspace_view.rs` 持有 `HostStore`、`DockArea`、按主机登记的面板注册表，以及**全部动作处理器**；`title_bar.rs`、`status_bar.rs`、`recent_hosts.rs`（中间区没有标签页时显示的「最近连接」开始页，**不是** Dock 面板）、`dock_skin.rs`（`WorkspaceDockSkin`：包一层 `DockSkin`，中间区为空时用 `deferred` 把开始页画在空的中间区之上；工作区在 `DockEvent::LayoutChanged` 时同步「中间区是否为空」并在刚变空时把焦点移到开始页）。
 - `update/` — 在线升级：`feed.rs` 从 `dl.shellrs.com` 取已签名的清单和安装包（reqwest，走系统代理），`verify.rs` 先验 minisign 签名（trusted comment 绑定通道和版本）再信清单、按大小和 SHA-256 信安装包，`install*.rs` 按安装方式装（macOS 整包交换、Windows 运行 Inno 安装程序、Linux 覆盖 AppImage），`updater.rs` 的 `Updater` 实体管检查、下载和重启，工作线程的事件由 UI 定时轮询。不依赖 `workspace` 和 `settings`；`new_with_services` 里的 `Updater` 没有服务、从不联网，生产路径才 `set_services` + `start`，UI 测试经 `workspace.updater()` 注入假的。详见 `CLAUDE.md`、`docs/manual.zh.md` 的「下载与更新」和 `docs/release.md`。
 - `shared/` — 多个功能共用的展示片段（`ClosableTabTitle`、`HostMark`）。
+- `connection.rs` — 认证问答的协议（`ConnectionPrompt` / `TerminalPrompt` / `TerminalSecret`）与「测试连接」。终端、SFTP、Telnet、串口共用这一套问答。
+- `cli/` — 外部 CLI（给 AI Agent 用）：`protocol.rs` 定义套接字协议（只加变体，不升版本），`server.rs` 在应用里接，`client.rs` 是 `shellrs` 命令，`backend.rs` 执行 `exec` / `upload` / `download` / `sync`，`manage.rs` 是主机的增删改查，`install.rs` 装命令和 Agent Skill。一个数据目录只跑一个 ShellRS：启动时先连外部 CLI 的套接字，连得上就交给已在运行的那个。
+- `credential/` — 凭据面板与对话框（密码、密钥、SSH Agent 三种，多台主机共用一条；密钥可以引用本机文件、粘贴或当场生成）。
+- `project/` — 右侧栏「项目」的树和对话框：像主机一样分组保存本地终端（分组只有名字、不嵌套，和磁盘目录无关）。模型在 `host/`，打开、保存和恢复终端在 `workspace/projects.rs`。
+- `forward/` — 端口转发：本地（`-L`）、远程（`-R`）、动态（`-D`）三种；`manager.rs` 管规则的生命周期，`worker.rs` 跑每条规则的连接（断线自动重连三次），`diagram.rs` 画对话框里的示意图，`socks.rs` 是动态转发的 SOCKS5。每条规则自己建连接，和主机的标签无关。
+- `editor/` — 内置编辑器的标签：只认 UTF-8、上限 5 MB；远程文件原地改写，保存前核对文件是否被别人改过。
+- `monitor/` `gpu/` `netstat/` `processes/` `services/` — 右侧栏的工具：系统监控（Linux）、GPU/NPU（NVIDIA 与昇腾）、网络连接、进程管理、系统服务。各自是「命令 + 纯解析模型 + 面板」，在终端自己的连接上执行命令；危险操作先确认，非 root 用 `sudo -n`。
+- `docker/` `kubernetes/` — 右侧栏的 Docker 与 Kubernetes 面板。Kubernetes 的模块边界、kubectl 查询范围与 RBAC 见 `docs/kubernetes.md`。
+- `tmux/` `history/` `snippets/` — 右侧栏的 tmux 会话、历史命令（读远端 `~/.bash_history`）和命令片段（所有主机共用，可分类）。
+- `telnet/` `serial/` — 各自的终端传输：Telnet 的协议自己写（不引第三方库），串口用 `serial2`。
+- `settings/` — 设置模型（`model.rs`）、设置页（`settings_panel.rs`）和落盘（`store.rs` 写 `settings.json`，写穿、内存说了算）。`apply.rs` 把设置落到各处：主题、快捷键表、侧栏工具、关键字高亮规则、界面字号。
+- `analytics/` — 匿名使用统计（Aptabase）：只发版本、系统和各功能的次数，不发主机、凭据、命令或任何标识。
+- `i18n.rs` — 多语言：`rust_i18n::i18n!("locales")` 载入 `locales/*.yml`，`t!` / `tn!` 取文案（`tn!` 带数量，英文分 `.one` / `.other`）。守卫测试检查两种语言齐全、键都被用到、`src/` 里测试以外没有中文字面量。
 
 关键流程与不变量：
 
 - **SFTP 独立于终端。** 主机状态综合所有终端与 SFTP 状态计算；关闭终端不停止上传，断开 / 删除主机会停止上传并保留续传数据。每主机一个运行批次，来源、端点和目标在确认时固定。认证问答按终端 / SFTP 来源与 SFTP 连接代次隔离。
 - **SFTP UI 测试完全注入。** 使用 `Workspace::new_with_services` 注入目录与传输，不访问用户服务器和钥匙串。工作线程事件由 UI 定时轮询，禁止后台线程直接唤醒 GPUI 前台任务；实体回调中的 SFTP 动作通过 `ExplorerDispatch` 延后派发，避免重入实体。
+- **打包器留下的变量不进 shell。** AppImage 的 runtime 启动时在环境里留下 `ARGV0` / `APPIMAGE` / `APPDIR` / `OWD`，本地终端起 shell 前要把它们去掉（`terminal/environment.rs`）：**zsh 拿 `ARGV0` 改写每一个命令的 argv[0]**，用户的 `cargo`、`rustc`、`rustfmt` 会全部失效，报的还是「unknown proxy name」。只动子进程——ShellRS 自己要用 `APPIMAGE` 在更新后重新启动自己。设置里「终端 › 本地终端 › 环境变量」还能逐项关掉 ShellRS 自己放的三个变量（`TERM_PROGRAM` / `COLORTERM` / `TERM`）和「继承整个环境」，关掉就是**真的没有**这个变量，不是空值。
+- **ZMODEM 的控制消息先于应答。** 拖文件到终端时，UI 线程先发 `Dropped(files)` 控制消息、再敲 `rz`；解析线程喂输出之前要把控制通道读干。`engine.rs` 的 `receive()` 在两个通道都就绪时是**随机选**的，选到应答就会把掉落的文件丢掉、改成问用户选文件。
 
 - **一个命令一个处理器。** 按钮、菜单、右键菜单、快捷键都只派发 `app/actions.rs` 里的动作，由 `Workspace` 处理。新增命令加在那里，不要写临时闭包直接改状态。
 - **持久化写穿，内存说了算。** `HostStore` 带 `Context` 的 mutator 负责「改内存 → 写库 → `notify`」，`*_unnotified` 那一半是纯内存的（给单元测试和加载用）。写库同步发生在 UI 线程：要落盘的都是用户在对话框里确认的单行写入，不是流。写失败时内存里的改动照样生效，store 发 `HostStoreEvent::PersistFailed`，工作区订阅后弹一个错误通知——**绝不静默吞掉**。`ConnectionState` 是运行时状态，不入库；`last_connected_at` 入库，开始页的「最近连接」因此能跨启动。删除分组靠数据库两个外键的 `ON DELETE CASCADE`，内存里的 `remove_group_unnotified` 必须给出一样的结果，并把被删主机的 id 返回给工作区去关标签页。
@@ -62,6 +80,7 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 - **Dock 面板**需实现 `EventEmitter<PanelEvent> + Focusable + Render + BasePanel + Panel`，一律用 `panel_handle(...)` 包装；`tab_name` 保持 `None`，由 `title` 返回富元素——标签页的图标和「×」关闭按钮就是这样来的（`ClosableTabTitle` 的「×」只派发面板的关闭动作，见下一条）。`panel_name()` 是持久化键，一经选定不可更改。
 - **标签页全部可关。** `TabGroup::close_panel` 会拒绝关闭区域内最后一个面板，所以关闭不走 tab group：「×」派发 `CloseTerminal` / `CloseExplorer`，⌘W 派发 `CloseActiveTab`（关工作区记录的最近显示的中间标签，面板在 `set_active(true)` 时发出 `Activated` 事件告知），处理器一律用 `DockArea::remove_panel` 移除。中间区空了就显示最近连接列表：`HostStore::recent_hosts()` 按「最近一次变为已连接」的顺序给出，`set_state` 变为 Connected 时把主机移到最前。
 - **焦点规则。** `window.dispatch_action` 只能到达焦点元素路径上的处理器，所以工作区内部必须有东西持有焦点（启动时聚焦主机面板）。永远不要聚焦工作区根节点的 handle：对话框层是它的子元素，祖先持有焦点会让对话框的焦点陷阱拿不到焦点，导致「取消 / 创建」无响应。标题栏和开始页的按钮改用工作区 handle 上的 `FocusHandle::dispatch_action` 派发。对话框打开后焦点停在对话框宿主上，直到用户点击某个字段；延迟或下一帧的聚焦请求不会生效。
+- **终端里 Ctrl 加字母是 shell 的。** `app/shortcuts.rs` 的 `shell_keys_in_terminal` 把这类绑定在终端上下文里换成 NoAction，交给 shell（tmux 的 Ctrl+B、readline 的 Ctrl+W、删前一个词的 Ctrl+W）。**Ctrl 加 Shift 加字母才是应用的**（`ctrl-shift-b` 之流）。写终端相关的快捷键、或在测试里按这类键时都要记住这条。
 - **树的语义。** 树行的左键按下会同时选中并切换展开（无法抑制）；双击打开靠 `ListItem` 上的 `ClickEvent::click_count() == 2`。`TreeState::set_items` 会清空选择，`HostPanel::rebuild_tree` 按 id 恢复选择，展开状态由它自己的 `expanded` 集合维护。对话框新建出来的节点靠 `HostPanel` 比对 `known_groups` / `seen_hosts` 快照来发现，然后展开祖先链并选中——对话框不需要回调面板。
 - **对话框关闭后焦点会丢。** 这是 gpui-component 的既有行为，不是本仓库引入的：关掉对话框后 `window.dispatch_action` 没有落点，要先点一下面板里的东西。UI 测试里同理（见 `groups_and_hosts_are_read_back_from_the_database`）。
 - **要彩色就不能用 `Icon`。** GPUI 的 `svg()` 走 `Window::paint_svg`，签名只收一个颜色，整张图当遮罩上色，所以彩色 SVG 塞进 `Icon` 会变成一坨纯色。真要彩色只能走 `img()`（`ImageSource`），那条路把 SVG 光栅化成 RGBA，颜色能留住，代价是变位图。系统徽章因此是「主题色的圆底 + 单色遮罩 logo」，不是一张彩图。
@@ -70,4 +89,6 @@ cargo test -- --ignored                     # 会读写真实钥匙串的测试�
 
 ## 测试约定
 
-UI 测试（`tests/ui/`）在无头窗口里渲染真实的 `Workspace`，通过 `gpui_kit::test::TestWindowExt`（`click`、`double_click`、`input`、`press`、`find`、`within`）驱动。`Workspace::new` 要求外部传入 `Entity<HostStore>`：生产环境由 `main.rs` 从数据库加载，测试用 `open_workspace_with_store` 注入 `HostStore::seed()`（或一个临时文件上的真库）。**不要用右键菜单驱动测试**：菜单项的 ElementId 只是序号，而且 `PopupMenu` 实体会让测试以「leaked handles」失败；直接 `window.dispatch_action` 派发菜单会派发的那个动作。测试模块里要显式导入类型，`use gpui_kit::*` 会遮蔽 `#[test]`。被测试查询的元素带稳定的领域 id，自定义 `div` 还要加 `.test_support()`：`("host-row", id)`、`("host-os", id)` 与开始页的 `("recent-host-os", id)`（`aria_label` 是系统名，未探测时是「未探测到系统」）、`("group-row", id)`、`("terminal", id)`、`("explorer", id)`、`("local-pane"|"remote-pane", id)`、`("close-terminal", id)`、`("close-explorer", id)`、`recent-hosts`、`("recent-host", id)`、`recent-new-host`、`host-search`、`new-host`、`new-group`、`theme-toggle`、`status-connection`、`commit`、`ok`（确认对话框）、`form-error`、`host-name` / `host-address` / `host-port` / `-user` / `-auth` / `-key-path` / `-password` / `-passphrase`、`group-name`、`remote-path`。被遮蔽的输入框在测试里读不到值（`ElementSnapshot::value()` 返回 `None`），所以密码相关的断言一律查注入的 `InMemorySecretStore`，不查界面。动作派发和 `set_active` 都是延迟执行的：先退出 `update_window`，调用 `cx.run_until_parked()`，再 `render_frame` 后断言。种子主机 id 按插入顺序（`web-01`=1 … `dev-box`=6），种子分组同理（`生产`=1、`测试`=2、`开发`=3）；`web-01` 与 `staging-api` 初始为已连接并已打开终端标签。
+UI 测试（`tests/ui/`）在无头窗口里渲染真实的 `Workspace`，通过 `gpui_kit::test::TestWindowExt`（`click`、`double_click`、`input`、`press`、`find`、`within`）驱动。`Workspace::new` 要求外部传入 `Entity<HostStore>`：生产环境由 `main.rs` 从数据库加载，测试用 `open_workspace_with_store` 注入 `HostStore::seed()`（或一个临时文件上的真库）。**不要用右键菜单驱动测试**：菜单项的 ElementId 只是序号，而且 `PopupMenu` 实体会让测试以「leaked handles」失败；直接 `window.dispatch_action` 派发菜单会派发的那个动作。测试模块里要显式导入类型，`use gpui_kit::*` 会遮蔽 `#[test]`。被测试查询的元素带稳定的领域 id，自定义 `div` 还要加 `.test_support()`：`("host-row", id)`、`("host-os", id)` 与开始页的 `("recent-host-os", id)`（`aria_label` 是系统名，未探测时是「未探测到系统」）、`("group-row", id)`、`("terminal", id)`、`("explorer", id)`、`("local-pane"|"remote-pane", id)`、`("close-terminal", id)`、`("close-explorer", id)`、`recent-hosts`、`("recent-host", id)`、`recent-new-host`、`host-search`、`new-host`、`new-group`、`theme-toggle`、`status-connection`、`commit`、`ok`（确认对话框）、`form-error`、`host-name` / `host-address` / `host-port` / `-user` / `-auth` / `-key-path` / `-password` / `-passphrase`、`group-name`、`remote-path`。其余按功能取：`("terminal-tab", id)`（标签）、`terminal-find`（查找栏）、`("close-explorer", id)`、`local-terminal`（本地终端面板）、`("saved-terminal-row", id)`（项目里的终端）、`projects-empty-new-group`（项目的新建分组）、`credential-list` / `credential-name` / `credential-password` / `credential-passphrase` / `credential-key-path`（凭据）、`forward-list` / `forward-name` / `forward-target-host` / `forward-target-port`（转发规则）、`queue-file` / `queue-file-status`（传输队列）、`transfer-status` / `transfer-summary`（传输进度）、`tool-docker` / `tool-kubernetes` / `tool-monitor` / `tool-files` / `tool-history` / `tool-processes` / `tool-services` / `tool-snippets` / `tool-tmux`（右侧栏的工具按钮）、`k8s-namespace` / `k8s-search` / `k8s-container`（Kubernetes）、`gpu-devices-fold` / `gpu-no-devices`（GPU）、`process-command` / `process-force-end`（进程）、`history-search` / `history-refresh`（历史命令）、`snippets-search` / `snippet-command`（命令片段）、`tmux-session-name` / `tmux-new`（tmux）、`import-select-all` / `import-status`（导入主机）、`settings-tab`（设置的标签）。被遮蔽的输入框在测试里读不到值（`ElementSnapshot::value()` 返回 `None`），所以密码相关的断言一律查注入的 `InMemorySecretStore`，不查界面。动作派发和 `set_active` 都是延迟执行的：先退出 `update_window`，调用 `cx.run_until_parked()`，再 `render_frame` 后断言。种子主机 id 按插入顺序（`web-01`=1 … `dev-box`=6），种子分组同理（`生产`=1、`测试`=2、`开发`=3）；`web-01` 与 `staging-api` 初始为已连接并已打开终端标签。
+
+设置页是一个**虚拟化的列表**（gpui-kit 的 `list`），只画当前看得见的组：靠下的组要滚到才在 DOM 里，找不到时先滚再找。组和项的 id 是 `group-N` 和 `item-M`（N、M 是页内的序号，与滚动无关）。页的分类是侧栏的 `0-N`。

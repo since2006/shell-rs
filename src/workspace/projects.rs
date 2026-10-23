@@ -434,6 +434,7 @@ pub(super) fn local_launch(
             .and_then(|terminal| terminal.directory.as_deref())
             .map(PathBuf::from),
         replay,
+        environment: settings.local_terminal.environment,
         ..LocalLaunch::new(shell)
     }
 }

@@ -12,6 +12,8 @@ use portable_pty::CommandBuilder;
 
 use crate::i18n::t;
 
+use super::LocalEnvironment;
+
 /// The program a local terminal runs, as the user wrote it: a path or a
 /// command, with any arguments. Without one, the system's default shell.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -61,13 +63,15 @@ impl LocalShell {
 }
 
 /// How a local terminal starts: the shell, the folder it starts in (the
-/// home folder without one), and what it showed when it last closed, to
-/// draw again first.
+/// home folder without one), what it showed when it last closed, to
+/// draw again first, and the environment the shell may see.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LocalLaunch {
     pub shell: LocalShell,
     pub directory: Option<PathBuf>,
     pub replay: Option<Vec<u8>>,
+    /// 本地终端的环境.
+    pub environment: LocalEnvironment,
 }
 
 impl LocalLaunch {
