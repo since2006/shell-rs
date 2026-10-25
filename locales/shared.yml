@@ -3,6 +3,11 @@ _version: 2
 shared.tab.unsaved:
   zh-CN: 未保存
   en: Unsaved changes
+shared.tab.pane_count.one:
+  en: "%{count} pane"
+shared.tab.pane_count.other:
+  zh-CN: "%{count} 个窗格"
+  en: "%{count} panes"
 shared.host_mark.unknown_os:
   zh-CN: 未探测到系统
   en: System not detected
@@ -27,6 +32,15 @@ shared.rename_tab.title:
 shared.rename_tab.name:
   zh-CN: 标签名称
   en: Tab name
+shared.rename_pane.title:
+  zh-CN: 重命名窗格
+  en: Rename pane
+shared.rename_pane.name:
+  zh-CN: 窗格名称
+  en: Pane name
+shared.rename_pane.menu:
+  zh-CN: 重命名窗格…
+  en: Rename pane…
 shared.rename_tab.default:
   zh-CN: 留空则使用「%{title}」。
   en: Leave empty to use “%{title}”.

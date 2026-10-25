@@ -37,9 +37,13 @@ pub struct AppSettings {
     /// terminal, as a host keeps its own for its terminals.
     #[serde(with = "tool_by_key")]
     pub local_sidebar_tool: Option<ToolKind>,
-    /// 撰写窗格 below the terminals, switched from its shortcut and the
-    /// terminal's context menu: shown while true. 命令广播 shows it anyway.
+    /// 撰写窗格 below the terminals, switched from the tab bar, its shortcut
+    /// and the terminal's context menu: shown while true. Choosing to send
+    /// to several terminals switches it on.
     pub compose_pane: bool,
+    /// How tall 撰写窗格 was dragged, in pixels, title bar included; `None`
+    /// for its default.
+    pub compose_height: Option<f32>,
     /// 终端 → 本地终端.
     pub local_terminal: LocalTerminalSettings,
     pub external_cli: ExternalCliSettings,

@@ -19,14 +19,13 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use gpui_kit::component::dock::PaneRef;
 use gpui_kit::*;
 
 use crate::analytics::Counter;
 use crate::app::{
-    CenterTab, CloseLocalTerminal, CloseSavedTerminal, DeleteSavedTerminal, DeleteTerminalGroup,
-    MoveTerminalNode, NewSavedTerminal, NewTerminalGroup, OpenSavedTerminal, RenameSavedTerminal,
-    RenameTerminalGroup, ToggleTerminalGroup,
+    CloseLocalTerminal, CloseSavedTerminal, DeleteSavedTerminal, DeleteTerminalGroup,
+    MoveTerminalNode, NewSavedTerminal, NewTerminalGroup, OpenSavedTerminal, PaneContent,
+    RenameSavedTerminal, RenameTerminalGroup, ToggleTerminalGroup,
 };
 use crate::host::{HostStore, SavedTerminal, SavedTerminalId, SavedTerminalTab};
 use crate::i18n::t;
@@ -269,8 +268,7 @@ impl Workspace {
         if let Some(tab) = self.tab_of(id)
             && let Some(panel) = self.local_terminals.get(&tab).cloned()
         {
-            let group = panel.read(cx).tab_group();
-            self.activate_tab(group, panel.entity_id(), window, cx);
+            self.activate_pane(PaneContent::LocalTerminal(tab), window, cx);
             let focus = panel.read(cx).focus_handle(cx);
             window.focus(&focus, cx);
             return;
@@ -378,22 +376,13 @@ impl Workspace {
     /// Remember the saved terminals open now, for the next launch: in the
     /// center's tab order, the one last in front marked. Tell 项目 too.
     pub(super) fn sync_saved_terminals(&mut self, cx: &mut Context<Self>) {
-        let mut order = Vec::new();
-        if let Some(tree) = self
-            .dock_area
+        let tabs: Vec<SavedTerminalTab> = self
+            .center
             .read(cx)
-            .layout(gpui_kit::component::dock::DockPlacement::Center)
-        {
-            tree.root().walk(&mut |node| {
-                if let PaneRef::Tabs { panels, .. } = node.kind() {
-                    order.extend(panels.iter().copied());
-                }
-            });
-        }
-        let tabs: Vec<SavedTerminalTab> = order
+            .all_panes()
             .into_iter()
-            .filter_map(|panel| match self.center_tab_for_panel(panel) {
-                Some(CenterTab::LocalTerminal(tab)) => Some(SavedTerminalTab {
+            .filter_map(|pane| match pane {
+                PaneContent::LocalTerminal(tab) => Some(SavedTerminalTab {
                     terminal: *self.saved_terminals.get(&tab)?,
                     front: self.front_saved_terminal == Some(tab),
                 }),
@@ -401,8 +390,8 @@ impl Workspace {
             })
             .collect();
         let open: HashSet<SavedTerminalId> = tabs.iter().map(|tab| tab.terminal).collect();
-        let front = match self.active_tab {
-            Some(CenterTab::LocalTerminal(tab)) => self.saved_terminals.get(&tab).copied(),
+        let front = match self.active_pane {
+            Some(PaneContent::LocalTerminal(tab)) => self.saved_terminals.get(&tab).copied(),
             _ => None,
         };
         self.store

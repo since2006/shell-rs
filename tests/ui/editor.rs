@@ -532,7 +532,7 @@ async fn closing_all_tabs_asks_once_for_every_unsaved_file(cx: &mut TestAppConte
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(
             Box::new(CloseTabs {
-                tab: CenterTab::Editor(EditorId(2)),
+                tab: PaneContent::Editor(EditorId(2)),
                 scope: CloseScope::All,
             }),
             cx,

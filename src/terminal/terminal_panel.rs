@@ -4,20 +4,22 @@ use std::rc::Rc;
 use gpui_kit::component::{
     Icon, IconName, Sizable as _,
     button::Button,
-    dock::{BasePanel, Panel, PanelEvent, TabGroup},
+    dock::{BasePanel, Panel, PanelEvent},
     menu::PopupMenu,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CenterTab, CloseTerminal, ConnectHost, CopyHostAddress, CopyHostId,
-    DisconnectTerminal, EditHost, OpenExplorer, ReconnectTerminal, RenameTerminal, SendBreak,
+    CatalogIcon, CloseTerminal, ConnectHost, CopyHostAddress, CopyHostId, DisconnectTerminal,
+    EditHost, OpenExplorer, PaneContent, ReconnectTerminal, RenameTerminal, SendBreak,
 };
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
 use crate::host::{ConnectionState, Host, HostConnection, HostId, HostOs, HostStore, ProtocolKind};
 use crate::i18n::t;
-use crate::shared::{ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items};
+use crate::shared::{
+    CenterPane, ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items,
+};
 
 use super::{
     HostTerminalTransports, RemoteTerminalId, ReportedDirectory, TerminalEvent, TerminalLifecycle,
@@ -61,8 +63,6 @@ pub struct TerminalPanel {
     connection: HostConnection,
     /// Opened from a link (外部连接): nothing beside the terminal.
     external: bool,
-    tab_group: Option<WeakEntity<TabGroup>>,
-    broadcast: Option<super::BroadcastSelection>,
     /// A title the user gave this tab, to tell apart several connections to
     /// the same host. Lives as long as the tab, like the rest of the layout.
     custom_title: Option<SharedString>,
@@ -164,8 +164,6 @@ impl TerminalPanel {
             host,
             connection,
             external,
-            tab_group: None,
-            broadcast: None,
             custom_title: None,
             _subscriptions: subscriptions,
         }
@@ -194,10 +192,6 @@ impl TerminalPanel {
         self.external || !self.host.is_ssh()
     }
 
-    pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
-        self.tab_group.clone()
-    }
-
     fn tab_menu(&self, cx: &Context<Self>) -> TabMenu {
         let store = self.store.read(cx);
         TabMenu {
@@ -209,24 +203,11 @@ impl TerminalPanel {
             host_exists: store.host(self.host_id).is_some(),
             host_is_ssh: store.host(self.host_id).is_some_and(|host| host.is_ssh()),
             editable: !store.is_temporary(self.host_id),
-            group: self.tab_group.clone(),
-            panel: cx.entity_id(),
         }
     }
 
     pub fn terminal(&self) -> &Entity<TerminalView> {
         &self.terminal
-    }
-
-    pub(crate) fn set_broadcast_selection(
-        &mut self,
-        selection: Option<super::BroadcastSelection>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.broadcast != selection {
-            self.broadcast = selection;
-            cx.notify();
-        }
     }
 
     pub fn lifecycle(&self, cx: &App) -> TerminalLifecycle {
@@ -330,40 +311,35 @@ impl BasePanel for TerminalPanel {
         window.focus(&focus, cx);
         cx.emit(TerminalPanelEvent::Activated(self.id, self.host_id));
     }
+}
 
-    fn on_added_to(&mut self, group: WeakEntity<TabGroup>, _: &mut Window, _: &mut Context<Self>) {
-        self.tab_group = Some(group);
-    }
-
-    fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.tab_group = None;
+impl CenterPane for TerminalPanel {
+    fn close(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.terminal
             .update(cx, |terminal, cx| terminal.shutdown(cx));
-        let id = self.host_id;
-        cx.emit(TerminalPanelEvent::Closed(self.id, id));
+        cx.emit(TerminalPanelEvent::Closed(self.id, self.host_id));
     }
 }
 
 impl Panel for TerminalPanel {
+    fn tab_name(&self, cx: &App) -> Option<SharedString> {
+        Some(self.tab_title(cx))
+    }
+
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let id = self.id;
         let (address, os) = (self.host.address.clone(), self.host.os);
         let tab_menu = self.tab_menu(cx);
         let state = self.connection_state(cx);
-        let mark = super::BroadcastSelection::lead(
-            self.broadcast.clone(),
-            CenterTab::Terminal(id),
-            self.tab_title(cx),
-            HostMark::new(
-                ("terminal-tab-os", id.0),
-                self.default_title(cx),
-                address,
-                os,
-            )
-            .protocol(self.host.kind())
-            .connection_state(state)
-            .small(),
-        );
+        let mark = HostMark::new(
+            ("terminal-tab-os", id.0),
+            self.default_title(cx),
+            address,
+            os,
+        )
+        .protocol(self.host.kind())
+        .connection_state(state)
+        .small();
         ClosableTabTitle::new(("terminal-tab", id.0), mark, self.tab_title(cx))
             .connection_state(state)
             .closable(("close-terminal", id.0), Box::new(CloseTerminal(id)))
@@ -504,8 +480,6 @@ struct TabMenu {
     host_is_ssh: bool,
     /// A saved host; a temporary one has nothing to edit.
     editable: bool,
-    group: Option<WeakEntity<TabGroup>>,
-    panel: EntityId,
 }
 
 impl RenamableTab for TerminalPanel {
@@ -537,7 +511,13 @@ impl TabMenu {
         let exists = self.host_exists;
         let mut menu = menu
             .menu_with_icon(
-                t!("terminal.remote.rename"),
+                if crate::center::tab_place(PaneContent::Terminal(id), cx)
+                    .is_some_and(|place| place.panes > 1)
+                {
+                    t!("shared.rename_pane.menu")
+                } else {
+                    t!("terminal.remote.rename")
+                },
                 Icon::new(CatalogIcon::Pencil),
                 Box::new(RenameTerminal(id)),
             )
@@ -585,13 +565,7 @@ impl TabMenu {
             );
         }
         let menu = menu.separator();
-        close_tab_items(
-            menu,
-            CenterTab::Terminal(id),
-            self.group.clone(),
-            self.panel,
-            cx,
-        )
+        close_tab_items(menu, PaneContent::Terminal(id), cx)
     }
 }
 

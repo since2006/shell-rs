@@ -9,7 +9,7 @@ use gpui_kit::*;
 
 use super::Workspace;
 use crate::analytics::Counter;
-use crate::app::CenterTab;
+use crate::app::PaneContent;
 use crate::i18n::t;
 use crate::terminal::{RemoteTerminalId, ZmodemDirection, ZmodemReply};
 
@@ -19,7 +19,7 @@ impl Workspace {
     /// nothing cancels the transfer.
     pub(super) fn ask_zmodem(
         &mut self,
-        tab: CenterTab,
+        tab: PaneContent,
         direction: ZmodemDirection,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -65,14 +65,14 @@ impl Workspace {
         .detach();
     }
 
-    fn reply_zmodem(&self, tab: CenterTab, reply: ZmodemReply, cx: &App) {
+    fn reply_zmodem(&self, tab: PaneContent, reply: ZmodemReply, cx: &App) {
         match tab {
-            CenterTab::Terminal(id) => {
+            PaneContent::Terminal(id) => {
                 if let Some(panel) = self.terminals.get(&id) {
                     panel.read(cx).zmodem_reply(reply, cx);
                 }
             }
-            CenterTab::LocalTerminal(id) => {
+            PaneContent::LocalTerminal(id) => {
                 if let Some(panel) = self.local_terminals.get(&id) {
                     panel.read(cx).zmodem_reply(reply, cx);
                 }

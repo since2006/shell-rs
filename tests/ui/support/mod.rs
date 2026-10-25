@@ -11,13 +11,13 @@ pub use gpui_kit::{
 };
 pub use semver::Version;
 pub use shellrs::app::{
-    CenterTab, CheckForUpdates, ClearTerminal, CloseScope, CloseTabs, CollapseAllGroups,
-    ConnectGroup, ConnectHost, CopyCredentialPublicKey, CopyHostAddress, CopyHostId,
-    DeleteCredential, DeleteForward, DeleteGroup, DeleteHost, DisconnectTerminal, EditCredential,
-    EditForward, EditHost, ExpandAllGroups, FindInTerminal, FindNextInTerminal,
-    FindPreviousInTerminal, FocusSearch, InstallCliCommand, NewHostInGroup, NewLocalTerminal,
-    OpenExplorer, OpenSettings, ReconnectTerminal, RemoveAgentSkill, RenameGroup, RenameTerminal,
-    StartForward, StopForward, ToggleHostPanel, ToggleToolSidebar,
+    CheckForUpdates, ClearTerminal, CloseScope, CloseTabs, CollapseAllGroups, ConnectGroup,
+    ConnectHost, CopyCredentialPublicKey, CopyHostAddress, CopyHostId, DeleteCredential,
+    DeleteForward, DeleteGroup, DeleteHost, DisconnectTerminal, EditCredential, EditForward,
+    EditHost, ExpandAllGroups, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal,
+    FocusSearch, InstallCliCommand, NewHostInGroup, NewLocalTerminal, OpenExplorer, OpenSettings,
+    PaneContent, ReconnectTerminal, RemoveAgentSkill, RenameGroup, RenameTerminal, StartForward,
+    StopForward, ToggleHostPanel, ToggleToolSidebar,
 };
 pub use shellrs::cli::{AgentKind, IntegrationPaths};
 pub use shellrs::connection::{
@@ -235,4 +235,24 @@ pub fn in_frame<R>(
         .unwrap();
     cx.run_until_parked();
     result
+}
+
+/// Put `pane` beside `onto`, on its `placement` side, in `onto`'s tab, as
+/// dragging its tab or header there does.
+pub fn split_beside(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Root>,
+    workspace: &Entity<Workspace>,
+    pane: PaneContent,
+    onto: PaneContent,
+    placement: gpui_kit::component::Placement,
+) {
+    cx.update_window(handle.into(), |_, window, cx| {
+        let center = workspace.read(cx).center().clone();
+        center.update(cx, |center, cx| {
+            assert!(center.move_pane(pane, onto, placement, window, cx));
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
 }

@@ -47,7 +47,7 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 - Each tab shows the SSH round-trip latency live.
 - Find (smart case) and local clear; configurable font, size and line height.
 - ZMODEM: `rz` and `sz` upload and download files right in the terminal, over SSH, Telnet or a serial line; drop files on a terminal to upload them.
-- Drag tabs into side-by-side or stacked splits to watch a terminal and SFTP together.
+- Split tabs: drag a tab into another to put terminals, SFTP and editors side by side or stacked; the compose pane sends to the current terminal, every terminal in the tab, or terminals you pick across tabs.
 
 **Right sidebar tools**
 
@@ -102,7 +102,7 @@ Hosts, groups, credentials and forwarding rules live in a local SQLite database.
 
 <p align="center">
   <img src="docs/screenshots/en/split.png" alt="A split view: a remote terminal on top and SFTP for the same host below"><br>
-  <em>Dock splits: a remote terminal and SFTP stacked in one window</em>
+  <em>A split tab: a remote terminal and SFTP stacked</em>
 </p>
 
 <p align="center">
@@ -142,7 +142,7 @@ Once installed, ShellRS keeps itself up to date: it checks, downloads and verifi
 2. Double-click a host to open a terminal. On the first connection you're asked to confirm the host key.
 3. Right-click a host and choose "Open SFTP", or click "SFTP" at the right of the terminal's tab bar. Drag files between the two panes to transfer them.
 4. The three icons after "ShellRS" in the title bar switch the sidebar between hosts, port forwards and credentials.
-5. ⌘T (Ctrl+T) opens a local terminal. Drag a tab to the top, bottom, left or right edge of the tab area to split it.
+5. ⌘T (Ctrl+T) opens a local terminal. Drag a tab to the top, bottom, left or right edge of a pane in another tab to split it.
 
 ## For AI agents
 

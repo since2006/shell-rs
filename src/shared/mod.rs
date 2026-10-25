@@ -1,5 +1,6 @@
 //! Small presentation pieces shared by more than one feature.
 
+mod center_pane;
 mod closable_tab;
 mod command_line;
 mod detail_row;
@@ -14,6 +15,7 @@ mod segmented_control;
 mod tab_menu;
 mod tint;
 
+pub use center_pane::CenterPane;
 pub use closable_tab::ClosableTabTitle;
 pub use command_line::{command_tooltip, one_line};
 pub use detail_row::detail_row;

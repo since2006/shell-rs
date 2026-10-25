@@ -4,13 +4,12 @@
 
 use std::rc::Rc;
 
-use gpui_kit::component::dock::{DockPlacement, panel_handle};
 use gpui_kit::*;
 
 use super::Workspace;
 use super::front::follow_focus;
 use crate::analytics::Counter;
-use crate::app::{CenterTab, CloseEditor, EditorAction, EditorCommand, EditorShortcut};
+use crate::app::{CloseEditor, EditorAction, EditorCommand, EditorShortcut, PaneContent};
 use crate::editor::{EditorId, EditorKey, EditorPanel, EditorPanelEvent, EditorSource};
 use crate::explorer::{ExplorerId, FileLocation};
 use crate::i18n::{t, tn};
@@ -50,8 +49,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let group = editor.read(cx).tab_group();
-        self.activate_tab(group, editor.entity_id(), window, cx);
+        let id = editor.read(cx).id();
+        self.activate_pane(PaneContent::Editor(id), window, cx);
         let focus = editor.read(cx).state().read(cx).focus_handle(cx);
         window.focus(&focus, cx);
     }
@@ -98,16 +97,10 @@ impl Workspace {
         self._subscriptions.push(subscription);
         let focus = editor.read(cx).focus_handle(cx);
         self._subscriptions
-            .push(follow_focus(CenterTab::Editor(id), &focus, window, cx));
+            .push(follow_focus(PaneContent::Editor(id), &focus, window, cx));
         self.editors.insert(id, editor.clone());
-        self.dock_area.update(cx, |area, cx| {
-            area.add_panel_view(
-                panel_handle(editor),
-                DockPlacement::Center,
-                None,
-                window,
-                cx,
-            );
+        self.center.update(cx, |center, cx| {
+            center.open(PaneContent::Editor(id), editor, window, cx)
         });
     }
 
@@ -120,18 +113,18 @@ impl Workspace {
     ) {
         match event {
             EditorPanelEvent::Activated(id) => {
-                self.set_active_tab(Some(CenterTab::Editor(*id)), window, cx);
+                self.set_active_pane(Some(PaneContent::Editor(*id)), window, cx);
                 cx.notify();
             }
             EditorPanelEvent::Closed(id) => {
                 self.editors.remove(id);
-                if self.active_tab == Some(CenterTab::Editor(*id)) {
-                    self.set_active_tab(None, window, cx);
+                if self.active_pane == Some(PaneContent::Editor(*id)) {
+                    self.set_active_pane(None, window, cx);
                 }
                 cx.notify();
             }
             EditorPanelEvent::Changed(id) => {
-                if self.active_tab == Some(CenterTab::Editor(*id)) {
+                if self.active_pane == Some(PaneContent::Editor(*id)) {
                     cx.notify();
                 }
             }
@@ -215,8 +208,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(editor) = self.editors.get(&id).cloned() {
-            self.dock_area
-                .update(cx, |area, cx| area.remove_panel(editor, window, cx));
+            self.remove_pane(PaneContent::Editor(id), editor, window, cx);
         }
     }
 
@@ -274,19 +266,19 @@ impl Workspace {
     /// Close several center tabs of one batch (关闭其他, 关闭全部…). Editors
     /// with changes, theirs or those of SFTP tabs and terminals' 文件 in the
     /// batch, are asked about once for all, not one dialog each.
-    pub(super) fn close_center_tabs(
+    pub(super) fn close_panes(
         &mut self,
-        tabs: Vec<CenterTab>,
+        tabs: Vec<PaneContent>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let mut editors = Vec::new();
         for tab in &tabs {
             match tab {
-                CenterTab::Editor(id) => editors.push(*id),
-                CenterTab::Explorer(id) => editors.extend(self.editors_of(*id, cx)),
+                PaneContent::Editor(id) => editors.push(*id),
+                PaneContent::Explorer(id) => editors.extend(self.editors_of(*id, cx)),
                 // A terminal's 文件 and the files it opened close with it.
-                CenterTab::Terminal(id) => {
+                PaneContent::Terminal(id) => {
                     if let Some(&sidebar) = self.file_sidebars.get(id) {
                         editors.extend(self.editors_of(sidebar, cx));
                     }
@@ -297,7 +289,7 @@ impl Workspace {
         let unsaved = self.unsaved_files(&editors, cx);
         if unsaved.is_empty() {
             for tab in tabs {
-                self.close_center_tab(tab, window, cx);
+                self.close_pane(tab, window, cx);
             }
             return;
         }
@@ -314,10 +306,10 @@ impl Workspace {
                 let _ = this.update(cx, |this, cx| {
                     for tab in tabs {
                         match tab {
-                            CenterTab::Editor(id) => this.remove_editor(id, window, cx),
-                            CenterTab::Explorer(id) => this.close_explorer(id, false, window, cx),
-                            CenterTab::Terminal(id) => this.close_terminal(id, false, window, cx),
-                            tab => this.close_center_tab(tab, window, cx),
+                            PaneContent::Editor(id) => this.remove_editor(id, window, cx),
+                            PaneContent::Explorer(id) => this.close_explorer(id, false, window, cx),
+                            PaneContent::Terminal(id) => this.close_terminal(id, false, window, cx),
+                            tab => this.close_pane(tab, window, cx),
                         }
                     }
                 });

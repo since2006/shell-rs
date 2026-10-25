@@ -26,6 +26,7 @@ struct RenameTabForm<T: RenamableTab> {
     panel: Entity<T>,
     title: Entity<InputState>,
     default: SharedString,
+    pane: bool,
 }
 
 impl<T: RenamableTab> RenameTabForm<T> {
@@ -43,16 +44,23 @@ impl<T: RenamableTab> Render for RenameTabForm<T> {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         Form::new().child(
             Field::new()
-                .label(t!("shared.rename_tab.name"))
+                .label(if self.pane {
+                    t!("shared.rename_pane.name")
+                } else {
+                    t!("shared.rename_tab.name")
+                })
                 .description(t!("shared.rename_tab.default", title = self.default))
                 .child(Input::new(&self.title).id("tab-name").small()),
         )
     }
 }
 
-/// Open the dialog that renames one tab.
+/// Open the dialog that renames one tab, or with `pane` one pane of a
+/// split tab: the same name, which the tab shows while the pane is alone in
+/// it.
 pub fn open_rename_tab_dialog<T: RenamableTab>(
     panel: Entity<T>,
+    pane: bool,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -68,10 +76,15 @@ pub fn open_rename_tab_dialog<T: RenamableTab>(
                 .default_value(current)
         }),
         default,
+        pane,
     });
     window.open_dialog(cx, move |dialog, _, _| {
         dialog
-            .title(t!("shared.rename_tab.title"))
+            .title(if pane {
+                t!("shared.rename_pane.title")
+            } else {
+                t!("shared.rename_tab.title")
+            })
             // Closed by its buttons or Escape, not by a click beside it.
             .overlay_closable(false)
             .child(form.clone())

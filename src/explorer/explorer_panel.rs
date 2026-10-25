@@ -9,8 +9,8 @@ use super::{
 use crate::app::ExplorerDispatch as _;
 use crate::{
     app::{
-        CatalogIcon, CenterTab, CloseExplorer, CopyHostAddress, ExplorerAction, ExplorerCommand,
-        OpenExplorer, RenameExplorer,
+        CatalogIcon, CloseExplorer, CopyHostAddress, ExplorerAction, ExplorerCommand, OpenExplorer,
+        PaneContent, RenameExplorer,
     },
     connection::{ConnectionPrompt, ConnectionPromptReply, Latency},
     host::{BookmarkSide, ConnectionState, Host, HostId, HostLogin, HostStore},
@@ -20,13 +20,13 @@ use crate::{
         SharedLocalDirectoryProvider, SharedSftpTransportProvider, TextFile, TransferDirection,
         TransferPhase, TransferQuestion, UploadRequest,
     },
-    shared::{ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items},
+    shared::{CenterPane, ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items},
 };
 use gpui_kit::component::{
     Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::Button,
     dialog::DialogButtonProps,
-    dock::{BasePanel, Panel, PanelEvent, TabGroup},
+    dock::{BasePanel, Panel, PanelEvent},
     menu::PopupMenu,
     notification::Notification,
     resizable::{ResizableState, h_resizable, resizable_panel, v_resizable},
@@ -95,7 +95,6 @@ pub struct ExplorerPanel {
     pub(super) dialog_open: bool,
     pub(super) dispatch: FocusHandle,
     focus_handle: FocusHandle,
-    tab_group: Option<WeakEntity<TabGroup>>,
     /// A title the user gave this tab. Lives as long as the tab, like the
     /// rest of the layout.
     custom_title: Option<SharedString>,
@@ -265,7 +264,6 @@ impl ExplorerPanel {
             dialog_open: false,
             dispatch,
             focus_handle: cx.focus_handle(),
-            tab_group: None,
             custom_title: None,
             last_remote: true,
             sidebar,
@@ -292,9 +290,6 @@ impl ExplorerPanel {
     }
     pub fn endpoint(&self) -> &str {
         &self.endpoint
-    }
-    pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
-        self.tab_group.clone()
     }
     pub fn local(&self) -> &Entity<FilePane> {
         &self.local
@@ -1011,15 +1006,16 @@ impl BasePanel for ExplorerPanel {
             cx.emit(ExplorerPanelEvent::Activated(self.id));
         }
     }
-    fn on_added_to(&mut self, group: WeakEntity<TabGroup>, _: &mut Window, _: &mut Context<Self>) {
-        self.tab_group = Some(group);
-    }
-    fn on_removed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.tab_group = None;
-        self.close(window, cx);
+}
+impl CenterPane for ExplorerPanel {
+    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        ExplorerPanel::close(self, window, cx);
     }
 }
 impl Panel for ExplorerPanel {
+    fn tab_name(&self, cx: &App) -> Option<SharedString> {
+        Some(self.tab_title(cx))
+    }
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (name, address, os) = (
             self.host.name.clone(),
@@ -1167,8 +1163,6 @@ struct TabMenu {
     /// The host is still there to open SFTP on and copy the address of.
     host_exists: bool,
     can_reconnect: bool,
-    group: Option<WeakEntity<TabGroup>>,
-    panel: EntityId,
 }
 
 impl ExplorerPanel {
@@ -1179,8 +1173,6 @@ impl ExplorerPanel {
             host_is_ip: self.host.address_is_ip(),
             host_exists: self.store.read(cx).host(self.host_id).is_some(),
             can_reconnect: self.can_reconnect(),
-            group: self.tab_group.clone(),
-            panel: cx.entity_id(),
         }
     }
 }
@@ -1196,7 +1188,13 @@ impl TabMenu {
         };
         let menu = menu
             .menu_with_icon(
-                t!("explorer.tab.rename"),
+                if crate::center::tab_place(PaneContent::Explorer(id), cx)
+                    .is_some_and(|place| place.panes > 1)
+                {
+                    t!("shared.rename_pane.menu")
+                } else {
+                    t!("explorer.tab.rename")
+                },
                 Icon::new(CatalogIcon::Pencil),
                 Box::new(RenameExplorer(id)),
             )
@@ -1219,13 +1217,7 @@ impl TabMenu {
                 !self.can_reconnect,
             )
             .separator();
-        close_tab_items(
-            menu,
-            CenterTab::Explorer(id),
-            self.group.clone(),
-            self.panel,
-            cx,
-        )
+        close_tab_items(menu, PaneContent::Explorer(id), cx)
     }
 }
 impl Render for ExplorerPanel {

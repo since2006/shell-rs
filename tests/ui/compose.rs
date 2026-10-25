@@ -26,6 +26,11 @@ struct Fixture {
 /// web-01's and staging-api's terminals, connected, web-01's in front;
 /// `shown` is whether the pane was left showing last time.
 async fn open(cx: &mut TestAppContext, shown: bool) -> Fixture {
+    open_with_height(cx, shown, None).await
+}
+
+/// As `open`, the pane last dragged to `height`.
+async fn open_with_height(cx: &mut TestAppContext, shown: bool, height: Option<f32>) -> Fixture {
     init_app(cx);
     cx.update(|cx| cx.set_reduce_motion(true));
     let web = Arc::new(FakeTerminalFactory::printing("ready-web"));
@@ -45,7 +50,10 @@ async fn open(cx: &mut TestAppContext, shown: bool) -> Fixture {
             ),
         ])));
         let mut settings = settings_store();
-        settings.update_unnotified(|settings| settings.compose_pane = shown);
+        settings.update_unnotified(|settings| {
+            settings.compose_pane = shown;
+            settings.compose_height = height;
+        });
         let view = cx.new(|cx| {
             Workspace::new_with_services(
                 cx.new(|_| seed),
@@ -229,4 +237,55 @@ async fn the_pane_goes_with_the_last_terminal_and_comes_back_with_the_next(
     in_frame(cx, handle, |window, _| {
         assert!(window.find("compose-pane").visible());
     });
+}
+
+fn pane_height(fixture: &Fixture, cx: &mut TestAppContext) -> Option<gpui_kit::Pixels> {
+    cx.read(|cx| {
+        fixture
+            .workspace
+            .read(cx)
+            .dock_area()
+            .read(cx)
+            .dock_size(gpui_kit::component::dock::DockPlacement::Bottom)
+    })
+}
+
+/// The pane opens low, out of the terminals' way; dragged taller, it keeps
+/// that height in the settings once the drag settles, and the next launch
+/// opens it so.
+#[gpui_kit::test]
+async fn the_pane_opens_low_and_keeps_the_height_it_is_dragged_to(cx: &mut TestAppContext) {
+    let fixture = open(cx, true).await;
+    assert_eq!(pane_height(&fixture, cx), Some(px(100.)));
+    cx.update_window(fixture.handle.into(), |_, window, cx| {
+        let area = fixture.workspace.read(cx).dock_area().clone();
+        area.update(cx, |area, cx| {
+            area.set_dock_size(
+                gpui_kit::component::dock::DockPlacement::Bottom,
+                px(200.),
+                window,
+                cx,
+            )
+        });
+    })
+    .unwrap();
+    cx.background_executor
+        .advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    let saved = cx.read(|cx| {
+        fixture
+            .workspace
+            .read(cx)
+            .settings()
+            .read(cx)
+            .settings()
+            .compose_height
+    });
+    assert_eq!(saved, Some(200.));
+}
+
+#[gpui_kit::test]
+async fn the_pane_opens_as_tall_as_it_was_left(cx: &mut TestAppContext) {
+    let fixture = open_with_height(cx, true, Some(180.)).await;
+    assert_eq!(pane_height(&fixture, cx), Some(px(180.)));
 }

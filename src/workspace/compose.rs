@@ -1,6 +1,6 @@
 //! 撰写窗格 in the workspace: the bottom dock holds it while it shows, and
-//! what it holds goes to the terminal in front, the one the right sidebar
-//! goes with, or to every checked terminal while 命令广播 has two.
+//! what it holds goes where `Sending` says: the current terminal, the one
+//! the right sidebar goes with, or several (命令广播).
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::dock::{DockLayout, DockPlacement, panel_handle};
@@ -9,48 +9,60 @@ use gpui_kit::*;
 
 use super::Workspace;
 use super::compose_pane::ComposeTarget;
-use super::terminal_groups::Recipient;
-use crate::app::{SendCompose, SendComposeInterrupt, SendComposeSnippet, ToggleComposePane};
+use super::sending::Recipient;
+use crate::app::{
+    SendCompose, SendComposeInterrupt, SendComposeSnippet, SendTarget, ToggleComposePane,
+};
 use crate::i18n::{join_list, t};
 use crate::terminal::{ComposePaneShown, TerminalInput};
 
-/// How tall the pane opens, title bar included: a few lines to write in.
-/// Dock geometry is an API boundary that takes `Pixels`.
-pub(super) const COMPOSE_HEIGHT: Pixels = px(160.);
-/// The lowest it can be dragged: its title bar and a line or two.
-const COMPOSE_MIN_HEIGHT: Pixels = px(96.);
+/// The lowest it can be dragged, title bar included: its title bar and a
+/// line or two, and the least a dock is kept at anyway. Dock geometry is an
+/// API boundary that takes `Pixels`.
+const COMPOSE_MIN_HEIGHT: Pixels = px(100.);
+/// How tall it opens until dragged: as low as it goes, out of the
+/// terminals' way; dragged taller, it opens so from then on.
+const COMPOSE_HEIGHT: Pixels = COMPOSE_MIN_HEIGHT;
+/// How long a dragged height settles before the settings file is written.
+const HEIGHT_SAVE_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How tall the pane opens: as last dragged, kept in the settings, but
+/// never below its lowest.
+pub(super) fn compose_height(saved: Option<f32>) -> Pixels {
+    saved.map_or(COMPOSE_HEIGHT, px).max(COMPOSE_MIN_HEIGHT)
+}
 
 impl Workspace {
     /// Where the pane sends.
     fn compose_recipients(&self, cx: &App) -> Vec<Recipient> {
-        if self.broadcast.active() {
-            return self.broadcast_recipients(cx);
-        }
-        self.tool_target(cx)
-            .and_then(|target| self.recipient(target.tab(), cx))
+        self.send_panes(cx)
             .into_iter()
+            .filter_map(|pane| self.recipient(pane, cx))
             .collect()
     }
 
-    /// Where the pane sends, as its title tells: none without a terminal
-    /// on screen.
+    /// Where the pane sends, as its title tells: the current terminal by
+    /// name, none without a terminal on screen; or how many it broadcasts
+    /// to.
     fn compose_target(&self, cx: &App) -> Option<ComposeTarget> {
-        if self.broadcast.active() {
-            return Some(ComposeTarget::Broadcast(self.broadcast.count()));
+        match self.sending.target() {
+            SendTarget::Current => {
+                let target = self.tool_target(cx)?;
+                let recipient = self.recipient(target.tab(), cx)?;
+                Some(ComposeTarget::Terminal(recipient.name))
+            }
+            SendTarget::Tab => Some(ComposeTarget::Tab(self.send_panes(cx).len())),
+            SendTarget::Selected => Some(ComposeTarget::Selected(self.send_panes(cx).len())),
         }
-        let target = self.tool_target(cx)?;
-        let recipient = self.recipient(target.tab(), cx)?;
-        Some(ComposeTarget::Terminal(recipient.name))
     }
 
-    /// Show the pane while it is switched on, or while 命令广播 sends, and
-    /// a terminal is on screen; tell it where it sends.
+    /// Show the pane while it is switched on and has somewhere to send;
+    /// tell it where it sends.
     pub(super) fn sync_compose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let target = self.compose_target(cx);
-        let wanted = self.settings().read(cx).settings().compose_pane || self.broadcast.active();
-        let show = wanted && target.is_some();
+        let show = self.settings().read(cx).settings().compose_pane && target.is_some();
         if let Some(target) = target {
-            let keys = self.broadcast.keys();
+            let keys = self.sending.keys();
             self.compose
                 .update(cx, |pane, cx| pane.set_target(target, keys, cx));
         }
@@ -93,19 +105,31 @@ impl Workspace {
         }
     }
 
-    /// Undo a drag that took the pane below its lowest. Runs whenever the
-    /// dock area changes, as the right sidebar's width is held.
+    /// Undo a drag that took the pane below its lowest, and keep the
+    /// height it was dragged to for the next launch, once the drag
+    /// settles. Runs whenever the dock area changes, as the right
+    /// sidebar's width is held.
     pub(super) fn hold_compose_height(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let lower = self
-            .dock_area
-            .read(cx)
-            .dock_size(DockPlacement::Bottom)
-            .is_some_and(|height| height < COMPOSE_MIN_HEIGHT);
-        if lower {
+        let Some(height) = self.dock_area.read(cx).dock_size(DockPlacement::Bottom) else {
+            return;
+        };
+        if height < COMPOSE_MIN_HEIGHT {
             self.dock_area.update(cx, |area, cx| {
                 area.set_dock_size(DockPlacement::Bottom, COMPOSE_MIN_HEIGHT, window, cx);
             });
+            return;
         }
+        if height == self.compose_height {
+            return;
+        }
+        self.compose_height = height;
+        let settings = self.settings().clone();
+        self.compose_height_save = Some(cx.spawn(async move |_, cx| {
+            cx.background_executor().timer(HEIGHT_SAVE_DELAY).await;
+            settings.update(cx, |settings, cx| {
+                settings.update(|s| s.compose_height = Some(f32::from(height)), cx)
+            });
+        }));
     }
 
     /// Type in the pane once it is drawn. A tab the dock moved takes the
@@ -132,7 +156,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.sync_broadcast(cx);
+        self.sync_sending(cx);
         let mut sent = false;
         // Why not, with the terminals it applies to, in the order met.
         let mut refused: Vec<(SharedString, Vec<SharedString>)> = Vec::new();
@@ -159,18 +183,15 @@ impl Workspace {
         sent
     }
 
-    /// Show or hide the pane. While 命令广播 sends it stays, as the
-    /// broadcast's command bar: the keyboard goes there instead.
+    /// Show or hide the pane, whatever it sends to. Hidden, it goes back to
+    /// the current terminal, keys unshared: it opens again sending to one
+    /// terminal, never to several left chosen and forgotten.
     pub(super) fn on_toggle_compose_pane(
         &mut self,
         _: &ToggleComposePane,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.broadcast.active() {
-            self.focus_compose_soon(window, cx);
-            return;
-        }
         // Nothing to write to: no terminal on screen.
         if self.compose_target(cx).is_none() {
             return;
@@ -179,6 +200,10 @@ impl Workspace {
         self.settings().update(cx, |settings, cx| {
             settings.update(|s| s.compose_pane = open, cx)
         });
+        if !open {
+            self.sending.send_to_current();
+            self.sync_sending(cx);
+        }
         self.sync_compose(window, cx);
         if open {
             self.focus_compose_soon(window, cx);
@@ -221,7 +246,7 @@ impl Workspace {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.sync_broadcast(cx);
+        self.sync_sending(cx);
         for recipient in self.compose_recipients(cx) {
             recipient.view.update(cx, |view, cx| {
                 view.receive_input(&TerminalInput::Bytes(vec![0x03]), cx);

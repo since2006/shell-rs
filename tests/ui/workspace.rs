@@ -2,10 +2,7 @@
 //! the title bar and dialogs in general.
 
 use crate::support::*;
-use gpui_kit::component::{
-    Placement,
-    dock::{DockPlacement, InsertTarget, PanelId},
-};
+use gpui_kit::component::Placement;
 use shellrs::app::Shortcut;
 
 /// Bind the close-tab shortcut to a key the terminal does not claim.
@@ -71,6 +68,63 @@ fn tab_close_button_closes_the_terminal_and_disconnects(cx: &mut TestAppContext)
         let workspace = workspace.read(cx);
         assert!(workspace.terminal(HostId(DB_01), cx).is_none());
         assert!(!workspace.has_connection(HostId(DB_01), cx));
+    });
+}
+
+/// A pane moved into another tab and out to one of its own again is never
+/// closed on the way: each tab lays its panes out in a dock area of its own,
+/// and leaving one is not closing. Only closing it ends its connection.
+#[gpui_kit::test]
+async fn a_pane_moved_between_tabs_stays_connected_until_it_is_closed(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let web = PaneContent::Terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL));
+    let staging = PaneContent::Terminal(RemoteTerminalId(INITIAL_STAGING_TERMINAL));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        workspace.read(cx).has_connection(HostId(WEB_01), cx)
+    })
+    .await;
+    let connected = |cx: &mut TestAppContext| {
+        cx.read(|cx| {
+            let workspace = workspace.read(cx);
+            workspace
+                .remote_terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))
+                .is_some()
+                && workspace.has_connection(HostId(WEB_01), cx)
+        })
+    };
+
+    split_beside(cx, handle, &workspace, web, staging, Placement::Left);
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find(("terminal", INITIAL_WEB_TERMINAL)).visible());
+        assert!(
+            window
+                .find(("terminal", INITIAL_STAGING_TERMINAL))
+                .visible()
+        );
+    });
+    assert!(connected(cx));
+    let tabs = cx.read(|cx| workspace.read(cx).center().read(cx).tab_ids().len());
+    assert_eq!(tabs, 1);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        let center = workspace.read(cx).center().clone();
+        center.update(cx, |center, cx| center.split_off(web, 0, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(connected(cx));
+
+    in_frame(cx, handle, |window, cx| {
+        window.click(("close-terminal", INITIAL_WEB_TERMINAL), cx)
+    });
+    cx.read(|cx| {
+        let workspace = workspace.read(cx);
+        assert!(
+            workspace
+                .remote_terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))
+                .is_none()
+        );
+        assert!(!workspace.has_connection(HostId(WEB_01), cx));
     });
 }
 
@@ -695,7 +749,7 @@ fn batch_close_commands_take_the_tabs_around_the_clicked_one(cx: &mut TestAppCon
         cx.run_until_parked();
     };
     let close = |tab, scope| Box::new(CloseTabs { tab, scope });
-    let terminal = |id| CenterTab::Terminal(RemoteTerminalId(id));
+    let terminal = |id| PaneContent::Terminal(RemoteTerminalId(id));
     let open_terminals = |cx: &mut TestAppContext| {
         cx.update(|cx| {
             let workspace = workspace.read(cx);
@@ -1253,36 +1307,16 @@ fn with_the_center_split_the_tool_sidebar_follows_the_focus(cx: &mut TestAppCont
         assert_eq!(window.find("tool-sidebar-host").label(), Some("web-01"));
     });
 
-    // staging-api's terminal to a group of its own on the right.
-    cx.update_window(handle.into(), |_, window, cx| {
-        let panel = PanelId::from(
-            workspace
-                .read(cx)
-                .remote_terminal(RemoteTerminalId(INITIAL_STAGING_TERMINAL))
-                .expect("staging-api's terminal")
-                .entity_id(),
-        );
-        let area = workspace.read(cx).dock_area().clone();
-        area.update(cx, |area, cx| {
-            let node = area
-                .layout(DockPlacement::Center)
-                .and_then(|tree| tree.find_panel_node(panel))
-                .expect("in the center");
-            // As a drag to the group's right edge does.
-            area.move_panel(
-                panel,
-                InsertTarget::Split {
-                    node,
-                    placement: Placement::Right,
-                    size: None,
-                },
-                window,
-                cx,
-            );
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
+    // staging-api's terminal on the right of web-01's, as a drag to its
+    // right edge does.
+    split_beside(
+        cx,
+        handle,
+        &workspace,
+        PaneContent::Terminal(RemoteTerminalId(INITIAL_STAGING_TERMINAL)),
+        PaneContent::Terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL)),
+        Placement::Right,
+    );
 
     let front = |cx: &mut TestAppContext| {
         in_frame(cx, handle, |window, _| {
@@ -1314,14 +1348,15 @@ fn with_the_center_split_the_tool_sidebar_follows_the_focus(cx: &mut TestAppCont
     }
 }
 
-/// A tab dragged over the terminal's group, shown in front of it, takes the
-/// sidebar away with the terminal: neither is on screen any more.
+/// An SFTP pane beside a terminal leaves the sidebar there; split off into
+/// a tab of its own, in front, it takes the sidebar away with the terminal:
+/// no terminal is on screen any more.
 #[gpui_kit::test]
-async fn a_tab_dropped_over_the_terminal_takes_the_sidebar_with_it(cx: &mut TestAppContext) {
+async fn a_tab_without_a_terminal_in_front_takes_the_sidebar_away(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace_with_sftp(cx, Arc::new(FakeSftpProvider::default()));
     cx.run_until_parked();
     // Open on both hosts' terminals: either may be the one beside the SFTP
-    // tab.
+    // pane.
     for terminal in [INITIAL_STAGING_TERMINAL, INITIAL_WEB_TERMINAL] {
         in_frame(cx, handle, |window, cx| {
             window.click(("terminal-tab", terminal), cx)
@@ -1329,60 +1364,7 @@ async fn a_tab_dropped_over_the_terminal_takes_the_sidebar_with_it(cx: &mut Test
         in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
     }
     open_test_explorer(cx, handle).await;
-
-    let explorer = cx.update(|cx| {
-        PanelId::from(
-            workspace
-                .read(cx)
-                .explorer(ExplorerId(SFTP_TAB))
-                .expect("the SFTP tab")
-                .entity_id(),
-        )
-    });
-    let terminal = cx.update(|cx| {
-        PanelId::from(
-            workspace
-                .read(cx)
-                .remote_terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))
-                .expect("web-01's terminal")
-                .entity_id(),
-        )
-    });
-    let move_explorer = |into_group: bool, cx: &mut TestAppContext| {
-        cx.update_window(handle.into(), |_, window, cx| {
-            let area = workspace.read(cx).dock_area().clone();
-            area.update(cx, |area, cx| {
-                let tree = area.layout(DockPlacement::Center).expect("the center");
-                let node = tree.find_panel_node(explorer).expect("in the center");
-                if into_group {
-                    let target = tree.find_panel_node(terminal).expect("the terminals");
-                    area.move_panel(
-                        explorer,
-                        InsertTarget::Tabs {
-                            node: target,
-                            ix: None,
-                            activate: true,
-                        },
-                        window,
-                        cx,
-                    );
-                } else {
-                    area.move_panel(
-                        explorer,
-                        InsertTarget::Split {
-                            node,
-                            placement: Placement::Bottom,
-                            size: None,
-                        },
-                        window,
-                        cx,
-                    );
-                }
-            });
-        })
-        .unwrap();
-        cx.run_until_parked();
-    };
+    let explorer = PaneContent::Explorer(ExplorerId(SFTP_TAB));
     let shown = |cx: &mut TestAppContext| {
         in_frame(cx, handle, |window, _| {
             (
@@ -1392,15 +1374,60 @@ async fn a_tab_dropped_over_the_terminal_takes_the_sidebar_with_it(cx: &mut Test
         })
     };
 
-    // Below the terminals: a terminal shows, and so do the tools.
-    move_explorer(false, cx);
+    // Below web-01's terminal: a terminal shows, and so do the tools.
+    split_beside(
+        cx,
+        handle,
+        &workspace,
+        explorer,
+        PaneContent::Terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL)),
+        Placement::Bottom,
+    );
     assert_eq!(shown(cx), (true, true));
-    // Back into their group, in front, as a drop leaves it: no terminal
-    // shows.
-    move_explorer(true, cx);
+    // A tab of its own again, in front: no terminal shows.
+    cx.update_window(handle.into(), |_, window, cx| {
+        let center = workspace.read(cx).center().clone();
+        center.update(cx, |center, cx| center.split_off(explorer, 0, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
     assert_eq!(shown(cx), (false, false));
-    let front = cx.update(|cx| workspace.read(cx).active_tab());
-    assert_eq!(front, Some(CenterTab::Explorer(ExplorerId(SFTP_TAB))));
+    let front = cx.update(|cx| workspace.read(cx).active_pane());
+    assert_eq!(front, Some(explorer));
+}
+
+/// An SFTP pane in front, beside a terminal in its tab: the sidebar stays
+/// with that terminal, while the status bar tells the SFTP pane's own
+/// connection.
+#[gpui_kit::test]
+async fn an_sftp_pane_in_front_leaves_the_sidebar_with_its_tabs_terminal(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace_with_sftp(cx, Arc::new(FakeSftpProvider::default()));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| window.activate_window());
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
+    open_test_explorer(cx, handle).await;
+    let explorer = PaneContent::Explorer(ExplorerId(SFTP_TAB));
+    split_beside(
+        cx,
+        handle,
+        &workspace,
+        explorer,
+        PaneContent::Terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL)),
+        Placement::Bottom,
+    );
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-pane", SFTP_TAB), cx)
+    });
+    let front = cx.update(|cx| workspace.read(cx).active_pane());
+    assert_eq!(front, Some(explorer));
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("tool-sidebar-host").label(), Some("web-01"));
+        let status = window.find("status-connection").label().map(str::to_string);
+        assert!(status.is_some_and(|status| status.ends_with(" db-01")));
+    });
 }
 
 #[gpui_kit::test]

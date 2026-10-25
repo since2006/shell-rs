@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Sizable as _,
     button::Button,
-    dock::{BasePanel, Panel, PanelEvent, TabGroup},
+    dock::{BasePanel, Panel, PanelEvent},
     h_flex,
     menu::PopupMenu,
     v_flex,
@@ -13,9 +13,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use regex::Regex;
 
-use crate::app::{CatalogIcon, CenterTab, CloseLocalTerminal, RestartLocalTerminal};
+use crate::app::{CatalogIcon, CloseLocalTerminal, PaneContent, RestartLocalTerminal};
 use crate::i18n::t;
-use crate::shared::{ClosableTabTitle, close_tab_items};
+use crate::shared::{CenterPane, ClosableTabTitle, close_tab_items};
 
 use super::{
     LocalTerminalId, SharedTerminalTransportFactory, TerminalEvent, TerminalLifecycle,
@@ -53,8 +53,6 @@ pub struct LocalTerminalPanel {
     /// Its name in 项目, for a terminal kept there.
     name: Option<SavedName>,
     terminal: Entity<TerminalView>,
-    tab_group: Option<WeakEntity<TabGroup>>,
-    broadcast: Option<super::BroadcastSelection>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -108,8 +106,6 @@ impl LocalTerminalPanel {
             id,
             name,
             terminal,
-            tab_group: None,
-            broadcast: None,
             _subscriptions: subscriptions,
         }
     }
@@ -122,10 +118,6 @@ impl LocalTerminalPanel {
             .map_or_else(|| default_title(self.id), |name| name.name.clone())
     }
 
-    pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
-        self.tab_group.clone()
-    }
-
     pub fn terminal(&self) -> &Entity<TerminalView> {
         &self.terminal
     }
@@ -133,17 +125,6 @@ impl LocalTerminalPanel {
     /// What the user chose for the transfer `rz` or `sz` started.
     pub fn zmodem_reply(&self, reply: ZmodemReply, cx: &App) {
         self.terminal.read(cx).zmodem_reply(reply, cx);
-    }
-
-    pub(crate) fn set_broadcast_selection(
-        &mut self,
-        selection: Option<super::BroadcastSelection>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.broadcast != selection {
-            self.broadcast = selection;
-            cx.notify();
-        }
     }
 
     pub fn status(&self, cx: &App) -> TerminalStatus {
@@ -222,13 +203,10 @@ impl BasePanel for LocalTerminalPanel {
             cx.emit(LocalTerminalPanelEvent::Activated(self.id));
         }
     }
+}
 
-    fn on_added_to(&mut self, group: WeakEntity<TabGroup>, _: &mut Window, _: &mut Context<Self>) {
-        self.tab_group = Some(group);
-    }
-
-    fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.tab_group = None;
+impl CenterPane for LocalTerminalPanel {
+    fn close(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self.terminal
             .update(cx, |terminal, cx| terminal.shutdown(cx));
         cx.emit(LocalTerminalPanelEvent::Closed(self.id));
@@ -236,14 +214,13 @@ impl BasePanel for LocalTerminalPanel {
 }
 
 impl Panel for LocalTerminalPanel {
+    fn tab_name(&self, cx: &App) -> Option<SharedString> {
+        Some(self.display_title(cx))
+    }
+
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (id, group, panel) = (self.id, self.tab_group.clone(), cx.entity_id());
-        let mark = super::BroadcastSelection::lead(
-            self.broadcast.clone(),
-            CenterTab::LocalTerminal(id),
-            self.display_title(cx),
-            Icon::new(CatalogIcon::Terminal).small(),
-        );
+        let id = self.id;
+        let mark = Icon::new(CatalogIcon::Terminal).small();
         ClosableTabTitle::new(
             ("local-terminal-tab", self.id.0),
             mark,
@@ -253,7 +230,7 @@ impl Panel for LocalTerminalPanel {
             ("close-local-terminal", self.id.0),
             Box::new(CloseLocalTerminal(self.id)),
         )
-        .context_menu(move |menu, _, cx| tab_menu(menu, id, group.clone(), panel, cx))
+        .context_menu(move |menu, _, cx| tab_menu(menu, id, cx))
     }
 
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
@@ -274,7 +251,7 @@ impl Panel for LocalTerminalPanel {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        tab_menu(menu, self.id, self.tab_group.clone(), cx.entity_id(), cx)
+        tab_menu(menu, self.id, cx)
     }
 
     fn inner_padding(&self, _: &App) -> bool {
@@ -370,13 +347,7 @@ fn default_title(id: LocalTerminalId) -> SharedString {
 
 /// The commands of a local terminal tab, shared by its context menu and the
 /// tab bar's 「…」 menu.
-fn tab_menu(
-    menu: PopupMenu,
-    id: LocalTerminalId,
-    group: Option<WeakEntity<TabGroup>>,
-    panel: EntityId,
-    cx: &App,
-) -> PopupMenu {
+fn tab_menu(menu: PopupMenu, id: LocalTerminalId, cx: &App) -> PopupMenu {
     let menu = menu
         .menu_with_icon(
             t!("terminal.local.restart"),
@@ -384,7 +355,7 @@ fn tab_menu(
             Box::new(RestartLocalTerminal(id)),
         )
         .separator();
-    close_tab_items(menu, CenterTab::LocalTerminal(id), group, panel, cx)
+    close_tab_items(menu, PaneContent::LocalTerminal(id), cx)
 }
 
 #[cfg(test)]

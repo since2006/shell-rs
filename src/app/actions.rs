@@ -43,17 +43,17 @@ gpui_kit::actions!(
         ImportKnownHosts,
         /// Open a new local login-shell terminal.
         NewLocalTerminal,
-        /// Start 命令广播, which turns terminal tab marks into checkboxes,
-        /// or end it.
-        ToggleTerminalBroadcast,
+        /// Choose the terminals 撰写窗格 sends to: 选定的终端…, and a
+        /// terminal's 发送到多个终端….
+        ChooseComposeTerminals,
         /// Show or hide 撰写窗格, the compose pane below the terminals.
         ToggleComposePane,
-        /// Run what 撰写窗格 holds in the terminal in front, or in every
-        /// terminal of 命令广播.
+        /// Run what 撰写窗格 holds wherever it sends.
         SendCompose,
         /// Send Ctrl+C where 撰写窗格 sends.
         SendComposeInterrupt,
-        /// Whether typing in one terminal of 命令广播 goes to the others too.
+        /// Whether typing in one terminal 撰写窗格 broadcasts to goes to
+        /// the others too.
         ToggleBroadcastKeys,
         /// Copy the active terminal selection.
         CopyTerminal,
@@ -495,9 +495,9 @@ pub struct EnterCommand {
     pub run: bool,
 }
 
-/// One tab of the center area, by the identity of what it shows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CenterTab {
+/// What one pane of the center shows, by its identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PaneContent {
     Terminal(RemoteTerminalId),
     Explorer(ExplorerId),
     LocalTerminal(LocalTerminalId),
@@ -506,27 +506,29 @@ pub enum CenterTab {
     Editor(EditorId),
 }
 
-/// Select one connected terminal for interactive input broadcast.
+/// Where 撰写窗格 sends.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SendTarget {
+    /// The current terminal: the one in front, or the one last used in the
+    /// tab in front.
+    #[default]
+    Current,
+    /// Every connected terminal of the tab in front: 命令广播 to a split.
+    Tab,
+    /// The terminals chosen by hand, in any tabs: 命令广播.
+    Selected,
+}
+
+/// Send what 撰写窗格 holds to `0` from now on.
 #[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = shellrs, no_json)]
-pub struct SetBroadcastTarget {
-    tab: CenterTab,
-    selected: bool,
-}
+pub struct SetSendTarget(pub SendTarget);
 
-impl SetBroadcastTarget {
-    pub fn new(tab: CenterTab, selected: bool) -> Self {
-        Self { tab, selected }
-    }
-
-    pub fn tab(&self) -> CenterTab {
-        self.tab
-    }
-
-    pub fn is_selected(&self) -> bool {
-        self.selected
-    }
-}
+/// The terminals chosen for 撰写窗格, as the chooser leaves them: it sends
+/// to these from now on, or with none to the current terminal again.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct SetComposeTerminals(pub Vec<PaneContent>);
 
 /// A tool of the right sidebar, in the order of the switch beside it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -661,8 +663,70 @@ impl CloseScope {
 #[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = shellrs, no_json)]
 pub struct CloseTabs {
-    pub tab: CenterTab,
+    pub tab: PaneContent,
     pub scope: CloseScope,
+}
+
+/// Put `pane` beside `onto`, on its `placement` side, in `onto`'s tab: a
+/// pane header dropped on the edge of a pane, or on another tab.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct MovePane {
+    pub pane: PaneContent,
+    pub onto: PaneContent,
+    pub placement: gpui_kit::component::Placement,
+}
+
+/// Drop the one pane of tab `from` beside `onto`: a tab dropped on the edge
+/// of a pane in another tab.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct MergeTab {
+    pub from: crate::center::TabId,
+    pub onto: PaneContent,
+    pub placement: gpui_kit::component::Placement,
+}
+
+/// Give `pane` a tab of its own: 移到新标签, or a pane header dropped on the
+/// tab bar. At `ix` among the tabs, or right after its tab.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct MovePaneToNewTab {
+    pub pane: PaneContent,
+    pub ix: Option<usize>,
+}
+
+/// Bring a tab to the front: a row of 所有标签.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct ActivateTab(pub crate::center::TabId);
+
+/// Bring a pane to the front, its tab with it: a pane's row of 所有标签.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct ActivatePane(pub PaneContent);
+
+/// Close a tab and every pane in it, asking first when it holds several.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct CloseTab(pub crate::center::TabId);
+
+/// Name a tab of several panes by hand.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct RenameTab(pub crate::center::TabId);
+
+/// 放大窗格: fill the pane's tab with it, or back to the tab's layout.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct ZoomPane(pub PaneContent);
+
+/// Move a tab to `ix` among the tabs: a tab dropped on another.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct MoveTab {
+    pub tab: crate::center::TabId,
+    pub ix: usize,
 }
 
 /// Commands shared by explorer controls, drops, dialogs and keyboard bindings.

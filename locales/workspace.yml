@@ -1,30 +1,53 @@
 _version: 2
 
-workspace.broadcast.title:
-  zh-CN: 命令广播
-  en: Broadcast input
-workspace.broadcast.active:
-  zh-CN: "广播中 · %{count} 个终端"
-  en: "Broadcasting · %{count} terminals"
-workspace.broadcast.choose:
-  zh-CN: 命令广播 · 勾选至少两个终端
-  en: Broadcast input · Check at least two terminals
-workspace.broadcast.target:
-  zh-CN: "将“%{name}”加入命令广播"
-  en: "Include “%{name}” in input broadcast"
-workspace.broadcast.unavailable:
-  zh-CN: 终端连接后可加入命令广播
-  en: Connect this terminal to include it in input broadcast
-workspace.broadcast.end:
-  zh-CN: 结束命令广播
-  en: Stop broadcasting
-# 撰写窗格 below the terminals, the broadcast's command bar while it is on.
+# 撰写窗格 below the terminals, the broadcast's command bar while it sends
+# to several.
 workspace.compose.title:
   zh-CN: 撰写窗格
   en: Compose
-workspace.compose.broadcast_target:
-  zh-CN: "勾选的 %{count} 个终端"
-  en: "%{count} checked terminals"
+workspace.compose.tab_target.one:
+  en: "%{count} terminal in this tab"
+workspace.compose.tab_target.other:
+  zh-CN: "当前标签的 %{count} 个终端"
+  en: "%{count} terminals in this tab"
+workspace.compose.selected_target.one:
+  en: "%{count} selected terminal"
+workspace.compose.selected_target.other:
+  zh-CN: "选定的 %{count} 个终端"
+  en: "%{count} selected terminals"
+workspace.compose.toggle:
+  zh-CN: 显示或隐藏撰写窗格
+  en: Show or hide the compose pane
+workspace.compose.target.tooltip:
+  zh-CN: 选择发送到哪里
+  en: Choose where to send
+workspace.compose.target.current:
+  zh-CN: 当前终端
+  en: Current terminal
+workspace.compose.target.tab:
+  zh-CN: 当前标签的终端
+  en: Terminals in this tab
+workspace.compose.target.selected:
+  zh-CN: 选定的终端…
+  en: Selected terminals…
+workspace.compose.choose.title:
+  zh-CN: 选择发送到的终端
+  en: Choose terminals to send to
+workspace.compose.choose.search:
+  zh-CN: 搜索终端或标签
+  en: Search terminals or tabs
+workspace.compose.choose.all:
+  zh-CN: 全选
+  en: Select all
+workspace.compose.choose.none:
+  zh-CN: 没有开着的终端
+  en: No terminals open
+workspace.compose.choose.no_match:
+  zh-CN: 没有符合条件的终端
+  en: No matching terminals
+workspace.compose.choose.ok:
+  zh-CN: 发送到选定的终端
+  en: Send to selected
 workspace.compose.placeholder:
   zh-CN: 输入命令，回车执行，Shift+Enter 换行
   en: Type commands. Enter runs them, Shift+Enter starts a new line
@@ -41,8 +64,8 @@ workspace.compose.keys:
   zh-CN: 同步按键
   en: Sync keys
 workspace.compose.keys_tooltip:
-  zh-CN: 在任一勾选的终端里打字时，同时发给其他勾选的终端
-  en: Typing in one checked terminal goes to the others too
+  zh-CN: 在其中任一终端里打字时，同时发给其他终端
+  en: Typing in one of these terminals goes to the others too
 workspace.compose.send:
   zh-CN: 发送
   en: Send

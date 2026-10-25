@@ -1,37 +1,18 @@
-//! Which center tab is in front. Without a split it is the tab shown; with
-//! the center split, several show at once and the one in front is the one
-//! the user works in: the focus decides, not only a tab switch. The status
-//! bar and the right sidebar follow it.
+//! Which pane is in front. A tab holding one pane shows just it; a tab
+//! split into several shows them all, and the one in front is the one the
+//! user works in: the focus decides, not only a tab switch. The status bar
+//! and the right sidebar follow it.
 
-use gpui_kit::component::dock::{DockPlacement, PaneRef, PanelId};
 use gpui_kit::*;
 
-use crate::app::CenterTab;
+use crate::app::PaneContent;
 
 use super::Workspace;
 
 impl Workspace {
-    /// The center tabs on screen: the tab each group shows, or only the
-    /// zoomed group's.
-    pub(super) fn visible_center_tabs(&self, cx: &App) -> Vec<CenterTab> {
-        let area = self.dock_area.read(cx);
-        let Some(tree) = area.layout(DockPlacement::Center) else {
-            return Vec::new();
-        };
-        let zoomed = area.zoomed_group();
-        let mut shown: Vec<PanelId> = Vec::new();
-        tree.root().walk(&mut |node| {
-            if let PaneRef::Tabs { panels, active_ix } = node.kind()
-                && zoomed.is_none_or(|zoomed| zoomed == node.id())
-                && let Some(panel) = panels.get(active_ix).or(panels.last())
-            {
-                shown.push(*panel);
-            }
-        });
-        shown
-            .into_iter()
-            .filter_map(|panel| self.center_tab_for_panel(panel))
-            .collect()
+    /// The panes on screen: the tab in front's, or only its zoomed one.
+    pub(super) fn visible_panes(&self, cx: &App) -> Vec<PaneContent> {
+        self.center.read(cx).visible_panes(cx)
     }
 
     /// The focus went into `tab`: in a split, clicking into the other half
@@ -39,43 +20,45 @@ impl Workspace {
     /// Does what the tab's own activation does.
     pub(super) fn focus_entered(
         &mut self,
-        tab: CenterTab,
+        tab: PaneContent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.active_tab == Some(tab) {
+        self.center
+            .update(cx, |center, cx| center.focus_entered(tab, cx));
+        if self.active_pane == Some(tab) {
             return;
         }
         let open = match tab {
-            CenterTab::Terminal(id) => self.terminals.contains_key(&id),
-            CenterTab::Explorer(id) => self.explorers.contains_key(&id),
-            CenterTab::Editor(id) => self.editors.contains_key(&id),
-            CenterTab::LocalTerminal(_) | CenterTab::Settings => true,
+            PaneContent::Terminal(id) => self.terminals.contains_key(&id),
+            PaneContent::Explorer(id) => self.explorers.contains_key(&id),
+            PaneContent::Editor(id) => self.editors.contains_key(&id),
+            PaneContent::LocalTerminal(_) | PaneContent::Settings => true,
         };
         if !open {
             return;
         }
-        self.set_active_tab(Some(tab), window, cx);
+        self.set_active_pane(Some(tab), window, cx);
         cx.notify();
     }
 
-    /// After the center's layout changed (a tab dragged into another group,
-    /// a group closed): a tab in front that no longer shows gives way to the
-    /// one with the focus, or to one that shows; then the right sidebar
+    /// After the center changed (another tab in front, a pane closed or
+    /// moved): a pane in front that no longer shows gives way to the one
+    /// with the focus, or to its tab's current pane; then the right sidebar
     /// follows.
     pub(super) fn sync_front(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let visible = self.visible_center_tabs(cx);
-        if let Some(tab) = self.active_tab
+        let visible = self.visible_panes(cx);
+        if let Some(tab) = self.active_pane
             && !visible.contains(&tab)
         {
-            self.active_tab = visible
+            self.active_pane = visible
                 .iter()
                 .copied()
                 .find(|tab| {
-                    self.tab_focus_handle(*tab, cx)
+                    self.pane_focus_handle(*tab, cx)
                         .is_some_and(|focus| focus.contains_focused(window, cx))
                 })
-                .or_else(|| visible.first().copied());
+                .or_else(|| self.center.read(cx).current_pane());
         }
         self.sync_tool_sidebar(window, cx);
     }
@@ -84,7 +67,7 @@ impl Workspace {
 /// Bring `tab` to the front whenever the focus goes into it. Registered with
 /// every center tab, held for as long as the workspace.
 pub(super) fn follow_focus(
-    tab: CenterTab,
+    tab: PaneContent,
     focus: &FocusHandle,
     window: &mut Window,
     cx: &mut Context<Workspace>,

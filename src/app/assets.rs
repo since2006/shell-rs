@@ -93,7 +93,8 @@ icon_assets!(
         FileSearch,
         SquareDashedText,
         CopyPlus,
-        CloudSync
+        CloudSync,
+        LayoutGrid
     ]
 );
 

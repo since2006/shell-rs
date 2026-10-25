@@ -8,6 +8,7 @@
 mod support;
 
 mod analytics;
+mod broadcast;
 mod cli;
 mod compose;
 mod connection;
@@ -33,9 +34,10 @@ mod sftp;
 mod shortcuts;
 mod snippets;
 mod sync;
+mod tabs;
 mod telnet;
 mod terminal;
-mod terminal_groups;
+
 mod tmux;
 mod transfer;
 mod update;

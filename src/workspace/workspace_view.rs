@@ -10,7 +10,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Root, Sizable as _, TitleBar, WindowExt as _,
     button::ButtonVariant,
     dialog::DialogButtonProps,
-    dock::{DockArea, DockEvent, DockLayout, DockPlacement, PanelId, TabGroup, panel_handle},
+    dock::{DockArea, DockLayout, DockPlacement, panel_handle},
     form::{Field, Form},
     h_flex,
     input::{Input, InputContentType, InputState},
@@ -25,19 +25,20 @@ use super::front::follow_focus;
 use crate::analytics::{Analytics, AnalyticsServices, Counter};
 use crate::app::ExplorerDispatch as _;
 use crate::app::{
-    CenterTab, ClearTerminal, CloseActiveTab, CloseEditor, CloseExplorer, CloseLocalTerminal,
-    CloseSettings, CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectHost,
-    CopyAgentSkill, CopyHostAddress, CopyHostId, CopyTerminal, DeleteGroup, DeleteHost,
-    DisconnectTerminal, DismissTerminalFind, DuplicateHost, EditHost, ExpandAllGroups,
-    ExplorerAction, ExplorerCommand, ExplorerShortcut, FindInTerminal, FindNextInTerminal,
-    FindPreviousInTerminal, FocusSearch, InstallAgentSkill, InstallCliCommand, MaximizeWindow,
-    MoveHostNode, NewChildGroup, NewGroup, NewHost, NewHostInGroup, NewLocalTerminal,
-    NewTemporaryConnection, OpenExplorer, OpenSettings, PasteTerminal, QuickConnect,
-    ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, RenameExplorer,
-    RenameGroup, RenameTerminal, RestartLocalTerminal, RestoreWindow, SelectAllTerminal, SendBreak,
-    SetFileSizeFormat, ShowOrHideApp, ToggleHiddenFiles, ToggleHostPanel, ToggleTheme, ToolKind,
-    ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
+    ClearTerminal, CloseActiveTab, CloseEditor, CloseExplorer, CloseLocalTerminal, CloseSettings,
+    CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectHost, CopyAgentSkill, CopyHostAddress,
+    CopyHostId, CopyTerminal, DeleteGroup, DeleteHost, DisconnectTerminal, DismissTerminalFind,
+    DuplicateHost, EditHost, ExpandAllGroups, ExplorerAction, ExplorerCommand, ExplorerShortcut,
+    FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch, InstallAgentSkill,
+    InstallCliCommand, MaximizeWindow, MoveHostNode, NewChildGroup, NewGroup, NewHost,
+    NewHostInGroup, NewLocalTerminal, NewTemporaryConnection, OpenExplorer, OpenSettings,
+    PaneContent, PasteTerminal, QuickConnect, ReconnectTerminal, RefreshCliIntegration,
+    RemoveAgentSkill, RemoveCliCommand, RenameExplorer, RenameGroup, RenameTerminal,
+    RestartLocalTerminal, RestoreWindow, SelectAllTerminal, SendBreak, SetFileSizeFormat,
+    ShowOrHideApp, ToggleHiddenFiles, ToggleHostPanel, ToggleTheme, ToolKind, ZoomIn, ZoomOut,
+    ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
 };
+use crate::center::{CenterEvent, CenterView};
 use crate::cli::{CliIntegration, CliServer, IntegrationPaths, SshCliBackend};
 use crate::connection::{
     ConnectionPrompt, ConnectionPromptField, ConnectionPromptKind, ConnectionPromptReply,
@@ -67,7 +68,7 @@ use crate::sftp::{
     SftpRoute, SharedLocalDirectoryProvider, SharedSftpTransportProvider, SshSftpTransportProvider,
     SystemLocalDirectoryProvider, TransferDirection,
 };
-use crate::shared::{commit_footer, confirm_danger, open_rename_tab_dialog};
+use crate::shared::{CenterPane, commit_footer, confirm_danger, open_rename_tab_dialog};
 use crate::sync::{SyncEvent, SyncService, SyncServices};
 use crate::terminal::{
     DEFAULT_FONT_SIZE, HostTerminalTransports, LocalPtyTransportProvider, LocalTerminalId,
@@ -79,7 +80,6 @@ use crate::terminal::{
 use crate::update::{UpdateServices, Updater, UpdaterEvent};
 
 use super::{
-    compose::COMPOSE_HEIGHT,
     compose_pane::ComposePane,
     dock_skin::WorkspaceDockSkin,
     recent_hosts::RecentHosts,
@@ -149,14 +149,23 @@ pub(super) enum PromptOwner {
 /// Owns the host store, the dock and the registry of open per-host
 /// panels, and handles every application action.
 pub struct Workspace {
-    pub(super) broadcast: super::terminal_groups::TerminalBroadcast,
+    /// Where 撰写窗格 sends.
+    pub(super) sending: super::sending::Sending,
+    /// 选定的终端…, while it is open: it lists the terminals as they are.
+    pub(super) compose_chooser: Option<WeakEntity<super::compose_chooser::ComposeChooser>>,
     /// 撰写窗格, in the bottom dock while it shows.
     pub(super) compose: Entity<ComposePane>,
     /// How tall 撰写窗格 was last: it opens again so.
     pub(super) compose_height: Pixels,
+    /// The pending write of a dragged 撰写窗格 height to the settings.
+    pub(super) compose_height_save: Option<Task<()>>,
     pub(super) store: Entity<HostStore>,
     pub(super) dock_area: Entity<DockArea>,
-    pub(super) skin: Rc<WorkspaceDockSkin>,
+    /// 中间区: the tabs and their panes, the one panel of the dock's center.
+    pub(super) center: Entity<CenterView>,
+    /// Whether the center held no tab when it last changed: its last tab
+    /// closing hands the focus to the start page.
+    center_was_empty: bool,
     /// The left dock's panel: the host tree or the forward list.
     pub(super) sidebar: Entity<Sidebar>,
     /// The right dock's panel: the tools for the host of the tab in front.
@@ -214,9 +223,9 @@ pub struct Workspace {
     next_explorer_id: u64,
     /// The center tab in front: shown most recently, or, with the center
     /// split, the one the focus went into last (see `front.rs`).
-    /// `CloseActiveTab` closes it. Changed through `set_active_tab`, which
+    /// `CloseActiveTab` closes it. Changed through `set_active_pane`, which
     /// brings the right sidebar in line.
-    pub(super) active_tab: Option<CenterTab>,
+    pub(super) active_pane: Option<PaneContent>,
     /// The terminal the right sidebar goes with while it shows: the last
     /// one in front, SSH or local. Another tab in front of the other half
     /// of a split leaves it be.
@@ -360,14 +369,8 @@ impl Workspace {
         let recent = cx.new(|cx| RecentHosts::new(store.clone(), focus_handle.clone(), cx));
         let compose =
             cx.new(|cx| ComposePane::new(store.clone(), focus_handle.clone(), window, cx));
-        let (dock_area, skin) = WorkspaceDockSkin::dock_area(
-            DOCK_ID,
-            Some(DOCK_VERSION),
-            recent.clone().into(),
-            focus_handle.clone(),
-            window,
-            cx,
-        );
+        let dock_area = WorkspaceDockSkin::dock_area(DOCK_ID, Some(DOCK_VERSION), window, cx);
+        let center = cx.new(|cx| CenterView::new(recent.clone().into(), focus_handle.clone(), cx));
         let host_panel = cx.new(|cx| HostPanel::new(store.clone(), window, cx));
         let forwards = cx.new(|cx| ForwardManager::new(store.clone(), forward_provider, cx));
         let update_settings = settings.read(cx).settings().update.clone();
@@ -491,17 +494,14 @@ impl Workspace {
                 crate::settings::apply(this.settings.read(cx).settings(), window, cx);
             }),
             cx.subscribe_in(
-                &dock_area,
+                &center,
                 window,
-                |this, _, event: &DockEvent, window, cx| {
-                    if matches!(event, DockEvent::LayoutChanged) {
-                        this.on_layout_changed(window, cx);
-                    }
+                |this, _, event: &CenterEvent, window, cx| match event {
+                    CenterEvent::Changed => this.on_center_changed(window, cx),
                 },
             ),
-            // Zoom and sidebar toggles only notify. Keep the permanent
-            // broadcast control on the leading visible tab bar.
-            cx.observe(&dock_area, |this, _, cx| this.sync_broadcast(cx)),
+            // Sidebar toggles only notify: the tab bar's switch follows.
+            cx.observe(&dock_area, |this, _, cx| this.sync_sending(cx)),
         ];
 
         // A fixture's hosts start with a terminal tab each.
@@ -528,7 +528,6 @@ impl Workspace {
             cx,
         );
         let mut terminals = HashMap::new();
-        let mut center = DockLayout::tabs();
         let mut next_remote_terminal_id = 1;
         let (restore, restore_front) = super::projects::terminals_to_restore(store.read(cx));
         for id in connected {
@@ -536,11 +535,18 @@ impl Workspace {
             next_remote_terminal_id += 1;
             let (panel, subscription) =
                 new_terminal_panel(&store, host_terminals.clone(), terminal_id, id, window, cx);
-            center = center.panel_view(panel_handle(panel.clone()), cx);
+            center.update(cx, |center, cx| {
+                center.open(
+                    PaneContent::Terminal(terminal_id),
+                    panel.clone(),
+                    window,
+                    cx,
+                )
+            });
             subscriptions.push(subscription);
             let focus = panel.read(cx).focus_handle(cx);
             subscriptions.push(follow_focus(
-                CenterTab::Terminal(terminal_id),
+                PaneContent::Terminal(terminal_id),
                 &focus,
                 window,
                 cx,
@@ -569,11 +575,13 @@ impl Workspace {
                 window,
                 cx,
             );
-            center = center.panel_view(panel_handle(panel.clone()), cx);
+            center.update(cx, |center, cx| {
+                center.open(PaneContent::LocalTerminal(id), panel.clone(), window, cx)
+            });
             subscriptions.push(subscription);
             let focus = panel.read(cx).focus_handle(cx);
             subscriptions.push(follow_focus(
-                CenterTab::LocalTerminal(id),
+                PaneContent::LocalTerminal(id),
                 &focus,
                 window,
                 cx,
@@ -582,17 +590,27 @@ impl Workspace {
             saved_terminals.insert(id, saved.id);
         }
         let front_saved_terminal = restore_front.map(|index| LocalTerminalId(index as u64 + 1));
-        if let Some(index) = restore_front {
-            center = center.active_index(terminals.len() + index);
-        }
-        let center_empty = terminals.is_empty() && local_terminals.is_empty();
+        // The first tab in front, as a fresh tab bar has it, unless the last
+        // launch left a saved terminal in front.
+        center.update(cx, |center, cx| match front_saved_terminal {
+            Some(front) => center.activate_pane(PaneContent::LocalTerminal(front), window, cx),
+            None => {
+                if let Some(first) = center.tab_ids().first().copied() {
+                    center.activate_tab(first, window, cx);
+                }
+            }
+        });
+        let center_empty = center.read(cx).is_empty();
 
         dock_area.update(cx, |area, cx| {
-            // With nothing to show, the center keeps the empty layout the
-            // area starts with; the skin draws the start page over it.
-            if !center_empty {
-                area.set_center(center, window, cx);
-            }
+            area.set_center(
+                DockLayout::tabs().panel_view(panel_handle(center.clone()), cx),
+                window,
+                cx,
+            );
+            // The center's panes move between its tabs, never through the
+            // dock: dropped on it, the dock would split the center itself.
+            area.set_locked(true, window, cx);
             area.set_dock(
                 DockPlacement::Left,
                 DockLayout::tabs().panel_view(panel_handle(sidebar.clone()), cx),
@@ -613,17 +631,19 @@ impl Workspace {
             set_right_dock_open(area, false, window, cx);
             area.set_dock_collapsible(DockPlacement::Right, false, window, cx);
         });
-        // Settled before the first `LayoutChanged` arrives, so the handler
-        // does not take the initial state for a tab having just closed.
-        skin.set_center_empty(center_empty, cx);
         // Rules marked to start with the application. What they need to ask
         // arrives as events, once the workspace is there to show it.
         forwards.update(cx, |forwards, cx| forwards.start_automatic(cx));
 
+        let compose_height =
+            super::compose::compose_height(settings.read(cx).settings().compose_height);
         Self {
             store,
             dock_area,
-            skin,
+            center,
+            // Settled before the first change arrives, so the handler does
+            // not take the initial state for a tab having just closed.
+            center_was_empty: center_empty,
             sidebar,
             tools,
             host_panel,
@@ -651,10 +671,12 @@ impl Workspace {
             next_remote_terminal_id,
             next_local_terminal_id,
             next_explorer_id: 1,
-            active_tab: None,
-            broadcast: Default::default(),
+            active_pane: None,
+            sending: Default::default(),
+            compose_chooser: None,
             compose,
-            compose_height: COMPOSE_HEIGHT,
+            compose_height,
+            compose_height_save: None,
             tool_target_choice: None,
             deleted_host_tools: HashMap::new(),
             prompt_queue: VecDeque::new(),
@@ -670,14 +692,19 @@ impl Workspace {
     }
 
     /// The center tab in front.
-    pub fn active_tab(&self) -> Option<CenterTab> {
-        self.active_tab
+    pub fn active_pane(&self) -> Option<PaneContent> {
+        self.active_pane
     }
 
     /// The host store, for tests and for panels created later.
     /// The dock area: the center's tabs and the two sidebars.
     pub fn dock_area(&self) -> &Entity<DockArea> {
         &self.dock_area
+    }
+
+    /// 中间区: its tabs and their panes.
+    pub fn center(&self) -> &Entity<CenterView> {
+        &self.center
     }
 
     pub fn store(&self) -> &Entity<HostStore> {
@@ -842,11 +869,12 @@ impl Workspace {
     /// while there is none. For when the focus is about to go off screen.
     pub(super) fn focus_center(&self, window: &mut Window, cx: &mut Context<Self>) {
         let tab = self
-            .active_tab
-            .and_then(|tab| self.tab_focus_handle(tab, cx));
+            .active_pane
+            .and_then(|tab| self.pane_focus_handle(tab, cx));
         let handle = tab.or_else(|| {
-            self.skin
-                .is_center_empty()
+            self.center
+                .read(cx)
+                .is_empty()
                 .then(|| self.recent.read(cx).focus_handle(cx))
         });
         if let Some(handle) = handle {
@@ -855,25 +883,25 @@ impl Workspace {
     }
 
     /// Where the focus goes in `tab`.
-    pub(super) fn tab_focus_handle(&self, tab: CenterTab, cx: &App) -> Option<FocusHandle> {
+    pub(super) fn pane_focus_handle(&self, tab: PaneContent, cx: &App) -> Option<FocusHandle> {
         match tab {
-            CenterTab::Terminal(id) => self
+            PaneContent::Terminal(id) => self
                 .terminals
                 .get(&id)
                 .map(|panel| panel.read(cx).focus_handle(cx)),
-            CenterTab::Explorer(id) => self
+            PaneContent::Explorer(id) => self
                 .explorers
                 .get(&id)
                 .map(|panel| panel.read(cx).focus_handle(cx)),
-            CenterTab::LocalTerminal(id) => self
+            PaneContent::LocalTerminal(id) => self
                 .local_terminals
                 .get(&id)
                 .map(|panel| panel.read(cx).focus_handle(cx)),
-            CenterTab::Settings => self
+            PaneContent::Settings => self
                 .settings_tab
                 .as_ref()
                 .map(|panel| panel.read(cx).focus_handle(cx)),
-            CenterTab::Editor(id) => self
+            PaneContent::Editor(id) => self
                 .editors
                 .get(&id)
                 .map(|panel| panel.read(cx).focus_handle(cx)),
@@ -883,19 +911,18 @@ impl Workspace {
     /// Keep the start page and focus in step with the center: once its last
     /// tab closes, the page fills it and takes the focus the tab held, so
     /// window-level shortcuts keep a dispatch path.
-    fn on_layout_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let empty = self.dock_area.read(cx).is_empty(DockPlacement::Center, cx);
-        let was_empty = self.skin.is_center_empty();
-        self.skin.set_center_empty(empty, cx);
+    fn on_center_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let empty = self.center.read(cx).is_empty();
+        let was_empty = std::mem::replace(&mut self.center_was_empty, empty);
         if empty && !was_empty {
             self.recent
                 .update(cx, |recent, cx| recent.clear_selection(cx));
             let page = self.recent.read(cx).focus_handle(cx);
             window.focus(&page, cx);
         }
-        // A tab dragged into another group may hide the one in front.
+        // Another tab in front, or panes moved: the pane in front follows.
         self.sync_front(window, cx);
-        self.sync_broadcast(cx);
+        self.sync_sending(cx);
         self.sync_compose(window, cx);
         // Tabs reordered, moved, opened or closed: what the next launch
         // opens again.
@@ -1271,14 +1298,14 @@ impl Workspace {
         self._subscriptions.push(subscription);
         let focus = panel.read(cx).focus_handle(cx);
         self._subscriptions.push(follow_focus(
-            CenterTab::Terminal(terminal_id),
+            PaneContent::Terminal(terminal_id),
             &focus,
             window,
             cx,
         ));
         self.terminals.insert(terminal_id, panel.clone());
-        self.dock_area.update(cx, |area, cx| {
-            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+        self.center.update(cx, |center, cx| {
+            center.open(PaneContent::Terminal(terminal_id), panel, window, cx)
         });
     }
 
@@ -1316,10 +1343,10 @@ impl Workspace {
         self._subscriptions.push(subscription);
         let focus = panel.read(cx).focus_handle(cx);
         self._subscriptions
-            .push(follow_focus(CenterTab::Explorer(id), &focus, window, cx));
+            .push(follow_focus(PaneContent::Explorer(id), &focus, window, cx));
         self.explorers.insert(id, panel.clone());
-        self.dock_area.update(cx, |area, cx| {
-            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+        self.center.update(cx, |center, cx| {
+            center.open(PaneContent::Explorer(id), panel, window, cx)
         });
     }
 
@@ -1349,7 +1376,7 @@ impl Workspace {
         self._subscriptions.push(subscription);
         let focus = panel.read(cx).focus_handle(cx);
         self._subscriptions.push(follow_focus(
-            CenterTab::LocalTerminal(id),
+            PaneContent::LocalTerminal(id),
             &focus,
             window,
             cx,
@@ -1358,8 +1385,8 @@ impl Workspace {
         if let Some(saved) = saved {
             self.saved_terminals.insert(id, saved.id);
         }
-        self.dock_area.update(cx, |area, cx| {
-            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+        self.center.update(cx, |center, cx| {
+            center.open(PaneContent::LocalTerminal(id), panel, window, cx)
         });
         id
     }
@@ -1368,10 +1395,7 @@ impl Workspace {
     /// one place, not one tab per visit.
     fn on_open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(panel) = self.settings_tab.clone() {
-            let group = panel.read(cx).tab_group();
-            self.activate_tab(group, panel.entity_id(), window, cx);
-            // Already displayed, the group reports nothing, so the panel
-            // takes the focus itself.
+            self.activate_pane(PaneContent::Settings, window, cx);
             panel.update(cx, |panel, cx| panel.show(window, cx));
             return;
         }
@@ -1388,12 +1412,12 @@ impl Workspace {
             |this, _, event: &SettingsPanelEvent, window, cx| {
                 match event {
                     SettingsPanelEvent::Activated => {
-                        this.set_active_tab(Some(CenterTab::Settings), window, cx);
+                        this.set_active_pane(Some(PaneContent::Settings), window, cx);
                     }
                     SettingsPanelEvent::Closed => {
                         this.settings_tab = None;
-                        if this.active_tab == Some(CenterTab::Settings) {
-                            this.set_active_tab(None, window, cx);
+                        if this.active_pane == Some(PaneContent::Settings) {
+                            this.set_active_pane(None, window, cx);
                         }
                     }
                 }
@@ -1403,10 +1427,10 @@ impl Workspace {
         self._subscriptions.push(subscription);
         let focus = panel.read(cx).focus_handle(cx);
         self._subscriptions
-            .push(follow_focus(CenterTab::Settings, &focus, window, cx));
+            .push(follow_focus(PaneContent::Settings, &focus, window, cx));
         self.settings_tab = Some(panel.clone());
-        self.dock_area.update(cx, |area, cx| {
-            area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+        self.center.update(cx, |center, cx| {
+            center.open(PaneContent::Settings, panel, window, cx)
         });
     }
 
@@ -1527,32 +1551,41 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(panel) = self.settings_tab.clone() {
-            self.dock_area
-                .update(cx, |area, cx| area.remove_panel(panel, window, cx));
+            self.remove_pane(PaneContent::Settings, panel, window, cx);
         }
     }
 
-    /// Display one tab of a tab group, found by its panel's entity.
-    pub(super) fn activate_tab(
+    /// Close a center pane for good, then take it out of the center:
+    /// leaving its tab alone does not close it (see `CenterPane`).
+    pub(super) fn remove_pane<P: CenterPane>(
         &self,
-        group: Option<WeakEntity<TabGroup>>,
-        panel: EntityId,
+        pane: PaneContent,
+        panel: Entity<P>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(group) = group.and_then(|group| group.upgrade()) else {
-            return;
-        };
-        group.update(cx, |group, cx| {
-            let target = PanelId::from(panel);
-            if let Some(ix) = group
-                .panels()
-                .iter()
-                .position(|panel| panel.panel_id(cx) == target)
-            {
-                group.select_tab(ix, window, cx);
-            }
-        });
+        panel.update(cx, |panel, cx| panel.close(window, cx));
+        self.center
+            .update(cx, |center, cx| center.remove(pane, window, cx));
+    }
+
+    /// Whether `pane` shares its tab with others.
+    fn in_split(&self, pane: PaneContent, cx: &App) -> bool {
+        let center = self.center.read(cx);
+        center
+            .tab_of(pane)
+            .is_some_and(|tab| center.panes(tab).len() > 1)
+    }
+
+    /// Bring a pane to the front, its tab with it, and give it the focus.
+    pub(super) fn activate_pane(
+        &self,
+        pane: PaneContent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.center
+            .update(cx, |center, cx| center.activate_pane(pane, window, cx));
     }
 
     /// Close a host's terminal tab. Goes through the dock area rather
@@ -1591,8 +1624,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(panel) = self.terminals.get(&id).cloned() {
-            self.dock_area
-                .update(cx, |area, cx| area.remove_panel(panel, window, cx));
+            self.remove_pane(PaneContent::Terminal(id), panel, window, cx);
         }
     }
 
@@ -1704,8 +1736,7 @@ impl Workspace {
                 window,
                 cx,
             );
-            self.dock_area
-                .update(cx, |area, cx| area.remove_panel(panel, window, cx));
+            self.remove_pane(PaneContent::Explorer(id), panel, window, cx);
         }
     }
     fn on_explorer_action(
@@ -1793,8 +1824,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(panel) = self.local_terminals.get(&action.0).cloned() {
-            self.dock_area
-                .update(cx, |area, cx| area.remove_panel(panel, window, cx));
+            self.remove_pane(PaneContent::LocalTerminal(action.0), panel, window, cx);
         }
     }
 
@@ -1804,114 +1834,28 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(tab) = self.active_tab {
-            self.close_center_tab(tab, window, cx);
+        if let Some(tab) = self.active_pane {
+            self.close_pane(tab, window, cx);
         }
     }
 
     /// Close one center tab through its own close path, so an explorer that
     /// is uploading still asks first.
-    pub(super) fn close_center_tab(
+    pub(super) fn close_pane(
         &mut self,
-        tab: CenterTab,
+        tab: PaneContent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match tab {
-            CenterTab::Terminal(id) => self.on_close_terminal(&CloseTerminal(id), window, cx),
-            CenterTab::Explorer(id) => self.on_close_explorer(&CloseExplorer(id), window, cx),
-            CenterTab::LocalTerminal(id) => {
+            PaneContent::Terminal(id) => self.on_close_terminal(&CloseTerminal(id), window, cx),
+            PaneContent::Explorer(id) => self.on_close_explorer(&CloseExplorer(id), window, cx),
+            PaneContent::LocalTerminal(id) => {
                 self.on_close_local_terminal(&CloseLocalTerminal(id), window, cx)
             }
-            CenterTab::Settings => self.on_close_settings(&CloseSettings, window, cx),
-            CenterTab::Editor(id) => self.on_close_editor(&CloseEditor(id), window, cx),
+            PaneContent::Settings => self.on_close_settings(&CloseSettings, window, cx),
+            PaneContent::Editor(id) => self.on_close_editor(&CloseEditor(id), window, cx),
         }
-    }
-
-    /// The tab group holding a center tab, and the tab's panel id in it.
-    pub(super) fn center_tab_location(
-        &self,
-        tab: CenterTab,
-        cx: &App,
-    ) -> Option<(Entity<TabGroup>, PanelId)> {
-        let (group, entity) = match tab {
-            CenterTab::Terminal(id) => {
-                let panel = self.terminals.get(&id)?;
-                (panel.read(cx).tab_group(), panel.entity_id())
-            }
-            CenterTab::Explorer(id) => {
-                let panel = self.explorers.get(&id)?;
-                (panel.read(cx).tab_group(), panel.entity_id())
-            }
-            CenterTab::LocalTerminal(id) => {
-                let panel = self.local_terminals.get(&id)?;
-                (panel.read(cx).tab_group(), panel.entity_id())
-            }
-            CenterTab::Settings => {
-                let panel = self.settings_tab.as_ref()?;
-                (panel.read(cx).tab_group(), panel.entity_id())
-            }
-            CenterTab::Editor(id) => {
-                let panel = self.editors.get(&id)?;
-                (panel.read(cx).tab_group(), panel.entity_id())
-            }
-        };
-        Some((group?.upgrade()?, PanelId::from(entity)))
-    }
-
-    /// The center tab a dock panel stands for, if it is one of ours.
-    pub(super) fn center_tab_for_panel(&self, panel: PanelId) -> Option<CenterTab> {
-        let is = |entity: EntityId| PanelId::from(entity) == panel;
-        self.terminals
-            .iter()
-            .find(|(_, entity)| is(entity.entity_id()))
-            .map(|(id, _)| CenterTab::Terminal(*id))
-            .or_else(|| {
-                self.explorers
-                    .iter()
-                    .find(|(_, entity)| is(entity.entity_id()))
-                    .map(|(id, _)| CenterTab::Explorer(*id))
-            })
-            .or_else(|| {
-                self.local_terminals
-                    .iter()
-                    .find(|(_, entity)| is(entity.entity_id()))
-                    .map(|(id, _)| CenterTab::LocalTerminal(*id))
-            })
-            .or_else(|| {
-                self.settings_tab
-                    .as_ref()
-                    .filter(|panel| is(panel.entity_id()))
-                    .map(|_| CenterTab::Settings)
-            })
-            .or_else(|| {
-                self.editors
-                    .iter()
-                    .find(|(_, entity)| is(entity.entity_id()))
-                    .map(|(id, _)| CenterTab::Editor(*id))
-            })
-    }
-
-    fn on_close_tabs(&mut self, action: &CloseTabs, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((group, anchor)) = self.center_tab_location(action.tab, cx) else {
-            return;
-        };
-        let panels: Vec<PanelId> = group
-            .read(cx)
-            .panels()
-            .iter()
-            .map(|panel| panel.panel_id(cx))
-            .collect();
-        let Some(ix) = panels.iter().position(|panel| *panel == anchor) else {
-            return;
-        };
-        let tabs: Vec<CenterTab> = action
-            .scope
-            .targets(panels.len(), ix)
-            .into_iter()
-            .filter_map(|target| self.center_tab_for_panel(panels[target]))
-            .collect();
-        self.close_center_tabs(tabs, window, cx);
     }
 
     fn on_rename_terminal(
@@ -1921,7 +1865,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(panel) = self.terminals.get(&action.0).cloned() {
-            open_rename_tab_dialog(panel, window, cx);
+            let pane = self.in_split(PaneContent::Terminal(action.0), cx);
+            open_rename_tab_dialog(panel, pane, window, cx);
         }
     }
 
@@ -1932,7 +1877,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(panel) = self.explorers.get(&action.0).cloned() {
-            open_rename_tab_dialog(panel, window, cx);
+            let pane = self.in_split(PaneContent::Explorer(action.0), cx);
+            open_rename_tab_dialog(panel, pane, window, cx);
         }
     }
 
@@ -2016,12 +1962,12 @@ impl Workspace {
 
     /// The terminal of the center tab shown most recently, remote or local.
     fn active_terminal(&self, cx: &App) -> Option<Entity<TerminalView>> {
-        match self.active_tab? {
-            CenterTab::Terminal(id) => Some(self.terminals.get(&id)?.read(cx).terminal().clone()),
-            CenterTab::LocalTerminal(id) => {
+        match self.active_pane? {
+            PaneContent::Terminal(id) => Some(self.terminals.get(&id)?.read(cx).terminal().clone()),
+            PaneContent::LocalTerminal(id) => {
                 Some(self.local_terminals.get(&id)?.read(cx).terminal().clone())
             }
-            CenterTab::Explorer(_) | CenterTab::Settings | CenterTab::Editor(_) => None,
+            PaneContent::Explorer(_) | PaneContent::Settings | PaneContent::Editor(_) => None,
         }
     }
 
@@ -2145,6 +2091,9 @@ impl Workspace {
         let id = action.0;
         self.cancel_prompts_for_terminal(id, window, cx);
         if let Some(terminal) = self.terminals.get(&id).cloned() {
+            // It takes the focus to reconnect: in front, where it can have
+            // it, and where it is watched coming back.
+            self.activate_pane(PaneContent::Terminal(id), window, cx);
             terminal.update(cx, |terminal, cx| terminal.reconnect(window, cx));
         }
     }
@@ -2541,25 +2490,25 @@ fn new_terminal_panel(
         window,
         |this, _, event: &TerminalPanelEvent, window, cx| match event {
             TerminalPanelEvent::Input(id, input) => {
-                this.broadcast_input(CenterTab::Terminal(*id), input, cx);
+                this.broadcast_input(PaneContent::Terminal(*id), input, cx);
             }
             TerminalPanelEvent::Activated(terminal_id, _) => {
-                this.set_active_tab(Some(CenterTab::Terminal(*terminal_id)), window, cx)
+                this.set_active_pane(Some(PaneContent::Terminal(*terminal_id)), window, cx)
             }
             TerminalPanelEvent::Closed(terminal_id, host_id) => {
                 this.cancel_prompts_for_terminal(*terminal_id, window, cx);
                 this.terminals.remove(terminal_id);
                 this.close_file_sidebar(*terminal_id, window, cx);
                 this.directory_follow.remove(terminal_id);
-                this.sync_broadcast(cx);
+                this.sync_sending(cx);
                 this.sync_compose(window, cx);
-                if this.active_tab == Some(CenterTab::Terminal(*terminal_id)) {
-                    this.set_active_tab(None, window, cx);
+                if this.active_pane == Some(PaneContent::Terminal(*terminal_id)) {
+                    this.set_active_pane(None, window, cx);
                 }
                 this.forget_unused_temporary_host(*host_id, window, cx);
             }
             TerminalPanelEvent::StatusChanged(..) => {
-                this.sync_broadcast(cx);
+                this.sync_sending(cx);
                 this.sync_compose(window, cx);
                 cx.notify();
             }
@@ -2613,13 +2562,13 @@ fn new_terminal_panel(
                     .update(cx, |store, cx| store.set_host_os(host_id, Some(os), cx));
             }
             TerminalPanelEvent::Notice(terminal_id, notice) => {
-                this.on_terminal_notice(CenterTab::Terminal(*terminal_id), notice, window, cx)
+                this.on_terminal_notice(PaneContent::Terminal(*terminal_id), notice, window, cx)
             }
             TerminalPanelEvent::DirectoryChanged(terminal_id, directory) => {
                 this.follow_directory(*terminal_id, directory, window, cx)
             }
             TerminalPanelEvent::ZmodemAsk(terminal_id, direction) => {
-                this.ask_zmodem(CenterTab::Terminal(*terminal_id), *direction, window, cx)
+                this.ask_zmodem(PaneContent::Terminal(*terminal_id), *direction, window, cx)
             }
             TerminalPanelEvent::FilesDropped(terminal_id, files) => {
                 this.upload_dropped(*terminal_id, files, window, cx)
@@ -2713,7 +2662,7 @@ fn new_explorer_panel(
         window,
         |this, _, event: &ExplorerPanelEvent, window, cx| match event {
             ExplorerPanelEvent::Activated(id) => {
-                this.set_active_tab(Some(CenterTab::Explorer(*id)), window, cx)
+                this.set_active_pane(Some(PaneContent::Explorer(*id)), window, cx)
             }
             ExplorerPanelEvent::Closed(id, host_id) => {
                 // Its remote files can no longer be written: their editors
@@ -2722,8 +2671,8 @@ fn new_explorer_panel(
                     this.remove_editor(editor, window, cx);
                 }
                 this.explorers.remove(id);
-                if this.active_tab == Some(CenterTab::Explorer(*id)) {
-                    this.set_active_tab(None, window, cx);
+                if this.active_pane == Some(PaneContent::Explorer(*id)) {
+                    this.set_active_pane(None, window, cx);
                 }
                 let sidebars = this.file_sidebars.len();
                 this.file_sidebars.retain(|_, sidebar| sidebar != id);
@@ -2753,7 +2702,7 @@ fn new_explorer_panel(
                 }
             },
             ExplorerPanelEvent::StatusChanged(id) => {
-                if this.active_tab == Some(CenterTab::Explorer(*id)) {
+                if this.active_pane == Some(PaneContent::Explorer(*id)) {
                     cx.notify();
                 }
             }
@@ -2785,10 +2734,10 @@ fn new_local_terminal_panel(
         window,
         |this, panel, event: &LocalTerminalPanelEvent, window, cx| match event {
             LocalTerminalPanelEvent::Input(id, input) => {
-                this.broadcast_input(CenterTab::LocalTerminal(*id), input, cx);
+                this.broadcast_input(PaneContent::LocalTerminal(*id), input, cx);
             }
             LocalTerminalPanelEvent::Activated(id) => {
-                this.set_active_tab(Some(CenterTab::LocalTerminal(*id)), window, cx);
+                this.set_active_pane(Some(PaneContent::LocalTerminal(*id)), window, cx);
                 cx.notify();
             }
             LocalTerminalPanelEvent::Closed(id) => {
@@ -2798,17 +2747,17 @@ fn new_local_terminal_panel(
                 if this.front_saved_terminal == Some(*id) {
                     this.front_saved_terminal = None;
                 }
-                this.sync_broadcast(cx);
+                this.sync_sending(cx);
                 this.sync_compose(window, cx);
-                if this.active_tab == Some(CenterTab::LocalTerminal(*id)) {
-                    this.set_active_tab(None, window, cx);
+                if this.active_pane == Some(PaneContent::LocalTerminal(*id)) {
+                    this.set_active_pane(None, window, cx);
                 }
                 this.sync_saved_terminals(cx);
                 cx.notify();
             }
             LocalTerminalPanelEvent::StatusChanged(id) => {
                 this.on_local_terminal_retitled(*id, cx);
-                this.sync_broadcast(cx);
+                this.sync_sending(cx);
                 this.sync_compose(window, cx);
                 cx.notify();
             }
@@ -2816,10 +2765,10 @@ fn new_local_terminal_panel(
                 this.on_local_terminal_moved(*id, folder, cx);
             }
             LocalTerminalPanelEvent::Notice(id, notice) => {
-                this.on_terminal_notice(CenterTab::LocalTerminal(*id), notice, window, cx)
+                this.on_terminal_notice(PaneContent::LocalTerminal(*id), notice, window, cx)
             }
             LocalTerminalPanelEvent::ZmodemAsk(id, direction) => {
-                this.ask_zmodem(CenterTab::LocalTerminal(*id), *direction, window, cx)
+                this.ask_zmodem(PaneContent::LocalTerminal(*id), *direction, window, cx)
             }
         },
     );
@@ -2828,9 +2777,9 @@ fn new_local_terminal_panel(
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let status = match self.active_tab {
+        let status = match self.active_pane {
             // A terminal tells its own connection, to the host as it took it.
-            Some(CenterTab::Terminal(id)) => match self.terminals.get(&id) {
+            Some(PaneContent::Terminal(id)) => match self.terminals.get(&id) {
                 Some(panel) => {
                     let panel = panel.read(cx);
                     WorkspaceStatus::Host(
@@ -2840,13 +2789,13 @@ impl Render for Workspace {
                 }
                 None => WorkspaceStatus::Host(None, None),
             },
-            Some(CenterTab::LocalTerminal(id)) => self
+            Some(PaneContent::LocalTerminal(id)) => self
                 .local_terminals
                 .get(&id)
                 .map(|panel| WorkspaceStatus::Local(panel.read(cx).status(cx)))
                 .unwrap_or(WorkspaceStatus::Host(None, None)),
             // An SFTP tab tells its own connection, and what went wrong in it.
-            Some(CenterTab::Explorer(id)) => match self.explorers.get(&id) {
+            Some(PaneContent::Explorer(id)) => match self.explorers.get(&id) {
                 Some(panel) => {
                     let panel = panel.read(cx);
                     WorkspaceStatus::Explorer(Some(panel.host().clone()), panel.status(cx))
@@ -2855,7 +2804,7 @@ impl Render for Workspace {
             },
             // An editor of a remote file tells the connection of the SFTP
             // tab its saves go through.
-            Some(CenterTab::Editor(id)) => match self.editors.get(&id) {
+            Some(PaneContent::Editor(id)) => match self.editors.get(&id) {
                 Some(editor) => {
                     let editor = editor.read(cx);
                     let remote = editor.explorer_id().map(|explorer| {
@@ -2890,8 +2839,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_new_temporary_connection))
             .on_action(cx.listener(Self::on_quick_connect))
             .on_action(cx.listener(Self::on_new_local_terminal))
-            .on_action(cx.listener(Self::on_toggle_terminal_broadcast))
-            .on_action(cx.listener(Self::on_set_broadcast_target))
+            .on_action(cx.listener(Self::on_set_send_target))
+            .on_action(cx.listener(Self::on_choose_compose_terminals))
+            .on_action(cx.listener(Self::on_set_compose_terminals))
             .on_action(cx.listener(Self::on_toggle_compose_pane))
             .on_action(cx.listener(Self::on_send_compose))
             .on_action(cx.listener(Self::on_send_compose_snippet))
@@ -2956,6 +2906,15 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_previous_tab))
             .on_action(cx.listener(Self::on_switch_to_tab))
+            .on_action(cx.listener(Self::on_move_pane))
+            .on_action(cx.listener(Self::on_merge_tab))
+            .on_action(cx.listener(Self::on_move_pane_to_new_tab))
+            .on_action(cx.listener(Self::on_move_tab))
+            .on_action(cx.listener(Self::on_close_tab))
+            .on_action(cx.listener(Self::on_rename_tab))
+            .on_action(cx.listener(Self::on_zoom_pane))
+            .on_action(cx.listener(Self::on_activate_tab))
+            .on_action(cx.listener(Self::on_activate_pane))
             .on_action(cx.listener(Self::on_close_tabs))
             .on_action(cx.listener(Self::on_rename_terminal))
             .on_action(cx.listener(Self::on_rename_explorer))

@@ -119,6 +119,9 @@ terminal.menu.clear:
 terminal.menu.compose:
   zh-CN: 撰写窗格
   en: Compose pane
+terminal.menu.send_to_several:
+  zh-CN: 发送到多个终端…
+  en: Send to several terminals…
 
 # Links
 terminal.link.open_hint:

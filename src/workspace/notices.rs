@@ -10,7 +10,7 @@ use gpui_kit::*;
 
 use super::Workspace;
 use crate::analytics::Counter;
-use crate::app::CenterTab;
+use crate::app::PaneContent;
 use crate::i18n::t;
 use crate::settings::NotificationSettings;
 use crate::shared::RenamableTab as _;
@@ -91,21 +91,21 @@ pub(super) fn due(last: Option<Instant>, now: Instant, interval: Duration) -> bo
 
 /// The system notification's tag: one terminal's newest replaces its last,
 /// and a click on it says which terminal to show.
-pub(super) fn notice_tag(tab: CenterTab) -> Option<String> {
+pub(super) fn notice_tag(tab: PaneContent) -> Option<String> {
     match tab {
-        CenterTab::Terminal(id) => Some(format!("terminal:remote:{}", id.0)),
-        CenterTab::LocalTerminal(id) => Some(format!("terminal:local:{}", id.0)),
+        PaneContent::Terminal(id) => Some(format!("terminal:remote:{}", id.0)),
+        PaneContent::LocalTerminal(id) => Some(format!("terminal:local:{}", id.0)),
         _ => None,
     }
 }
 
-pub(super) fn tab_of_tag(tag: &str) -> Option<CenterTab> {
+pub(super) fn tab_of_tag(tag: &str) -> Option<PaneContent> {
     let rest = tag.strip_prefix("terminal:")?;
     let (kind, id) = rest.split_once(':')?;
     let id = id.parse().ok()?;
     match kind {
-        "remote" => Some(CenterTab::Terminal(RemoteTerminalId(id))),
-        "local" => Some(CenterTab::LocalTerminal(LocalTerminalId(id))),
+        "remote" => Some(PaneContent::Terminal(RemoteTerminalId(id))),
+        "local" => Some(PaneContent::LocalTerminal(LocalTerminalId(id))),
         _ => None,
     }
 }
@@ -114,7 +114,7 @@ impl Workspace {
     /// A terminal has something to tell: say it where the user will see it.
     pub(super) fn on_terminal_notice(
         &mut self,
-        tab: CenterTab,
+        tab: PaneContent,
         notice: &TerminalNotice,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -122,7 +122,7 @@ impl Workspace {
         let settings = self.settings().read(cx).settings().notifications;
         // In sight is on screen: the tab in front of its group, beside
         // another in a split as well.
-        let in_sight = self.visible_center_tabs(cx).contains(&tab);
+        let in_sight = self.visible_panes(cx).contains(&tab);
         let delivery = delivery(notice, settings, window.is_window_active(), in_sight);
         let (Some(tag), Some(tab_title)) = (notice_tag(tab), self.notice_tab_title(tab, cx)) else {
             return;
@@ -186,27 +186,16 @@ impl Workspace {
         }
     }
 
-    fn show_terminal_tab(&self, tab: CenterTab, window: &mut Window, cx: &mut Context<Self>) {
-        let target = match tab {
-            CenterTab::Terminal(id) => self
-                .terminals
-                .get(&id)
-                .map(|panel| (panel.read(cx).tab_group(), panel.entity_id())),
-            CenterTab::LocalTerminal(id) => self
-                .local_terminals
-                .get(&id)
-                .map(|panel| (panel.read(cx).tab_group(), panel.entity_id())),
-            _ => None,
-        };
-        if let Some((group, panel)) = target {
-            self.activate_tab(group, panel, window, cx);
-        }
+    fn show_terminal_tab(&self, tab: PaneContent, window: &mut Window, cx: &mut Context<Self>) {
+        self.activate_pane(tab, window, cx);
     }
 
-    fn notice_tab_title(&self, tab: CenterTab, cx: &App) -> Option<String> {
+    fn notice_tab_title(&self, tab: PaneContent, cx: &App) -> Option<String> {
         match tab {
-            CenterTab::Terminal(id) => Some(self.terminals.get(&id)?.read(cx).tab_title(cx).into()),
-            CenterTab::LocalTerminal(id) => Some(
+            PaneContent::Terminal(id) => {
+                Some(self.terminals.get(&id)?.read(cx).tab_title(cx).into())
+            }
+            PaneContent::LocalTerminal(id) => Some(
                 self.local_terminals
                     .get(&id)?
                     .read(cx)
@@ -224,9 +213,9 @@ struct TerminalNoticeTag;
 #[cfg(test)]
 mod tests {
     use super::{
-        BELL_INTERVAL, CenterTab, Delivery, Duration, Instant, LocalTerminalId,
-        NotificationSettings, RemoteTerminalId, TerminalNotice, delivery, due, notice_tag,
-        notice_text, tab_of_tag,
+        BELL_INTERVAL, Delivery, Duration, Instant, LocalTerminalId, NotificationSettings,
+        PaneContent, RemoteTerminalId, TerminalNotice, delivery, due, notice_tag, notice_text,
+        tab_of_tag,
     };
 
     fn program(title: Option<&str>) -> TerminalNotice {
@@ -306,12 +295,12 @@ mod tests {
     #[test]
     fn a_tag_names_its_terminal() {
         for tab in [
-            CenterTab::Terminal(RemoteTerminalId(3)),
-            CenterTab::LocalTerminal(LocalTerminalId(12)),
+            PaneContent::Terminal(RemoteTerminalId(3)),
+            PaneContent::LocalTerminal(LocalTerminalId(12)),
         ] {
             assert_eq!(tab_of_tag(&notice_tag(tab).unwrap()), Some(tab));
         }
-        assert_eq!(notice_tag(CenterTab::Settings), None);
+        assert_eq!(notice_tag(PaneContent::Settings), None);
         assert_eq!(tab_of_tag("terminal:local:x"), None);
         assert_eq!(tab_of_tag("other:local:1"), None);
     }

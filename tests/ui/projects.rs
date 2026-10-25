@@ -4,7 +4,6 @@
 
 use crate::support::*;
 use gpui_kit::component::Placement;
-use gpui_kit::component::dock::{DockPlacement, InsertTarget, PanelId};
 use shellrs::app::{
     CloseLocalTerminal, CloseSavedTerminal, DeleteSavedTerminal, DeleteTerminalGroup,
     NewSavedTerminal, OpenSavedTerminal, RestartLocalTerminal, ToolKind,
@@ -168,8 +167,8 @@ async fn a_group_made_by_name_gets_terminals_from_its_plus(cx: &mut TestAppConte
             window.click(("new-saved-terminal", SHELLRS.0), cx)
         });
         assert_eq!(
-            cx.update(|cx| workspace.read(cx).active_tab()),
-            Some(CenterTab::LocalTerminal(LocalTerminalId(tab)))
+            cx.update(|cx| workspace.read(cx).active_pane()),
+            Some(PaneContent::LocalTerminal(LocalTerminalId(tab)))
         );
         in_frame(cx, handle, |window, _| {
             assert_eq!(
@@ -262,8 +261,8 @@ async fn a_closed_terminal_stays_and_opens_again_where_its_shell_was(cx: &mut Te
     dispatch(cx, handle, OpenSavedTerminal(FIRST));
     assert_eq!(local.launches().len(), started);
     assert_eq!(
-        cx.update(|cx| workspace.read(cx).active_tab()),
-        Some(CenterTab::LocalTerminal(LocalTerminalId(3)))
+        cx.update(|cx| workspace.read(cx).active_pane()),
+        Some(PaneContent::LocalTerminal(LocalTerminalId(3)))
     );
 
     // 重新启动 starts it where its shell was, with the shell set now.
@@ -663,34 +662,16 @@ async fn the_saved_tabs_follow_the_saved_terminals(cx: &mut TestAppContext) {
         [tab(FIRST, true), tab(BLOG_FIRST, false)]
     );
 
-    // shellrs 1 dragged to a group of its own on the right: after blog 1.
-    cx.update_window(handle.into(), |_, window, cx| {
-        let panel = PanelId::from(
-            workspace
-                .read(cx)
-                .local_terminal(LocalTerminalId(1))
-                .expect("shellrs 1's tab")
-                .entity_id(),
-        );
-        let area = workspace.read(cx).dock_area().clone();
-        area.update(cx, |area, cx| {
-            let node = area
-                .layout(DockPlacement::Center)
-                .and_then(|tree| tree.find_panel_node(panel))
-                .expect("in the center");
-            area.move_panel(
-                panel,
-                InsertTarget::Split {
-                    node,
-                    placement: Placement::Right,
-                    size: None,
-                },
-                window,
-                cx,
-            );
+    // shellrs 1's tab dragged to the end: after blog 1.
+    cx.update(|cx| {
+        let center = workspace.read(cx).center().clone();
+        center.update(cx, |center, cx| {
+            let tab = center
+                .tab_of(PaneContent::LocalTerminal(LocalTerminalId(1)))
+                .expect("shellrs 1's tab");
+            center.move_tab(tab, usize::MAX, cx);
         });
-    })
-    .unwrap();
+    });
     cx.run_until_parked();
     assert_eq!(
         saved(&workspace, cx),
@@ -760,8 +741,8 @@ async fn the_next_launch_opens_the_saved_terminals_left_open(cx: &mut TestAppCon
         );
     });
     assert_eq!(
-        cx.update(|cx| workspace.read(cx).active_tab()),
-        Some(CenterTab::LocalTerminal(LocalTerminalId(2)))
+        cx.update(|cx| workspace.read(cx).active_pane()),
+        Some(PaneContent::LocalTerminal(LocalTerminalId(2)))
     );
     assert_eq!(
         saved(&workspace, cx),
@@ -795,35 +776,15 @@ async fn with_the_center_split_the_sidebar_follows_the_terminal_clicked_last(
     in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
     open_projects(cx, handle);
 
-    // The local terminal to a group of its own on the right.
-    cx.update_window(handle.into(), |_, window, cx| {
-        let panel = PanelId::from(
-            workspace
-                .read(cx)
-                .local_terminal(LocalTerminalId(1))
-                .expect("the local terminal")
-                .entity_id(),
-        );
-        let area = workspace.read(cx).dock_area().clone();
-        area.update(cx, |area, cx| {
-            let node = area
-                .layout(DockPlacement::Center)
-                .and_then(|tree| tree.find_panel_node(panel))
-                .expect("in the center");
-            area.move_panel(
-                panel,
-                InsertTarget::Split {
-                    node,
-                    placement: Placement::Right,
-                    size: None,
-                },
-                window,
-                cx,
-            );
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
+    // The local terminal on the right of web-01's.
+    split_beside(
+        cx,
+        handle,
+        &workspace,
+        PaneContent::LocalTerminal(LocalTerminalId(1)),
+        PaneContent::Terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL)),
+        Placement::Right,
+    );
     // web-01's terminal on the left, beside the local one.
     in_frame(cx, handle, |window, cx| {
         window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
@@ -866,8 +827,8 @@ async fn a_link_after_the_launch_opens_its_terminal_in_front(cx: &mut TestAppCon
     store.set_saved_terminal_tabs_unnotified(vec![tab(FIRST, true), tab(BLOG_FIRST, false)]);
     let (handle, workspace) = open_with_local(cx, store, fake_local_terminals());
     assert_eq!(
-        cx.update(|cx| workspace.read(cx).active_tab()),
-        Some(CenterTab::LocalTerminal(LocalTerminalId(1)))
+        cx.update(|cx| workspace.read(cx).active_pane()),
+        Some(PaneContent::LocalTerminal(LocalTerminalId(1)))
     );
     // As `main` does once the window is open.
     cx.update_window(handle.into(), |_, window, cx| {
@@ -881,8 +842,8 @@ async fn a_link_after_the_launch_opens_its_terminal_in_front(cx: &mut TestAppCon
     cx.run_until_parked();
     in_frame(cx, handle, |_, _| {});
     assert_eq!(
-        cx.update(|cx| workspace.read(cx).active_tab()),
-        Some(CenterTab::Terminal(RemoteTerminalId(FIRST_NEW_TERMINAL)))
+        cx.update(|cx| workspace.read(cx).active_pane()),
+        Some(PaneContent::Terminal(RemoteTerminalId(FIRST_NEW_TERMINAL)))
     );
 }
 

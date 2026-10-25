@@ -1,8 +1,8 @@
 //! 撰写窗格: commands written and edited below the terminals, then run in
-//! the terminal in front, or in every checked terminal while 命令广播 is
-//! on, which makes it the broadcast's command bar. A panel of the dock's
-//! bottom dock, there while it shows. Every control dispatches to the
-//! workspace, which owns where it sends.
+//! the current terminal, or broadcast to several: the terminals of the tab
+//! in front, or those chosen by hand, which makes it the broadcast's
+//! command bar. A panel of the dock's bottom dock, there while it shows.
+//! Every control dispatches to the workspace, which owns where it sends.
 
 use std::rc::Rc;
 
@@ -21,11 +21,11 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, SendCompose, SendComposeInterrupt, SendComposeSnippet, ToggleBroadcastKeys,
-    ToggleComposePane, ToggleTerminalBroadcast,
+    CatalogIcon, ChooseComposeTerminals, SendCompose, SendComposeInterrupt, SendComposeSnippet,
+    SendTarget, SetSendTarget, ToggleBroadcastKeys, ToggleComposePane,
 };
 use crate::host::{HostStore, SnippetId};
-use crate::i18n::{UiLocale, t};
+use crate::i18n::{UiLocale, t, tn};
 
 /// A category's name (none for the uncategorized) and its snippets.
 type SnippetGroup = (Option<SharedString>, Vec<(SnippetId, SharedString)>);
@@ -33,10 +33,31 @@ type SnippetGroup = (Option<SharedString>, Vec<(SnippetId, SharedString)>);
 /// Where the pane sends.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum ComposeTarget {
-    /// The terminal in front, by its tab's name.
+    /// The current terminal, by its name.
     Terminal(SharedString),
-    /// The terminals checked for 命令广播, this many.
-    Broadcast(usize),
+    /// The connected terminals of the tab in front, this many.
+    Tab(usize),
+    /// The terminals chosen by hand, this many.
+    Selected(usize),
+}
+
+impl ComposeTarget {
+    fn kind(&self) -> SendTarget {
+        match self {
+            Self::Terminal(_) => SendTarget::Current,
+            Self::Tab(_) => SendTarget::Tab,
+            Self::Selected(_) => SendTarget::Selected,
+        }
+    }
+
+    /// As the title tells it.
+    fn label(&self) -> SharedString {
+        match self {
+            Self::Terminal(name) => name.clone(),
+            Self::Tab(count) => tn!("workspace.compose.tab_target", *count),
+            Self::Selected(count) => tn!("workspace.compose.selected_target", *count),
+        }
+    }
 }
 
 pub(super) struct ComposePane {
@@ -85,7 +106,7 @@ impl ComposePane {
             input,
             store,
             dispatch,
-            target: ComposeTarget::Broadcast(0),
+            target: ComposeTarget::Selected(0),
             keys: false,
             _subscriptions: subscriptions,
         }
@@ -115,7 +136,7 @@ impl ComposePane {
     }
 
     fn broadcasting(&self) -> bool {
-        matches!(self.target, ComposeTarget::Broadcast(_))
+        self.target.kind() != SendTarget::Current
     }
 
     /// The snippets by category, the uncategorized first, as 命令片段
@@ -165,17 +186,13 @@ impl BasePanel for ComposePane {
 }
 
 impl ComposePane {
-    /// The pane, and where it sends: with the center split, more than one
-    /// terminal may show.
+    /// The pane, and where it sends, which its menu changes: the current
+    /// terminal, the tab's terminals, or terminals chosen by hand.
     fn render_title(&self, cx: &App) -> impl IntoElement {
-        let target = match &self.target {
-            ComposeTarget::Terminal(name) => name.clone(),
-            ComposeTarget::Broadcast(count) => {
-                t!("workspace.compose.broadcast_target", count = count)
-            }
-        };
+        let target = self.target.label();
+        let kind = self.target.kind();
         let title = t!("workspace.compose.title");
-        let muted = cx.theme().muted_foreground;
+        let dispatch = self.dispatch.clone();
         h_flex()
             .id("compose-pane-title")
             .test_support()
@@ -185,16 +202,40 @@ impl ComposePane {
             .gap_1()
             .child(Icon::new(CatalogIcon::SquarePen).small())
             .child(div().flex_shrink_0().child(title))
-            .child(div().flex_shrink_0().text_color(muted).child("·"))
             .child(
                 div()
-                    .id("compose-pane-target")
-                    .test_support()
-                    .aria_label(target.clone())
-                    .min_w_0()
-                    .truncate()
-                    .text_color(muted)
-                    .child(target),
+                    .flex_shrink_0()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("·"),
+            )
+            .child(
+                div().min_w_0().child(
+                    Button::new("compose-pane-target")
+                        .xsmall()
+                        .ghost()
+                        .label(target.clone())
+                        .accessibility_label(target)
+                        .dropdown_caret(true)
+                        .tooltip(t!("workspace.compose.target.tooltip"))
+                        .dropdown_menu(move |menu, _, _| {
+                            menu.action_context(dispatch.clone())
+                                .menu_with_check(
+                                    t!("workspace.compose.target.current"),
+                                    kind == SendTarget::Current,
+                                    Box::new(SetSendTarget(SendTarget::Current)),
+                                )
+                                .menu_with_check(
+                                    t!("workspace.compose.target.tab"),
+                                    kind == SendTarget::Tab,
+                                    Box::new(SetSendTarget(SendTarget::Tab)),
+                                )
+                                .menu_with_check(
+                                    t!("workspace.compose.target.selected"),
+                                    kind == SendTarget::Selected,
+                                    Box::new(ChooseComposeTerminals),
+                                )
+                        }),
+                ),
             )
     }
 
@@ -292,22 +333,16 @@ impl ComposePane {
             )
     }
 
-    /// × closes the pane; while broadcasting it is the broadcast's command
-    /// bar, and × ends the broadcast.
+    /// × hides the pane, as its switch does; a broadcast stays chosen.
     fn render_close(&self) -> impl IntoElement {
         let dispatch = self.dispatch.clone();
-        let (tooltip, action): (_, &'static dyn Action) = if self.broadcasting() {
-            (t!("workspace.broadcast.end"), &ToggleTerminalBroadcast)
-        } else {
-            (t!("workspace.compose.close"), &ToggleComposePane)
-        };
         Button::new("compose-close")
             .xsmall()
             .ghost()
             .tab_stop(false)
             .icon(IconName::Close)
-            .tooltip(tooltip)
-            .on_click(move |_, window, cx| dispatch.dispatch_action(action, window, cx))
+            .tooltip(t!("workspace.compose.close"))
+            .on_click(move |_, window, cx| dispatch.dispatch_action(&ToggleComposePane, window, cx))
     }
 }
 
@@ -329,6 +364,7 @@ impl Panel for ComposePane {
 
 impl Render for ComposePane {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let broadcasting = self.broadcasting();
         v_flex()
             .id("compose-pane")
             .test_support()
@@ -339,12 +375,20 @@ impl Render for ComposePane {
                 // Laid out as the dock's own title bars are, which it sizes
                 // in pixels: the panes beside it line up.
                 h_flex()
+                    .id("compose-pane-bar")
                     .flex_shrink_0()
                     .h(px(30.))
                     .py_2()
                     .pl_3()
                     .pr_2()
                     .gap_2()
+                    // Broadcasting, the bar takes the warning color: what
+                    // is sent here goes to several terminals at once.
+                    .when(broadcasting, |bar| {
+                        bar.bg(cx.theme().warning.opacity(0.15))
+                            .border_b_1()
+                            .border_color(cx.theme().warning.opacity(0.5))
+                    })
                     .child(self.render_title(cx))
                     .child(self.render_controls(cx))
                     .child(self.render_close()),

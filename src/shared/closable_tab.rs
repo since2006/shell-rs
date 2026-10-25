@@ -5,13 +5,14 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     menu::{ContextMenuExt as _, PopupMenu},
+    tooltip::Tooltip,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::ToggleHostPanel;
 use crate::host::ConnectionState;
-use crate::i18n::t;
+use crate::i18n::{t, tn};
 
 type MenuBuilder = Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
 
@@ -40,6 +41,8 @@ pub struct ClosableTabTitle {
     menu: Option<MenuBuilder>,
     modified: bool,
     connection_state: Option<ConnectionState>,
+    count: Option<usize>,
+    tooltip: Option<SharedString>,
 }
 
 impl ClosableTabTitle {
@@ -58,6 +61,8 @@ impl ClosableTabTitle {
             menu: None,
             modified: false,
             connection_state: None,
+            count: None,
+            tooltip: None,
         }
     }
 
@@ -75,6 +80,19 @@ impl ClosableTabTitle {
     /// as editors do.
     pub fn modified(mut self, modified: bool) -> Self {
         self.modified = modified;
+        self
+    }
+
+    /// How many panes the tab holds, after the label and never cut off with
+    /// it.
+    pub fn count(mut self, count: usize) -> Self {
+        self.count = Some(count);
+        self
+    }
+
+    /// What the tab says under the pointer.
+    pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
         self
     }
 
@@ -121,6 +139,22 @@ impl RenderOnce for ClosableTabTitle {
                     })
                     .child(self.label.clone()),
             )
+            .when_some(self.count, |row, count| {
+                row.child(
+                    div()
+                        .id("pane-count")
+                        .test_support()
+                        .aria_label(tn!("shared.tab.pane_count", count))
+                        .flex_shrink_0()
+                        .px_1p5()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(count.to_string()),
+                )
+            })
             .when(self.modified, |row| {
                 row.child(
                     div()
@@ -164,6 +198,9 @@ impl RenderOnce for ClosableTabTitle {
             })
             .test_support()
             .aria_label(self.label)
+            .when_some(self.tooltip, |title, tooltip| {
+                title.tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+            })
             .child(match self.menu {
                 Some(menu) => row
                     .context_menu(move |popup, window, cx| menu(popup, window, cx))

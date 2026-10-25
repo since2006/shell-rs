@@ -1502,8 +1502,8 @@ async fn terminals_notify_where_the_user_will_see_it(cx: &mut TestAppContext) {
     // name, and clicking it shows that terminal.
     cx.update(|cx| {
         assert_eq!(
-            workspace.read(cx).active_tab(),
-            Some(shellrs::app::CenterTab::LocalTerminal(LocalTerminalId(2)))
+            workspace.read(cx).active_pane(),
+            Some(shellrs::app::PaneContent::LocalTerminal(LocalTerminalId(2)))
         );
     });
     gpui_kit::VisualTestContext::from_window(handle.into(), cx).deactivate_window();
@@ -1519,17 +1519,71 @@ async fn terminals_notify_where_the_user_will_see_it(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update(|cx| {
         assert_eq!(
-            workspace.read(cx).active_tab(),
-            Some(shellrs::app::CenterTab::LocalTerminal(LocalTerminalId(1)))
+            workspace.read(cx).active_pane(),
+            Some(shellrs::app::PaneContent::LocalTerminal(LocalTerminalId(1)))
         );
+    });
+}
+
+/// A notice from a pane of a split tab behind another: clicking it brings
+/// the tab forward, the pane in front of its tab.
+#[gpui_kit::test]
+async fn a_notice_shows_its_pane_in_a_split_tab_behind(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory).await;
+    for id in [2_u64, 3] {
+        in_frame(cx, handle, |window, cx| {
+            window.click("new-local-terminal", cx)
+        });
+        cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+            workspace
+                .read(cx)
+                .local_terminal(LocalTerminalId(id))
+                .is_some_and(|terminal| {
+                    terminal.read(cx).status(cx).lifecycle() == &TerminalLifecycle::Running
+                })
+        })
+        .await;
+    }
+    let pane = |id| shellrs::app::PaneContent::LocalTerminal(LocalTerminalId(id));
+    // 1 and 2 split in one tab, 3 in front on its own.
+    split_beside(
+        cx,
+        handle,
+        &workspace,
+        pane(2),
+        pane(1),
+        gpui_kit::component::Placement::Right,
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        let center = workspace.read(cx).center().clone();
+        center.update(cx, |center, cx| {
+            let tab = center.tab_of(pane(3)).expect("3's tab");
+            center.activate_tab(tab, window, cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    gpui_kit::VisualTestContext::from_window(handle.into(), cx).deactivate_window();
+    print_into(cx, &workspace, 1, "\x1b]9;构建完成\x07");
+    let shown = system_notifications(cx, 1).await;
+    assert_eq!(shown[0].tag.as_ref(), "terminal:local:1");
+    cx.simulate_system_notification_response(gpui_kit::SystemNotificationResponse {
+        tag: shown[0].tag.clone(),
+        action_id: None,
+    });
+    cx.run_until_parked();
+    cx.update(|cx| assert_eq!(workspace.read(cx).active_pane(), Some(pane(1))));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find(("local-terminal", 1_u64)).visible());
+        assert!(window.find(("local-terminal", 2_u64)).visible());
+        assert!(window.try_find(("local-terminal", 3_u64)).is_none());
     });
 }
 
 #[gpui_kit::test]
 async fn a_terminal_in_a_split_beside_rings_without_a_reminder(cx: &mut TestAppContext) {
-    use gpui_kit::component::Placement;
-    use gpui_kit::component::dock::{DockPlacement, InsertTarget, PanelId};
-
     let factory = Arc::new(FakeTerminalFactory::default());
     let (handle, workspace) = open_running_local_terminal(cx, factory).await;
     in_frame(cx, handle, |window, _| window.activate_window());
@@ -1545,43 +1599,26 @@ async fn a_terminal_in_a_split_beside_rings_without_a_reminder(cx: &mut TestAppC
             })
     })
     .await;
-    // The second beside the first.
-    cx.update_window(handle.into(), |_, window, cx| {
-        let panel = PanelId::from(
-            workspace
-                .read(cx)
-                .local_terminal(LocalTerminalId(2))
-                .expect("the second terminal")
-                .entity_id(),
-        );
-        let area = workspace.read(cx).dock_area().clone();
-        area.update(cx, |area, cx| {
-            let node = area
-                .layout(DockPlacement::Center)
-                .and_then(|tree| tree.find_panel_node(panel))
-                .expect("in the center");
-            area.move_panel(
-                panel,
-                InsertTarget::Split {
-                    node,
-                    placement: Placement::Right,
-                    size: None,
-                },
-                window,
-                cx,
-            );
-        });
-    })
-    .unwrap();
-    cx.run_until_parked();
+    // The second beside the first, the first clicked into.
+    split_beside(
+        cx,
+        handle,
+        &workspace,
+        shellrs::app::PaneContent::LocalTerminal(LocalTerminalId(2)),
+        shellrs::app::PaneContent::LocalTerminal(LocalTerminalId(1)),
+        gpui_kit::component::Placement::Right,
+    );
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1_u64), cx)
+    });
     in_frame(cx, handle, |window, _| {
         assert!(window.find(("local-terminal", 1_u64)).visible());
         assert!(window.find(("local-terminal", 2_u64)).visible());
     });
     cx.update(|cx| {
         assert_eq!(
-            workspace.read(cx).active_tab(),
-            Some(shellrs::app::CenterTab::LocalTerminal(LocalTerminalId(1)))
+            workspace.read(cx).active_pane(),
+            Some(shellrs::app::PaneContent::LocalTerminal(LocalTerminalId(1)))
         );
     });
     // In sight, though not the tab in front: the bell says nothing.
@@ -1685,8 +1722,8 @@ async fn a_matching_line_notifies_from_a_terminal_out_of_sight(cx: &mut TestAppC
     in_frame(cx, handle, |window, _| window.activate_window());
     cx.update(|cx| {
         assert_eq!(
-            workspace.read(cx).active_tab(),
-            Some(shellrs::app::CenterTab::LocalTerminal(LocalTerminalId(1)))
+            workspace.read(cx).active_pane(),
+            Some(shellrs::app::PaneContent::LocalTerminal(LocalTerminalId(1)))
         );
     });
     // The program's notice after it comes once the line has been weighed.

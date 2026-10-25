@@ -1,0 +1,31 @@
+_version: 2
+
+center.tab.joined_names:
+  zh-CN: "%{names}、%{name}"
+  en: "%{names}, %{name}"
+center.tab.rename:
+  zh-CN: 重命名标签…
+  en: Rename tab…
+center.tab.close_confirm:
+  zh-CN: "关闭“%{name}”里的 %{count} 个窗格？"
+  en: "Close %{count} panes in “%{name}”?"
+center.tab.close_many_confirm.one:
+  en: "Close %{count} pane?"
+center.tab.close_many_confirm.other:
+  zh-CN: "关闭 %{count} 个窗格？"
+  en: "Close %{count} panes?"
+center.tab.close_description:
+  zh-CN: 标签里的终端会断开，SFTP 和编辑器一起关闭。
+  en: Their terminals disconnect, and their SFTP and editor panes close.
+center.pane.move_to_new_tab:
+  zh-CN: 移到新标签
+  en: Move to new tab
+center.pane.maximize:
+  zh-CN: 放大窗格
+  en: Maximize pane
+center.pane.restore:
+  zh-CN: 还原窗格
+  en: Restore pane
+center.tab.all:
+  zh-CN: 所有标签
+  en: All tabs

@@ -95,10 +95,9 @@ fn settings_open_from_the_host_list_as_one_tab(cx: &mut TestAppContext) {
     })
     .unwrap();
     cx.update(|cx| {
-        let settings = workspace.read(cx).settings_tab().expect("settings open");
-        let group = settings.read(cx).tab_group().unwrap().upgrade().unwrap();
+        assert!(workspace.read(cx).settings_tab().is_some());
         // The two host terminals and a single settings tab.
-        assert_eq!(group.read(cx).panels().len(), 3);
+        assert_eq!(workspace.read(cx).center().read(cx).tab_ids().len(), 3);
     });
 
     // Opening it while it is displayed changes nothing.

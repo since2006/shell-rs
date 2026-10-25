@@ -25,7 +25,7 @@ use gpui_kit::*;
 
 use crate::analytics::Counter;
 use crate::app::{
-    CenterTab, ControlContainers, ControlService, CopyCommand, EndProcess, EnterCommand,
+    ControlContainers, ControlService, CopyCommand, EndProcess, EnterCommand, PaneContent,
     RefreshConnections, RefreshDocker, RefreshGpu, RefreshHistory, RefreshProcesses,
     RefreshServices, RemoveDockerObject, ShowDockerObject, ShowProcess, ShowService, SortProcesses,
     ToggleAllGpuDevices, ToggleDockerProject, ToggleGpuDevice, ToggleMonitorDetail, ToggleTool,
@@ -55,18 +55,18 @@ pub(super) enum ToolTarget {
 }
 
 impl ToolTarget {
-    fn of(tab: CenterTab) -> Option<Self> {
+    fn of(tab: PaneContent) -> Option<Self> {
         match tab {
-            CenterTab::Terminal(id) => Some(Self::Remote(id)),
-            CenterTab::LocalTerminal(id) => Some(Self::Local(id)),
+            PaneContent::Terminal(id) => Some(Self::Remote(id)),
+            PaneContent::LocalTerminal(id) => Some(Self::Local(id)),
             _ => None,
         }
     }
 
-    pub(super) fn tab(self) -> CenterTab {
+    pub(super) fn tab(self) -> PaneContent {
         match self {
-            Self::Remote(id) => CenterTab::Terminal(id),
-            Self::Local(id) => CenterTab::LocalTerminal(id),
+            Self::Remote(id) => PaneContent::Terminal(id),
+            Self::Local(id) => PaneContent::LocalTerminal(id),
         }
     }
 }
@@ -103,7 +103,7 @@ impl Workspace {
     /// The terminal the right sidebar goes with: the one in front last
     /// while it is on screen, else another that is.
     pub(super) fn tool_target(&self, cx: &App) -> Option<ToolTarget> {
-        let visible = self.visible_center_tabs(cx);
+        let visible = self.visible_panes(cx);
         self.tool_target_choice
             .filter(|target| visible.contains(&target.tab()))
             .or_else(|| visible.iter().copied().find_map(ToolTarget::of))
@@ -209,17 +209,17 @@ impl Workspace {
 
     /// Record the center tab in front, and bring the right sidebar in line
     /// with it.
-    pub(super) fn set_active_tab(
+    pub(super) fn set_active_pane(
         &mut self,
-        tab: Option<CenterTab>,
+        tab: Option<PaneContent>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.active_tab = tab;
+        self.active_pane = tab;
         if let Some(target) = tab.and_then(ToolTarget::of) {
             self.tool_target_choice = Some(target);
         }
-        if let Some(CenterTab::LocalTerminal(id)) = tab
+        if let Some(PaneContent::LocalTerminal(id)) = tab
             && self.saved_terminals.contains_key(&id)
         {
             self.front_saved_terminal = Some(id);

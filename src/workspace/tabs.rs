@@ -1,16 +1,24 @@
-//! Moving between the center's tabs from the keyboard: the next one, the
-//! previous one, or one by its position, within the current tab's group.
+//! The center's tabs from the keyboard: the next one, the previous one, or
+//! one by its position; and rearranged by dragging tabs and pane headers.
 
-use gpui_kit::component::dock::TabGroup;
 use gpui_kit::*;
 
-use crate::app::{NextTab, PreviousTab, SwitchToTab};
+use std::rc::Rc;
+
+use crate::app::{
+    ActivatePane, ActivateTab, CloseTab, CloseTabs, MergeTab, MovePane, MovePaneToNewTab, MoveTab,
+    NextTab, PaneContent, PreviousTab, RenameTab, SwitchToTab, ZoomPane,
+};
+use crate::center::TabNaming;
+use crate::i18n::{t, tn};
+use crate::shared::{confirm_danger, open_rename_tab_dialog};
 
 use super::Workspace;
 
 impl Workspace {
     pub(super) fn on_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.step_tab(1, window, cx);
+        self.center
+            .update(cx, |center, cx| center.step(1, window, cx));
     }
 
     pub(super) fn on_previous_tab(
@@ -19,7 +27,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.step_tab(-1, window, cx);
+        self.center
+            .update(cx, |center, cx| center.step(-1, window, cx));
     }
 
     /// From 1; 9 is the last, as in browsers. A position past the last
@@ -30,46 +39,162 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((group, _)) = self.current_tab_group(cx) else {
-            return;
-        };
-        group.update(cx, |group, cx| {
-            let count = group.panels().len();
-            let ix = if action.0 >= 9 {
-                count.checked_sub(1)
-            } else {
-                action.0.checked_sub(1).filter(|ix| *ix < count)
+        self.center
+            .update(cx, |center, cx| center.switch_to(action.0, window, cx));
+    }
+
+    pub(super) fn on_move_pane(
+        &mut self,
+        action: &MovePane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.center.update(cx, |center, cx| {
+            center.move_pane(action.pane, action.onto, action.placement, window, cx);
+        });
+    }
+
+    pub(super) fn on_merge_tab(
+        &mut self,
+        action: &MergeTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.center.update(cx, |center, cx| {
+            center.merge_tab(action.from, action.onto, action.placement, window, cx);
+        });
+    }
+
+    /// At the place asked for, or right after the tab the pane leaves.
+    pub(super) fn on_move_pane_to_new_tab(
+        &mut self,
+        action: &MovePaneToNewTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.center.update(cx, |center, cx| {
+            let Some(from) = center.tab_of(action.pane) else {
+                return;
             };
-            if let Some(ix) = ix {
-                group.select_tab(ix, window, cx);
-            }
+            let ix = action.ix.unwrap_or_else(|| {
+                center
+                    .tab_ids()
+                    .iter()
+                    .position(|tab| *tab == from)
+                    .map_or(usize::MAX, |ix| ix + 1)
+            });
+            center.split_off(action.pane, ix, window, cx);
         });
     }
 
-    /// The tab `step` places away from the current one, around the ends.
-    fn step_tab(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((group, ix)) = self.current_tab_group(cx) else {
+    pub(super) fn on_move_tab(&mut self, action: &MoveTab, _: &mut Window, cx: &mut Context<Self>) {
+        self.center
+            .update(cx, |center, cx| center.move_tab(action.tab, action.ix, cx));
+    }
+
+    /// Close a tab with all its panes, asking first when it holds several.
+    pub(super) fn on_close_tab(
+        &mut self,
+        action: &CloseTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let center = self.center.read(cx);
+        let panes = center.panes(action.0).to_vec();
+        if panes.len() < 2 {
+            self.close_panes(panes, window, cx);
             return;
-        };
-        group.update(cx, |group, cx| {
-            let count = group.panels().len() as isize;
-            if count > 1 {
-                let next = (ix as isize + step).rem_euclid(count) as usize;
-                group.select_tab(next, window, cx);
-            }
-        });
+        }
+        let title = t!(
+            "center.tab.close_confirm",
+            name = center.tab_label(action.0, cx),
+            count = panes.len()
+        );
+        self.confirm_closing(title, panes, window, cx);
     }
 
-    /// The group holding the current center tab, and where in it the tab
-    /// is. Its `select_tab` activates the panel, which reports back to
-    /// `set_active_tab`.
-    fn current_tab_group(&self, cx: &App) -> Option<(Entity<TabGroup>, usize)> {
-        let (group, panel) = self.center_tab_location(self.active_tab?, cx)?;
-        let ix = group
-            .read(cx)
-            .panels()
+    /// The tabs a close command of a tab's menu takes, the tab it was opened
+    /// on being `action.tab`'s. Asks first when one of them holds several
+    /// panes.
+    pub(super) fn on_close_tabs(
+        &mut self,
+        action: &CloseTabs,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let center = self.center.read(cx);
+        let tabs = center.tabs_in_scope(action.tab, action.scope);
+        let several = tabs.iter().any(|tab| center.panes(*tab).len() > 1);
+        let panes: Vec<PaneContent> = tabs
             .iter()
-            .position(|candidate| candidate.panel_id(cx) == panel)?;
-        Some((group, ix))
+            .flat_map(|tab| center.panes(*tab).to_vec())
+            .collect();
+        if several {
+            let title = tn!("center.tab.close_many_confirm", panes.len());
+            self.confirm_closing(title, panes, window, cx);
+        } else {
+            self.close_panes(panes, window, cx);
+        }
+    }
+
+    fn confirm_closing(
+        &self,
+        title: SharedString,
+        panes: Vec<PaneContent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let workspace = cx.weak_entity();
+        confirm_danger(
+            title,
+            Some(t!("center.tab.close_description")),
+            t!("common.close"),
+            Rc::new(move |window, cx| {
+                _ = workspace.update(cx, |workspace, cx| {
+                    workspace.close_panes(panes.clone(), window, cx)
+                });
+            }),
+            window,
+            cx,
+        );
+    }
+
+    pub(super) fn on_rename_tab(
+        &mut self,
+        action: &RenameTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let naming = cx.new(|_| TabNaming::new(self.center.downgrade(), action.0));
+        open_rename_tab_dialog(naming, false, window, cx);
+    }
+
+    pub(super) fn on_zoom_pane(
+        &mut self,
+        action: &ZoomPane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.center
+            .update(cx, |center, cx| center.toggle_zoom(action.0, window, cx));
+    }
+
+    pub(super) fn on_activate_tab(
+        &mut self,
+        action: &ActivateTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.center
+            .update(cx, |center, cx| center.activate_tab(action.0, window, cx));
+    }
+
+    pub(super) fn on_activate_pane(
+        &mut self,
+        action: &ActivatePane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.activate_pane(action.0, window, cx);
     }
 }

@@ -24,8 +24,8 @@ use gpui_kit::*;
 use unicode_width::UnicodeWidthChar as _;
 
 use crate::app::{
-    CatalogIcon, ClearTerminal, CopyTerminal, DismissTerminalFind, FindInTerminal,
-    FindNextInTerminal, FindPreviousInTerminal, PasteTerminal, SelectAllTerminal,
+    CatalogIcon, ChooseComposeTerminals, ClearTerminal, CopyTerminal, DismissTerminalFind,
+    FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, PasteTerminal, SelectAllTerminal,
     ToggleComposePane,
 };
 use crate::connection::{ConnectionPromptReply, Latency};
@@ -1088,6 +1088,10 @@ impl TerminalView {
                     t!("terminal.menu.compose"),
                     compose_shown,
                     Box::new(ToggleComposePane),
+                )
+                .menu(
+                    t!("terminal.menu.send_to_several"),
+                    Box::new(ChooseComposeTerminals),
                 );
             match &owner_items {
                 Some(items) => (items.commands)(menu.separator(), &lifecycle),

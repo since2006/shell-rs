@@ -1,7 +1,7 @@
 //! 设置 › 键盘快捷键, and the tab keys it lists.
 
 use gpui_kit::Keystroke;
-use shellrs::app::{CenterTab, Shortcut};
+use shellrs::app::{PaneContent, Shortcut};
 use shellrs::terminal::RemoteTerminalId;
 
 use crate::support::*;
@@ -20,12 +20,12 @@ fn primary(key: &str) -> String {
     format!("{modifier}-{key}")
 }
 
-fn active_tab(workspace: &Entity<Workspace>, cx: &mut TestAppContext) -> Option<CenterTab> {
-    cx.update(|cx| workspace.read(cx).active_tab())
+fn active_pane(workspace: &Entity<Workspace>, cx: &mut TestAppContext) -> Option<PaneContent> {
+    cx.update(|cx| workspace.read(cx).active_pane())
 }
 
-fn terminal(id: u64) -> Option<CenterTab> {
-    Some(CenterTab::Terminal(RemoteTerminalId(id)))
+fn terminal(id: u64) -> Option<PaneContent> {
+    Some(PaneContent::Terminal(RemoteTerminalId(id)))
 }
 
 /// Open 设置 › 键盘快捷键, the fifth category.
@@ -65,7 +65,7 @@ fn tabs_are_switched_from_the_keyboard(cx: &mut TestAppContext) {
     in_frame(cx, handle, |window, cx| {
         window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
     });
-    assert_eq!(active_tab(&workspace, cx), terminal(INITIAL_WEB_TERMINAL));
+    assert_eq!(active_pane(&workspace, cx), terminal(INITIAL_WEB_TERMINAL));
 
     let switch = default_keys("switch-to-tab");
     let press = |keys: String, cx: &mut TestAppContext| {
@@ -73,28 +73,28 @@ fn tabs_are_switched_from_the_keyboard(cx: &mut TestAppContext) {
     };
     press(default_keys("next-tab").into(), cx);
     assert_eq!(
-        active_tab(&workspace, cx),
+        active_pane(&workspace, cx),
         terminal(INITIAL_STAGING_TERMINAL)
     );
     // Around the end and back.
     press(default_keys("next-tab").into(), cx);
-    assert_eq!(active_tab(&workspace, cx), terminal(INITIAL_WEB_TERMINAL));
+    assert_eq!(active_pane(&workspace, cx), terminal(INITIAL_WEB_TERMINAL));
     press(default_keys("previous-tab").into(), cx);
     assert_eq!(
-        active_tab(&workspace, cx),
+        active_pane(&workspace, cx),
         terminal(INITIAL_STAGING_TERMINAL)
     );
     press(switch.into(), cx);
-    assert_eq!(active_tab(&workspace, cx), terminal(INITIAL_WEB_TERMINAL));
+    assert_eq!(active_pane(&workspace, cx), terminal(INITIAL_WEB_TERMINAL));
     // 9 is the last; past the last, nothing.
     press(switch.replace('1', "9"), cx);
     assert_eq!(
-        active_tab(&workspace, cx),
+        active_pane(&workspace, cx),
         terminal(INITIAL_STAGING_TERMINAL)
     );
     press(switch.replace('1', "5"), cx);
     assert_eq!(
-        active_tab(&workspace, cx),
+        active_pane(&workspace, cx),
         terminal(INITIAL_STAGING_TERMINAL)
     );
 }
@@ -125,13 +125,13 @@ fn a_shortcut_takes_the_keys_pressed_for_it(cx: &mut TestAppContext) {
 
     // The new keys move on from the settings tab, the last, to the first;
     // the old ones no longer do anything.
-    assert_eq!(active_tab(&workspace, cx), Some(CenterTab::Settings));
+    assert_eq!(active_pane(&workspace, cx), Some(PaneContent::Settings));
     in_frame(cx, handle, |window, cx| window.press(&primary("j"), cx));
-    assert_eq!(active_tab(&workspace, cx), terminal(INITIAL_WEB_TERMINAL));
+    assert_eq!(active_pane(&workspace, cx), terminal(INITIAL_WEB_TERMINAL));
     in_frame(cx, handle, |window, cx| {
         window.press(default_keys("next-tab"), cx)
     });
-    assert_eq!(active_tab(&workspace, cx), terminal(INITIAL_WEB_TERMINAL));
+    assert_eq!(active_pane(&workspace, cx), terminal(INITIAL_WEB_TERMINAL));
 }
 
 #[gpui_kit::test]
@@ -150,7 +150,7 @@ fn a_shortcut_turned_off_does_nothing_until_put_back(cx: &mut TestAppContext) {
         assert_eq!(window.find("shortcut-keys-next-tab").label(), Some("无"));
         window.press(default_keys("next-tab"), cx);
     });
-    assert_eq!(active_tab(&workspace, cx), Some(CenterTab::Settings));
+    assert_eq!(active_pane(&workspace, cx), Some(PaneContent::Settings));
 
     in_frame(cx, handle, |window, cx| {
         window.click("shortcut-reset-next-tab", cx)
@@ -159,7 +159,7 @@ fn a_shortcut_turned_off_does_nothing_until_put_back(cx: &mut TestAppContext) {
     in_frame(cx, handle, |window, cx| {
         window.press(default_keys("next-tab"), cx)
     });
-    assert_eq!(active_tab(&workspace, cx), terminal(INITIAL_WEB_TERMINAL));
+    assert_eq!(active_pane(&workspace, cx), terminal(INITIAL_WEB_TERMINAL));
 }
 
 #[gpui_kit::test]
@@ -189,7 +189,7 @@ fn keys_that_are_taken_or_plain_are_refused_and_escape_gives_up(cx: &mut TestApp
     in_frame(cx, handle, |window, cx| {
         assert_eq!(window.notifications(cx).len(), 4);
     });
-    assert_eq!(active_tab(&workspace, cx), Some(CenterTab::Settings));
+    assert_eq!(active_pane(&workspace, cx), Some(PaneContent::Settings));
     in_frame(cx, handle, |window, cx| window.press("escape", cx));
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find("shortcut-recorder-next-tab").is_none());

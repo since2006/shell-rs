@@ -4,7 +4,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::{DialogAction, DialogFooter},
-    dock::{BasePanel, Panel, PanelEvent, TabGroup},
+    dock::{BasePanel, Panel, PanelEvent},
     h_flex,
     input::{Editor, EditorState, InputEvent, Position, Rope, RopeExt as _},
     menu::PopupMenu,
@@ -16,8 +16,8 @@ use gpui_kit::*;
 
 use super::{EditorId, EditorKey, cursor_label, format_label, indentation, language_for};
 use crate::app::{
-    CatalogIcon, CenterTab, CloseEditor, EDITOR_CONTEXT, EditorAction, EditorCommand,
-    EditorShortcut,
+    CatalogIcon, CloseEditor, EDITOR_CONTEXT, EditorAction, EditorCommand, EditorShortcut,
+    PaneContent,
 };
 use crate::explorer::{ExplorerId, ExplorerPanel, FileLocation};
 use crate::host::{Host, HostId};
@@ -26,7 +26,9 @@ use crate::sftp::{
     FileStamp, ReadFailure, SaveFailure, SharedLocalDirectoryProvider, TextFile, TextFormat,
     read_local_text, write_local_text,
 };
-use crate::shared::{ClosableTabTitle, HostMark, close_tab_items, confirm_danger, soft_tag};
+use crate::shared::{
+    CenterPane, ClosableTabTitle, HostMark, close_tab_items, confirm_danger, soft_tag,
+};
 
 /// Where an editor reads and writes its file. A remote file goes through
 /// the SFTP tab that opened it, over that tab's connection; a local one
@@ -83,7 +85,6 @@ pub struct EditorPanel {
     /// The workspace's focus handle, which commands from dialogs and
     /// buttons are dispatched on.
     dispatch: FocusHandle,
-    tab_group: Option<WeakEntity<TabGroup>>,
     _task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -137,7 +138,6 @@ impl EditorPanel {
             close_after_save: false,
             cursor: Position::default(),
             dispatch,
-            tab_group: None,
             _task: None,
             _subscriptions: subscriptions,
         }
@@ -180,9 +180,6 @@ impl EditorPanel {
     }
     pub fn state(&self) -> &Entity<EditorState> {
         &self.state
-    }
-    pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
-        self.tab_group.clone()
     }
     pub fn contains_focus(&self, window: &Window, cx: &App) -> bool {
         self.state
@@ -615,21 +612,22 @@ impl BasePanel for EditorPanel {
             cx.emit(EditorPanelEvent::Activated(self.id));
         }
     }
+}
 
-    fn on_added_to(&mut self, group: WeakEntity<TabGroup>, _: &mut Window, _: &mut Context<Self>) {
-        self.tab_group = Some(group);
-    }
-
-    fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.tab_group = None;
+impl CenterPane for EditorPanel {
+    fn close(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         self._task = None;
         cx.emit(EditorPanelEvent::Closed(self.id));
     }
 }
 
 impl Panel for EditorPanel {
-    fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (id, group, panel) = (self.id, self.tab_group.clone(), cx.entity_id());
+    fn tab_name(&self, _: &App) -> Option<SharedString> {
+        Some(self.name().into())
+    }
+
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let id = self.id;
         ClosableTabTitle::new(
             ("editor-tab", id.0),
             Icon::new(CatalogIcon::FileText).small(),
@@ -637,7 +635,7 @@ impl Panel for EditorPanel {
         )
         .modified(self.dirty)
         .closable(("close-editor", id.0), Box::new(CloseEditor(id)))
-        .context_menu(move |menu, _, cx| tab_menu(menu, id, group.clone(), panel, cx))
+        .context_menu(move |menu, _, cx| tab_menu(menu, id, cx))
     }
 
     fn dropdown_menu(
@@ -646,7 +644,7 @@ impl Panel for EditorPanel {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        tab_menu(menu, self.id, self.tab_group.clone(), cx.entity_id(), cx)
+        tab_menu(menu, self.id, cx)
     }
 
     fn inner_padding(&self, _: &App) -> bool {
@@ -656,13 +654,7 @@ impl Panel for EditorPanel {
 
 /// The commands of an editor tab, shared by its context menu and the tab
 /// bar's 「…」 menu.
-fn tab_menu(
-    menu: PopupMenu,
-    id: EditorId,
-    group: Option<WeakEntity<TabGroup>>,
-    panel: EntityId,
-    cx: &App,
-) -> PopupMenu {
+fn tab_menu(menu: PopupMenu, id: EditorId, cx: &App) -> PopupMenu {
     let action = |command| Box::new(EditorAction::new(id, command));
     let menu = menu
         .menu_with_icon(
@@ -680,7 +672,7 @@ fn tab_menu(
             action(EditorCommand::CopyPath),
         )
         .separator();
-    close_tab_items(menu, CenterTab::Editor(id), group, panel, cx)
+    close_tab_items(menu, PaneContent::Editor(id), cx)
 }
 
 impl Render for EditorPanel {

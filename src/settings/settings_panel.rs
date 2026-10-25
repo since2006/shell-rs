@@ -4,7 +4,7 @@ use std::rc::Rc;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
-    dock::{BasePanel, Panel, PanelEvent, TabGroup},
+    dock::{BasePanel, Panel, PanelEvent},
     group_box::GroupBoxVariant,
     h_flex,
     label::Label,
@@ -21,15 +21,15 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CenterTab, CheckForUpdates, CloseSettings, CopyAgentSkill, DownloadUpdate,
-    InstallAgentSkill, InstallCliCommand, OpenDownloadPage, OpenWebsite, RefreshCliIntegration,
+    CatalogIcon, CheckForUpdates, CloseSettings, CopyAgentSkill, DownloadUpdate, InstallAgentSkill,
+    InstallCliCommand, OpenDownloadPage, OpenWebsite, PaneContent, RefreshCliIntegration,
     RemoveAgentSkill, RemoveCliCommand, ShowUpdate,
 };
 use crate::cli::{AgentKind, BinaryStatus, CliIntegration, IntegrationStatus, SkillStatus};
 use crate::explorer::{FileIcon, FileIconKind};
 use crate::i18n::t;
 use crate::sftp::{DEFAULT_PARALLEL_TRANSFERS, PARALLEL_TRANSFERS_RANGE};
-use crate::shared::{ClosableTabTitle, close_tab_items};
+use crate::shared::{CenterPane, ClosableTabTitle, close_tab_items};
 use crate::sync::SyncService;
 use crate::terminal::{
     FONT_SIZE_RANGE, LINE_HEIGHT_RANGE, TerminalColors, TerminalFont, TerminalFontPreview,
@@ -83,7 +83,6 @@ pub struct SettingsPanel {
     /// page header records the category it draws.
     shown_category: Rc<Cell<usize>>,
     focus_handle: FocusHandle,
-    tab_group: Option<WeakEntity<TabGroup>>,
     _subscriptions: [Subscription; 6],
     _font_scan: Task<()>,
 }
@@ -131,14 +130,9 @@ impl SettingsPanel {
             font_families: &[],
             shown_category: Rc::default(),
             focus_handle: cx.focus_handle(),
-            tab_group: None,
             _subscriptions: subscriptions,
             _font_scan: font_scan,
         }
-    }
-
-    pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
-        self.tab_group.clone()
     }
 
     /// Take the focus, and tell the workspace this is the tab ⌘W closes.
@@ -174,27 +168,27 @@ impl BasePanel for SettingsPanel {
             self.show(window, cx);
         }
     }
+}
 
-    fn on_added_to(&mut self, group: WeakEntity<TabGroup>, _: &mut Window, _: &mut Context<Self>) {
-        self.tab_group = Some(group);
-    }
-
-    fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.tab_group = None;
+impl CenterPane for SettingsPanel {
+    fn close(&mut self, _: &mut Window, cx: &mut Context<Self>) {
         cx.emit(SettingsPanelEvent::Closed);
     }
 }
 
 impl Panel for SettingsPanel {
-    fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (group, panel) = (self.tab_group.clone(), cx.entity_id());
+    fn tab_name(&self, _: &App) -> Option<SharedString> {
+        Some(t!("settings.tab.title"))
+    }
+
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         ClosableTabTitle::new(
             "settings-tab",
             Icon::new(CatalogIcon::Settings).small(),
             t!("settings.tab.title"),
         )
         .closable("close-settings", Box::new(CloseSettings))
-        .context_menu(move |menu, _, cx| tab_menu(menu, group.clone(), panel, cx))
+        .context_menu(move |menu, _, cx| tab_menu(menu, cx))
     }
 
     fn dropdown_menu(
@@ -203,7 +197,7 @@ impl Panel for SettingsPanel {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> PopupMenu {
-        tab_menu(menu, self.tab_group.clone(), cx.entity_id(), cx)
+        tab_menu(menu, cx)
     }
 
     fn inner_padding(&self, _: &App) -> bool {
@@ -1485,11 +1479,6 @@ fn choice_field<T: Choice>(
 
 /// The settings tab's commands, shared by its context menu and the tab bar's
 /// 「…」 menu: only the close family.
-fn tab_menu(
-    menu: PopupMenu,
-    group: Option<WeakEntity<TabGroup>>,
-    panel: EntityId,
-    cx: &App,
-) -> PopupMenu {
-    close_tab_items(menu, CenterTab::Settings, group, panel, cx)
+fn tab_menu(menu: PopupMenu, cx: &App) -> PopupMenu {
+    close_tab_items(menu, PaneContent::Settings, cx)
 }
