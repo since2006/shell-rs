@@ -17,7 +17,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::drag::{DragPreview, Dragged};
+use super::drag::{DragPreview, Dragged, Drops};
 use super::pane_controls::pane_controls;
 use super::pane_view::PaneView;
 use crate::i18n::t;
@@ -27,6 +27,10 @@ pub(super) struct PaneSkin {
     /// Whether the tab holds more than one pane, which the view keeps in
     /// step with the tab.
     headers: Rc<Cell<bool>>,
+    /// Where a pane dragged by its header says it is dragged.
+    dragging: Rc<Cell<Option<Dragged>>>,
+    /// The drops that would do something, which alone show where they land.
+    drops: Drops,
 }
 
 impl PaneSkin {
@@ -34,6 +38,8 @@ impl PaneSkin {
     /// pane headers.
     pub(super) fn dock_area(
         id: SharedString,
+        dragging: Rc<Cell<Option<Dragged>>>,
+        drops: Drops,
         window: &mut Window,
         cx: &mut App,
     ) -> (Entity<DockArea>, Rc<Cell<bool>>) {
@@ -42,6 +48,8 @@ impl PaneSkin {
             let skin = Self {
                 skin: DockSkin::new(cx),
                 headers: headers.clone(),
+                dragging,
+                drops,
             };
             DockArea::new(id, None, window, cx).with_renderer(Rc::new(skin))
         });
@@ -91,6 +99,9 @@ impl DockAreaRenderer for PaneSkin {
         Rc::new(PaneHeader {
             skin: self.skin.tab_group_renderer(),
             headers: self.headers.clone(),
+            dragging: self.dragging.clone(),
+            drops: self.drops.clone(),
+            refused: Cell::new(false),
         })
     }
 
@@ -102,6 +113,11 @@ impl DockAreaRenderer for PaneSkin {
 struct PaneHeader {
     skin: Rc<dyn TabGroupRenderer>,
     headers: Rc<Cell<bool>>,
+    dragging: Rc<Cell<Option<Dragged>>>,
+    drops: Drops,
+    /// Whether the drop the group being drawn shows would do nothing: its
+    /// content frame is asked first, then its drop indicator.
+    refused: Cell<bool>,
 }
 
 impl TabGroupRenderer for PaneHeader {
@@ -128,6 +144,14 @@ impl TabGroupRenderer for PaneHeader {
         window: &mut Window,
         cx: &mut App,
     ) -> Stateful<Div> {
+        let pane = group
+            .active_panel()
+            .and_then(PaneView::of)
+            .map(PaneView::pane);
+        let refused = group.drop_indicator().is_some_and(|indicator| {
+            pane.is_none_or(|pane| !self.drops.allows(pane, indicator.placement()))
+        });
+        self.refused.set(refused);
         self.skin.content_frame(group, window, cx)
     }
 
@@ -149,6 +173,7 @@ impl TabGroupRenderer for PaneHeader {
         };
         let title = pane.handle().title(window, cx);
         let label = pane.handle().tab_name(cx).unwrap_or_default();
+        let dragging = self.dragging.clone();
         h_flex()
             .id(("pane-header", id))
             .test_support()
@@ -156,7 +181,10 @@ impl TabGroupRenderer for PaneHeader {
             // tab of its own on the tab bar.
             .on_drag(
                 AnyDrag::new(Dragged::Pane(pane.pane())),
-                move |_, _, _, cx| cx.new(|_| DragPreview::new(label.clone())),
+                move |dragged: &AnyDrag, _, _, cx| {
+                    dragging.set(dragged.value().downcast_ref::<Dragged>().copied());
+                    cx.new(|_| DragPreview::new(label.clone()))
+                },
             )
             .flex_shrink_0()
             .w_full()
@@ -198,12 +226,16 @@ impl TabGroupRenderer for PaneHeader {
         self.skin.render_active_panel(panel, group, window, cx)
     }
 
+    /// Only a drop that would do something shows where it lands.
     fn render_drop_indicator(
         &self,
         indicator: DropIndicator,
         window: &mut Window,
         cx: &mut App,
     ) -> Option<AnyElement> {
+        if self.refused.take() {
+            return None;
+        }
         self.skin.render_drop_indicator(indicator, window, cx)
     }
 

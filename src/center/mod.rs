@@ -3,6 +3,7 @@
 //! window can hold one.
 
 mod drag;
+pub mod layout;
 pub mod model;
 mod naming;
 mod pane_controls;
@@ -12,11 +13,12 @@ mod places;
 mod tab_bar;
 mod view;
 
+pub use layout::Layout;
 pub use model::{PaneKind, TabId, TabTitle, Tabs};
 pub use naming::TabNaming;
 pub use places::{TabPlace, tab_place};
 pub use tab_bar::LeadingControls;
-pub use view::{CenterEvent, CenterView};
+pub use view::{CenterEvent, CenterView, split_items};
 
 use crate::app::PaneContent;
 

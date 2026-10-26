@@ -687,6 +687,40 @@ pub struct MergeTab {
     pub placement: gpui_kit::component::Placement,
 }
 
+/// Put `pane` along the whole `placement` side of `tab`: a tab or a pane
+/// header dropped on the middle of another tab, or a tab chosen to go
+/// beside one (向右分屏…, 向下分屏…).
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct JoinTab {
+    pub pane: PaneContent,
+    pub tab: crate::center::TabId,
+    pub placement: gpui_kit::component::Placement,
+}
+
+/// Two panes of a tab trade places: a pane header dropped on the middle of
+/// another pane.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct SwapPanes {
+    pub pane: PaneContent,
+    pub with: PaneContent,
+}
+
+/// 均分窗格: every row and column of a tab shares its space equally.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct EqualizePanes(pub crate::center::TabId);
+
+/// 向右分屏…, 向下分屏…: choose, from a menu where the pointer is, a tab to
+/// put along the `placement` side of `tab`.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct ChooseTabToJoin {
+    pub tab: crate::center::TabId,
+    pub placement: gpui_kit::component::Placement,
+}
+
 /// Give `pane` a tab of its own: 移到新标签, or a pane header dropped on the
 /// tab bar. At `ix` among the tabs, or right after its tab.
 #[derive(Action, Clone, PartialEq, Eq)]

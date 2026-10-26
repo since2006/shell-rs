@@ -52,6 +52,16 @@ fn near(bounds: gpui_kit::Bounds<Pixels>, side: Placement) -> Point<Pixels> {
     }
 }
 
+/// At one end of a tab, where a tab dropped moves along the bar.
+fn near_end(bounds: gpui_kit::Bounds<Pixels>, side: Placement) -> Point<Pixels> {
+    let inset = px(4.);
+    let center = bounds.center();
+    match side {
+        Placement::Left => point(bounds.left() + inset, center.y),
+        _ => point(bounds.right() - inset, center.y),
+    }
+}
+
 fn press(window: &mut gpui_kit::Window, at: Point<Pixels>, cx: &mut App) {
     window.dispatch_event(
         MouseDownEvent {
@@ -263,21 +273,22 @@ fn tabs_move_along_the_bar_and_one_of_several_panes_joins_no_other(cx: &mut Test
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(NewLocalTerminal), cx)
     });
-    // The local terminal's tab onto web-01's: in its place.
+    // The local terminal's tab onto the left end of web-01's: before it.
     in_frame(cx, handle, |window, cx| {
-        window.drag_to(
-            ("local-terminal-tab", 1_u64),
-            ("terminal-tab", INITIAL_WEB_TERMINAL),
-            cx,
-        )
+        let start = window.find(("local-terminal-tab", 1_u64)).bounds().center();
+        let end = near_end(
+            window.find(("terminal-tab", INITIAL_WEB_TERMINAL)).bounds(),
+            Placement::Left,
+        );
+        window.drag(start, end, cx);
     });
     assert_eq!(
         layout(cx, &workspace),
         [vec![LOCAL], vec![WEB], vec![STAGING]]
     );
 
-    // A tab of two panes, dragged onto a pane, stays as it is; onto a tab,
-    // it moves there.
+    // A tab of two panes, dragged onto a pane, stays as it is; onto either
+    // end of a tab, it moves there.
     split_beside(cx, handle, &workspace, STAGING, WEB, Placement::Right);
     let split = tab_of(cx, &workspace, WEB);
     in_frame(cx, handle, |window, cx| {
@@ -294,7 +305,10 @@ fn tabs_move_along_the_bar_and_one_of_several_panes_joins_no_other(cx: &mut Test
     assert_eq!(layout(cx, &workspace), [vec![LOCAL], vec![WEB, STAGING]]);
     in_frame(cx, handle, |window, cx| {
         let start = window.find(("pane-tab", split.0)).bounds().center();
-        let end = window.find(("local-terminal-tab", 1_u64)).bounds().center();
+        let end = near_end(
+            window.find(("local-terminal-tab", 1_u64)).bounds(),
+            Placement::Left,
+        );
         window.drag(start, end, cx);
     });
     assert_eq!(layout(cx, &workspace), [vec![WEB, STAGING], vec![LOCAL]]);
@@ -584,5 +598,311 @@ fn the_tab_bar_switches_the_compose_pane(cx: &mut TestAppContext) {
     });
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find("compose-pane").is_none());
+    });
+}
+
+fn bounds_of(window: &mut gpui_kit::Window, pane: PaneContent) -> gpui_kit::Bounds<Pixels> {
+    match pane {
+        PaneContent::Terminal(id) => window.find(("terminal", id.0)).bounds(),
+        PaneContent::LocalTerminal(id) => window.find(("local-terminal", id.0)).bounds(),
+        other => panic!("no element for {other:?}"),
+    }
+}
+
+/// About the same size, within the width of a divider or two.
+fn about(a: Pixels, b: Pixels) -> bool {
+    (a - b).abs() <= px(8.)
+}
+
+fn open_local_terminals(cx: &mut TestAppContext, handle: WindowHandle<Root>, count: usize) {
+    for _ in 0..count {
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_action(Box::new(NewLocalTerminal), cx)
+        });
+    }
+}
+
+const LOCAL_2: PaneContent = PaneContent::LocalTerminal(LocalTerminalId(2));
+const LOCAL_3: PaneContent = PaneContent::LocalTerminal(LocalTerminalId(3));
+
+/// In a grid of four, a pane moved beside another joins that pane's row,
+/// which then shares its space equally: no pane is left a sliver, as the
+/// dock left them when it sized rows itself.
+#[gpui_kit::test]
+fn moving_panes_in_a_grid_shares_the_space_equally(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    open_local_terminals(cx, handle, 2);
+    // web-01 and staging-api above, the two local terminals below.
+    split_beside(cx, handle, &workspace, STAGING, WEB, Placement::Right);
+    split_beside(cx, handle, &workspace, LOCAL, WEB, Placement::Bottom);
+    split_beside(cx, handle, &workspace, LOCAL_2, STAGING, Placement::Bottom);
+
+    // The first local terminal to the right of web-01: three columns.
+    split_beside(cx, handle, &workspace, LOCAL, WEB, Placement::Right);
+    in_frame(cx, handle, |window, _| {
+        let [web, local, staging, local_2] =
+            [WEB, LOCAL, STAGING, LOCAL_2].map(|pane| bounds_of(window, pane));
+        assert!(web.right() <= local.left() && local.right() <= staging.left());
+        assert!(about(web.size.width, local.size.width));
+        assert!(about(web.size.width, staging.size.width));
+        assert!(about(staging.size.width, local_2.size.width));
+        assert!(staging.bottom() <= local_2.top());
+        assert!(about(web.size.height, local.size.height));
+    });
+
+    // Then staging-api below web-01: the second local terminal has its
+    // column to itself, and web-01 and staging-api share theirs.
+    split_beside(cx, handle, &workspace, STAGING, WEB, Placement::Bottom);
+    assert_eq!(layout(cx, &workspace), [vec![WEB, STAGING, LOCAL, LOCAL_2]]);
+    in_frame(cx, handle, |window, _| {
+        let [web, staging, local, local_2] =
+            [WEB, STAGING, LOCAL, LOCAL_2].map(|pane| bounds_of(window, pane));
+        assert!(web.bottom() <= staging.top());
+        assert!(about(web.size.height, staging.size.height));
+        for column in [local, local_2] {
+            assert!(about(web.size.width, column.size.width));
+            assert!(column.size.height > web.size.height * 1.8);
+        }
+    });
+
+    // 均分窗格 leaves an even layout as it is, and every pane connected.
+    let tab = tab_of(cx, &workspace, WEB);
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(shellrs::app::EqualizePanes(tab)), cx)
+    });
+    assert_eq!(layout(cx, &workspace), [vec![WEB, STAGING, LOCAL, LOCAL_2]]);
+}
+
+#[gpui_kit::test]
+fn a_pane_dropped_on_the_middle_of_another_trades_places_with_it(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    split_beside(cx, handle, &workspace, STAGING, WEB, Placement::Right);
+    in_frame(cx, handle, |window, cx| {
+        let start = window
+            .find(("terminal-tab", INITIAL_STAGING_TERMINAL))
+            .bounds()
+            .center();
+        let end = window
+            .find(("terminal", INITIAL_WEB_TERMINAL))
+            .bounds()
+            .center();
+        window.drag(start, end, cx);
+    });
+    assert_eq!(layout(cx, &workspace), [vec![STAGING, WEB]]);
+    in_frame(cx, handle, |window, _| {
+        let [staging, web] = [STAGING, WEB].map(|pane| bounds_of(window, pane));
+        assert!(staging.right() <= web.left());
+        assert!(about(staging.size.width, web.size.width));
+    });
+    let active = cx.read(|cx| workspace.read(cx).active_pane());
+    assert_eq!(active, Some(STAGING));
+}
+
+/// A tab dropped on the middle of another goes into it, along its right
+/// side; on either end of it, the tab moves along the bar.
+#[gpui_kit::test]
+fn a_tab_dropped_on_the_middle_of_another_joins_it(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    open_local_terminals(cx, handle, 1);
+    in_frame(cx, handle, |window, cx| {
+        let start = window.find(("local-terminal-tab", 1_u64)).bounds().center();
+        let end = near_end(
+            window
+                .find(("terminal-tab", INITIAL_STAGING_TERMINAL))
+                .bounds(),
+            Placement::Right,
+        );
+        window.drag(start, end, cx);
+    });
+    assert_eq!(
+        layout(cx, &workspace),
+        [vec![WEB], vec![STAGING], vec![LOCAL]]
+    );
+    in_frame(cx, handle, |window, cx| {
+        let start = window.find(("local-terminal-tab", 1_u64)).bounds().center();
+        let end = near_end(
+            window
+                .find(("terminal-tab", INITIAL_STAGING_TERMINAL))
+                .bounds(),
+            Placement::Left,
+        );
+        window.drag(start, end, cx);
+    });
+    assert_eq!(
+        layout(cx, &workspace),
+        [vec![WEB], vec![LOCAL], vec![STAGING]]
+    );
+
+    in_frame(cx, handle, |window, cx| {
+        window.drag_to(
+            ("local-terminal-tab", 1_u64),
+            ("terminal-tab", INITIAL_STAGING_TERMINAL),
+            cx,
+        )
+    });
+    assert_eq!(layout(cx, &workspace), [vec![WEB], vec![STAGING, LOCAL]]);
+    assert_eq!(front(cx, &workspace), Some(tab_of(cx, &workspace, LOCAL)));
+    in_frame(cx, handle, |window, _| {
+        let [staging, local] = [STAGING, LOCAL].map(|pane| bounds_of(window, pane));
+        assert!(staging.right() <= local.left());
+    });
+}
+
+/// Held over the middle of a tab of several panes, a tab brings it forward,
+/// and can then be dropped beside any of its panes.
+#[gpui_kit::test]
+async fn a_tab_held_over_a_split_tab_brings_it_forward_to_drop_into(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    open_local_terminals(cx, handle, 1);
+    split_beside(cx, handle, &workspace, STAGING, WEB, Placement::Right);
+    let split = tab_of(cx, &workspace, WEB);
+    assert_eq!(layout(cx, &workspace), [vec![WEB, STAGING], vec![LOCAL]]);
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(shellrs::app::SwitchToTab(2)), cx)
+    });
+    assert_eq!(front(cx, &workspace), Some(tab_of(cx, &workspace, LOCAL)));
+
+    in_frame(cx, handle, |window, cx| {
+        let start = window.find(("local-terminal-tab", 1_u64)).bounds().center();
+        let tab = window.find(("pane-tab", split.0)).bounds().center();
+        press(window, start, cx);
+        drag_to(window, point(start.x + px(20.), start.y + px(20.)), cx);
+        drag_to(window, tab, cx);
+    });
+    cx.background_executor
+        .advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    assert_eq!(front(cx, &workspace), Some(split));
+
+    in_frame(cx, handle, |window, cx| {
+        let end = near(
+            window.find(("terminal", INITIAL_WEB_TERMINAL)).bounds(),
+            Placement::Bottom,
+        );
+        drag_to(window, end, cx);
+        release(window, end, cx);
+    });
+    assert_eq!(layout(cx, &workspace), [vec![WEB, LOCAL, STAGING]]);
+    in_frame(cx, handle, |window, _| {
+        let [web, local] = [WEB, LOCAL].map(|pane| bounds_of(window, pane));
+        assert!(web.bottom() <= local.top());
+    });
+}
+
+/// The tab in front dropped on a side of its own pane: 选择标签 asks which
+/// tab goes there, and the tab chosen does.
+#[gpui_kit::test]
+fn a_tab_dropped_on_its_own_pane_asks_which_tab_goes_there(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    assert_eq!(front(cx, &workspace), Some(tab_of(cx, &workspace, WEB)));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("popup-menu").is_none());
+    });
+    drag_onto(
+        cx,
+        handle,
+        ("terminal-tab", INITIAL_WEB_TERMINAL),
+        ("terminal", INITIAL_WEB_TERMINAL),
+        Placement::Right,
+    );
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("popup-menu").visible());
+    });
+    assert_eq!(layout(cx, &workspace), [vec![WEB], vec![STAGING]]);
+
+    // What choosing staging-api's tab does.
+    let tab = tab_of(cx, &workspace, WEB);
+    let join = shellrs::app::JoinTab {
+        pane: STAGING,
+        tab,
+        placement: Placement::Right,
+    };
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(join.clone()), cx)
+    });
+    assert_eq!(layout(cx, &workspace), [vec![WEB, STAGING]]);
+
+    // 向下分屏… asks the same.
+    open_local_terminals(cx, handle, 1);
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(shellrs::app::ChooseTabToJoin {
+                tab,
+                placement: Placement::Bottom,
+            }),
+            cx,
+        )
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("popup-menu").visible());
+    });
+}
+
+/// A drop that would leave a pane too small to use does nothing: past four
+/// columns in this window, a fifth would.
+#[gpui_kit::test]
+fn nothing_lands_where_a_pane_would_be_too_small(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    open_local_terminals(cx, handle, 3);
+    split_beside(cx, handle, &workspace, STAGING, WEB, Placement::Right);
+    split_beside(cx, handle, &workspace, LOCAL, STAGING, Placement::Right);
+    split_beside(cx, handle, &workspace, LOCAL_2, LOCAL, Placement::Right);
+    let row = vec![WEB, STAGING, LOCAL, LOCAL_2];
+    assert_eq!(layout(cx, &workspace), [row.clone(), vec![LOCAL_3]]);
+
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(shellrs::app::SwitchToTab(1)), cx)
+    });
+    let local_3_tab = ("local-terminal-tab", 3_u64);
+    drag_onto(
+        cx,
+        handle,
+        local_3_tab,
+        ("local-terminal", 2_u64),
+        Placement::Right,
+    );
+    assert_eq!(layout(cx, &workspace), [row.clone(), vec![LOCAL_3]]);
+
+    // Below one of them there is room.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(shellrs::app::SwitchToTab(1)), cx)
+    });
+    drag_onto(
+        cx,
+        handle,
+        local_3_tab,
+        ("local-terminal", 2_u64),
+        Placement::Bottom,
+    );
+    assert_eq!(
+        layout(cx, &workspace),
+        [vec![WEB, STAGING, LOCAL, LOCAL_2, LOCAL_3]]
+    );
+}
+
+/// A pane closing gives its space to the rest of its row.
+#[gpui_kit::test]
+fn a_pane_closing_gives_its_space_to_its_row(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    open_local_terminals(cx, handle, 1);
+    split_beside(cx, handle, &workspace, STAGING, WEB, Placement::Right);
+    split_beside(cx, handle, &workspace, LOCAL, STAGING, Placement::Right);
+    in_frame(cx, handle, |window, _| {
+        let [web, staging, local] = [WEB, STAGING, LOCAL].map(|pane| bounds_of(window, pane));
+        assert!(about(web.size.width, staging.size.width));
+        assert!(about(web.size.width, local.size.width));
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(shellrs::app::CloseTerminal(RemoteTerminalId(
+                INITIAL_STAGING_TERMINAL,
+            ))),
+            cx,
+        )
+    });
+    assert_eq!(layout(cx, &workspace), [vec![WEB, LOCAL]]);
+    in_frame(cx, handle, |window, _| {
+        let [web, local] = [WEB, LOCAL].map(|pane| bounds_of(window, pane));
+        assert!(about(web.size.width, local.size.width));
     });
 }

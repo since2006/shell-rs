@@ -6,8 +6,9 @@ use gpui_kit::*;
 use std::rc::Rc;
 
 use crate::app::{
-    ActivatePane, ActivateTab, CloseTab, CloseTabs, MergeTab, MovePane, MovePaneToNewTab, MoveTab,
-    NextTab, PaneContent, PreviousTab, RenameTab, SwitchToTab, ZoomPane,
+    ActivatePane, ActivateTab, ChooseTabToJoin, CloseTab, CloseTabs, EqualizePanes, JoinTab,
+    MergeTab, MovePane, MovePaneToNewTab, MoveTab, NextTab, PaneContent, PreviousTab, RenameTab,
+    SwapPanes, SwitchToTab, ZoomPane,
 };
 use crate::center::TabNaming;
 use crate::i18n::{t, tn};
@@ -62,6 +63,52 @@ impl Workspace {
     ) {
         self.center.update(cx, |center, cx| {
             center.merge_tab(action.from, action.onto, action.placement, window, cx);
+        });
+    }
+
+    pub(super) fn on_join_tab(
+        &mut self,
+        action: &JoinTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.center.update(cx, |center, cx| {
+            center.join_tab(action.pane, action.tab, action.placement, window, cx);
+        });
+    }
+
+    pub(super) fn on_swap_panes(
+        &mut self,
+        action: &SwapPanes,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.center.update(cx, |center, cx| {
+            center.swap_panes(action.pane, action.with, window, cx);
+        });
+    }
+
+    pub(super) fn on_equalize_panes(
+        &mut self,
+        action: &EqualizePanes,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.center
+            .update(cx, |center, cx| center.equalize(action.0, window, cx));
+    }
+
+    /// The menu opens where the pointer is: on the command that asked for
+    /// it.
+    pub(super) fn on_choose_tab_to_join(
+        &mut self,
+        action: &ChooseTabToJoin,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let position = window.mouse_position();
+        self.center.update(cx, |center, cx| {
+            center.open_chooser(action.tab, action.placement, position, window, cx);
         });
     }
 

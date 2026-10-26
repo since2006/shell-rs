@@ -2,10 +2,7 @@
 
 use std::{
     any::Any,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 
 use gpui_kit::component::dock::{BasePanelView, PanelHandle, PanelId, PanelState, TabGroup};
@@ -13,28 +10,59 @@ use gpui_kit::*;
 
 use crate::app::PaneContent;
 
+/// Which pane of a tab, if any, the dock's next word that a pane is active
+/// reaches: a pane just opened in a tab of its own. Shared by the tab's
+/// panes; the word reaches the pane once.
+#[derive(Clone, Default)]
+pub(super) struct Activation(Arc<Mutex<Option<PaneContent>>>);
+
+impl Activation {
+    /// Let the word through to `pane`, or with `None` to no pane.
+    pub(super) fn grant(&self, pane: Option<PaneContent>) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = pane;
+    }
+
+    /// Whether the word reaches `pane`, which uses it up.
+    fn take(&self, pane: PaneContent) -> bool {
+        let mut granted = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *granted == Some(pane) {
+            *granted = None;
+            return true;
+        }
+        false
+    }
+}
+
 /// A pane's handle, which passes the dock's word that the pane is active on
-/// only while its tab is in front.
+/// only where the view granted it.
 ///
-/// The dock tells a pane it is active a frame after it is added or shown,
-/// and the pane takes the focus then. A tab behind is neither drawn nor
-/// told it went behind by its dock area, so without the gate a pane opened
-/// into a tab behind, or added while its tab went behind, would take the
-/// focus off screen, where no action reaches the workspace.
+/// The dock tells a pane it is active a frame after it is added, and the
+/// pane takes the focus then. That is right for a pane opened in a new tab
+/// in front, and wrong everywhere else: a tab behind is neither drawn nor
+/// told it went behind by its dock area, so a pane added while its tab went
+/// behind would take the focus off screen, where no action reaches the
+/// workspace; and a tab laid out anew tells every one of its panes at once.
+/// The view gives the focus itself when a tab comes forward or a pane
+/// moves.
 #[derive(Clone)]
 pub(super) struct PaneView {
     pane: PaneContent,
     handle: PanelHandle,
-    /// Whether the pane's tab is in front, shared by the tab's panes.
-    in_front: Arc<AtomicBool>,
+    activation: Activation,
 }
 
 impl PaneView {
-    pub(super) fn new(pane: PaneContent, handle: PanelHandle, in_front: Arc<AtomicBool>) -> Self {
+    pub(super) fn new(pane: PaneContent, handle: PanelHandle, activation: Activation) -> Self {
         Self {
             pane,
             handle,
-            in_front,
+            activation,
         }
     }
 
@@ -74,7 +102,7 @@ impl BasePanelView for PaneView {
     }
 
     fn set_active(&self, active: bool, window: &mut Window, cx: &mut App) {
-        if !active || self.in_front.load(Ordering::Relaxed) {
+        if !active || self.activation.take(self.pane) {
             self.handle.set_active(active, window, cx);
         }
     }

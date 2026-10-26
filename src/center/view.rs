@@ -9,20 +9,11 @@
 //! are told `set_active(false)`, which their own dock area never tells
 //! them.
 
-use std::{
-    cell::Cell,
-    collections::HashMap,
-    rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
+use std::{cell::Cell, collections::HashMap, rc::Rc, sync::Arc, time::Duration};
 
 use gpui_kit::component::dock::{
-    AnyDrag, BasePanel, BasePanelView as _, DockArea, DockEvent, DockPlacement, DropTarget,
-    InsertTarget, NodeId, PaneRef, Panel, PanelEvent, PanelHandle, PanelId,
+    AnyDrag, BasePanel, BasePanelView, DockArea, DockEvent, DockLayout, DockPlacement, NodeId,
+    PaneNode, PaneRef, Panel, PanelEvent, PanelHandle, PanelId, PanelInfo, PanelState,
 };
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Placement, Selectable as _, Sizable as _,
@@ -34,20 +25,23 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 
-use super::drag::{DragPreview, Dragged, TabAlong};
+use super::drag::{DragPreview, Dragged, Drops, TabAlong, TabZone};
+use super::layout::Layout;
 use super::model::{PaneKind as _, TabId, TabTitle, Tabs};
 use super::pane_controls::pane_controls;
 use super::pane_skin::PaneSkin;
-use super::pane_view::PaneView;
+use super::pane_view::{Activation, PaneView};
 use super::places::tab_place;
 use super::places::{TabPlace, TabPlaces};
 use super::tab_bar::{LeadingControls, wheel_scrolls_tabs};
 use crate::app::{
-    ActivatePane, ActivateTab, CatalogIcon, CloseScope, CloseTab, CloseTabs, MergeTab, MovePane,
-    MovePaneToNewTab, MoveTab, PaneContent, RenameTab,
+    ActivatePane, ActivateTab, CatalogIcon, ChooseTabToJoin, CloseScope, CloseTab, CloseTabs,
+    EqualizePanes, PaneContent, RenameTab,
 };
 use crate::i18n::t;
 use crate::shared::ClosableTabTitle;
+
+mod drops;
 
 pub enum CenterEvent {
     /// Tabs opened, closed, moved or brought to the front, or a tab's panes
@@ -71,9 +65,9 @@ struct TabArea {
     area: Entity<DockArea>,
     /// Whether its panes show a header: while it holds more than one.
     headers: Rc<Cell<bool>>,
-    /// Whether it is in front, which lets its dock area's word that a pane
-    /// is active through (see `PaneView`).
-    in_front: Arc<AtomicBool>,
+    /// Which pane its dock area's word that a pane is active reaches (see
+    /// `PaneView`).
+    activation: Activation,
     _subscriptions: [Subscription; 2],
 }
 
@@ -91,14 +85,69 @@ pub struct CenterView {
     /// Where the tab bar's controls dispatch to.
     target: FocusHandle,
     controls: LeadingControls,
-    /// While a pane is dragged over another tab: that tab, and the wait
-    /// before it comes forward to take the pane.
+    /// While something is dragged over another tab: that tab, and the wait
+    /// before it comes forward to take what is dragged.
     hover: Option<(TabId, Task<()>)>,
+    /// What is being dragged, set as the drag starts; stale once no drag
+    /// is on.
+    dragging: Rc<Cell<Option<Dragged>>>,
+    /// Where on a tab what is dragged would land, while it is over one.
+    tab_zone: Option<(TabId, TabZone)>,
+    /// Which drops on the panes of the tab in front would do something,
+    /// for their skins to show only those.
+    drops: Drops,
+    /// 选择标签: the tabs to put beside a pane, at a place in the window.
+    chooser: Option<Chooser>,
     focus_handle: FocusHandle,
 }
 
-/// How long a pane dragged over a tab waits before that tab comes forward.
+/// The menu of tabs that can join a tab, open where it was asked for.
+struct Chooser {
+    menu: Entity<PopupMenu>,
+    position: Point<Pixels>,
+    _subscription: Subscription,
+}
+
+/// Where in a tab a pane lands.
+#[derive(Clone, Copy, Debug)]
+enum Spot<P> {
+    /// On a side of one of its panes.
+    Beside(P, Placement),
+    /// Along a whole side of the tab.
+    Edge(Placement),
+}
+
+/// Put `pane` in `layout` at `spot`, `pane` being in it already when it
+/// moves `within`. Returns whether it landed.
+fn land<P: Copy + Eq + std::fmt::Debug>(
+    layout: &mut Layout<P>,
+    pane: P,
+    spot: Spot<P>,
+    within: bool,
+) -> bool {
+    match spot {
+        Spot::Beside(onto, side) if within => layout.move_beside(pane, onto, side),
+        Spot::Beside(onto, side) => layout.insert(pane, onto, side),
+        Spot::Edge(side) if within => {
+            let before = layout.clone();
+            if layout.remove(pane) && layout.insert_at_edge(pane, side) {
+                return true;
+            }
+            *layout = before;
+            false
+        }
+        Spot::Edge(side) => layout.insert_at_edge(pane, side),
+    }
+}
+
+/// How long something dragged over a tab waits before that tab comes
+/// forward.
 const HOVER_SWITCH: Duration = Duration::from_millis(500);
+
+/// How small a pane may become, in pixels: about 20 columns by 5 lines of a
+/// terminal. A drop that would leave a pane smaller is not taken.
+const MIN_PANE_WIDTH: f32 = 200.;
+const MIN_PANE_HEIGHT: f32 = 100.;
 
 impl EventEmitter<CenterEvent> for CenterView {}
 
@@ -115,6 +164,10 @@ impl CenterView {
             target,
             controls: LeadingControls::default(),
             hover: None,
+            dragging: Rc::default(),
+            tab_zone: None,
+            drops: Drops::default(),
+            chooser: None,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -227,7 +280,7 @@ impl CenterView {
             area.area
                 .update(cx, |area, cx| area.set_locked(true, window, cx));
         }
-        self.put_in(pane, tab, None, window, cx);
+        self.put_in(pane, tab, window, cx);
         self.changed(cx);
     }
 
@@ -239,12 +292,15 @@ impl CenterView {
             return;
         };
         let was_front = self.tabs.active() == Some(tab);
+        let rest = self.layout_without(pane, cx);
         self.take_out(pane, tab, window, cx);
         self.panes.remove(&pane);
         self.take_outs.remove(&pane);
         cx.default_global::<TabPlaces>().0.remove(&pane);
         if self.tabs.close_pane(pane).is_some() {
             self.areas.remove(&tab);
+        } else if let Some(rest) = rest {
+            self.lay_out(tab, &rest, window, cx);
         }
         if was_front && let Some(front) = self.tabs.active() {
             self.show(front, window, cx);
@@ -263,45 +319,10 @@ impl CenterView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let (Some(from), Some(into)) = (self.tabs.tab_of(pane), self.tabs.tab_of(onto)) else {
+        let Some(into) = self.tabs.tab_of(onto) else {
             return false;
         };
-        if pane == onto {
-            return false;
-        }
-        if from == into {
-            let Some(target) = self.split_target(onto, placement, cx) else {
-                return false;
-            };
-            let Some(panel) = self.panes.get(&pane).map(|panel| panel.panel_id(cx)) else {
-                return false;
-            };
-            if let Some(area) = self.areas.get(&from) {
-                area.area
-                    .update(cx, |area, cx| area.move_panel(panel, target, window, cx));
-            }
-            self.tabs.focus(pane);
-            self.changed(cx);
-            return true;
-        }
-        if !self.tabs.can_move_into(pane, into) {
-            return false;
-        }
-        if let Some(previous) = self.tabs.active().filter(|previous| *previous != into) {
-            self.hide(previous, window, cx);
-        }
-        self.take_out(pane, from, window, cx);
-        self.tabs.move_pane(pane, into);
-        if self.tabs.panes(from).is_empty() {
-            self.areas.remove(&from);
-        }
-        if let Some(area) = self.areas.get(&into) {
-            area.in_front.store(true, Ordering::Relaxed);
-        }
-        self.put_in(pane, into, Some((onto, placement)), window, cx);
-        self.show(into, window, cx);
-        self.changed(cx);
-        true
+        self.place(pane, into, Spot::Beside(onto, placement), window, cx)
     }
 
     /// Drop the one pane of tab `from` beside `onto`, in `onto`'s tab.
@@ -324,6 +345,61 @@ impl CenterView {
         self.move_pane(pane, onto, placement, window, cx)
     }
 
+    /// Put `pane` along the whole `placement` side of `tab`. Returns
+    /// whether it moved.
+    pub fn join_tab(
+        &mut self,
+        pane: PaneContent,
+        tab: TabId,
+        placement: Placement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.place(pane, tab, Spot::Edge(placement), window, cx)
+    }
+
+    /// Two panes of a tab trade places. Returns whether they did.
+    pub fn swap_panes(
+        &mut self,
+        pane: PaneContent,
+        with: PaneContent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab) = self.tabs.tab_of(pane) else {
+            return false;
+        };
+        if self.tabs.tab_of(with) != Some(tab) {
+            return false;
+        }
+        let Some(mut layout) = self.layout_of(tab, cx) else {
+            return false;
+        };
+        if !layout.swap(pane, with) {
+            return false;
+        }
+        self.lay_out(tab, &layout, window, cx);
+        self.tabs.focus(pane);
+        self.show(tab, window, cx);
+        self.changed(cx);
+        true
+    }
+
+    /// 均分窗格: every row and column of the tab shares its space equally.
+    pub fn equalize(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tabs.panes(tab).len() < 2 {
+            return;
+        }
+        if let Some(mut layout) = self.layout_of(tab, cx) {
+            layout.equalize();
+            self.lay_out(tab, &layout, window, cx);
+            if self.tabs.active() == Some(tab) {
+                self.show(tab, window, cx);
+            }
+            self.changed(cx);
+        }
+    }
+
     /// Give `pane` a tab of its own at `ix` among the tabs, in front.
     pub fn split_off(
         &mut self,
@@ -343,12 +419,16 @@ impl CenterView {
         if let Some(previous) = self.tabs.active() {
             self.hide(previous, window, cx);
         }
+        let rest = self.layout_without(pane, cx);
         self.take_out(pane, from, window, cx);
         let Some(tab) = self.tabs.split_off(pane, ix) else {
             return;
         };
+        if let Some(rest) = rest {
+            self.lay_out(from, &rest, window, cx);
+        }
         self.new_area(tab, window, cx);
-        self.put_in(pane, tab, None, window, cx);
+        self.put_in(pane, tab, window, cx);
         self.show(tab, window, cx);
         self.changed(cx);
     }
@@ -437,7 +517,7 @@ impl CenterView {
         };
         let zoomed = self.zoomed_pane(tab, cx);
         let several = self.tabs.panes(tab).len() > 1;
-        let target = self.split_target(pane, Placement::Right, cx);
+        let node = self.node_of(pane, cx);
         let Some(area) = self.areas.get(&tab).map(|area| area.area.clone()) else {
             return;
         };
@@ -447,7 +527,7 @@ impl CenterView {
             }
             if zoomed != Some(pane)
                 && several
-                && let Some(InsertTarget::Split { node, .. }) = target
+                && let Some(node) = node
             {
                 area.set_zoomed_in(node, window, cx);
             }
@@ -487,7 +567,13 @@ impl CenterView {
 
     /// A dock area for a new tab, in front.
     fn new_area(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
-        let (area, headers) = PaneSkin::dock_area(format!("tab-{}", tab.0).into(), window, cx);
+        let (area, headers) = PaneSkin::dock_area(
+            format!("tab-{}", tab.0).into(),
+            self.dragging.clone(),
+            self.drops.clone(),
+            window,
+            cx,
+        );
         let subscriptions = [
             cx.subscribe_in(
                 &area,
@@ -507,155 +593,10 @@ impl CenterView {
             TabArea {
                 area,
                 headers,
-                in_front: Arc::new(AtomicBool::new(true)),
+                activation: Activation::default(),
                 _subscriptions: subscriptions,
             },
         );
-    }
-
-    /// Something dragged was dropped on a side of one of `tab`'s panes. The
-    /// middle takes nothing: a pane is never a tab of another.
-    fn on_dropped_on_pane(
-        &mut self,
-        tab: TabId,
-        item: &AnyDrag,
-        target: &DropTarget,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.hover = None;
-        let Some(&dragged) = item.value().downcast_ref::<Dragged>() else {
-            return;
-        };
-        let DropTarget::Group {
-            node,
-            placement: Some(placement),
-        } = *target
-        else {
-            return;
-        };
-        let Some(onto) = self.pane_in_group(tab, node, cx) else {
-            return;
-        };
-        let action: Box<dyn Action> = match dragged {
-            Dragged::Pane(pane) if pane != onto => Box::new(MovePane {
-                pane,
-                onto,
-                placement,
-            }),
-            Dragged::Tab(from) if self.tabs.can_merge(from, tab) => Box::new(MergeTab {
-                from,
-                onto,
-                placement,
-            }),
-            _ => return,
-        };
-        self.dispatch(action, window, cx);
-    }
-
-    /// The pane a group of `tab`'s dock area shows.
-    fn pane_in_group(&self, tab: TabId, node: NodeId, cx: &App) -> Option<PaneContent> {
-        let area = self.areas.get(&tab)?.area.read(cx);
-        let mut panel = None;
-        area.layout(DockPlacement::Center)?
-            .root()
-            .walk(&mut |candidate| {
-                if candidate.id() == node
-                    && let PaneRef::Tabs { panels, .. } = candidate.kind()
-                {
-                    panel = panels.first().copied();
-                }
-            });
-        self.pane_of(panel?, cx)
-    }
-
-    /// Something dragged was dropped on a tab: a tab moves to its place; a
-    /// pane goes into it, on the right.
-    fn on_dropped_on_tab(
-        &mut self,
-        tab: TabId,
-        dragged: Dragged,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.hover = None;
-        let action: Box<dyn Action> = match dragged {
-            Dragged::Tab(moved) => match self.position(tab) {
-                Some(ix) => Box::new(MoveTab { tab: moved, ix }),
-                None => return,
-            },
-            Dragged::Pane(pane) => {
-                let Some(&onto) = self.tabs.panes(tab).last() else {
-                    return;
-                };
-                if !self.tabs.can_move_into(pane, tab) {
-                    return;
-                }
-                Box::new(MovePane {
-                    pane,
-                    onto,
-                    placement: Placement::Right,
-                })
-            }
-        };
-        self.dispatch(action, window, cx);
-    }
-
-    /// Something dragged was dropped past the last tab: a tab goes last, a
-    /// pane to a tab of its own there.
-    fn on_dropped_past_the_tabs(
-        &mut self,
-        dragged: Dragged,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.hover = None;
-        let last = self.tabs.ids().count();
-        let action: Box<dyn Action> = match dragged {
-            Dragged::Tab(tab) => Box::new(MoveTab { tab, ix: last }),
-            Dragged::Pane(pane) => Box::new(MovePaneToNewTab {
-                pane,
-                ix: Some(last),
-            }),
-        };
-        self.dispatch(action, window, cx);
-    }
-
-    /// A pane dragged over a tab other than the one in front: after a
-    /// moment that tab comes forward, so the pane can be dropped beside one
-    /// of its panes. Leaving the tab calls it off.
-    fn on_drag_over_tab(
-        &mut self,
-        tab: TabId,
-        event: &DragMoveEvent<AnyDrag>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let over = event.bounds.contains(&event.event.position);
-        let hovering = self.hover.as_ref().map(|(hovered, _)| *hovered);
-        if !over {
-            if hovering == Some(tab) {
-                self.hover = None;
-            }
-            return;
-        }
-        let is_pane = matches!(
-            event.drag(cx).value().downcast_ref::<Dragged>(),
-            Some(Dragged::Pane(_))
-        );
-        if !is_pane || hovering == Some(tab) || self.tabs.active() == Some(tab) {
-            return;
-        }
-        let task = cx.spawn_in(window, async move |this, cx| {
-            cx.background_executor().timer(HOVER_SWITCH).await;
-            _ = this.update_in(cx, |this, window, cx| {
-                this.hover = None;
-                if cx.has_active_drag() {
-                    this.activate_tab(tab, window, cx);
-                }
-            });
-        });
-        self.hover = Some((tab, task));
     }
 
     /// Hand a command to the workspace, once this update is over: its
@@ -679,14 +620,12 @@ impl CenterView {
         }
     }
 
-    /// Put a pane into a tab's dock area, beside another pane or, in a new
-    /// tab, alone. Adding tells the pane it is active, which gives it the
-    /// focus while the tab is in front.
+    /// Put a pane alone into a new tab's dock area. Adding tells the pane
+    /// it is active, which gives it the focus while the tab is in front.
     fn put_in(
         &mut self,
         pane: PaneContent,
         tab: TabId,
-        beside: Option<(PaneContent, Placement)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -694,14 +633,10 @@ impl CenterView {
         else {
             return;
         };
-        let id = panel.panel_id(cx);
-        let view = Arc::new(PaneView::new(pane, panel, area.in_front.clone()));
-        let target = beside.and_then(|(onto, placement)| self.split_target(onto, placement, cx));
+        area.activation.grant(Some(pane));
+        let view = Arc::new(PaneView::new(pane, panel, area.activation.clone()));
         area.area.clone().update(cx, |area, cx| {
             area.add_panel_view(view, DockPlacement::Center, None, window, cx);
-            if let Some(target) = target {
-                area.move_panel(id, target, window, cx);
-            }
         });
     }
 
@@ -721,27 +656,219 @@ impl CenterView {
         });
     }
 
-    /// Where a pane dropped on `placement`'s side of `onto` goes.
-    fn split_target(
-        &self,
-        onto: PaneContent,
-        placement: Placement,
-        cx: &App,
-    ) -> Option<InsertTarget> {
-        let tab = self.tabs.tab_of(onto)?;
-        let panel = self.panes.get(&onto)?.panel_id(cx);
-        let node = self
-            .areas
+    /// The pane a group of `tab`'s dock area shows.
+    fn pane_in_group(&self, tab: TabId, node: NodeId, cx: &App) -> Option<PaneContent> {
+        let area = self.areas.get(&tab)?.area.read(cx);
+        let mut panel = None;
+        area.layout(DockPlacement::Center)?
+            .root()
+            .walk(&mut |candidate| {
+                if candidate.id() == node
+                    && let PaneRef::Tabs { panels, .. } = candidate.kind()
+                {
+                    panel = panels.first().copied();
+                }
+            });
+        self.pane_of(panel?, cx)
+    }
+
+    /// The group of its tab's dock area that shows `pane`.
+    fn node_of(&self, pane: PaneContent, cx: &App) -> Option<NodeId> {
+        let tab = self.tabs.tab_of(pane)?;
+        let panel = self.panes.get(&pane)?.panel_id(cx);
+        self.areas
             .get(&tab)?
             .area
             .read(cx)
             .layout(DockPlacement::Center)?
-            .find_panel_node(panel)?;
-        Some(InsertTarget::Split {
-            node,
-            placement,
-            size: None,
-        })
+            .find_panel_node(panel)
+    }
+
+    /// Put `pane` at `spot` in tab `into`: elsewhere in its own tab, or out
+    /// of its tab into another, whose layout it then shares. Its own tab
+    /// goes with its last pane. Returns whether it moved.
+    fn place(
+        &mut self,
+        pane: PaneContent,
+        into: TabId,
+        spot: Spot<PaneContent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(from) = self.tabs.tab_of(pane) else {
+            return false;
+        };
+        if from != into && !self.tabs.can_move_into(pane, into) {
+            return false;
+        }
+        let Some(target) = self
+            .layout_of(into, cx)
+            .and_then(|mut layout| land(&mut layout, pane, spot, from == into).then_some(layout))
+        else {
+            return false;
+        };
+        // Nowhere a pane would be too small to use.
+        if !self.fits(&target, cx) {
+            return false;
+        }
+        if from == into {
+            self.lay_out(into, &target, window, cx);
+            self.tabs.focus(pane);
+            self.show(into, window, cx);
+            self.changed(cx);
+            return true;
+        }
+        if let Some(previous) = self.tabs.active().filter(|previous| *previous != into) {
+            self.hide(previous, window, cx);
+        }
+        let rest = self.layout_without(pane, cx);
+        self.take_out(pane, from, window, cx);
+        self.tabs.move_pane(pane, into);
+        if self.tabs.panes(from).is_empty() {
+            self.areas.remove(&from);
+        } else if let Some(rest) = rest {
+            self.lay_out(from, &rest, window, cx);
+        }
+        self.lay_out(into, &target, window, cx);
+        self.show(into, window, cx);
+        self.changed(cx);
+        true
+    }
+
+    /// How `tab`'s panes are laid out now, at the sizes on screen.
+    fn layout_of(&self, tab: TabId, cx: &App) -> Option<Layout<PaneContent>> {
+        let area = self.areas.get(&tab)?.area.read(cx);
+        let tree = area.layout(DockPlacement::Center)?;
+        self.read_layout(tree.root(), &area.dump(cx).center, cx)
+    }
+
+    /// The layout of `pane`'s tab once `pane` has left it; `None` when it
+    /// is the tab's last pane.
+    fn layout_without(&self, pane: PaneContent, cx: &App) -> Option<Layout<PaneContent>> {
+        let mut layout = self.layout_of(self.tabs.tab_of(pane)?, cx)?;
+        layout.remove(pane).then_some(layout)
+    }
+
+    /// A node of a dock area's tree as a layout, its sizes read from the
+    /// area's account of itself, which has the sizes on screen.
+    fn read_layout(
+        &self,
+        node: &PaneNode,
+        state: &PanelState,
+        cx: &App,
+    ) -> Option<Layout<PaneContent>> {
+        match node.kind() {
+            PaneRef::Tabs { panels, .. } => self.pane_of(*panels.first()?, cx).map(Layout::Pane),
+            PaneRef::Split { axis, children, .. } => {
+                let measured = match &state.info {
+                    PanelInfo::Stack { sizes, .. } => sizes
+                        .iter()
+                        .map(|size| f32::from(*size))
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                };
+                let measured = (measured.len() == children.len()
+                    && measured.iter().all(|size| *size > 0.))
+                .then_some(measured);
+                let children: Vec<_> = children
+                    .iter()
+                    .zip(&state.children)
+                    .enumerate()
+                    .filter_map(|(ix, (child, child_state))| {
+                        let share = measured.as_ref().map_or(1., |sizes| sizes[ix]);
+                        Some((self.read_layout(child, child_state, cx)?, share))
+                    })
+                    .collect();
+                (!children.is_empty()).then(|| Layout::split(axis, children))
+            }
+            PaneRef::Tiles { .. } => None,
+        }
+    }
+
+    /// Lay `tab`'s panes out as `layout` says, each at its size. The dock
+    /// area takes the layout whole, so no pane's size is left to it.
+    fn lay_out(
+        &mut self,
+        tab: TabId,
+        layout: &Layout<PaneContent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(area) = self.areas.get(&tab) else {
+            return;
+        };
+        // The panes laid out anew are told they are active; the view gives
+        // the focus itself.
+        area.activation.grant(None);
+        let (width, height) = self.center_size(cx);
+        let described = self.describe(layout, width, height, &area.activation, cx);
+        area.area.clone().update(cx, |area, cx| {
+            if area.is_zoomed() {
+                area.set_zoomed_out(window, cx);
+            }
+            area.set_center(described, window, cx);
+        });
+    }
+
+    /// `layout` as the dock area takes it, `width` by `height`.
+    fn describe(
+        &self,
+        layout: &Layout<PaneContent>,
+        width: f32,
+        height: f32,
+        activation: &Activation,
+        cx: &App,
+    ) -> DockLayout {
+        match layout {
+            Layout::Pane(pane) => {
+                let group = DockLayout::tabs();
+                match self.panes.get(pane) {
+                    Some(handle) => {
+                        let view: Arc<dyn BasePanelView> =
+                            Arc::new(PaneView::new(*pane, handle.clone(), activation.clone()));
+                        group.panel_view(view, cx)
+                    }
+                    None => group,
+                }
+            }
+            Layout::Split { axis, children } => {
+                let mut split = match axis {
+                    Axis::Horizontal => DockLayout::h_split(),
+                    Axis::Vertical => DockLayout::v_split(),
+                };
+                for (child, share) in children {
+                    let (width, height, along) = match axis {
+                        Axis::Horizontal => (width * share, height, width * share),
+                        Axis::Vertical => (width, height * share, height * share),
+                    };
+                    // Before the center has been measured, the slots share
+                    // the space evenly.
+                    let size = (along >= 1.).then(|| px(along));
+                    split = split.child(self.describe(child, width, height, activation, cx), size);
+                }
+                split
+            }
+        }
+    }
+
+    /// The size of a tab's panes all together, as last drawn.
+    fn center_size(&self, cx: &App) -> (f32, f32) {
+        let front = self.tabs.active().and_then(|tab| self.areas.get(&tab));
+        front
+            .into_iter()
+            .chain(self.areas.values())
+            .map(|area| area.area.read(cx).bounds().size)
+            .find(|size| size.width > px(0.) && size.height > px(0.))
+            .map_or((0., 0.), |size| {
+                (f32::from(size.width), f32::from(size.height))
+            })
+    }
+
+    /// Whether every pane of `layout` would be large enough to use. Before
+    /// the center has been measured, anything fits.
+    fn fits<P: Copy + Eq + std::fmt::Debug>(&self, layout: &Layout<P>, cx: &App) -> bool {
+        let (width, height) = self.center_size(cx);
+        width <= 0. || layout.fits(width, height, MIN_PANE_WIDTH, MIN_PANE_HEIGHT)
     }
 
     fn pane_of(&self, panel: PanelId, cx: &App) -> Option<PaneContent> {
@@ -753,9 +880,6 @@ impl CenterView {
 
     /// A tab comes forward: its current pane takes the focus.
     fn show(&self, tab: TabId, window: &mut Window, cx: &mut App) {
-        if let Some(area) = self.areas.get(&tab) {
-            area.in_front.store(true, Ordering::Relaxed);
-        }
         if let Some(panel) = self
             .tabs
             .current(tab)
@@ -768,7 +892,7 @@ impl CenterView {
     /// A tab goes behind: none of its panes is on screen any more.
     fn hide(&self, tab: TabId, window: &mut Window, cx: &mut App) {
         if let Some(area) = self.areas.get(&tab) {
-            area.in_front.store(false, Ordering::Relaxed);
+            area.activation.grant(None);
         }
         for pane in self.tabs.panes(tab) {
             if let Some(panel) = self.panes.get(pane) {
@@ -821,12 +945,15 @@ impl CenterView {
         for (ix, tab) in ids.iter().enumerate() {
             let panes = self.tabs.panes(*tab);
             let zoomed = self.zoomed_pane(*tab, cx);
+            let joinable = self.has_joiners(*tab);
             for pane in panes {
                 let place = TabPlace {
+                    tab: *tab,
                     count: ids.len(),
                     ix,
                     panes: panes.len(),
                     zoomed: zoomed == Some(*pane),
+                    joinable,
                 };
                 places.push((*pane, place));
             }
@@ -956,37 +1083,55 @@ impl CenterView {
     }
 }
 
-/// The commands of a tab of several panes: its name, and closing it or the
-/// tabs around it.
+/// The commands of a tab of several panes: its name, another tab beside it,
+/// its panes' sizes, and closing it or the tabs around it.
 fn tab_menu(menu: PopupMenu, tab: TabId, first: PaneContent, cx: &App) -> PopupMenu {
     let place = tab_place(first, cx);
     let is_empty = |scope: CloseScope| {
         place.is_none_or(|place| scope.targets(place.count, place.ix).is_empty())
     };
     let batch = |scope| Box::new(CloseTabs { tab: first, scope });
-    menu.menu_with_icon(
+    let menu = menu.menu_with_icon(
         t!("center.tab.rename"),
         Icon::new(CatalogIcon::Pencil),
         Box::new(RenameTab(tab)),
+    );
+    split_items(menu, tab, place.is_some_and(|place| place.joinable))
+        .menu(t!("center.tab.equalize"), Box::new(EqualizePanes(tab)))
+        .separator()
+        .menu(t!("common.close"), Box::new(CloseTab(tab)))
+        .menu_with_disabled(
+            t!("shared.tab_menu.close_left"),
+            batch(CloseScope::Left),
+            is_empty(CloseScope::Left),
+        )
+        .menu_with_disabled(
+            t!("shared.tab_menu.close_right"),
+            batch(CloseScope::Right),
+            is_empty(CloseScope::Right),
+        )
+        .menu_with_disabled(
+            t!("shared.tab_menu.close_others"),
+            batch(CloseScope::Others),
+            is_empty(CloseScope::Others),
+        )
+        .menu(t!("shared.tab_menu.close_all"), batch(CloseScope::All))
+}
+
+/// 向右分屏…, 向下分屏…: choose a tab to go beside `tab`. Disabled while no
+/// tab could.
+pub fn split_items(menu: PopupMenu, tab: TabId, joinable: bool) -> PopupMenu {
+    let choose = |placement| Box::new(ChooseTabToJoin { tab, placement });
+    menu.menu_with_disabled(
+        t!("center.tab.split_right"),
+        choose(Placement::Right),
+        !joinable,
     )
-    .separator()
-    .menu(t!("common.close"), Box::new(CloseTab(tab)))
     .menu_with_disabled(
-        t!("shared.tab_menu.close_left"),
-        batch(CloseScope::Left),
-        is_empty(CloseScope::Left),
+        t!("center.tab.split_down"),
+        choose(Placement::Bottom),
+        !joinable,
     )
-    .menu_with_disabled(
-        t!("shared.tab_menu.close_right"),
-        batch(CloseScope::Right),
-        is_empty(CloseScope::Right),
-    )
-    .menu_with_disabled(
-        t!("shared.tab_menu.close_others"),
-        batch(CloseScope::Others),
-        is_empty(CloseScope::Others),
-    )
-    .menu(t!("shared.tab_menu.close_all"), batch(CloseScope::All))
 }
 
 impl Render for CenterView {
@@ -998,6 +1143,7 @@ impl Render for CenterView {
                 .child(self.placeholder.clone())
                 .into_any_element();
         };
+        self.refresh_drops(cx);
         let ids = self.tab_ids();
         if self.scrolled_to != Some(front) {
             if let Some(ix) = ids.iter().position(|id| *id == front) {
@@ -1009,38 +1155,51 @@ impl Render for CenterView {
             .iter()
             .map(|&tab| {
                 let label = self.tab_label(tab, cx);
-                let tab_element = Tab::new()
-                    .child(self.render_tab_title(tab, window, cx))
-                    .selected(tab == front)
-                    .on_click(
-                        cx.listener(move |this, _, window, cx| this.activate_tab(tab, window, cx)),
-                    )
-                    .drag_over::<AnyDrag>(|tab, _, _, cx| {
-                        tab.border_l_2().border_color(cx.theme().drag_border)
-                    })
-                    .drag_over::<TabAlong>(|tab, _, _, cx| {
-                        tab.border_l_2().border_color(cx.theme().drag_border)
-                    })
-                    .on_drag_move(cx.listener(move |this, event, window, cx| {
-                        this.on_drag_over_tab(tab, event, window, cx)
-                    }))
-                    .on_drop(cx.listener(move |this, item: &AnyDrag, window, cx| {
-                        if let Some(&dragged) = item.value().downcast_ref::<Dragged>() {
-                            this.on_dropped_on_tab(tab, dragged, window, cx);
-                        }
-                    }))
-                    .on_drop(cx.listener(move |this, along: &TabAlong, window, cx| {
-                        this.on_dropped_on_tab(tab, Dragged::Tab(along.0), window, cx)
-                    }));
+                // Where what is dragged would land: a line on the side it
+                // would stand, or the whole tab when it would go in.
+                let zone = self.zone_shown(tab, cx);
+                let shown = move |tab: StyleRefinement, cx: &App| match zone {
+                    Some(TabZone::Before) => tab.border_l_2().border_color(cx.theme().drag_border),
+                    Some(TabZone::After) => tab.border_r_2().border_color(cx.theme().drag_border),
+                    Some(TabZone::Into) => tab.bg(cx.theme().tokens.drop_target),
+                    None => tab,
+                };
+                let tab_element =
+                    Tab::new()
+                        .child(self.render_tab_title(tab, window, cx))
+                        .selected(tab == front)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.activate_tab(tab, window, cx)
+                        }))
+                        .drag_over::<AnyDrag>(move |style, _, _, cx| shown(style, cx))
+                        .drag_over::<TabAlong>(move |style, _, _, cx| shown(style, cx))
+                        .on_drag_move(cx.listener(move |this, event, window, cx| {
+                            this.on_drag_over_tab(tab, event, window, cx)
+                        }))
+                        .on_drag_move(cx.listener(move |this, event, _, cx| {
+                            this.on_drag_along_tab(tab, event, cx)
+                        }))
+                        .on_drop(cx.listener(move |this, item: &AnyDrag, window, cx| {
+                            if let Some(&dragged) = item.value().downcast_ref::<Dragged>() {
+                                this.on_dropped_on_tab(tab, dragged, window, cx);
+                            }
+                        }))
+                        .on_drop(cx.listener(move |this, along: &TabAlong, window, cx| {
+                            this.on_dropped_along_tab(tab, along.0, window, cx)
+                        }));
                 // A tab of one pane can join another tab; one of several, or
                 // 设置, only moves along the bar.
                 let panes = self.tabs.panes(tab);
                 if panes.len() == 1 && !panes[0].stands_alone() {
+                    let dragging = self.dragging.clone();
                     tab_element.on_drag(AnyDrag::new(Dragged::Tab(tab)), move |_, _, _, cx| {
+                        dragging.set(Some(Dragged::Tab(tab)));
                         cx.new(|_| DragPreview::new(label.clone()))
                     })
                 } else {
+                    let dragging = self.dragging.clone();
                     tab_element.on_drag(TabAlong(tab), move |_, _, _, cx| {
+                        dragging.set(None);
                         cx.new(|_| DragPreview::new(label.clone()))
                     })
                 }
@@ -1091,6 +1250,7 @@ impl Render for CenterView {
                     })),
             )
             .child(div().flex_1().min_h_0().children(area))
+            .children(self.render_chooser())
             .into_any_element()
     }
 }

@@ -3,15 +3,16 @@ use gpui_kit::*;
 
 use crate::app::{
     CloseEditor, CloseExplorer, CloseLocalTerminal, CloseScope, CloseSettings, CloseTabs,
-    CloseTerminal, MovePaneToNewTab, PaneContent, ZoomPane,
+    CloseTerminal, EqualizePanes, MovePaneToNewTab, PaneContent, ZoomPane,
 };
-use crate::center::tab_place;
+use crate::center::{split_items, tab_place};
 use crate::i18n::t;
 
 /// The commands every center pane's menu ends with. A pane alone in its tab
-/// closes as the tab: it, and the tabs to its left, to its right, the
-/// others and all of them. A pane among several moves to a tab of its own,
-/// fills its tab, or closes alone; its tab's own menu closes tabs.
+/// is the tab: another tab goes beside it, and it closes as the tab: it,
+/// and the tabs to its left, to its right, the others and all of them. A
+/// pane among several moves to a tab of its own, fills its tab, evens out
+/// its tab's panes, or closes alone; its tab's own menu closes tabs.
 ///
 /// Where the tab of `pane` stands is read when the menu opens, so a batch
 /// command that would close nothing is shown disabled.
@@ -29,6 +30,10 @@ pub fn close_tab_items(menu: PopupMenu, pane: PaneContent, cx: &App) -> PopupMen
                 Box::new(MovePaneToNewTab { pane, ix: None }),
             )
             .menu(zoom, Box::new(ZoomPane(pane)))
+            .menu(
+                t!("center.tab.equalize"),
+                Box::new(EqualizePanes(place.tab)),
+            )
             .separator()
             .menu(t!("common.close"), close_action(pane));
     }
@@ -37,6 +42,11 @@ pub fn close_tab_items(menu: PopupMenu, pane: PaneContent, cx: &App) -> PopupMen
         |scope: CloseScope| position.is_none_or(|(len, ix)| scope.targets(len, ix).is_empty());
     let batch = |scope| Box::new(CloseTabs { tab: pane, scope });
 
+    // 设置 shares its tab with nothing.
+    let menu = match place.filter(|_| !matches!(pane, PaneContent::Settings)) {
+        Some(place) => split_items(menu, place.tab, place.joinable).separator(),
+        None => menu,
+    };
     menu.menu(t!("common.close"), close_action(pane))
         .menu_with_disabled(
             t!("shared.tab_menu.close_left"),

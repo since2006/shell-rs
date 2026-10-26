@@ -29,3 +29,27 @@ center.pane.restore:
 center.tab.all:
   zh-CN: 所有标签
   en: All tabs
+center.tab.equalize:
+  zh-CN: 均分窗格
+  en: Equalize panes
+center.tab.split_right:
+  zh-CN: 向右分屏…
+  en: Split right…
+center.tab.split_down:
+  zh-CN: 向下分屏…
+  en: Split down…
+center.chooser.left:
+  zh-CN: 选择放在左侧的标签
+  en: Choose a tab for the left
+center.chooser.right:
+  zh-CN: 选择放在右侧的标签
+  en: Choose a tab for the right
+center.chooser.top:
+  zh-CN: 选择放在上方的标签
+  en: Choose a tab for the top
+center.chooser.bottom:
+  zh-CN: 选择放在下方的标签
+  en: Choose a tab for the bottom
+center.chooser.too_small:
+  zh-CN: 这里放不下更多窗格了
+  en: No room here for another pane
