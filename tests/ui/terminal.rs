@@ -2,8 +2,8 @@
 //! the font and the size, links, the mouse for programs and their copies.
 
 use crate::support::*;
-use shellrs::app::{CopyTerminal, SelectAllTerminal, Shortcut};
-use shellrs::terminal::RightClick;
+use shellrs::app::{CopyTerminal, PasteTerminal, SelectAllTerminal, Shortcut};
+use shellrs::terminal::{RightClick, SendDelay};
 
 fn open_workspace_with_factory(
     cx: &mut TestAppContext,
@@ -1730,4 +1730,87 @@ async fn rz_in_a_local_terminal_asks_for_files_too(cx: &mut TestAppContext) {
         factory.data().starts_with(&[0x18; 10])
     })
     .await;
+}
+
+#[gpui_kit::test]
+async fn a_paste_waits_between_its_lines_when_the_settings_say_so(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| {
+                    settings.send_delay = SendDelay {
+                        line_ms: 400,
+                        character_ms: 0,
+                    }
+                },
+                cx,
+            )
+        });
+    });
+    cx.run_until_parked();
+    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("one\ntwo".into())));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(PasteTerminal), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(factory.written_text(), "one");
+
+    // The line's Enter is the next write, due when the delay is up; the
+    // line after it goes at once.
+    cx.background_executor
+        .advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    assert_eq!(factory.written_text(), "one\rtwo");
+}
+
+#[gpui_kit::test]
+async fn a_session_log_is_written_without_colors_and_with_a_time_on_each_line(
+    cx: &mut TestAppContext,
+) {
+    let factory = Arc::new(FakeTerminalFactory::printing("\x1b[31mhello\x1b[0m\r\n"));
+    let (handle, workspace) = open_workspace_with_factory(cx, factory);
+    let folder = tempfile::tempdir().expect("a temporary folder");
+    let path = folder.path().join("test.log");
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| {
+                    settings.session_log.enabled = true;
+                    settings.session_log.directory =
+                        Some(folder.path().to_string_lossy().into_owned());
+                    settings.session_log.template = "test.log".into();
+                    settings.session_log.timestamp = true;
+                    settings.session_log.timestamp_format = "[T] ".into();
+                },
+                cx,
+            )
+        });
+    });
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("new-local-terminal", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        std::fs::read_to_string(&path).is_ok_and(|text| text.contains("hello"))
+    })
+    .await;
+
+    let text = std::fs::read_to_string(&path).expect("the log was written");
+    assert!(!text.contains('\x1b'), "{text:?}");
+    assert!(text.contains("hello"), "{text:?}");
+    assert!(
+        text.lines()
+            .filter(|line| !line.is_empty())
+            .all(|line| line.starts_with("[T] ")),
+        "{text:?}"
+    );
 }
