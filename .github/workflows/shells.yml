@@ -20,6 +20,15 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - ".github/workflows/shells.yml"
+  # The same paths as a push: a pull request is tested the same way.
+  pull_request:
+    paths:
+      - "src/terminal/**"
+      - "src/testing.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/shells.yml"
   workflow_dispatch:
 
 jobs:
