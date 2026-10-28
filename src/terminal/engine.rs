@@ -1379,11 +1379,13 @@ impl Parser {
                 .commands
                 .send(TerminalTransportCommand::WriteData(wire));
         }
+        // The flag before the ask: what reads it must find the transfer
+        // already on, not the two apart with the ask in between.
+        self.transferring
+            .store(self.zmodem.active(), Ordering::Release);
         if let Some(direction) = ask {
             self.proxy.send(TerminalUiEventKind::ZmodemAsk(direction));
         }
-        self.transferring
-            .store(self.zmodem.active(), Ordering::Release);
     }
 
     /// Output for the emulator, and for what reads it beside: 关键字高亮,
