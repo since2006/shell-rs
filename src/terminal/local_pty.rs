@@ -60,6 +60,7 @@ impl TerminalTransport for LocalPtyTransport {
             shell,
             directory,
             replay,
+            system_proxy,
         } = self.launch;
         // Before the shell can write anything.
         if let Some(replay) = replay {
@@ -70,7 +71,7 @@ impl TerminalTransport for LocalPtyTransport {
             .openpty(to_pty_size(initial_size))
             .context(t!("terminal.pty.open_failed"))?;
 
-        let mut command = shell_command(&shell)?;
+        let mut command = shell_command(&shell, system_proxy)?;
         // A folder gone since leaves the home folder, as with none.
         if let Some(directory) = directory.filter(|directory| directory.is_dir()) {
             command.cwd(directory);
@@ -217,12 +218,17 @@ impl TerminalTransport for LocalPtyTransport {
 
 /// The command a local terminal's shell runs: the shell the settings name,
 /// in the environment ShellRS itself was started in, with the few
-/// variables a terminal needs and none of the packaging's.
-fn shell_command(shell: &LocalShell) -> Result<CommandBuilder> {
+/// variables a terminal needs and none of the packaging's. With 跟随系统
+/// 代理 on, the desktop's proxy settings go in too, as the variables
+/// curl, git and cargo read.
+fn shell_command(shell: &LocalShell, system_proxy: bool) -> Result<CommandBuilder> {
     let mut command = shell.command_builder()?;
     // The packaging that put ShellRS on this computer left variables in
     // the environment; they are none of the user's shell's business.
     strip_launcher_vars(&mut command);
+    if system_proxy {
+        crate::system_proxy::inject(&mut command);
+    }
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
     command.env("TERM_PROGRAM", "ShellRS");
@@ -328,12 +334,29 @@ mod tests {
     /// ShellRS was started in, without what the packaging left in it.
     #[test]
     fn the_shell_starts_without_the_packaging() {
-        let command = shell_command(&LocalShell::new("/bin/sh")).unwrap();
+        let command = shell_command(&LocalShell::new("/bin/sh"), false).unwrap();
         for name in LAUNCHER_VARS {
             assert_eq!(command.get_env(name), None, "{name} is left in");
         }
         // The rest of the environment is still there.
         assert!(command.get_env("PATH").is_some());
+    }
+
+    /// With 跟随系统代理 off, nothing of the desktop's proxy settings is
+    /// added, whatever this computer's settings say.
+    #[test]
+    fn the_shell_without_the_system_proxy_gets_none_of_it() {
+        let mut command = shell_command(&LocalShell::new("/bin/sh"), false).unwrap();
+        // Whichever proxy this machine has, the switch is off: what the
+        // environment already holds is the only answer.
+        let inherited = std::env::var_os("http_proxy").is_some();
+        assert_eq!(
+            command.get_env("http_proxy").is_some(),
+            inherited,
+            "the proxy came in with the switch off"
+        );
+        command.env_remove("http_proxy");
+        assert_eq!(command.get_env("http_proxy"), None);
     }
 
     /// The same test in a child process whose environment holds what the

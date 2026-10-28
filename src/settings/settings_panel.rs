@@ -446,6 +446,7 @@ fn local_terminal_group(panel: &SettingsPanel) -> SettingGroup {
     let (editor, reset) = (panel.local_shell.clone(), panel.local_shell.clone());
     let store = panel.store.clone();
     let (reader, writer) = (panel.store.clone(), panel.store.clone());
+    let (proxy_reader, proxy_writer) = (panel.store.clone(), panel.store.clone());
     SettingGroup::new()
         .title(t!("settings.local_terminal.title"))
         .items([
@@ -476,6 +477,22 @@ fn local_terminal_group(panel: &SettingsPanel) -> SettingGroup {
             )
             .description(t!("settings.local_terminal.keep_output_description"))
             .keywords(keywords(t!("settings.local_terminal.keep_output_keywords"))),
+            SettingItem::new(
+                t!("settings.local_terminal.system_proxy"),
+                SettingField::switch(
+                    move |cx| proxy_reader.read(cx).settings().local_terminal.system_proxy,
+                    move |on, cx| {
+                        proxy_writer.update(cx, |store, cx| {
+                            store.update(|settings| settings.local_terminal.system_proxy = on, cx)
+                        });
+                    },
+                )
+                .default_value(true),
+            )
+            .description(t!("settings.local_terminal.system_proxy_description"))
+            .keywords(keywords(t!(
+                "settings.local_terminal.system_proxy_keywords"
+            ))),
         ])
 }
 
