@@ -344,6 +344,11 @@ pub struct LocalTerminalSettings {
     /// 保留终端内容: a 项目 terminal's last lines of output, kept when it
     /// closes and drawn again when it opens. On until the user turns it off.
     pub keep_output: bool,
+    /// 跟随系统代理: the desktop's proxy settings, put into the shell's
+    /// environment as the variables programs read. On until the user turns
+    /// it off; Linux reads GNOME's 设置 › 网络 › 网络代理, macOS and Windows
+    /// hand their settings to programs another way and gain nothing here.
+    pub system_proxy: bool,
 }
 
 impl Default for LocalTerminalSettings {
@@ -351,6 +356,7 @@ impl Default for LocalTerminalSettings {
         Self {
             shell: None,
             keep_output: true,
+            system_proxy: true,
         }
     }
 }
@@ -914,6 +920,24 @@ mod tests {
             ..AppSettings::default()
         };
         assert_eq!(blank.normalized(), AppSettings::default());
+    }
+
+    #[test]
+    fn local_terminals_follow_the_system_proxy_until_the_file_says_otherwise() {
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(settings.local_terminal.system_proxy);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"local_terminal":{"shell":"/bin/zsh"}}"#).unwrap();
+        assert!(settings.local_terminal.system_proxy);
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"local_terminal":{"system_proxy":false}}"#).unwrap();
+        assert!(!settings.local_terminal.system_proxy);
+        // And false is written and read back.
+        let mut settings = AppSettings::default();
+        settings.local_terminal.system_proxy = false;
+        let json = serde_json::to_string(&settings).unwrap();
+        let read: AppSettings = serde_json::from_str(&json).unwrap();
+        assert!(!read.local_terminal.system_proxy);
     }
 
     #[test]
