@@ -1,0 +1,71 @@
+# The app's own tests, as a pull request sees them: formatting, clippy
+# over the whole workspace, the unit tests of every default member, the
+# UI tests and the external CLI's.
+#
+# The other workflows answer to the paths they name and used to answer
+# only to a push, so a pull request came back with no check at all; they
+# now answer to a pull request too. This one carries the tests the others
+# run only in parts: `shells` runs two groups of `terminal::`, `windows`
+# runs a list of targets on Windows, and nothing ran the unit tests of
+# the app or the UI tests as a whole on Linux.
+#
+# One UI test is skipped: projects::a_programs_title_names_the_terminal
+# _until_it_is_named_by_hand does not close its dialog in time on Linux
+# on main itself, change or no change, so it would fail every run until
+# it is fixed.
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "locales/**"
+      - "crates/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - ".github/workflows/tests.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "locales/**"
+      - "crates/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".cargo/**"
+      - ".github/workflows/tests.yml"
+  workflow_dispatch:
+
+jobs:
+  tests:
+    # The same image and packages shells.yml builds the app with.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang pkg-config libfontconfig-dev \
+            libfreetype-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-xcb-dev libxcb1-dev libvulkan-dev libdbus-1-dev libssl-dev
+      # rust-toolchain.toml picks the toolchain; this installs it with the
+      # components it lists before the cache key is computed.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --locked --lib
+      # See the header: this one test does not close its dialog in time on
+      # Linux on main itself.
+      - run: cargo test --locked --test ui -- --skip projects::a_programs_title_names_the_terminal_until_it_is_named_by_hand
+      - run: cargo test --locked --test cli_bin

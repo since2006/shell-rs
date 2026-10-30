@@ -458,9 +458,13 @@ $3:0:1:my job:/home/alice
         assert_eq!(read.current.as_deref(), Some("$1"), "{output}");
         assert_eq!(read.names(), ["test", "work"]);
 
-        // No tmux.
+        // No tmux: only this directory on PATH, or a tmux the machine
+        // happens to have (the CI images ship one) would answer instead.
         std::fs::remove_file(bin.join("tmux")).unwrap();
-        let output = crate::testing::sh(script(&command()), Some(&path));
+        // `sh` is looked up in the PATH the test sets, so it needs one here.
+        std::os::unix::fs::symlink("/bin/sh", bin.join("sh")).unwrap();
+        let only = bin.display().to_string();
+        let output = crate::testing::sh(script(&command()), Some(&only));
         assert_eq!(String::from_utf8(output.stdout).unwrap(), "@@missing\n");
     }
 }
