@@ -505,8 +505,20 @@ async fn quitting_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
 
     type_text(cx, handle, "1");
     // From the app, with no window in front, as ⌘Q may arrive after a
-    // dialog left nothing focused.
-    cx.update(|cx| cx.dispatch_action(&Quit));
+    // dialog left nothing focused. The tray restores the main window and
+    // dispatches Quit, even when closing to the tray is enabled.
+    cx.update(|cx| {
+        workspace
+            .read(cx)
+            .settings()
+            .clone()
+            .update(cx, |store, cx| {
+                store.update(|settings| settings.window.close_to_tray = true, cx);
+            });
+        cx.set_global(shellrs::app::MainWindow(handle.into()));
+        cx.dispatch_action(&shellrs::app::ShowApp);
+        cx.dispatch_action(&Quit);
+    });
     wait_for(cx, handle, "ok").await;
     in_frame(cx, handle, |window, cx| window.click("cancel", cx));
     assert!(is_open(&workspace, FIRST, cx));

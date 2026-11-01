@@ -60,6 +60,9 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
         cx.set_global(UiLocale(locale));
         window.refresh();
     }
+    // Only the production main window installs the native tray service.
+    #[cfg(windows)]
+    crate::app::sync_window_tray(settings.window.close_to_tray, window, cx);
 
     let font = settings.terminal_font;
     let font = TerminalFont {

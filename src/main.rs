@@ -66,6 +66,8 @@ fn main() {
                 .open_window(options, |window, cx| {
                     window.activate_window();
                     window.set_window_title("ShellRS");
+                    #[cfg(windows)]
+                    shellrs::app::listen_for_tray(window, cx);
                     shellrs::app::hide_when_closed(window, cx);
                     // Drawn by the processor (a virtual machine without 3D),
                     // ShellRS draws fewer frames.

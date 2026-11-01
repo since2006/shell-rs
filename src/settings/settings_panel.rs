@@ -883,41 +883,57 @@ fn sync_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
 /// 应用 → 窗口: what the next launch restores of the main window.
 fn application_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     let store = &panel.store;
-    let switch = |read: fn(&WindowSettings) -> bool, write: fn(&mut WindowSettings, bool)| {
-        let (reader, writer) = (store.clone(), store.clone());
-        SettingField::switch(
-            move |cx| read(&reader.read(cx).settings().window),
-            move |on, cx| {
-                writer.update(cx, |store, cx| {
-                    store.update(|settings| write(&mut settings.window, on), cx)
-                });
-            },
+    let switch =
+        |read: fn(&WindowSettings) -> bool, write: fn(&mut WindowSettings, bool), default| {
+            let (reader, writer) = (store.clone(), store.clone());
+            SettingField::switch(
+                move |cx| read(&reader.read(cx).settings().window),
+                move |on, cx| {
+                    writer.update(cx, |store, cx| {
+                        store.update(|settings| write(&mut settings.window, on), cx)
+                    });
+                },
+            )
+            .default_value(default)
+        };
+    let window_group = SettingGroup::new()
+        .title(t!("settings.window.title"))
+        .items([
+            SettingItem::new(
+                t!("settings.window.remember_size"),
+                switch(
+                    |window| window.remember_size,
+                    |window, on| window.remember_size = on,
+                    true,
+                ),
+            )
+            .description(t!("settings.window.remember_size_description")),
+            SettingItem::new(
+                t!("settings.window.remember_position"),
+                switch(
+                    |window| window.remember_position,
+                    |window, on| window.remember_position = on,
+                    true,
+                ),
+            )
+            .description(t!("settings.window.remember_position_description")),
+        ]);
+    let window_group = if cfg!(windows) {
+        window_group.item(
+            SettingItem::new(
+                t!("settings.window.close_to_tray"),
+                switch(
+                    |window| window.close_to_tray,
+                    |window, on| window.close_to_tray = on,
+                    false,
+                ),
+            )
+            .description(t!("settings.window.close_to_tray_description")),
         )
-        .default_value(true)
+    } else {
+        window_group
     };
-    vec![
-        SettingGroup::new()
-            .title(t!("settings.window.title"))
-            .items([
-                SettingItem::new(
-                    t!("settings.window.remember_size"),
-                    switch(
-                        |window| window.remember_size,
-                        |window, on| window.remember_size = on,
-                    ),
-                )
-                .description(t!("settings.window.remember_size_description")),
-                SettingItem::new(
-                    t!("settings.window.remember_position"),
-                    switch(
-                        |window| window.remember_position,
-                        |window, on| window.remember_position = on,
-                    ),
-                )
-                .description(t!("settings.window.remember_position_description")),
-            ]),
-        app_lock_group(&panel.store, cx),
-    ]
+    vec![window_group, app_lock_group(&panel.store, cx)]
 }
 
 fn app_lock_group(store: &Entity<SettingsStore>, cx: &App) -> SettingGroup {

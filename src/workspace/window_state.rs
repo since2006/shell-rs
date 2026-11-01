@@ -279,6 +279,7 @@ mod tests {
         WindowSettings {
             remember_size,
             remember_position,
+            ..WindowSettings::default()
         }
     }
 

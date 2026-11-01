@@ -481,6 +481,71 @@ fn the_window_settings_are_on_until_turned_off(cx: &mut TestAppContext) {
     assert!(settings.remember_size && !settings.remember_position);
 }
 
+/// The tray preference belongs only to Windows. Other platforms must not
+/// offer a switch that cannot take effect; Windows starts off and can reset it.
+#[gpui_kit::test]
+fn closing_to_the_tray_is_off_and_offered_only_on_windows(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-7", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        let offered = gpui_kit::base::test_support::snapshots(window)
+            .iter()
+            .any(|element| {
+                ["settings", "group-0", "item-2"]
+                    .iter()
+                    .all(|id| element.path().contains(&ElementId::from(*id)))
+            });
+        assert_eq!(offered, cfg!(windows));
+    });
+    #[cfg(windows)]
+    {
+        in_frame(cx, handle, |window, cx| {
+            assert_eq!(
+                window
+                    .within("settings")
+                    .within("group-0")
+                    .within("item-2")
+                    .find("check")
+                    .checked(),
+                Some(false)
+            );
+            window
+                .within("settings")
+                .within("group-0")
+                .within("item-2")
+                .click("check", cx);
+        });
+        cx.update(|cx| {
+            assert!(
+                workspace
+                    .read(cx)
+                    .settings()
+                    .read(cx)
+                    .settings()
+                    .window
+                    .close_to_tray
+            );
+        });
+        in_frame(cx, handle, |window, cx| {
+            window.within("settings").click("reset", cx);
+        });
+    }
+    cx.update(|cx| {
+        assert!(
+            !workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .window
+                .close_to_tray
+        );
+    });
+}
+
 #[gpui_kit::test]
 fn terminal_cursor_settings_apply_to_open_and_restarted_terminals(cx: &mut TestAppContext) {
     use alacritty_terminal::vte::ansi::CursorShape;

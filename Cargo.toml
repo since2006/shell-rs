@@ -143,14 +143,17 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 [target.'cfg(windows)'.dependencies]
 windows-registry = "0.6"
 windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
+    "Win32_System_LibraryLoader",
     "Win32_System_Pipes",
     "Win32_System_Threading",
     "Win32_System_WindowsProgramming",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
 ] }
 # The window's handle, to restore it from maximized: GPUI only maximizes.
 raw-window-handle = "0.6"

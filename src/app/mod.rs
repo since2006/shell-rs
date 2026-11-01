@@ -9,6 +9,8 @@ mod quit;
 mod rendering;
 mod shortcuts;
 mod system_hotkey;
+#[cfg(windows)]
+mod tray;
 mod window_hiding;
 
 pub use actions::*;
@@ -27,6 +29,10 @@ pub use shortcuts::{
     fixed_bindings, key_caps, key_text, listen_for_system_hotkey,
 };
 pub use system_hotkey::{system_hotkey_available, take_system_hotkey_press};
+#[cfg(windows)]
+pub use tray::listen_for_tray;
+#[cfg(windows)]
+pub(crate) use tray::sync as sync_window_tray;
 pub use window_hiding::{MainWindow, bring_forward, hide_when_closed, restore_window, send_back};
 
 use gpui_kit::component::Theme;
@@ -91,6 +97,13 @@ pub fn init(cx: &mut App) {
     // The defaults; the settings bring the user's changes once read.
     apply_shortcuts(&ShortcutOverrides::default(), cx);
     cx.on_action(|_: &Quit, cx: &mut App| quit::quit(cx));
+    cx.on_action(|_: &ShowApp, cx: &mut App| {
+        if let Some(MainWindow(window)) = cx.try_global().copied() {
+            cx.defer(move |cx| {
+                _ = window.update(cx, |_, window, cx| bring_forward(window, cx));
+            });
+        }
+    });
 }
 
 /// How much of a selected row's color hover gets in the dark appearance.

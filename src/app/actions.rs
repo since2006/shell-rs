@@ -89,6 +89,8 @@ gpui_kit::actions!(
         /// away when it already is. The system tells of its key
         /// (`system_hotkey`), not the keymap.
         ShowOrHideApp,
+        /// Restore the main window, including from the notification area.
+        ShowApp,
         /// Read the network connections of the SSH terminal's host again.
         RefreshConnections,
         /// Read the processes of the SSH terminal's host again.

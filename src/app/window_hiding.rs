@@ -5,9 +5,9 @@
 //! it would stop all of that yet leave the app in the Dock with no window,
 //! and the Dock icon could not bring one back. So, like Mac terminals,
 //! closing hides the app: the Dock icon, ⌘Tab or opening ShellRS again
-//! shows the window as it was, and ⌘Q quits. Windows and Linux quit when
-//! the window closes, as GPUI does there by default, but like ⌘Q only once
-//! the quit guard lets them (unsaved changes in an editor are asked about).
+//! shows the window as it was, and ⌘Q quits. Windows can opt into hiding in
+//! the notification area; otherwise it and Linux quit when the window
+//! closes, after the quit guard asks about unsaved changes.
 
 use gpui_kit::{AnyWindowHandle, App, Global, Window};
 
@@ -19,7 +19,7 @@ pub struct MainWindow(pub AnyWindowHandle);
 impl Global for MainWindow {}
 
 /// Make the window's close button hide ShellRS on macOS. Elsewhere closing
-/// quits, after asking the quit guard.
+/// quits, after asking the quit guard, unless Windows hides in the tray.
 #[cfg(target_os = "macos")]
 pub fn hide_when_closed(window: &Window, cx: &App) {
     window.on_window_should_close(cx, |_, cx| {
@@ -30,7 +30,13 @@ pub fn hide_when_closed(window: &Window, cx: &App) {
 
 #[cfg(not(target_os = "macos"))]
 pub fn hide_when_closed(window: &Window, cx: &App) {
-    window.on_window_should_close(cx, |window, cx| !super::quit::quit_held_back(window, cx));
+    window.on_window_should_close(cx, |window, cx| {
+        #[cfg(windows)]
+        if super::tray::hide_on_close(window, cx) {
+            return false;
+        }
+        !super::quit::quit_held_back(window, cx)
+    });
 }
 
 /// Show the window again, in front of other apps: when the Dock icon is
@@ -41,6 +47,9 @@ pub fn bring_forward(window: &mut Window, cx: &mut App) {
     if let Some(main_thread) = objc2::MainThreadMarker::new() {
         objc2_app_kit::NSApplication::sharedApplication(main_thread).unhide(None);
     }
+    // GPUI restores minimized windows, but does not show a hidden HWND.
+    #[cfg(windows)]
+    super::tray::show_window(window);
     cx.activate(true);
     window.activate_window();
 }

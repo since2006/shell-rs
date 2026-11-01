@@ -4,6 +4,16 @@ app.database_unavailable:
   zh-CN: 无法打开本地数据库，本次运行的改动不会被保存：%{error}
   en: "Couldn’t open the local database, so changes last only until ShellRS quits: %{error}"
 
+app.tray.show:
+  zh-CN: 显示窗口
+  en: Show window
+app.tray.quit:
+  zh-CN: 退出
+  en: Quit
+app.tray.failed:
+  zh-CN: 无法使用系统托盘，窗口将保持打开：%{error}
+  en: "The system tray is unavailable. The window will stay open: %{error}"
+
 # 设置 › 键盘快捷键: each shortcut by its id, in the order the page lists them.
 app.shortcut.new_host:
   zh-CN: 新建主机

@@ -210,8 +210,7 @@ mod tool_by_key {
     }
 }
 
-/// 应用 → 窗口: what the next launch restores of the main window. Both on
-/// until the user turns them off.
+/// 应用 → 窗口: what the next launch restores, and how closing behaves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WindowSettings {
@@ -219,6 +218,9 @@ pub struct WindowSettings {
     pub remember_size: bool,
     /// 记住窗口位置: where it was, on which screen.
     pub remember_position: bool,
+    /// Windows only: hide the window in the notification area instead of
+    /// quitting when its close button is clicked. Off until enabled.
+    pub close_to_tray: bool,
 }
 
 impl Default for WindowSettings {
@@ -226,6 +228,7 @@ impl Default for WindowSettings {
         Self {
             remember_size: true,
             remember_position: true,
+            close_to_tray: false,
         }
     }
 }
@@ -1042,6 +1045,18 @@ mod tests {
         let settings: AppSettings =
             serde_json::from_str(r#"{"window":{"remember_position":false}}"#).unwrap();
         assert!(settings.window.remember_size && !settings.window.remember_position);
+    }
+
+    #[test]
+    fn closing_to_the_tray_is_opt_in_and_keeps_older_window_settings() {
+        for json in ["{}", r#"{"window":{"remember_position":false}}"#] {
+            let settings: AppSettings = serde_json::from_str(json).unwrap();
+            assert!(!settings.window.close_to_tray);
+        }
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"window":{"close_to_tray":true}}"#).unwrap();
+        assert!(settings.window.close_to_tray);
+        assert!(settings.window.remember_size && settings.window.remember_position);
     }
 
     #[test]
