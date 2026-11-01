@@ -8,7 +8,7 @@ use gpui_kit::*;
 
 use crate::app::{
     CatalogIcon, NewLocalTerminal, NewTemporaryConnection, QuickConnect, ShowCredentials,
-    ShowForwards, ShowHosts, ShowUpdate, ToggleHostPanel, ToggleTheme,
+    ShowForwards, ShowHosts, ShowUpdate, ToggleComposePane, ToggleHostPanel, ToggleTheme,
 };
 use crate::i18n::t;
 use crate::shared::tinted;
@@ -191,9 +191,11 @@ pub fn render_title_bar(
 /// The closed dock keeps its width, so the reopen button stays put.
 pub(super) fn render_sidebar_toggle(
     open: bool,
+    compose_open: bool,
     sidebar_width: Pixels,
     target: &FocusHandle,
 ) -> impl IntoElement {
+    let compose = target.clone();
     let target = target.clone();
     let label = if open {
         t!("workspace.title_bar.hide_sidebar")
@@ -206,6 +208,7 @@ pub(super) fn render_sidebar_toggle(
         .left(sidebar_width)
         .h(TITLE_BAR_HEIGHT)
         .pl_2()
+        .gap_1()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
             Button::new("toggle-hosts")
@@ -220,6 +223,19 @@ pub(super) fn render_sidebar_toggle(
                 .accessibility_label(label)
                 .on_click(move |_, window, cx| {
                     target.dispatch_action(&ToggleHostPanel, window, cx)
+                }),
+        )
+        .child(
+            Button::new("toggle-compose-pane")
+                .ghost()
+                .small()
+                .icon(CatalogIcon::SquarePen)
+                .selected(compose_open)
+                .toggled(compose_open)
+                .tooltip_with_action(t!("workspace.compose.title"), &ToggleComposePane, None)
+                .accessibility_label(t!("workspace.compose.title"))
+                .on_click(move |_, window, cx| {
+                    compose.dispatch_action(&ToggleComposePane, window, cx)
                 }),
         )
 }

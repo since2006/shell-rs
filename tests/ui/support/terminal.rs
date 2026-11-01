@@ -34,6 +34,7 @@ pub const RZ_STARTS: &[u8] = b"rz waiting to receive.**\x18B0100000023be50\r\x8a
 #[derive(Default)]
 pub struct FakeTerminalFactory {
     pub starts: AtomicUsize,
+    pub output: Arc<Mutex<Option<async_channel::Sender<TerminalTransportEvent>>>>,
     pub behavior: FakeBehavior,
     pub writes: Arc<Mutex<Vec<Vec<u8>>>>,
     pub writes_by_run: WritesByRun,
@@ -54,6 +55,16 @@ pub struct FakeTerminalFactory {
 }
 
 impl FakeTerminalFactory {
+    pub fn print(&self, text: &str) {
+        self.output
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("transport started")
+            .send_blocking(TerminalTransportEvent::Output(text.as_bytes().to_vec()))
+            .unwrap();
+    }
+
     /// What file transfers sent, all of it.
     pub fn data(&self) -> Vec<u8> {
         self.data
@@ -157,6 +168,7 @@ impl TerminalTransportFactory for FakeTerminalFactory {
         let run = self.starts.fetch_add(1, Ordering::SeqCst) + 1;
         Box::new(FakeTerminalTransport {
             run,
+            output: self.output.clone(),
             behavior: self.behavior,
             writes: self.writes.clone(),
             writes_by_run: self.writes_by_run.clone(),
@@ -172,6 +184,7 @@ impl TerminalTransportFactory for FakeTerminalFactory {
 
 pub struct FakeTerminalTransport {
     pub run: usize,
+    pub output: Arc<Mutex<Option<async_channel::Sender<TerminalTransportEvent>>>>,
     pub behavior: FakeBehavior,
     pub writes: Arc<Mutex<Vec<Vec<u8>>>>,
     pub writes_by_run: WritesByRun,
@@ -193,6 +206,7 @@ impl TerminalTransport for FakeTerminalTransport {
         if matches!(self.behavior, FakeBehavior::FailFirst) && self.run == 1 {
             anyhow::bail!("测试启动失败");
         }
+        *self.output.lock().unwrap() = Some(events.clone());
         events.send_blocking(TerminalTransportEvent::Started)?;
         if let FakeBehavior::ReportsOs(os) = self.behavior {
             events.send_blocking(TerminalTransportEvent::HostOsDetected(os))?;

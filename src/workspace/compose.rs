@@ -1,61 +1,135 @@
-//! 撰写窗格 in the workspace: the bottom dock holds it while it shows, and
-//! what it holds goes to the terminal in front, the one the right sidebar
-//! goes with, or to every checked terminal while 命令广播 has two.
-
-use gpui_kit::component::WindowExt as _;
-use gpui_kit::component::dock::{DockLayout, DockPlacement, panel_handle};
-use gpui_kit::component::notification::Notification;
-use gpui_kit::*;
-
-use super::Workspace;
-use super::compose_pane::ComposeTarget;
-use super::terminal_groups::Recipient;
-use crate::app::{SendCompose, SendComposeInterrupt, SendComposeSnippet, ToggleComposePane};
+//! Commands are submitted against a fixed identity snapshot, with explicit
+//! per-target results. A partial report blocks ordinary submission until resolved.
+use super::{
+    Workspace,
+    compose_pane::ComposePresentation,
+    terminal_groups::{ComposeIdentity, Recipient},
+};
+use crate::app::{
+    CenterTab, ComposeScope, EditComposeAsNew, RetryCompose, SendCompose, SendComposeInterrupt,
+    SendComposeSnippet, ToggleComposePane,
+};
 use crate::i18n::{join_list, t};
 use crate::terminal::{ComposePaneShown, TerminalInput};
+use gpui_kit::component::dock::{DockLayout, DockPlacement, panel_handle};
+use gpui_kit::*;
 
-/// How tall the pane opens, title bar included: a few lines to write in.
-/// Dock geometry is an API boundary that takes `Pixels`.
-pub(super) const COMPOSE_HEIGHT: Pixels = px(160.);
-/// The lowest it can be dragged: its title bar and a line or two.
+// Dock size APIs take Pixels. Minimum accommodates the header, editor and actions.
+pub(super) const COMPOSE_HEIGHT: Pixels = px(104.);
 const COMPOSE_MIN_HEIGHT: Pixels = px(96.);
 
-impl Workspace {
-    /// Where the pane sends.
-    fn compose_recipients(&self, cx: &App) -> Vec<Recipient> {
-        if self.broadcast.active() {
-            return self.broadcast_recipients(cx);
-        }
-        self.tool_target(cx)
-            .and_then(|target| self.recipient(target.tab(), cx))
-            .into_iter()
+pub(super) struct ComposeOutcome {
+    identity: ComposeIdentity,
+    name: SharedString,
+    /// None means accepted by the terminal input path, not remotely executed.
+    refusal: Option<SharedString>,
+}
+
+pub(super) struct ComposeReport {
+    command: String,
+    run: bool,
+    /// Snippets leave an unrelated draft intact, including after a retry.
+    clears_draft: bool,
+    outcomes: Vec<ComposeOutcome>,
+}
+impl ComposeReport {
+    fn submitted(&self) -> usize {
+        self.outcomes.iter().filter(|r| r.refusal.is_none()).count()
+    }
+    fn partial(&self) -> bool {
+        self.submitted() > 0 && self.submitted() < self.outcomes.len()
+    }
+    fn complete(&self) -> bool {
+        !self.outcomes.is_empty() && self.submitted() == self.outcomes.len()
+    }
+    fn summary(&self) -> SharedString {
+        t!(
+            "workspace.compose.result",
+            submitted = self.submitted(),
+            refused = self.outcomes.len() - self.submitted()
+        )
+    }
+    fn details(&self) -> Vec<SharedString> {
+        self.outcomes
+            .iter()
+            .map(|outcome| match &outcome.refusal {
+                Some(reason) => t!(
+                    "workspace.compose.refused",
+                    names = &outcome.name,
+                    error = reason
+                ),
+                None => t!("workspace.compose.submitted_target", name = &outcome.name),
+            })
             .collect()
     }
+}
 
-    /// Where the pane sends, as its title tells: none without a terminal
-    /// on screen.
-    fn compose_target(&self, cx: &App) -> Option<ComposeTarget> {
-        if self.broadcast.active() {
-            return Some(ComposeTarget::Broadcast(self.broadcast.count()));
+impl Workspace {
+    pub(super) fn compose_presentation(&self, cx: &App) -> ComposePresentation {
+        let recipients = self.compose_recipients(cx);
+        let count = recipients.len();
+        let local = recipients
+            .iter()
+            .filter(|r| matches!(r.identity.tab, CenterTab::LocalTerminal(_)))
+            .count();
+        let summary = match count {
+            0 if self.compose_routing.scope == ComposeScope::Selected => {
+                t!("workspace.compose.choose")
+            }
+            0 => t!("workspace.compose.empty"),
+            1 if local == 1 => t!("workspace.compose.single_local", name = &recipients[0].name),
+            1 => recipients[0].name.clone(),
+            _ if local > 0 => t!(
+                "workspace.compose.multiple_local",
+                count = count,
+                local = local
+            ),
+            _ => t!("workspace.compose.multiple", count = count),
+        };
+        let names: Vec<_> = recipients.iter().map(|r| r.name.clone()).collect();
+        let report = self.compose_report.as_ref();
+        let blocked = report.is_some_and(ComposeReport::partial);
+        ComposePresentation {
+            scope: self.compose_routing.scope,
+            summary,
+            names: join_list(&names).into(),
+            count,
+            keys: self.compose_routing.keys,
+            targets_changed: self.compose_routing.targets_changed,
+            available: count > 0 && !crate::app_lock::is_locked(cx),
+            blocked,
+            result: report
+                .filter(|r| !r.complete() || r.outcomes.len() > 1)
+                .map(ComposeReport::summary),
+            result_command: report
+                .filter(|r| !r.complete())
+                .map(|r| r.command.clone().into()),
+            details: report
+                .filter(|r| !r.complete())
+                .map(ComposeReport::details)
+                .unwrap_or_default(),
+            retry: report.is_some_and(|r| {
+                r.partial()
+                    && r.outcomes.iter().any(|outcome| {
+                        outcome.refusal.is_some()
+                            && self
+                                .recipient(outcome.identity.tab, cx)
+                                .is_some_and(|recipient| {
+                                    recipient.identity == outcome.identity
+                                        && recipient.view.read(cx).lifecycle(cx).accepts_input()
+                                })
+                    })
+            }) && !crate::app_lock::is_locked(cx),
         }
-        let target = self.tool_target(cx)?;
-        let recipient = self.recipient(target.tab(), cx)?;
-        Some(ComposeTarget::Terminal(recipient.name))
     }
 
-    /// Show the pane while it is switched on, or while 命令广播 sends, and
-    /// a terminal is on screen; tell it where it sends.
+    /// A requested pane remains visible even with no available targets.
     pub(super) fn sync_compose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let target = self.compose_target(cx);
-        let wanted = self.settings().read(cx).settings().compose_pane || self.broadcast.active();
-        let show = wanted && target.is_some();
-        if let Some(target) = target {
-            let keys = self.broadcast.keys();
-            self.compose
-                .update(cx, |pane, cx| pane.set_target(target, keys, cx));
-        }
+        self.sync_compose_routing(cx);
+        let show = self.settings().read(cx).settings().compose_pane;
         cx.set_global(ComposePaneShown(show));
         if self.dock_area.read(cx).has_dock(DockPlacement::Bottom) == show {
+            self.hold_compose_height(window, cx);
             return;
         }
         if show {
@@ -69,14 +143,10 @@ impl Workspace {
                     cx,
                 );
                 area.set_dock_size(DockPlacement::Bottom, height, window, cx);
-                // Its × and the shortcut are its controls, not gpui-kit's
-                // collapse button.
                 area.set_dock_collapsible(DockPlacement::Bottom, false, window, cx);
             });
         } else {
-            // The dock goes away, and the pane with it: what it holds stays
-            // for next time, and so does how tall it was.
-            let focus_inside = self
+            let focused = self
                 .compose
                 .read(cx)
                 .focus_handle(cx)
@@ -87,23 +157,41 @@ impl Workspace {
             self.dock_area.update(cx, |area, cx| {
                 area.remove_dock(DockPlacement::Bottom, window, cx)
             });
-            if focus_inside {
+            if focused {
                 self.focus_center(window, cx);
             }
         }
     }
-
     /// Undo a drag that took the pane below its lowest. Runs whenever the
     /// dock area changes, as the right sidebar's width is held.
     pub(super) fn hold_compose_height(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let area = self.dock_area.read(cx);
+        let width = window.viewport_size().width
+            - window.rem_size() * 3.
+            - [DockPlacement::Left, DockPlacement::Right]
+                .into_iter()
+                .filter(|side| area.is_dock_open(*side))
+                .filter_map(|side| area.dock_size(side))
+                .sum::<Pixels>();
+        let rows = if width < window.rem_size() * 42. {
+            8.
+        } else {
+            6.
+        };
+        let result = if self.compose_presentation(cx).result.is_some() {
+            1.75
+        } else {
+            0.
+        };
+        let minimum = COMPOSE_MIN_HEIGHT.max(window.rem_size() * (rows + result));
         let lower = self
             .dock_area
             .read(cx)
             .dock_size(DockPlacement::Bottom)
-            .is_some_and(|height| height < COMPOSE_MIN_HEIGHT);
+            .is_some_and(|height| height < minimum);
         if lower {
             self.dock_area.update(cx, |area, cx| {
-                area.set_dock_size(DockPlacement::Bottom, COMPOSE_MIN_HEIGHT, window, cx);
+                area.set_dock_size(DockPlacement::Bottom, minimum, window, cx);
             });
         }
     }
@@ -119,62 +207,84 @@ impl Workspace {
         .detach();
     }
 
-    /// Put `command` on the input line of each terminal the pane sends to
-    /// and with `run` run it. After whatever is typed there, not in its
-    /// place as 命令片段 does: as Xshell's and SecureCRT's send to all, and
-    /// clearing with Ctrl-E Ctrl-U rings bash's bell on an empty line and
-    /// means other things to network devices. Says which terminals could not
-    /// take it, and returns whether any did.
+    fn submit_composed(
+        command: &str,
+        run: bool,
+        recipient: Recipient,
+        cx: &mut App,
+    ) -> ComposeOutcome {
+        let refusal = recipient
+            .view
+            .update(cx, |view, cx| view.enter_command(command, run, false, cx))
+            .err();
+        ComposeOutcome {
+            identity: recipient.identity,
+            name: recipient.name,
+            refusal,
+        }
+    }
+
     fn send_composed(
         &mut self,
         command: &str,
         run: bool,
+        clears_draft: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> bool {
-        self.sync_broadcast(cx);
-        let mut sent = false;
-        // Why not, with the terminals it applies to, in the order met.
-        let mut refused: Vec<(SharedString, Vec<SharedString>)> = Vec::new();
-        for recipient in self.compose_recipients(cx) {
-            match recipient
-                .view
-                .update(cx, |view, cx| view.enter_command(command, run, false, cx))
-            {
-                Ok(()) => sent = true,
-                Err(why) => match refused.iter_mut().find(|(reason, _)| *reason == why) {
-                    Some((_, names)) => names.push(recipient.name),
-                    None => refused.push((why, vec![recipient.name])),
-                },
-            }
+    ) {
+        if crate::app_lock::is_locked(cx)
+            || self
+                .compose_report
+                .as_ref()
+                .is_some_and(ComposeReport::partial)
+        {
+            return;
         }
-        for (why, names) in refused {
-            let message = t!(
-                "workspace.compose.refused",
-                names = join_list(&names),
-                error = why
-            );
-            window.push_notification(Notification::error(message), cx);
+        self.sync_compose_routing(cx);
+        if self.compose_routing.scope != ComposeScope::Current && command.trim().is_empty() {
+            return;
         }
-        sent
+        // Collect once. Creating/reconnecting a terminal cannot enlarge this send.
+        let recipients = self.compose_recipients(cx);
+        if recipients.is_empty() {
+            return;
+        }
+        let outcomes = recipients
+            .into_iter()
+            .map(|r| Self::submit_composed(command, run, r, cx))
+            .collect();
+        self.finish_compose_report(
+            ComposeReport {
+                command: command.to_owned(),
+                run,
+                clears_draft,
+                outcomes,
+            },
+            window,
+            cx,
+        );
     }
 
-    /// Show or hide the pane. While 命令广播 sends it stays, as the
-    /// broadcast's command bar: the keyboard goes there instead.
+    fn finish_compose_report(
+        &mut self,
+        report: ComposeReport,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if report.complete() && report.clears_draft {
+            self.compose.update(cx, |pane, cx| pane.clear(window, cx));
+        }
+        self.compose_report = Some(report);
+        self.sync_compose(window, cx);
+        self.focus_compose_soon(window, cx);
+    }
+
     pub(super) fn on_toggle_compose_pane(
         &mut self,
         _: &ToggleComposePane,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.broadcast.active() {
-            self.focus_compose_soon(window, cx);
-            return;
-        }
-        // Nothing to write to: no terminal on screen.
-        if self.compose_target(cx).is_none() {
-            return;
-        }
         let open = !self.settings().read(cx).settings().compose_pane;
         self.settings().update(cx, |settings, cx| {
             settings.update(|s| s.compose_pane = open, cx)
@@ -195,12 +305,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let text = self.compose.read(cx).text(cx);
-        // A last line ended would run once more, empty.
-        let command = text.trim_end_matches(['\r', '\n']);
-        // What could not be sent anywhere stays, to send again.
-        if self.send_composed(command, true, window, cx) {
-            self.compose.update(cx, |pane, cx| pane.clear(window, cx));
-        }
+        self.send_composed(text.trim_end_matches(['\r', '\n']), true, true, window, cx);
     }
 
     pub(super) fn on_send_compose_snippet(
@@ -209,23 +314,79 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if crate::app_lock::is_locked(cx)
+            || self
+                .compose_report
+                .as_ref()
+                .is_some_and(ComposeReport::partial)
+        {
+            return;
+        }
         let Some(snippet) = self.store.read(cx).snippet(action.0).cloned() else {
             return;
         };
-        self.send_composed(&snippet.command, snippet.run_on_click, window, cx);
+        self.send_composed(&snippet.command, snippet.run_on_click, false, window, cx);
+    }
+
+    pub(super) fn on_retry_compose(
+        &mut self,
+        _: &RetryCompose,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if crate::app_lock::is_locked(cx) {
+            return;
+        }
+        let Some(mut report) = self.compose_report.take() else {
+            return;
+        };
+        if !report.partial() {
+            self.compose_report = Some(report);
+            return;
+        }
+        for outcome in &mut report.outcomes {
+            if outcome.refusal.is_none() {
+                continue;
+            }
+            let recipient = self
+                .recipient(outcome.identity.tab, cx)
+                .filter(|r| r.identity == outcome.identity);
+            outcome.refusal = match recipient {
+                Some(recipient) => {
+                    Self::submit_composed(&report.command, report.run, recipient, cx).refusal
+                }
+                None => Some(t!("workspace.compose.connection_changed")),
+            };
+        }
+        self.finish_compose_report(report, window, cx);
+    }
+
+    pub(super) fn on_edit_compose_as_new(
+        &mut self,
+        _: &EditComposeAsNew,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.compose_report = None;
+        self.sync_compose(window, cx);
+        self.focus_compose_soon(window, cx);
     }
 
     pub(super) fn on_send_compose_interrupt(
         &mut self,
         _: &SendComposeInterrupt,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.sync_broadcast(cx);
+        if crate::app_lock::is_locked(cx) {
+            return;
+        }
+        self.sync_compose_routing(cx);
         for recipient in self.compose_recipients(cx) {
             recipient.view.update(cx, |view, cx| {
                 view.receive_input(&TerminalInput::Bytes(vec![0x03]), cx);
             });
         }
+        self.focus_compose_soon(window, cx);
     }
 }

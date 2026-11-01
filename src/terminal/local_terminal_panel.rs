@@ -54,7 +54,7 @@ pub struct LocalTerminalPanel {
     name: Option<SavedName>,
     terminal: Entity<TerminalView>,
     tab_group: Option<WeakEntity<TabGroup>>,
-    broadcast: Option<super::BroadcastSelection>,
+    compose_selection: Option<super::ComposeSelection>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -109,7 +109,7 @@ impl LocalTerminalPanel {
             name,
             terminal,
             tab_group: None,
-            broadcast: None,
+            compose_selection: None,
             _subscriptions: subscriptions,
         }
     }
@@ -135,13 +135,13 @@ impl LocalTerminalPanel {
         self.terminal.read(cx).zmodem_reply(reply, cx);
     }
 
-    pub(crate) fn set_broadcast_selection(
+    pub(crate) fn set_compose_selection(
         &mut self,
-        selection: Option<super::BroadcastSelection>,
+        selection: Option<super::ComposeSelection>,
         cx: &mut Context<Self>,
     ) {
-        if self.broadcast != selection {
-            self.broadcast = selection;
+        if self.compose_selection != selection {
+            self.compose_selection = selection;
             cx.notify();
         }
     }
@@ -169,6 +169,7 @@ impl LocalTerminalPanel {
     pub fn set_name(&mut self, name: SavedName, cx: &mut Context<Self>) {
         if self.name.as_ref() != Some(&name) {
             self.name = Some(name);
+            cx.emit(LocalTerminalPanelEvent::StatusChanged(self.id));
             cx.notify();
         }
     }
@@ -238,8 +239,8 @@ impl BasePanel for LocalTerminalPanel {
 impl Panel for LocalTerminalPanel {
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (id, group, panel) = (self.id, self.tab_group.clone(), cx.entity_id());
-        let mark = super::BroadcastSelection::lead(
-            self.broadcast.clone(),
+        let mark = super::ComposeSelection::lead(
+            self.compose_selection.clone(),
             CenterTab::LocalTerminal(id),
             self.display_title(cx),
             Icon::new(CatalogIcon::Terminal).small(),

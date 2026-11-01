@@ -154,9 +154,10 @@ pub(super) enum PromptOwner {
 /// Owns the host store, the dock and the registry of open per-host
 /// panels, and handles every application action.
 pub struct Workspace {
-    pub(super) broadcast: super::terminal_groups::TerminalBroadcast,
+    pub(super) compose_routing: super::terminal_groups::ComposeRouting,
     /// 撰写窗格, in the bottom dock while it shows.
     pub(super) compose: Entity<ComposePane>,
+    pub(super) compose_report: Option<super::compose::ComposeReport>,
     /// How tall 撰写窗格 was last: it opens again so.
     pub(super) compose_height: Pixels,
     pub(super) store: Entity<HostStore>,
@@ -396,7 +397,6 @@ impl Workspace {
             DOCK_ID,
             Some(DOCK_VERSION),
             recent.clone().into(),
-            focus_handle.clone(),
             window,
             cx,
         );
@@ -491,6 +491,7 @@ impl Workspace {
             ),
             cx.observe_in(&settings, window, |this, settings, window, cx| {
                 crate::settings::apply(settings.read(cx).settings(), window, cx);
+                this.hold_compose_height(window, cx);
                 if !settings.read(cx).settings().local_terminal.keep_output {
                     this.store.read(cx).forget_kept_outputs();
                 }
@@ -520,6 +521,9 @@ impl Workspace {
                 this.on_sync_event(event, window, cx)
             }),
             // Coming back to ShellRS, the other computers' edits come too.
+            cx.observe_window_bounds(window, |this, window, cx| {
+                this.hold_compose_height(window, cx);
+            }),
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
                     this.sync.update(cx, |sync, cx| sync.window_activated(cx));
@@ -547,9 +551,12 @@ impl Workspace {
                     }
                 },
             ),
+            cx.observe_global_in::<crate::i18n::UiLocale>(window, |this, window, cx| {
+                this.sync_compose(window, cx);
+            }),
             // Zoom and sidebar toggles only notify. Keep the permanent
-            // broadcast control on the leading visible tab bar.
-            cx.observe(&dock_area, |this, _, cx| this.sync_broadcast(cx)),
+            // compose control on the leading visible tab bar.
+            cx.observe(&dock_area, |this, _, cx| this.sync_compose_routing(cx)),
         ];
 
         // A fixture's hosts start with a terminal tab each.
@@ -679,6 +686,7 @@ impl Workspace {
             Self::watch_idle_lock(lock.clone(), window, cx);
             subscriptions.push(cx.observe_in(&lock, window, |this, _, window, cx| {
                 this.sync_cli_server(cx);
+                this.sync_compose(window, cx);
                 if !crate::app_lock::is_locked(cx) {
                     for link in std::mem::take(&mut this.locked_links) {
                         this.open_link(link, window, cx);
@@ -723,8 +731,9 @@ impl Workspace {
             next_local_terminal_id,
             next_explorer_id: 1,
             active_tab: None,
-            broadcast: Default::default(),
+            compose_routing: Default::default(),
             compose,
+            compose_report: None,
             compose_height: COMPOSE_HEIGHT,
             tool_target_choice: None,
             deleted_host_tools: HashMap::new(),
@@ -976,7 +985,6 @@ impl Workspace {
         }
         // A tab dragged into another group may hide the one in front.
         self.sync_front(window, cx);
-        self.sync_broadcast(cx);
         self.sync_compose(window, cx);
         // Tabs reordered, moved, opened or closed: what the next launch
         // opens again.
@@ -2655,7 +2663,7 @@ fn new_terminal_panel(
         window,
         |this, _, event: &TerminalPanelEvent, window, cx| match event {
             TerminalPanelEvent::Input(id, input) => {
-                this.broadcast_input(CenterTab::Terminal(*id), input, cx);
+                this.sync_compose_input(CenterTab::Terminal(*id), input, cx);
             }
             TerminalPanelEvent::Activated(terminal_id, _) => {
                 this.set_active_tab(Some(CenterTab::Terminal(*terminal_id)), window, cx)
@@ -2665,7 +2673,6 @@ fn new_terminal_panel(
                 this.terminals.remove(terminal_id);
                 this.close_file_sidebar(*terminal_id, window, cx);
                 this.directory_follow.remove(terminal_id);
-                this.sync_broadcast(cx);
                 this.sync_compose(window, cx);
                 if this.active_tab == Some(CenterTab::Terminal(*terminal_id)) {
                     this.set_active_tab(None, window, cx);
@@ -2673,7 +2680,6 @@ fn new_terminal_panel(
                 this.forget_unused_temporary_host(*host_id, window, cx);
             }
             TerminalPanelEvent::StatusChanged(..) => {
-                this.sync_broadcast(cx);
                 this.sync_compose(window, cx);
                 cx.notify();
             }
@@ -2899,7 +2905,7 @@ fn new_local_terminal_panel(
         window,
         |this, panel, event: &LocalTerminalPanelEvent, window, cx| match event {
             LocalTerminalPanelEvent::Input(id, input) => {
-                this.broadcast_input(CenterTab::LocalTerminal(*id), input, cx);
+                this.sync_compose_input(CenterTab::LocalTerminal(*id), input, cx);
             }
             LocalTerminalPanelEvent::Activated(id) => {
                 this.set_active_tab(Some(CenterTab::LocalTerminal(*id)), window, cx);
@@ -2912,7 +2918,6 @@ fn new_local_terminal_panel(
                 if this.front_saved_terminal == Some(*id) {
                     this.front_saved_terminal = None;
                 }
-                this.sync_broadcast(cx);
                 this.sync_compose(window, cx);
                 if this.active_tab == Some(CenterTab::LocalTerminal(*id)) {
                     this.set_active_tab(None, window, cx);
@@ -2922,7 +2927,6 @@ fn new_local_terminal_panel(
             }
             LocalTerminalPanelEvent::StatusChanged(id) => {
                 this.on_local_terminal_retitled(*id, cx);
-                this.sync_broadcast(cx);
                 this.sync_compose(window, cx);
                 cx.notify();
             }
@@ -3004,13 +3008,15 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_new_temporary_connection))
             .on_action(cx.listener(Self::on_quick_connect))
             .on_action(cx.listener(Self::on_new_local_terminal))
-            .on_action(cx.listener(Self::on_toggle_terminal_broadcast))
-            .on_action(cx.listener(Self::on_set_broadcast_target))
+            .on_action(cx.listener(Self::on_set_compose_scope))
+            .on_action(cx.listener(Self::on_set_compose_target))
             .on_action(cx.listener(Self::on_toggle_compose_pane))
             .on_action(cx.listener(Self::on_send_compose))
             .on_action(cx.listener(Self::on_send_compose_snippet))
             .on_action(cx.listener(Self::on_send_compose_interrupt))
-            .on_action(cx.listener(Self::on_toggle_broadcast_keys))
+            .on_action(cx.listener(Self::on_retry_compose))
+            .on_action(cx.listener(Self::on_edit_compose_as_new))
+            .on_action(cx.listener(Self::on_toggle_compose_key_sync))
             .on_action(cx.listener(Self::on_edit_host))
             .on_action(cx.listener(Self::on_duplicate_host))
             .on_action(cx.listener(Self::on_move_host_node))
@@ -3177,6 +3183,7 @@ impl Render for Workspace {
             ))
             .child(render_sidebar_toggle(
                 sidebar.is_some(),
+                self.settings().read(cx).settings().compose_pane,
                 self.dock_area
                     .read(cx)
                     .dock_size(DockPlacement::Left)

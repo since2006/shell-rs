@@ -4,67 +4,13 @@ use std::{
     sync::Arc,
 };
 
-use crate::app::{CatalogIcon, ToggleTerminalBroadcast};
-use crate::i18n::t;
 use gpui_kit::component::dock::{
     BasePanelView, DockArea, DockAreaRenderer, DockContext, DockSkin, DropIndicator, NodeId,
     PanelState, PanelStyle, TabGroupContext, TabGroupRenderer, TilesRenderer,
 };
-use gpui_kit::component::{
-    ActiveTheme as _, Icon, Selectable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
-};
+use gpui_kit::component::v_flex;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-
-/// What the leading center tab bar shows ahead of its tabs: 命令广播's
-/// switch. Renderers consume this value, never the Workspace
-/// entity being rendered.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-struct TabBarControls {
-    node: Option<NodeId>,
-    enabled: bool,
-    count: usize,
-}
-
-impl TabBarControls {
-    fn controls(self, target: &FocusHandle, cx: &App) -> impl IntoElement {
-        let broadcast = target.clone();
-        let label = if !self.enabled {
-            t!("workspace.broadcast.title")
-        } else if self.count < 2 {
-            t!("workspace.broadcast.choose")
-        } else {
-            t!("workspace.broadcast.active", count = self.count)
-        };
-        // Bordered like the tab bar's own prefix: the bar's bottom line runs
-        // under it, and the first tab, drawn without a left border, is set
-        // off from it.
-        h_flex()
-            .id("tab-bar-controls")
-            .test_support()
-            .flex_shrink_0()
-            .self_stretch()
-            .px_2()
-            .gap_1()
-            .border_b_1()
-            .border_r_1()
-            .border_color(cx.theme().border)
-            .child(
-                Button::new("toggle-terminal-broadcast")
-                    .ghost()
-                    .xsmall()
-                    .icon(Icon::new(CatalogIcon::Megaphone))
-                    .selected(self.enabled)
-                    .accessibility_label(label)
-                    .tooltip(t!("workspace.broadcast.title"))
-                    .on_click(move |_, window, cx| {
-                        broadcast.dispatch_action(&ToggleTerminalBroadcast, window, cx)
-                    }),
-            )
-    }
-}
 
 /// The workspace's dock appearance: gpui-kit's `DockSkin`, plus a view that
 /// fills the center while it holds no tab.
@@ -77,15 +23,12 @@ impl TabBarControls {
 pub(super) struct WorkspaceDockSkin {
     skin: Rc<DockSkin>,
     // The center's bars: always tabs, so a lone tab looks selected as it
-    // does among others, while the sidebars keep their plain title. The
-    // leading one adds the broadcast control. Center bars hide the built-in
-    // sidebar toggle, which the workspace title bar provides.
+    // does among others, while the sidebars keep their plain title. Center
+    // bars hide the sidebar toggle, which the workspace title bar provides.
     center_skin: Rc<DockSkin>,
     /// The center's tab groups, which the workspace keeps in step with the
     /// layout (`set_center_groups`).
     center_groups: Rc<RefCell<Vec<NodeId>>>,
-    broadcast: Rc<Cell<TabBarControls>>,
-    target: FocusHandle,
     area: WeakEntity<DockArea>,
     placeholder: AnyView,
     center_empty: Cell<bool>,
@@ -99,7 +42,6 @@ impl WorkspaceDockSkin {
         id: &'static str,
         version: Option<usize>,
         placeholder: AnyView,
-        target: FocusHandle,
         window: &mut Window,
         cx: &mut App,
     ) -> (Entity<DockArea>, Rc<Self>) {
@@ -109,8 +51,6 @@ impl WorkspaceDockSkin {
                 skin: DockSkin::new(cx),
                 center_skin: DockSkin::new(cx),
                 center_groups: Rc::default(),
-                broadcast: Rc::default(),
-                target,
                 area: cx.weak_entity(),
                 placeholder,
                 center_empty: Cell::new(false),
@@ -127,23 +67,6 @@ impl WorkspaceDockSkin {
 
     pub(super) fn is_center_empty(&self) -> bool {
         self.center_empty.get()
-    }
-
-    pub(super) fn set_broadcast(
-        &self,
-        node: Option<NodeId>,
-        enabled: bool,
-        count: usize,
-        cx: &mut App,
-    ) {
-        let state = TabBarControls {
-            node,
-            enabled,
-            count,
-        };
-        if self.broadcast.replace(state) != state {
-            _ = self.area.update(cx, |_, cx| cx.notify());
-        }
     }
 
     pub(super) fn set_center_groups(&self, groups: Vec<NodeId>, cx: &mut App) {
@@ -214,8 +137,6 @@ impl DockAreaRenderer for WorkspaceDockSkin {
             skin: self.skin.tab_group_renderer(),
             center_skin: self.center_skin.tab_group_renderer(),
             center_groups: self.center_groups.clone(),
-            broadcast: self.broadcast.clone(),
-            target: self.target.clone(),
         })
     }
 
@@ -253,14 +174,12 @@ fn wheel_scrolls_tabs(tabs: AnyElement) -> Div {
         .child(tabs)
 }
 
-/// Add the permanent broadcast toggle ahead of the leading center tab strip.
+/// Preserve the center tab strip's scrolling and native Dock behavior.
 /// Dock's renderer still owns tabs, dragging, overflow, menus and focus.
 struct WorkspaceTabBar {
     skin: Rc<dyn TabGroupRenderer>,
     center_skin: Rc<dyn TabGroupRenderer>,
     center_groups: Rc<RefCell<Vec<NodeId>>>,
-    broadcast: Rc<Cell<TabBarControls>>,
-    target: FocusHandle,
 }
 
 impl TabGroupRenderer for WorkspaceTabBar {
@@ -287,32 +206,20 @@ impl TabGroupRenderer for WorkspaceTabBar {
         {
             return Empty.into_any_element();
         }
-        let state = self.broadcast.get();
-        if state.node != Some(group.node()) {
-            return if self.center_groups.borrow().contains(&group.node()) {
-                wheel_scrolls_tabs(self.center_skin.render_tab_bar(group, window, cx))
-                    .into_any_element()
-            } else {
-                self.skin.render_tab_bar(group, window, cx)
-            };
+        if self.center_groups.borrow().contains(&group.node()) {
+            wheel_scrolls_tabs(self.center_skin.render_tab_bar(group, window, cx))
+                .id(
+                    if self.center_groups.borrow().first() == Some(&group.node()) {
+                        ElementId::Name("center-tab-bar".into())
+                    } else {
+                        ("center-tab-bar", group.node().as_u64()).into()
+                    },
+                )
+                .test_support()
+                .into_any_element()
+        } else {
+            self.skin.render_tab_bar(group, window, cx)
         }
-        let tabs = self.center_skin.render_tab_bar(group, window, cx);
-        h_flex()
-            .w_full()
-            .bg(cx.theme().tokens.tab_bar)
-            .child(state.controls(&self.target, cx))
-            // A column, as base lays out the other bars: in a block `div`
-            // the bar's height is indefinite, so the toolbar box on its
-            // right, `h_full`, shrinks to its buttons and its bottom border
-            // sits above the bar's (#44).
-            .child(
-                wheel_scrolls_tabs(tabs)
-                    .id("center-tab-bar")
-                    .test_support()
-                    .flex_1()
-                    .min_w_0(),
-            )
-            .into_any_element()
     }
     fn render_active_panel(
         &self,

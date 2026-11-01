@@ -64,7 +64,7 @@ pub struct TerminalPanel {
     /// Opened from a link (外部连接): nothing beside the terminal.
     external: bool,
     tab_group: Option<WeakEntity<TabGroup>>,
-    broadcast: Option<super::BroadcastSelection>,
+    compose_selection: Option<super::ComposeSelection>,
     /// A title the user gave this tab, to tell apart several connections to
     /// the same host. Lives as long as the tab, like the rest of the layout.
     custom_title: Option<SharedString>,
@@ -244,7 +244,7 @@ impl TerminalPanel {
             connection,
             external,
             tab_group: None,
-            broadcast: None,
+            compose_selection: None,
             custom_title: title,
             initial_directory: directory,
             _subscriptions: subscriptions,
@@ -298,13 +298,13 @@ impl TerminalPanel {
         &self.terminal
     }
 
-    pub(crate) fn set_broadcast_selection(
+    pub(crate) fn set_compose_selection(
         &mut self,
-        selection: Option<super::BroadcastSelection>,
+        selection: Option<super::ComposeSelection>,
         cx: &mut Context<Self>,
     ) {
-        if self.broadcast != selection {
-            self.broadcast = selection;
+        if self.compose_selection != selection {
+            self.compose_selection = selection;
             cx.notify();
         }
     }
@@ -430,8 +430,8 @@ impl Panel for TerminalPanel {
         let (address, os) = (self.host.address.clone(), self.host.os);
         let tab_menu = self.tab_menu(cx);
         let state = self.connection_state(cx);
-        let mark = super::BroadcastSelection::lead(
-            self.broadcast.clone(),
+        let mark = super::ComposeSelection::lead(
+            self.compose_selection.clone(),
             CenterTab::Terminal(id),
             self.tab_title(cx),
             HostMark::new(
@@ -475,7 +475,7 @@ impl Panel for TerminalPanel {
         let sftp = offers_sftp.then(|| {
             Button::new(("sftp", terminal_id.0))
                 .icon(Icon::new(CatalogIcon::FolderTree))
-                .label("SFTP")
+                .accessibility_label(t!("terminal.remote.open_sftp"))
                 .tooltip(t!("terminal.remote.sftp_tooltip"))
                 .on_click(move |_, window, cx| {
                     window.dispatch_action(Box::new(OpenExplorer(host_id)), cx)
@@ -483,6 +483,7 @@ impl Panel for TerminalPanel {
         });
         let reconnect = Button::new(("reconnect", terminal_id.0))
             .icon(Icon::new(CatalogIcon::RefreshCw))
+            .accessibility_label(t!("terminal.remote.reconnect"))
             .tooltip(t!("terminal.remote.reconnect"))
             .on_click(move |_, window, cx| {
                 reconnect_dispatch.dispatch_action(&ReconnectTerminal(terminal_id), window, cx)
@@ -602,6 +603,7 @@ impl RenamableTab for TerminalPanel {
     }
     fn set_custom_title(&mut self, title: Option<SharedString>, cx: &mut Context<Self>) {
         self.custom_title = title;
+        cx.emit(TerminalPanelEvent::StatusChanged(self.id, self.host_id));
         cx.notify();
     }
 }

@@ -1062,7 +1062,7 @@ impl Panel for ExplorerPanel {
         Some(vec![
             Button::new(("open-sftp", id.0))
                 .icon(Icon::new(CatalogIcon::FolderTree))
-                .label("SFTP")
+                .accessibility_label(t!("explorer.tab.open_sftp_tip"))
                 .tooltip(t!("explorer.tab.open_sftp_tip"))
                 .on_click(move |_, window, cx| {
                     window.dispatch_action(Box::new(OpenExplorer(host_id)), cx)

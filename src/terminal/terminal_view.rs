@@ -986,7 +986,7 @@ impl TerminalView {
         true
     }
 
-    /// Apply broadcast input without emitting it again. Each terminal encodes
+    /// Apply synchronized input without emitting it again. Each terminal encodes
     /// keys and bracketed paste using its own mode; no focus is transferred.
     pub(crate) fn receive_input(&mut self, input: &TerminalInput, cx: &mut Context<Self>) -> bool {
         if !self.lifecycle(cx).accepts_input() {

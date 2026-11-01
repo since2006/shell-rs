@@ -1240,6 +1240,14 @@ async fn the_sftp_tab_bar_shows_the_connection_latency_while_connected(cx: &mut 
     let latency = ("sftp-latency", SFTP_TAB);
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find(latency).is_none(), "nothing measured yet");
+        assert_eq!(
+            window.find(("open-sftp", SFTP_TAB)).bounds().size.width,
+            window
+                .find(("reconnect-sftp", SFTP_TAB))
+                .bounds()
+                .size
+                .width
+        );
     });
 
     let events = provider.events.lock().unwrap()[0].clone();
@@ -1258,6 +1266,13 @@ async fn the_sftp_tab_bar_shows_the_connection_latency_while_connected(cx: &mut 
         })
         .await;
     }
+
+    in_frame(cx, handle, |w, _| {
+        let label = w.find(latency).bounds();
+        let button = w.find(("open-sftp", SFTP_TAB)).bounds();
+        assert!(label.right() <= button.left());
+        assert!(label.top() >= button.top() && label.bottom() <= button.bottom());
+    });
 
     events
         .send_blocking(SftpEvent::Disconnected("SFTP 连接中断，请重新连接".into()))

@@ -41,7 +41,7 @@ pub struct AppSettings {
     #[serde(with = "tool_by_key")]
     pub local_sidebar_tool: Option<ToolKind>,
     /// 撰写窗格 below the terminals, switched from its shortcut and the
-    /// terminal's context menu: shown while true. 命令广播 shows it anyway.
+    /// terminal's context menu and tab-bar button: shown while true.
     pub compose_pane: bool,
     /// 终端 → 本地终端.
     pub local_terminal: LocalTerminalSettings,

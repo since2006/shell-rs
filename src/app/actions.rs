@@ -43,18 +43,18 @@ gpui_kit::actions!(
         ImportKnownHosts,
         /// Open a new local login-shell terminal.
         NewLocalTerminal,
-        /// Start 命令广播, which turns terminal tab marks into checkboxes,
-        /// or end it.
-        ToggleTerminalBroadcast,
         /// Show or hide 撰写窗格, the compose pane below the terminals.
         ToggleComposePane,
-        /// Run what 撰写窗格 holds in the terminal in front, or in every
-        /// terminal of 命令广播.
+        /// Submit the compose draft to its current scope.
         SendCompose,
         /// Send Ctrl+C where 撰写窗格 sends.
         SendComposeInterrupt,
-        /// Whether typing in one terminal of 命令广播 goes to the others too.
-        ToggleBroadcastKeys,
+        /// Explicitly share terminal keystrokes within the compose scope.
+        ToggleComposeKeySync,
+        /// Retry only the original, explicitly unsubmitted targets.
+        RetryCompose,
+        /// Resolve a partial submission and edit the draft as a new command.
+        EditComposeAsNew,
         /// Copy the active terminal selection.
         CopyTerminal,
         /// Paste the clipboard into the active terminal.
@@ -375,8 +375,7 @@ id_actions! {
     EditSnippet(SnippetId);
     /// Ask for confirmation, then delete a snippet.
     DeleteSnippet(SnippetId);
-    /// Send a snippet where 撰写窗格 sends: the terminal in front, or every
-    /// terminal of 命令广播.
+    /// Submit a snippet using the compose pane’s current scope.
     SendComposeSnippet(SnippetId);
     /// Open the rename dialog of a snippet category.
     RenameSnippetCategory(SnippetCategoryId);
@@ -516,15 +515,38 @@ pub enum CenterTab {
     Editor(EditorId),
 }
 
-/// Select one connected terminal for interactive input broadcast.
+/// In-memory scope of the compose pane. Each terminal is an independent target.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ComposeScope {
+    #[default]
+    Current,
+    Window,
+    Selected,
+}
+
+/// Change the compose scope without sending input.
 #[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = shellrs, no_json)]
-pub struct SetBroadcastTarget {
+pub struct SetComposeScope(ComposeScope);
+
+impl SetComposeScope {
+    pub fn new(scope: ComposeScope) -> Self {
+        Self(scope)
+    }
+    pub fn scope(&self) -> ComposeScope {
+        self.0
+    }
+}
+
+/// Select one available terminal for the compose pane.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct SetComposeTarget {
     tab: CenterTab,
     selected: bool,
 }
 
-impl SetBroadcastTarget {
+impl SetComposeTarget {
     pub fn new(tab: CenterTab, selected: bool) -> Self {
         Self { tab, selected }
     }

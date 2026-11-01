@@ -1,7 +1,7 @@
 //! 终端: shared terminal emulation, transports and Dock panels.
 
 mod box_drawing;
-mod broadcast;
+mod compose_selection;
 mod directory;
 mod directory_setup;
 mod engine;
@@ -27,7 +27,7 @@ mod theme;
 mod transport;
 mod zmodem;
 
-pub(crate) use broadcast::BroadcastSelection;
+pub(crate) use compose_selection::ComposeSelection;
 pub use directory::ReportedDirectory;
 pub use directory_setup::{
     FollowCheck, FollowSetup, check_command as directory_check_command,
