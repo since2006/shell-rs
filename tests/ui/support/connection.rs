@@ -12,6 +12,15 @@ pub fn open_workspace_with_tester(
     store: HostStore,
     tester: Arc<FakeConnectionTester>,
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
+    open_workspace_with_settings_and_tester(cx, store, settings_store(), tester)
+}
+
+pub fn open_workspace_with_settings_and_tester(
+    cx: &mut TestAppContext,
+    store: HostStore,
+    settings: SettingsStore,
+    tester: Arc<FakeConnectionTester>,
+) -> (WindowHandle<Root>, Entity<Workspace>) {
     init_app(cx);
     cx.update(|cx| cx.set_reduce_motion(true));
     let mut workspace = None;
@@ -23,7 +32,7 @@ pub fn open_workspace_with_tester(
         let view = cx.new(|cx| {
             Workspace::new_with_services(
                 store,
-                cx.new(|_| settings_store()),
+                cx.new(|_| settings),
                 remote,
                 fake_telnet_terminals(),
                 fake_serial_terminals(),

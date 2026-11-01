@@ -449,6 +449,14 @@ impl Workspace {
                 this.hold_sidebar_width(window, cx);
                 this.hold_tool_sidebar_width(window, cx);
                 this.hold_compose_height(window, cx);
+                // Keep every entry point, including search and the list
+                // switches that reopen the sidebar, for the next launch.
+                let collapsed = !area.read(cx).is_dock_open(DockPlacement::Left);
+                if this.settings.read(cx).settings().sidebar_collapsed != collapsed {
+                    this.settings.update(cx, |store, cx| {
+                        store.update(|settings| settings.sidebar_collapsed = collapsed, cx);
+                    });
+                }
                 // The title-bar toggle follows the left dock's current width.
                 let width = area.read(cx).dock_size(DockPlacement::Left);
                 if sidebar_width != width {
@@ -649,6 +657,9 @@ impl Workspace {
             // Dock geometry is an API boundary that takes `Pixels`.
             area.set_dock_size(DockPlacement::Left, SIDEBAR_WIDTH, window, cx);
             area.set_dock_collapsible(DockPlacement::Left, true, window, cx);
+            if launch_settings.sidebar_collapsed {
+                area.toggle_dock(DockPlacement::Left, window, cx);
+            }
             area.set_dock(
                 DockPlacement::Right,
                 DockLayout::tabs().panel_view(panel_handle(tools.clone()), cx),
@@ -679,7 +690,7 @@ impl Workspace {
         // arrives as events, once the workspace is there to show it.
         forwards.update(cx, |forwards, cx| forwards.start_automatic(cx));
 
-        Self {
+        let this = Self {
             store,
             dock_area,
             skin,
@@ -726,7 +737,17 @@ impl Workspace {
             window_state_save: None,
             ssh_dir: None,
             _subscriptions: subscriptions,
+        };
+        if launch_settings.sidebar_collapsed {
+            // The hidden host panel cannot provide a keyboard dispatch path.
+            let focus = this
+                .visible_center_tabs(cx)
+                .first()
+                .and_then(|tab| this.tab_focus_handle(*tab, cx))
+                .unwrap_or_else(|| this.recent.read(cx).focus_handle(cx));
+            window.focus(&focus, cx);
         }
+        this
     }
 
     /// The center tab in front.

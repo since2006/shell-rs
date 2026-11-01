@@ -502,7 +502,7 @@ fn both_tabs_of_one_host_stay_closable(cx: &mut TestAppContext) {
 /// single click only selects the tab.
 #[gpui_kit::test]
 async fn double_clicking_a_tab_toggles_the_host_sidebar(cx: &mut TestAppContext) {
-    let (handle, _) = open_workspace(cx);
+    let (handle, workspace) = open_workspace(cx);
     cx.run_until_parked();
     let sidebar_shown = |cx: &mut TestAppContext| {
         cx.update_window(handle.into(), |_, window, cx| {
@@ -522,6 +522,17 @@ async fn double_clicking_a_tab_toggles_the_host_sidebar(cx: &mut TestAppContext)
         .unwrap();
         cx.run_until_parked();
         assert_eq!(sidebar_shown(cx), shown);
+        cx.update(|cx| {
+            assert_eq!(
+                workspace
+                    .read(cx)
+                    .settings()
+                    .read(cx)
+                    .settings()
+                    .sidebar_collapsed,
+                !shown
+            );
+        });
     }
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -530,6 +541,75 @@ async fn double_clicking_a_tab_toggles_the_host_sidebar(cx: &mut TestAppContext)
     .unwrap();
     cx.run_until_parked();
     assert!(sidebar_shown(cx));
+}
+
+/// Both states survive a fresh settings load and workspace, including the
+/// search/list commands that reopen a hidden sidebar. An empty start still
+/// has a keyboard dispatch path when the sidebar starts hidden.
+#[gpui_kit::test]
+fn the_left_sidebar_keeps_its_visibility_after_reopening(cx: &mut TestAppContext) {
+    use shellrs::app::ShowForwards;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let open = |cx: &mut TestAppContext, hosts| {
+        let (mut settings, problem) = SettingsStore::load(path.clone());
+        assert!(problem.is_none());
+        settings
+            .update_unnotified(|settings| settings.language = InterfaceLanguage::SimplifiedChinese);
+        open_workspace_with_settings_and_tester(
+            cx,
+            hosts,
+            settings,
+            Arc::new(FakeConnectionTester::default()),
+        )
+    };
+    let assert_shown = |cx: &mut TestAppContext, handle, shown| {
+        in_frame(cx, handle, |window, _| {
+            assert_eq!(
+                window
+                    .try_find("workspace-sidebar")
+                    .is_some_and(|sidebar| sidebar.visible()),
+                shown
+            );
+            assert_eq!(
+                window.find("toggle-hosts").label(),
+                Some(if shown {
+                    "隐藏侧栏"
+                } else {
+                    "显示侧栏"
+                })
+            );
+        });
+        let (settings, problem) = SettingsStore::load(path.clone());
+        assert!(problem.is_none());
+        assert_eq!(settings.settings().sidebar_collapsed, !shown);
+    };
+
+    let (handle, _) = open(cx, HostStore::empty());
+    assert_shown(cx, handle, true);
+    in_frame(cx, handle, |window, cx| window.click("toggle-hosts", cx));
+    assert_shown(cx, handle, false);
+
+    let (handle, _) = open(cx, HostStore::empty());
+    assert_shown(cx, handle, false);
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("recent-hosts").focused(), Some(true));
+        window.dispatch_action(Box::new(FocusSearch), cx);
+    });
+    assert_shown(cx, handle, true);
+
+    let (handle, _) = open(cx, HostStore::seed());
+    assert_shown(cx, handle, true);
+    in_frame(cx, handle, |window, cx| window.click("toggle-hosts", cx));
+    assert_shown(cx, handle, false);
+
+    let (handle, _) = open(cx, HostStore::seed());
+    assert_shown(cx, handle, false);
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ShowForwards), cx);
+    });
+    assert_shown(cx, handle, true);
 }
 
 /// A middle click on a tab's title closes the tab, as its × does; the

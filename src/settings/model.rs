@@ -33,6 +33,8 @@ pub struct AppSettings {
     pub terminal_interaction: TerminalInteraction,
     /// 终端 → 侧栏功能: which tools the right sidebar offers.
     pub sidebar_tools: SidebarTools,
+    /// The left sidebar's visibility, restored on the next launch.
+    pub sidebar_collapsed: bool,
     /// The right sidebar beside local terminals, switched from its tool
     /// buttons: the tool it shows, `None` while hidden. One for every local
     /// terminal, as a host keeps its own for its terminals.
