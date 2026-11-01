@@ -4,6 +4,29 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.17]
+
+### Shared core for mobile
+
+This release moves the desktop app's SSH connections, SFTP transfers, host and credential management, database persistence and cloud sync into Rust libraries independent of the interface. The desktop app now uses these shared cores, and Swift and Kotlin bindings let future iOS and Android clients use the same authentication, resumable transfers and end-to-end encrypted sync. The shared cores and mobile bindings are MIT licensed; the desktop app remains GPL-3.0-only.
+
+### Added
+
+- App lock: require a password at startup, lock automatically after inactivity, and choose whether the external CLI remains available while locked. The lock settings and password verifier are kept in the system keychain.
+- On Windows, “Minimize to tray on close” under Settings → General → Window keeps connections, transfers and port forwards running after the window is closed. Restore the window or quit from the tray. Off by default. ([#83](https://github.com/since2006/shell-rs/issues/83))
+- Choose the terminal cursor's shape and whether it blinks under Settings → Terminal → Interaction.
+- “Duplicate session” in a terminal tab's menu carries over its title and, for SSH terminals that report it, its working directory.
+
+### Improved
+
+- The left sidebar remembers whether it was shown or hidden across launches.
+- Open saved hosts directly from the title bar's Quick connect button. The sidebar toggle follows the panel's edge when resized, and the panel stays at least as wide as its default.
+
+### Fixed
+
+- On macOS, waking from sleep or switching displays could crash ShellRS while the screen was temporarily unavailable.
+- On Windows without the Visual C++ Redistributable, such as Windows 11 LTSC, ShellRS didn’t start: “VCRUNTIME140.dll was not found”.
+
 ## [0.1.17-beta.1]
 
 ### Fixed
