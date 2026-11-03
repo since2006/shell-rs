@@ -144,16 +144,32 @@ impl TerminalStatus {
     }
 }
 
-/// 终端 → 终端交互: what the mouse does in terminals besides selecting. A
+/// 终端 → 终端交互: mouse behavior and the default cursor. A
 /// global, set from the settings, because terminals do not depend on them.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct TerminalInteraction {
     /// 选中复制: what a selection takes in goes to the clipboard once the
     /// mouse lets go. Off until the user turns it on.
     pub copy_on_select: bool,
     /// 右键行为.
     pub right_click: RightClick,
+    /// The default shape; a terminal program can request its own.
+    pub cursor_style: TerminalCursorStyle,
+    /// Blink by default, unless a program chooses otherwise.
+    pub cursor_blinking: bool,
+}
+
+impl Default for TerminalInteraction {
+    fn default() -> Self {
+        Self {
+            copy_on_select: false,
+            right_click: RightClick::default(),
+            cursor_style: TerminalCursorStyle::default(),
+            cursor_blinking: true,
+        }
+    }
 }
 
 impl Global for TerminalInteraction {}
@@ -162,6 +178,27 @@ impl TerminalInteraction {
     /// What the terminals do now.
     pub fn current(cx: &App) -> Self {
         cx.try_global::<Self>().copied().unwrap_or_default()
+    }
+}
+
+/// The cursor shapes offered in 终端交互, stored by key.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalCursorStyle {
+    #[default]
+    Block,
+    Underline,
+    Beam,
+}
+
+impl TerminalCursorStyle {
+    pub(crate) fn shape(self) -> alacritty_terminal::vte::ansi::CursorShape {
+        use alacritty_terminal::vte::ansi::CursorShape;
+        match self {
+            Self::Block => CursorShape::Block,
+            Self::Underline => CursorShape::Underline,
+            Self::Beam => CursorShape::Beam,
+        }
     }
 }
 

@@ -2,8 +2,9 @@ use gpui_kit::component::ThemeMode;
 use gpui_kit::{SharedString, WindowAppearance};
 use serde::{Deserialize, Deserializer, Serialize};
 
+pub use crate::sync::SyncLocation;
+
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use crate::app::{ShortcutOverrides, ToolKind};
 use crate::explorer::{FileIconStyle, FileSizeFormat, ShowHiddenFiles};
@@ -11,7 +12,8 @@ use crate::i18n::t;
 use crate::sftp::{DEFAULT_PARALLEL_TRANSFERS, PARALLEL_TRANSFERS_RANGE};
 use crate::terminal::{
     DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, HighlightRule, LINE_HEIGHT_RANGE,
-    RightClick, SendDelay, SessionLogSettings, TerminalInteraction, TerminalTheme, default_rules,
+    RightClick, SendDelay, SessionLogSettings, TerminalCursorStyle, TerminalInteraction,
+    TerminalTheme, default_rules,
 };
 use crate::update::Channel;
 
@@ -36,6 +38,8 @@ pub struct AppSettings {
     pub session_log: SessionLogSettings,
     /// 终端 → 侧栏功能: which tools the right sidebar offers.
     pub sidebar_tools: SidebarTools,
+    /// The left sidebar's visibility, restored on the next launch.
+    pub sidebar_collapsed: bool,
     /// The right sidebar beside local terminals, switched from its tool
     /// buttons: the tool it shows, `None` while hidden. One for every local
     /// terminal, as a host keeps its own for its terminals.
@@ -70,6 +74,10 @@ pub struct AppSettings {
     pub terminal_highlight: TerminalHighlightSettings,
     /// 应用 → 窗口.
     pub window: WindowSettings,
+    /// 应用 → 应用锁: zero disables locking after inactivity.
+    pub app_lock_idle_minutes: u32,
+    /// Keep the external CLI available behind the password gate, if enabled.
+    pub app_lock_allow_cli: bool,
     /// 键盘快捷键: what the user changed of them.
     pub shortcuts: ShortcutOverrides,
 }
@@ -207,8 +215,7 @@ mod tool_by_key {
     }
 }
 
-/// 应用 → 窗口: what the next launch restores of the main window. Both on
-/// until the user turns them off.
+/// 应用 → 窗口: what the next launch restores, and how closing behaves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WindowSettings {
@@ -216,6 +223,9 @@ pub struct WindowSettings {
     pub remember_size: bool,
     /// 记住窗口位置: where it was, on which screen.
     pub remember_position: bool,
+    /// Windows only: hide the window in the notification area instead of
+    /// quitting when its close button is clicked. Off until enabled.
+    pub close_to_tray: bool,
 }
 
 impl Default for WindowSettings {
@@ -223,6 +233,7 @@ impl Default for WindowSettings {
         Self {
             remember_size: true,
             remember_position: true,
+            close_to_tray: false,
         }
     }
 }
@@ -392,74 +403,6 @@ pub struct SyncSettings {
     pub location: Option<SyncLocation>,
 }
 
-/// Where sync goes through.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SyncLocation {
-    /// A folder on this computer, which a cloud drive may be syncing.
-    Folder { path: PathBuf },
-    /// A folder on a WebDAV server; its password is in the keychain.
-    #[serde(rename = "webdav")]
-    WebDav { url: String, username: String },
-    /// A folder in an S3 bucket, or one of a service that speaks its API;
-    /// its secret key is in the keychain.
-    S3 {
-        /// The service's address, such as `https://s3.us-east-1.amazonaws.com`.
-        endpoint: String,
-        region: String,
-        bucket: String,
-        /// The folder in the bucket; empty for its top.
-        prefix: String,
-        /// The bucket in the address's path rather than its host.
-        path_style: bool,
-        access_key: String,
-    },
-}
-
-impl SyncLocation {
-    /// Whether `other` is the same place, signed in to maybe otherwise:
-    /// what a new login may change.
-    pub fn same_place(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Folder { path: a }, Self::Folder { path: b }) => a == b,
-            (Self::WebDav { url: a, .. }, Self::WebDav { url: b, .. }) => a == b,
-            (
-                Self::S3 {
-                    endpoint,
-                    region,
-                    bucket,
-                    prefix,
-                    path_style,
-                    ..
-                },
-                Self::S3 {
-                    endpoint: other_endpoint,
-                    region: other_region,
-                    bucket: other_bucket,
-                    prefix: other_prefix,
-                    path_style: other_path_style,
-                    ..
-                },
-            ) => {
-                (endpoint, region, bucket, prefix, path_style)
-                    == (
-                        other_endpoint,
-                        other_region,
-                        other_bucket,
-                        other_prefix,
-                        other_path_style,
-                    )
-            }
-            _ => false,
-        }
-    }
-
-    /// Whether getting there takes a login the keychain keeps.
-    pub fn signs_in(&self) -> bool {
-        !matches!(self, Self::Folder { .. })
-    }
-}
-
 /// 关于 → 应用更新.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -527,6 +470,26 @@ impl Choice for FileIconStyle {
     }
 }
 
+impl Choice for TerminalCursorStyle {
+    const ALL: &'static [Self] = &[Self::Block, Self::Underline, Self::Beam];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::Underline => "underline",
+            Self::Beam => "beam",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Block => t!("settings.cursor_style.block"),
+            Self::Underline => t!("settings.cursor_style.underline"),
+            Self::Beam => t!("settings.cursor_style.beam"),
+        }
+    }
+}
+
 impl Choice for RightClick {
     const ALL: &'static [Self] = &[Self::Nothing, Self::Paste, Self::Menu];
 
@@ -548,6 +511,11 @@ impl Choice for RightClick {
 }
 
 impl AppSettings {
+    /// The global CLI switch always applies, including behind the password gate.
+    pub fn is_external_cli_allowed(&self, locked: bool) -> bool {
+        self.external_cli.enabled && (!locked || self.app_lock_allow_cli)
+    }
+
     /// The settings with every number in the range the app accepts. Applied
     /// to what the file holds and to every change, so neither a hand-edited
     /// file nor a typed value can give the terminal a size of zero.
@@ -748,6 +716,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn app_lock_cli_access_requires_the_global_switch_and_explicit_permission() {
+        for enabled in [false, true] {
+            for allowed in [false, true] {
+                let mut settings = AppSettings::default();
+                settings.external_cli.enabled = enabled;
+                settings.app_lock_allow_cli = allowed;
+                assert_eq!(settings.is_external_cli_allowed(false), enabled);
+                assert_eq!(settings.is_external_cli_allowed(true), enabled && allowed);
+            }
+        }
+    }
+
+    #[test]
     fn the_file_spells_each_value_as_its_key() {
         fn check<T: Choice + Serialize + for<'de> Deserialize<'de> + std::fmt::Debug>() {
             for &choice in T::ALL {
@@ -760,6 +741,7 @@ mod tests {
         check::<InterfaceLanguage>();
         check::<Appearance>();
         check::<RightClick>();
+        check::<TerminalCursorStyle>();
         check::<FileIconStyle>();
         assert_eq!(Appearance::from_key("sepia"), None);
     }
@@ -768,6 +750,8 @@ mod tests {
     fn a_file_missing_a_setting_keeps_its_default() {
         let settings: AppSettings = serde_json::from_str(r#"{"appearance":"dark"}"#).unwrap();
         assert_eq!(settings.appearance, Appearance::Dark);
+        assert_eq!(settings.app_lock_idle_minutes, 0);
+        assert!(!settings.app_lock_allow_cli);
         assert_eq!(settings.language, InterfaceLanguage::default());
         let settings: AppSettings = serde_json::from_str(r#"{"later":1}"#).unwrap();
         assert_eq!(settings, AppSettings::default());
@@ -1071,6 +1055,18 @@ mod tests {
     }
 
     #[test]
+    fn closing_to_the_tray_is_opt_in_and_keeps_older_window_settings() {
+        for json in ["{}", r#"{"window":{"remember_position":false}}"#] {
+            let settings: AppSettings = serde_json::from_str(json).unwrap();
+            assert!(!settings.window.close_to_tray);
+        }
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"window":{"close_to_tray":true}}"#).unwrap();
+        assert!(settings.window.close_to_tray);
+        assert!(settings.window.remember_size && settings.window.remember_position);
+    }
+
+    #[test]
     fn terminals_show_the_menu_and_copy_only_on_command_unless_the_file_says_otherwise() {
         let settings: AppSettings = serde_json::from_str("{}").unwrap();
         assert!(!settings.terminal_interaction.copy_on_select);
@@ -1079,6 +1075,20 @@ mod tests {
             serde_json::from_str(r#"{"terminal_interaction":{"right_click":"paste"}}"#).unwrap();
         assert!(!settings.terminal_interaction.copy_on_select);
         assert_eq!(settings.terminal_interaction.right_click, RightClick::Paste);
+        assert_eq!(
+            settings.terminal_interaction.cursor_style,
+            TerminalCursorStyle::Block
+        );
+        assert!(settings.terminal_interaction.cursor_blinking);
+        let settings: AppSettings = serde_json::from_str(
+            r#"{"terminal_interaction":{"cursor_style":"underline","cursor_blinking":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            settings.terminal_interaction.cursor_style,
+            TerminalCursorStyle::Underline
+        );
+        assert!(!settings.terminal_interaction.cursor_blinking);
     }
 
     #[test]

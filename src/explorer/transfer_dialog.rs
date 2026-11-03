@@ -268,7 +268,11 @@ impl ExplorerPanel {
                     v_flex()
                         .gap_3()
                         .child(div().text_sm().child(question.path().to_string()))
-                        .child(div().text_sm().child(question.message().to_string()))
+                        .child(
+                            div()
+                                .text_sm()
+                                .child(crate::sftp::describe_reason_link(question.message())),
+                        )
                         .child(form.clone()),
                 )
                 .footer(

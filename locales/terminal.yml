@@ -28,9 +28,12 @@ terminal.remote.copy_id:
 terminal.remote.rename:
   zh-CN: 重命名标签…
   en: Rename tab…
-terminal.remote.connect_in_new_tab:
-  zh-CN: 在新标签页中连接
-  en: Connect in new tab
+terminal.remote.duplicate:
+  zh-CN: 复制会话
+  en: Duplicate session
+terminal.remote.restore_directory_failed:
+  zh-CN: "无法恢复原标签的工作目录：%{error}"
+  en: "Couldn’t restore the original tab’s working directory: %{error}"
 terminal.remote.edit_host:
   zh-CN: 编辑主机…
   en: Edit host…

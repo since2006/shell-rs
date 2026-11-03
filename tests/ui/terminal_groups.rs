@@ -143,12 +143,10 @@ async fn the_toggle_puts_checkboxes_ahead_of_the_tab_marks(cx: &mut TestAppConte
     let handle = fixture.handle;
     in_frame(cx, handle, |window, cx| {
         assert!(window.try_find("compose-pane").is_none());
-        let hide = window.find("toggle-dock:Left").bounds();
+        assert!(window.try_find("toggle-dock:Left").is_none());
         let broadcast = window.find("toggle-terminal-broadcast").bounds();
         let tab = window.find(("terminal-tab", INITIAL_WEB_TERMINAL)).bounds();
-        assert!(hide.right() <= broadcast.left());
         assert!(broadcast.right() <= tab.left());
-        assert!((hide.center().y - broadcast.center().y).abs() <= px(1.));
         // The controls run the bar's full height, so their bottom border
         // lines up with the one under the tabs.
         let controls = window.find("tab-bar-controls").bounds();

@@ -15,10 +15,11 @@ use crate::secrets::{SecretRef, SharedSecretStore};
 use crate::sftp::{
     DownloadRequest, RemotePath, SftpCommand, SftpEvent, SftpRoute, SharedSftpTransportProvider,
     TransferAnswer, TransferChoice, TransferPhase, TransferProgress, TransferQuestionKind,
-    UploadRequest,
+    UploadRequest, describe_sftp_error,
 };
 use crate::ssh::{
-    ExecErrorKind, ExecExit, ExecStream, SshConnectionConfig, SshConnector, run_command,
+    ExecErrorKind, ExecExit, ExecStream, SshConnectionConfig, SshConnector, describe_exec_error,
+    run_command,
 };
 
 /// How often a transfer reports progress to the command.
@@ -100,7 +101,8 @@ impl SshCliBackend {
                                 TransferQuestionKind::Resume | TransferQuestionKind::InvalidResume,
                             ) => TransferChoice::Restart,
                             (_, TransferQuestionKind::Error) => {
-                                run.failures.push(question.message().to_string());
+                                run.failures
+                                    .push(crate::sftp::describe_reason_link(question.message()));
                                 TransferChoice::Skip
                             }
                         };
@@ -146,15 +148,16 @@ impl CliBackend for SshCliBackend {
                 Ok(signal_exit_code(&signal))
             }
             Err(error) => {
+                let message = describe_exec_error(&error);
                 // A bastion host's link logs in once; its terminal is open.
                 let message = if target.login().shell_only
                     && matches!(
                         error.kind,
                         ExecErrorKind::MissingCredential | ExecErrorKind::Connect
                     ) {
-                    t!("cli.exec.try_terminal", message = error.message).to_string()
+                    t!("cli.exec.try_terminal", message = message).to_string()
                 } else {
-                    error.message
+                    message
                 };
                 Err(CliError::new(
                     match error.kind {
@@ -188,7 +191,7 @@ impl CliBackend for SshCliBackend {
         progress: &mut dyn FnMut(TransferCounters) -> io::Result<()>,
     ) -> Result<TransferSummary, CliError> {
         let request = DownloadRequest::scp(remote_path(source)?, destination.to_path_buf())
-            .map_err(|error| CliError::new(ErrorCode::BadRequest, error.to_string()))?;
+            .map_err(|error| CliError::new(ErrorCode::BadRequest, describe_sftp_error(&error)))?;
         self.transfer(target, SftpCommand::Download(request), progress)
     }
 
@@ -310,7 +313,8 @@ fn remote_path(path: &str) -> Result<RemotePath, CliError> {
         _ if path.starts_with('/') || path.starts_with("./") || path == "." => path.to_string(),
         _ => format!("./{path}"),
     };
-    RemotePath::new(path).map_err(|error| CliError::new(ErrorCode::BadRequest, error.to_string()))
+    RemotePath::new(path)
+        .map_err(|error| CliError::new(ErrorCode::BadRequest, describe_sftp_error(&error)))
 }
 
 /// The shell's convention for a command killed by a signal: 128 plus the

@@ -89,6 +89,8 @@ gpui_kit::actions!(
         /// away when it already is. The system tells of its key
         /// (`system_hotkey`), not the keymap.
         ShowOrHideApp,
+        /// Restore the main window, including from the notification area.
+        ShowApp,
         /// Read the network connections of the SSH terminal's host again.
         RefreshConnections,
         /// Read the processes of the SSH terminal's host again.
@@ -165,6 +167,14 @@ gpui_kit::actions!(
         PreviousTab,
         /// Open the settings tab, or bring it forward if it is already open.
         OpenSettings,
+        /// Set the application password.
+        EnableAppLock,
+        /// Change the application password after verifying the current one.
+        ChangeAppLockPassword,
+        /// Disable the application password after verifying it.
+        DisableAppLock,
+        /// Hide the workspace until the application password is entered.
+        LockApp,
         /// Close the settings tab.
         CloseSettings,
         /// Increase the application base font (interface zoom).
@@ -284,6 +294,8 @@ id_actions! {
     DisconnectTerminal(RemoteTerminalId);
     /// Open the dialog that gives one remote terminal tab its own title.
     RenameTerminal(RemoteTerminalId);
+    /// Copy an open terminal's connection, tab title and working directory.
+    DuplicateTerminal(RemoteTerminalId);
     /// Hold a serial host's line in the break condition for a moment.
     SendBreak(RemoteTerminalId);
     /// Open the dialog that sends several lines to one remote terminal,

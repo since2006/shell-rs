@@ -39,8 +39,8 @@ use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, Te
 use super::zmodem::{Fed, Shown, Zmodem, ZmodemControl, ZmodemDirection, ZmodemReply};
 use super::{
     ExecRequest, ExecResult, SharedTerminalTransportFactory, TerminalChannels, TerminalColors,
-    TerminalLifecycle, TerminalSize, TerminalStatus, TerminalTheme, TerminalTransportCommand,
-    TerminalTransportEvent,
+    TerminalInteraction, TerminalLifecycle, TerminalSize, TerminalStatus, TerminalTheme,
+    TerminalTransportCommand, TerminalTransportEvent,
 };
 
 pub type AlacrittyTerm = Term<TerminalEventProxy>;
@@ -115,6 +115,7 @@ pub struct TerminalEngine {
     /// programs ask for from it.
     theme: SharedTheme,
     _theme_observer: gpui_kit::Subscription,
+    _interaction_observer: gpui_kit::Subscription,
     /// Where channels beside the shell open: the current runtime's
     /// connection, attached on every start.
     channels: TerminalChannels,
@@ -149,6 +150,7 @@ impl TerminalEngine {
             highlights.clone(),
             theme.clone(),
             log_plan(&identity, cx),
+            TerminalInteraction::current(cx),
         );
         if let Some(error) = log_error {
             append_message(&runtime.term, &error);
@@ -166,6 +168,13 @@ impl TerminalEngine {
             *this.theme.lock().unwrap_or_else(|error| error.into_inner()) =
                 TerminalColors::current(cx);
         });
+        let interaction_observer = cx.observe_global::<TerminalInteraction>(|this, cx| {
+            this.runtime
+                .term
+                .lock()
+                .set_options(terminal_config(TerminalInteraction::current(cx)));
+            cx.notify();
+        });
         let mut this = Self {
             factory,
             identity,
@@ -179,6 +188,7 @@ impl TerminalEngine {
             _highlights_observer: highlights_observer,
             theme,
             _theme_observer: theme_observer,
+            _interaction_observer: interaction_observer,
             channels,
             directory: None,
             reconnect_on_enter: false,
@@ -337,6 +347,7 @@ impl TerminalEngine {
             self.highlights.clone(),
             self.theme.clone(),
             log_plan(&self.identity, cx),
+            TerminalInteraction::current(cx),
         );
         if let Some(error) = log_error {
             append_message(&runtime.term, &error);
@@ -906,6 +917,7 @@ impl TerminalRuntime {
         highlights: SharedHighlights,
         theme: SharedTheme,
         log: Option<SessionLogPlan>,
+        interaction: TerminalInteraction,
     ) -> (Self, Option<SharedString>) {
         let (commands, command_receiver) = mpsc::channel();
         let (transport_events, transport_receiver) = async_channel::unbounded();
@@ -921,7 +933,7 @@ impl TerminalRuntime {
             theme,
         };
         let parser_proxy = proxy.clone();
-        let config = terminal_config();
+        let config = terminal_config(interaction);
         let term = Arc::new(FairMutex::new(AlacrittyTerm::new(config, &size, proxy)));
 
         let run: Arc<Mutex<Option<RunHandle>>> = Arc::default();
@@ -1142,12 +1154,12 @@ impl TerminalRuntime {
     }
 }
 
-fn terminal_config() -> Config {
+fn terminal_config(interaction: TerminalInteraction) -> Config {
     Config {
         scrolling_history: 10_000,
         default_cursor_style: CursorStyle {
-            shape: CursorShape::Block,
-            blinking: true,
+            shape: interaction.cursor_style.shape(),
+            blinking: interaction.cursor_blinking,
         },
         // Programs may copy to the clipboard (vim, tmux), never read it.
         osc52: Osc52::OnlyCopy,
@@ -1619,7 +1631,11 @@ mod tests {
     ) {
         let size = TerminalSize::new(columns, rows, 8, 16);
         let (proxy, command_receiver, ui_receiver) = test_proxy(size);
-        let term = AlacrittyTerm::new(terminal_config(), &size, proxy);
+        let term = AlacrittyTerm::new(
+            terminal_config(TerminalInteraction::default()),
+            &size,
+            proxy,
+        );
         (term, command_receiver, ui_receiver)
     }
 
@@ -1655,7 +1671,11 @@ mod tests {
     fn queries_are_answered_in_the_order_asked() {
         let size = TerminalSize::new(20, 4, 8, 16);
         let (proxy, commands, _) = test_proxy(size);
-        let mut term = AlacrittyTerm::new(terminal_config(), &size, proxy.clone());
+        let mut term = AlacrittyTerm::new(
+            terminal_config(TerminalInteraction::default()),
+            &size,
+            proxy.clone(),
+        );
         feed(&mut term, b"ab\x1b]11;?\x1b\\\x1b[6n\x1b]4;1;?\x07");
         assert!(commands.try_iter().next().is_none());
         proxy.answer(&term);
@@ -1690,7 +1710,11 @@ mod tests {
     fn programs_may_turn_on_the_kitty_keyboard_protocol() {
         let size = TerminalSize::new(20, 4, 8, 16);
         let (proxy, commands, _) = test_proxy(size);
-        let mut term = AlacrittyTerm::new(terminal_config(), &size, proxy.clone());
+        let mut term = AlacrittyTerm::new(
+            terminal_config(TerminalInteraction::default()),
+            &size,
+            proxy.clone(),
+        );
         let answer = |term: &AlacrittyTerm| {
             proxy.answer(term);
             commands
@@ -2001,6 +2025,35 @@ mod tests {
     }
 
     #[test]
+    fn cursor_preferences_apply_and_programs_can_restore_the_default() {
+        use super::super::TerminalCursorStyle;
+
+        let mut term = test_term(8, 2);
+        for (style, shape) in [
+            (TerminalCursorStyle::Block, CursorShape::Block),
+            (TerminalCursorStyle::Underline, CursorShape::Underline),
+            (TerminalCursorStyle::Beam, CursorShape::Beam),
+        ] {
+            for blinking in [false, true] {
+                let interaction = TerminalInteraction {
+                    cursor_style: style,
+                    cursor_blinking: blinking,
+                    ..TerminalInteraction::default()
+                };
+                term.set_options(terminal_config(interaction));
+                assert_eq!(term.cursor_style(), CursorStyle { shape, blinking });
+                // A program can request a steady block, then return to the
+                // user's preference with DECSCUSR 0.
+                feed(&mut term, b"\x1b[2 q");
+                assert_eq!(term.cursor_style().shape, CursorShape::Block);
+                assert!(!term.cursor_style().blinking);
+                feed(&mut term, b"\x1b[0 q");
+                assert_eq!(term.cursor_style(), CursorStyle { shape, blinking });
+            }
+        }
+    }
+
+    #[test]
     fn parses_ansi_color_wide_characters_and_alternate_screen() {
         let mut term = test_term(12, 3);
         feed(&mut term, b"\x1b[31mA\x1b[0m");
@@ -2269,6 +2322,7 @@ mod tests {
                 gpui_kit::component::ThemeMode::Light,
             ))),
             None,
+            TerminalInteraction::default(),
         )
         .0
     }
@@ -2420,6 +2474,7 @@ mod tests {
                 gpui_kit::component::ThemeMode::Light,
             ))),
             None,
+            TerminalInteraction::default(),
         )
         .0;
         events.send(TerminalTransportEvent::Started).unwrap();

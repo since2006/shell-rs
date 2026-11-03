@@ -24,7 +24,7 @@ use crate::host::{Host, HostId};
 use crate::i18n::t;
 use crate::sftp::{
     FileStamp, ReadFailure, SaveFailure, SharedLocalDirectoryProvider, TextFile, TextFormat,
-    read_local_text, write_local_text,
+    describe_read_failure, read_local_text, write_local_text,
 };
 use crate::shared::{ClosableTabTitle, HostMark, close_tab_items, confirm_danger, soft_tag};
 
@@ -414,7 +414,7 @@ impl EditorPanel {
                 self.update_dirty(cx);
             }
             Err(failure) => window.push_notification(
-                Notification::error(failure.to_string())
+                Notification::error(describe_read_failure(&failure))
                     .title(t!("editor.reload.failed", name = self.name())),
                 cx,
             ),

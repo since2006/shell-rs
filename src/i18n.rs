@@ -201,6 +201,11 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut files = Vec::new();
         sources(&root.join("src"), &mut files);
+        // The SSH and hosts cores and the mobile apps' interface to them say
+        // nothing in words: the apps word what they say.
+        sources(&root.join("crates/shellrs-ssh/src"), &mut files);
+        sources(&root.join("crates/shellrs-hosts/src"), &mut files);
+        sources(&root.join("crates/shellrs-mobile/src"), &mut files);
         files.sort();
         files
             .into_iter()

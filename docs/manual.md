@@ -4,11 +4,13 @@
 
 An SSH host manager built on GPUI Kit, with saved hosts and groups, login credentials that several hosts can share, local terminals, multiple SSH terminals, a WinSCP-style dual-pane SFTP browser and SSH port forwarding.
 
-The three icons after “ShellRS” in the title bar switch what the left sidebar shows: the host list, the port forwarding list or the credential list. When the sidebar is hidden, clicking one of them shows it again.
+The three icons after “ShellRS” in the title bar switch what the left sidebar shows: the host list, the port forwarding list or the credential list. When the sidebar is hidden, clicking one of them shows it again. The left sidebar's visibility is saved automatically and restored on the next launch; it is shown on the first launch.
 
 Only one ShellRS runs at a time: opening it again while it’s running brings the existing window to the front, and the newly launched copy quits. Two copies would each load the hosts into memory and write them back to the same database, overwriting each other’s changes. (Copies pointed at different data folders with `SHELLRS_DATA_DIR` count as different and can run side by side; so do the installed and portable copies on Windows.) To see two terminals or SFTP tabs side by side, drag a tab into a split.
 
-On macOS, the close button at the top left of the window only hides ShellRS: open connections, SFTP transfers, port forwards and the external CLI keep running. Click the Dock icon to bring the window back with all its tabs. To actually quit, press ⌘Q or right-click the Dock icon and choose Quit. On Windows and Linux, closing the window quits.
+On macOS, the close button at the top left of the window only hides ShellRS: open connections, SFTP transfers, port forwards and the external CLI keep running. Click the Dock icon to bring the window back with all its tabs. To actually quit, press ⌘Q or right-click the Dock icon and choose Quit. On Linux, closing the window quits.
+
+Windows quits when the window is closed by default. Turn on “Minimize to tray on close” under “Settings → General → Window” to hide the window instead, keeping connections, transfers and port forwards running. Click the tray icon or choose “Show window” from its context menu to restore the window. Choose “Quit” to exit; unsaved editor changes still ask for confirmation. Starting ShellRS again or using the system-wide show shortcut also restores the window. This option is off by default and appears only on Windows. If the tray icon cannot be created, ShellRS reports the error and keeps the window open.
 
 ## Hosts
 

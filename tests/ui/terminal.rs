@@ -2,7 +2,7 @@
 //! the font and the size, links, the mouse for programs and their copies.
 
 use crate::support::*;
-use shellrs::app::{CopyTerminal, PasteTerminal, SelectAllTerminal, Shortcut};
+use shellrs::app::{CopyTerminal, DuplicateTerminal, PasteTerminal, SelectAllTerminal, Shortcut};
 use shellrs::terminal::{RightClick, SendDelay};
 
 fn open_workspace_with_factory(
@@ -1813,4 +1813,146 @@ async fn a_session_log_is_written_without_colors_and_with_a_time_on_each_line(
             .all(|line| line.starts_with("[T] ")),
         "{text:?}"
     );
+}
+
+/// The copied tab keeps its own connection and title, then restores the
+/// source's reported folder once. The source receives no new command.
+#[gpui_kit::test]
+async fn duplicating_a_terminal_keeps_its_title_connection_and_directory(cx: &mut TestAppContext) {
+    let remote = Arc::new(RecordingRemoteProvider::default());
+    let factory = remote.factory.clone();
+    let (handle, workspace) = open_workspace_with_credentials(
+        cx,
+        HostStore::seed(),
+        remote.clone(),
+        Arc::new(FakeConnectionTester::default()),
+    );
+    let source = RemoteTerminalId(INITIAL_WEB_TERMINAL);
+    let copied = RemoteTerminalId(FIRST_NEW_TERMINAL);
+    let directory = "/srv/it's project/中文;$(printf oops)";
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        remote_lifecycle(&workspace, source, cx) == TerminalLifecycle::Running
+    })
+    .await;
+    let original_login = remote.logins()[0].clone();
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(RenameTerminal(source)), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("tab-name", cx);
+        window.press("secondary-a", cx);
+        window.input("排查日志", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    // OSC 1337 reports a path without a hostname, as some shells do.
+    cx.update(|cx| {
+        let panel = workspace.read(cx).remote_terminal(source).unwrap().clone();
+        let terminal = panel.read(cx).terminal().clone();
+        cx.write_to_clipboard(ClipboardItem::new_string(format!(
+            "\x1b]1337;CurrentDir={directory}\x07"
+        )));
+        terminal.update(cx, |terminal, cx| terminal.paste_clipboard(cx));
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        workspace
+            .read(cx)
+            .remote_terminal(source)
+            .unwrap()
+            .read(cx)
+            .terminal()
+            .read(cx)
+            .directory(cx)
+            .is_some_and(|reported| reported.path == directory)
+    })
+    .await;
+    // A normal new connection would take these changed settings. A copy
+    // keeps the connection that the source actually opened.
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().clone();
+        let mut draft = store.read(cx).host(HostId(WEB_01)).unwrap().draft();
+        draft.name = "renamed-host".into();
+        draft.address = "new.example.test".into();
+        draft.user = "another-user".into();
+        store.update(cx, |store, cx| {
+            store.update(HostId(WEB_01), draft, cx);
+        });
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-search", cx);
+        window.dispatch_action(Box::new(DuplicateTerminal(source)), cx);
+    });
+    let command = "cd -- '/srv/it'\\''s project/中文;$(printf oops)'\r";
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        remote_lifecycle(&workspace, copied, cx) == TerminalLifecycle::Running
+            && window
+                .try_find(("terminal-tab", copied.0))
+                .is_some_and(|tab| tab.label() == Some("排查日志"))
+            && factory
+                .writes_by_run
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(run, bytes)| *run == 3 && bytes == command.as_bytes())
+    })
+    .await;
+    assert_eq!(remote.logins().last(), Some(&original_login));
+    let writes = factory.writes_by_run.lock().unwrap().clone();
+    assert_eq!(
+        writes
+            .iter()
+            .filter(|(_, bytes)| bytes == command.as_bytes())
+            .count(),
+        1
+    );
+    assert!(
+        writes
+            .iter()
+            .filter(|(run, _)| *run != 3)
+            .all(|(_, bytes)| !bytes.starts_with(b"cd --"))
+    );
+    // The restoration belongs to the copy's first connection, not every
+    // later reconnect of that tab.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ReconnectTerminal(copied)), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        factory.starts() == 4
+            && remote_lifecycle(&workspace, copied, cx) == TerminalLifecycle::Running
+    })
+    .await;
+    assert_eq!(
+        factory
+            .writes_by_run
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, bytes)| bytes.starts_with(b"cd --"))
+            .count(),
+        1
+    );
+}
+
+#[gpui_kit::test]
+async fn duplicating_a_terminal_without_a_reported_directory_only_copies_its_name(
+    cx: &mut TestAppContext,
+) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) =
+        open_workspace_with_remote_factory(cx, HostStore::seed(), factory.clone());
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(
+            Box::new(DuplicateTerminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))),
+            cx,
+        );
+    });
+    let copied = RemoteTerminalId(FIRST_NEW_TERMINAL);
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        remote_lifecycle(&workspace, copied, cx) == TerminalLifecycle::Running
+            && window
+                .try_find(("terminal-tab", copied.0))
+                .is_some_and(|tab| tab.label() == Some("web-01"))
+    })
+    .await;
+    assert!(!factory.written_text().contains("cd --"));
 }

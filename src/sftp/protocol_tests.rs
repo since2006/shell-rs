@@ -2,9 +2,9 @@
 use super::*;
 use crate::{
     connection::{ConnectionPromptKind, ConnectionPromptReply, ConnectionSecret, Latency},
-    host::{AuthKind, Host, HostDraft, HostId, HostLogin, HostStore, SshLink},
+    host::{AuthKind, Host, HostDraft, HostId, HostLogin, HostLoginExt, HostStore, SshLink},
     i18n::t,
-    secrets::{InMemorySecretStore, SharedSecretStore},
+    secrets::{InMemorySecretStore, KeychainSource, SharedSecretSource},
     ssh::{SshConnector, SshTerminalTransportProvider},
     terminal::{
         RemoteTerminalTransportProvider as _, TerminalChannels, TerminalSize,
@@ -306,13 +306,13 @@ fn worker(port: u16, data: &std::path::Path) -> Worker {
         data,
     )
 }
-fn worker_for(login: &HostLogin, secrets: SharedSecretStore, data: &std::path::Path) -> Worker {
+fn worker_for(login: &HostLogin, secrets: SharedSecretSource, data: &std::path::Path) -> Worker {
     worker_on(login, SftpRoute::Login, secrets, data)
 }
 fn worker_on(
     login: &HostLogin,
     route: SftpRoute,
-    secrets: SharedSecretStore,
+    secrets: SharedSecretSource,
     data: &std::path::Path,
 ) -> Worker {
     let provider = SshSftpTransportProvider::new(
@@ -508,7 +508,11 @@ fn a_link_without_a_password_connects_where_the_server_asks_for_none() {
         let mut store = HostStore::empty();
         let link = format!("sftp://{TOKEN_USER}@127.0.0.1:{}", server.port);
         let host = store.insert_external_unnotified(SshLink::parse(&link, None).unwrap());
-        let worker = worker_for(&store.login(host).unwrap(), store.secrets(), temp.path());
+        let worker = worker_for(
+            &store.login(host).unwrap(),
+            KeychainSource::shared(store.secrets()),
+            temp.path(),
+        );
         loop {
             let event = tokio::time::timeout(Duration::from_secs(25), worker.events.recv())
                 .await

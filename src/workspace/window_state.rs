@@ -41,23 +41,23 @@ pub struct WindowState {
 }
 
 impl WindowState {
-    pub fn capture(window: &Window, cx: &App) -> Self {
-        // macOS never reports a window maximized, only its frame filling
-        // the screen; a full screen window comes back as it was before.
+    /// Waking after an external display was disconnected can leave the window
+    /// without a screen temporarily. Keep the last valid state until macOS
+    /// assigns it to a screen again.
+    pub fn capture(window: &Window, cx: &App) -> Option<Self> {
+        // GPUI refreshes the window's display before notifying bounds observers.
+        // Check it before is_maximized, whose macOS implementation assumes one.
+        let display = window.display(cx)?;
         let (bounds, maximized) = match window.window_bounds() {
             WindowBounds::Windowed(bounds) => (bounds, window.is_maximized()),
             WindowBounds::Maximized(bounds) => (bounds, true),
             WindowBounds::Fullscreen(bounds) => (bounds, false),
         };
-        let display = window
-            .display(cx)
-            .and_then(|display| display.uuid().ok())
-            .map(|uuid| uuid.to_string());
-        Self {
-            display,
+        Some(Self {
+            display: display.uuid().ok().map(|uuid| uuid.to_string()),
             bounds,
             maximized,
-        }
+        })
     }
 
     /// The state saved at `path`; none when there is none or it does not
@@ -102,7 +102,9 @@ impl Workspace {
         })
         .detach();
         let subscription = cx.observe_window_bounds(window, move |this, window, cx| {
-            let state = WindowState::capture(window, cx);
+            let Some(state) = WindowState::capture(window, cx) else {
+                return;
+            };
             if latest.borrow().as_ref() == Some(&state) {
                 return;
             }
@@ -277,6 +279,7 @@ mod tests {
         WindowSettings {
             remember_size,
             remember_position,
+            ..WindowSettings::default()
         }
     }
 

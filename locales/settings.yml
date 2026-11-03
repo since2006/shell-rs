@@ -136,6 +136,24 @@ settings.right_click.paste:
 settings.right_click.menu:
   zh-CN: 显示菜单
   en: Show menu
+settings.interaction.cursor_style:
+  zh-CN: 光标样式
+  en: Cursor style
+settings.interaction.cursor_style_description:
+  zh-CN: 选择光标的显示形状。
+  en: Choose the shape of the cursor.
+settings.interaction.cursor_blinking:
+  zh-CN: 光标闪烁
+  en: Cursor blinking
+settings.cursor_style.block:
+  zh-CN: 方块
+  en: Block
+settings.cursor_style.underline:
+  zh-CN: 下划线
+  en: Underline
+settings.cursor_style.beam:
+  zh-CN: 竖线
+  en: Bar
 
 settings.sidebar_tools.title:
   zh-CN: 侧栏功能
@@ -438,6 +456,12 @@ settings.window.remember_position:
 settings.window.remember_position_description:
   zh-CN: 下次启动时把窗口放回上次所在的屏幕和位置；那块屏幕不在时放在主屏幕中间。
   en: The next launch puts the window back on the same screen and in the same place. If that screen is gone, it opens in the middle of the main screen.
+settings.window.close_to_tray:
+  zh-CN: 关闭窗口时最小化到托盘
+  en: Minimize to tray on close
+settings.window.close_to_tray_description:
+  zh-CN: 关闭窗口后继续在后台运行，可从托盘恢复窗口或退出。
+  en: Keep running in the background when the window is closed. Restore the window or quit from the tray.
 
 settings.cli.access:
   zh-CN: 访问控制

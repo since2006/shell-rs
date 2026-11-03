@@ -16,6 +16,13 @@ pub struct ReportedDirectory {
 }
 
 impl ReportedDirectory {
+    /// Restore this POSIX folder in a shell, with the path kept as one
+    /// literal argument even when it contains quotes or shell syntax.
+    pub(crate) fn cd_command(&self) -> Option<String> {
+        (self.path.starts_with('/') && !self.path.chars().any(char::is_control))
+            .then(|| format!("cd -- '{}'", self.path.replace('\'', r"'\''")))
+    }
+
     /// Whether the report comes from the host called `hostname` (its
     /// `uname -n`). One that names no host is taken at its word; one that
     /// names a host is taken only from a host whose name is known.
@@ -132,5 +139,32 @@ mod tests {
         assert!(!named.is_from(Some("db-01")));
         assert!(!named.is_from(None));
         assert!(at(None, "/srv").unwrap().is_from(None));
+    }
+
+    #[test]
+    fn restoring_a_folder_quotes_it_as_one_literal_argument() {
+        #[cfg(unix)]
+        for path in [
+            "/srv/itcm",
+            "/srv/a b/中文",
+            "/srv/it's;$(printf oops)`printf oops`",
+            "/-logs",
+        ] {
+            let directory = at(None, path).unwrap();
+            let command = directory.cd_command().unwrap();
+            let output = std::process::Command::new("sh")
+                .args(["-c", &format!("set -- {command}; printf '%s\\0' \"$@\"")])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(output.stdout, format!("cd\0--\0{path}\0").as_bytes());
+        }
+        assert_eq!(
+            at(None, "/srv/itcm").unwrap().cd_command().as_deref(),
+            Some("cd -- '/srv/itcm'")
+        );
+        for path in ["relative", "/tmp\ninjected", "/tmp\r", "/tmp\x1b"] {
+            assert!(at(None, path).unwrap().cd_command().is_none());
+        }
     }
 }

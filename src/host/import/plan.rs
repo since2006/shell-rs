@@ -8,10 +8,9 @@ use gpui_kit::{Context, SharedString};
 
 use crate::i18n::t;
 
-use super::super::private_key::read_small;
 use super::super::{
-    AuthKind, CredentialDraft, CredentialId, CredentialKind, DEFAULT_USER, GroupPathError,
-    HostDraft, HostDraftError, HostStore,
+    AuthKind, CredentialDraft, CredentialId, CredentialKind, DEFAULT_USER, ErrorMessage as _,
+    GroupPathError, HostDraft, HostDraftError, HostStore, read_small,
 };
 use super::{ImportCandidate, ImportScan};
 
@@ -308,7 +307,7 @@ pub fn apply_import(
                 Ok(Some(kept)) => draft.with_key_path(kept),
                 Ok(None) => draft,
                 Err(error) => {
-                    not_copied.push(t!("host.import.key_not_copied", error = error));
+                    not_copied.push(t!("host.import.key_not_copied", error = error.message()));
                     draft
                 }
             }

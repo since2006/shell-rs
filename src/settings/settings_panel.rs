@@ -29,12 +29,13 @@ use crate::cli::{AgentKind, BinaryStatus, CliIntegration, IntegrationStatus, Ski
 use crate::explorer::{FileIcon, FileIconKind};
 use crate::i18n::t;
 use crate::sftp::{DEFAULT_PARALLEL_TRANSFERS, PARALLEL_TRANSFERS_RANGE};
-use crate::shared::{ClosableTabTitle, close_tab_items};
+use crate::shared::{ClosableTabTitle, Segment, SegmentedControl, close_tab_items};
 use crate::sync::SyncService;
 use crate::terminal::{
     CHARACTER_DELAY_RANGE, DEFAULT_LOG_TEMPLATE, DEFAULT_LOG_TIMESTAMP_FORMAT, FONT_SIZE_RANGE,
-    LINE_DELAY_RANGE, LINE_HEIGHT_RANGE, SendDelay, TerminalColors, TerminalFont,
-    TerminalFontPreview, TerminalHighlights, is_font_installed, monospace_font_families,
+    LINE_DELAY_RANGE, LINE_HEIGHT_RANGE, SendDelay, TerminalColors, TerminalCursorStyle,
+    TerminalFont, TerminalFontPreview, TerminalHighlights, is_font_installed,
+    monospace_font_families,
 };
 use crate::update::{Phase, Tone, UpdateSnapshot, UpdateStep, Updater, build_info, platform};
 
@@ -92,6 +93,7 @@ pub struct SettingsPanel {
     tab_group: Option<WeakEntity<TabGroup>>,
     _subscriptions: [Subscription; 7],
     _font_scan: Task<()>,
+    _lock_subscription: Option<Subscription>,
 }
 
 impl SettingsPanel {
@@ -128,7 +130,10 @@ impl SettingsPanel {
                 cx.notify();
             });
         });
+        let lock_subscription = crate::app_lock::AppLock::global(cx)
+            .map(|lock| cx.observe(&lock, |_, _, cx| cx.notify()));
         Self {
+            _lock_subscription: lock_subscription,
             store,
             integration,
             updater,
@@ -651,9 +656,10 @@ fn session_log_group(panel: &SettingsPanel) -> SettingGroup {
         ])
 }
 
-/// 终端 → 终端交互: what the mouse does besides selecting.
+/// 终端 → 终端交互: mouse behavior and the default cursor.
 fn interaction_group(store: &Entity<SettingsStore>) -> SettingGroup {
     let (reader, writer) = (store.clone(), store.clone());
+    let (cursor_reader, cursor_writer) = (store.clone(), store.clone());
     SettingGroup::new()
         .title(t!("settings.interaction.title"))
         .items([
@@ -688,7 +694,102 @@ fn interaction_group(store: &Entity<SettingsStore>) -> SettingGroup {
                 ),
             )
             .description(t!("settings.interaction.right_click_description")),
+            SettingItem::new(
+                t!("settings.interaction.cursor_style"),
+                cursor_style_field(store),
+            )
+            .description(t!("settings.interaction.cursor_style_description")),
+            SettingItem::new(
+                t!("settings.interaction.cursor_blinking"),
+                SettingField::switch(
+                    move |cx| {
+                        cursor_reader
+                            .read(cx)
+                            .settings()
+                            .terminal_interaction
+                            .cursor_blinking
+                    },
+                    move |on, cx| {
+                        cursor_writer.update(cx, |store, cx| {
+                            store.update(
+                                |settings| settings.terminal_interaction.cursor_blinking = on,
+                                cx,
+                            )
+                        });
+                    },
+                )
+                .default_value(true),
+            ),
         ])
+}
+
+fn cursor_style_field(store: &Entity<SettingsStore>) -> SettingField<SharedString> {
+    let (reader, dirty, reset) = (store.clone(), store.clone(), store.clone());
+    SettingField::render(move |options, _, cx| {
+        let chosen = reader.read(cx).settings().terminal_interaction.cursor_style;
+        let writer = reader.clone();
+        div().child(
+            SegmentedControl::new("terminal-cursor-style")
+                .compact()
+                .with_size(options.size())
+                .selected_index(
+                    TerminalCursorStyle::ALL
+                        .iter()
+                        .position(|style| *style == chosen),
+                )
+                .segments(TerminalCursorStyle::ALL.iter().map(|&style| {
+                    let color = if style == chosen {
+                        cx.theme().foreground
+                    } else {
+                        cx.theme().muted_foreground
+                    };
+                    let shape = match style {
+                        TerminalCursorStyle::Block => div().w_2().h_3(),
+                        TerminalCursorStyle::Underline => div().w_2().h_0p5(),
+                        TerminalCursorStyle::Beam => div().w_0p5().h_3(),
+                    };
+                    Segment::new(style.label())
+                        .disabled(options.is_disabled())
+                        .prefix(
+                            div()
+                                .w_3()
+                                .h_4()
+                                .flex_none()
+                                .flex()
+                                .items_end()
+                                .justify_center()
+                                .pb_0p5()
+                                .child(shape.bg(color)),
+                        )
+                }))
+                .on_change(move |ix, _, cx| {
+                    if let Some(&style) = TerminalCursorStyle::ALL.get(*ix) {
+                        writer.update(cx, |store, cx| {
+                            store.update(
+                                |settings| settings.terminal_interaction.cursor_style = style,
+                                cx,
+                            )
+                        });
+                    }
+                }),
+        )
+    })
+    .on_reset(
+        move |cx| {
+            dirty.read(cx).settings().terminal_interaction.cursor_style
+                != TerminalCursorStyle::default()
+        },
+        move |_, cx| {
+            reset.update(cx, |store, cx| {
+                store.update(
+                    |settings| {
+                        settings.terminal_interaction.cursor_style = TerminalCursorStyle::default()
+                    },
+                    cx,
+                )
+            });
+        },
+    )
 }
 
 /// 终端 → 通知: when the window is not in front, the system's notification;
@@ -953,42 +1054,180 @@ fn sync_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
 }
 
 /// 应用 → 窗口: what the next launch restores of the main window.
-fn application_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
+fn application_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
     let store = &panel.store;
-    let switch = |read: fn(&WindowSettings) -> bool, write: fn(&mut WindowSettings, bool)| {
-        let (reader, writer) = (store.clone(), store.clone());
-        SettingField::switch(
-            move |cx| read(&reader.read(cx).settings().window),
-            move |on, cx| {
-                writer.update(cx, |store, cx| {
-                    store.update(|settings| write(&mut settings.window, on), cx)
-                });
-            },
+    let switch =
+        |read: fn(&WindowSettings) -> bool, write: fn(&mut WindowSettings, bool), default| {
+            let (reader, writer) = (store.clone(), store.clone());
+            SettingField::switch(
+                move |cx| read(&reader.read(cx).settings().window),
+                move |on, cx| {
+                    writer.update(cx, |store, cx| {
+                        store.update(|settings| write(&mut settings.window, on), cx)
+                    });
+                },
+            )
+            .default_value(default)
+        };
+    let window_group = SettingGroup::new()
+        .title(t!("settings.window.title"))
+        .items([
+            SettingItem::new(
+                t!("settings.window.remember_size"),
+                switch(
+                    |window| window.remember_size,
+                    |window, on| window.remember_size = on,
+                    true,
+                ),
+            )
+            .description(t!("settings.window.remember_size_description")),
+            SettingItem::new(
+                t!("settings.window.remember_position"),
+                switch(
+                    |window| window.remember_position,
+                    |window, on| window.remember_position = on,
+                    true,
+                ),
+            )
+            .description(t!("settings.window.remember_position_description")),
+        ]);
+    let window_group = if cfg!(windows) {
+        window_group.item(
+            SettingItem::new(
+                t!("settings.window.close_to_tray"),
+                switch(
+                    |window| window.close_to_tray,
+                    |window, on| window.close_to_tray = on,
+                    false,
+                ),
+            )
+            .description(t!("settings.window.close_to_tray_description")),
         )
-        .default_value(true)
+    } else {
+        window_group
     };
-    vec![
-        SettingGroup::new()
-            .title(t!("settings.window.title"))
-            .items([
-                SettingItem::new(
-                    t!("settings.window.remember_size"),
-                    switch(
-                        |window| window.remember_size,
-                        |window, on| window.remember_size = on,
-                    ),
+    vec![window_group, app_lock_group(&panel.store, cx)]
+}
+
+fn app_lock_group(store: &Entity<SettingsStore>, cx: &App) -> SettingGroup {
+    use crate::app::{ChangeAppLockPassword, DisableAppLock, EnableAppLock, LockApp};
+    let lock = crate::app_lock::AppLock::global(cx);
+    let enabled = lock.as_ref().is_some_and(|lock| lock.read(cx).is_enabled());
+    let available = lock.is_some();
+    let busy = lock.as_ref().is_some_and(|lock| lock.read(cx).is_busy());
+    let mut items = vec![
+        SettingItem::render(move |_, _, cx| {
+            h_flex()
+                .w_full()
+                .flex_wrap()
+                .gap_3()
+                .justify_between()
+                .child(
+                    v_flex()
+                        .gap_1()
+                        .min_w_0()
+                        .child(div().text_sm().child(if enabled {
+                            t!("app_lock.enabled")
+                        } else {
+                            t!("app_lock.disabled")
+                        }))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(t!("app_lock.description")),
+                        ),
                 )
-                .description(t!("settings.window.remember_size_description")),
-                SettingItem::new(
-                    t!("settings.window.remember_position"),
-                    switch(
-                        |window| window.remember_position,
-                        |window, on| window.remember_position = on,
-                    ),
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .when(enabled, |row| {
+                            row.child(
+                                Button::new("app-lock-now")
+                                    .label(t!("app_lock.lock_now"))
+                                    .disabled(busy)
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(LockApp), cx)
+                                    }),
+                            )
+                            .child(
+                                Button::new("app-lock-change")
+                                    .label(t!("app_lock.change"))
+                                    .disabled(busy)
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(ChangeAppLockPassword), cx)
+                                    }),
+                            )
+                            .child(
+                                Button::new("app-lock-disable")
+                                    .label(t!("app_lock.disable"))
+                                    .disabled(busy)
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(DisableAppLock), cx)
+                                    }),
+                            )
+                        })
+                        .when(!enabled, |row| {
+                            row.child(
+                                Button::new("app-lock-enable")
+                                    .label(t!("app_lock.enable"))
+                                    .disabled(!available || busy)
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(EnableAppLock), cx)
+                                    }),
+                            )
+                        }),
                 )
-                .description(t!("settings.window.remember_position_description")),
-            ]),
-    ]
+        })
+        .keywords(keywords(t!("app_lock.keywords"))),
+    ];
+    if enabled {
+        let (reader, writer) = (store.clone(), store.clone());
+        items.push(
+            SettingItem::new(
+                t!("app_lock.idle_title"),
+                SettingField::number_input(
+                    NumberFieldOptions {
+                        min: 0.,
+                        max: u32::MAX as f64,
+                        step: 1.,
+                    },
+                    move |cx| reader.read(cx).settings().app_lock_idle_minutes as f64,
+                    move |minutes: f64, cx| {
+                        writer.update(cx, |store, cx| {
+                            store.update(
+                                |settings| settings.app_lock_idle_minutes = minutes.round() as u32,
+                                cx,
+                            )
+                        })
+                    },
+                )
+                .default_value(0.),
+            )
+            .description(t!("app_lock.idle_description"))
+            .disabled(busy)
+            .keywords(keywords(t!("app_lock.keywords"))),
+        );
+        let (reader, writer) = (store.clone(), store.clone());
+        items.push(
+            SettingItem::new(
+                t!("app_lock.allow_cli"),
+                SettingField::switch(
+                    move |cx| reader.read(cx).settings().app_lock_allow_cli,
+                    move |allowed, cx| {
+                        writer.update(cx, |store, cx| {
+                            store.update(|settings| settings.app_lock_allow_cli = allowed, cx)
+                        })
+                    },
+                )
+                .default_value(false),
+            )
+            .description(t!("app_lock.allow_cli_description"))
+            .disabled(busy)
+            .keywords(keywords(t!("app_lock.keywords"))),
+        );
+    }
+    SettingGroup::new().title(t!("app_lock.title")).items(items)
 }
 
 /// 外部 CLI: whether the `shellrs` command may use the saved hosts, the

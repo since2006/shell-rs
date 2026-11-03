@@ -1,6 +1,6 @@
 [package]
 name = "shellrs"
-version = "0.1.16"
+version = "0.1.17"
 edition = "2024"
 publish = false
 description = "SSH client and host manager: terminal, SFTP, port forwarding"
@@ -20,11 +20,19 @@ path = "src/main.rs"
 name = "shellrs-cli"
 path = "src/bin/shellrs-cli.rs"
 
-# The sync core is a crate of its own, under MIT, so the mobile apps can
-# link it as well. Cargo commands here build, test and lint it too.
+# The sync, SSH and hosts cores are crates of their own, under MIT, so the
+# mobile apps can link them as well. Cargo commands here build, test and lint them
+# too.
 [workspace]
-members = ["crates/shellrs-sync"]
-default-members = [".", "crates/shellrs-sync"]
+# The mobile apps' bindings build only when asked for (`-p shellrs-mobile`):
+# their generator and its dependencies are no use to the desktop app.
+members = [
+    "crates/shellrs-sync",
+    "crates/shellrs-ssh",
+    "crates/shellrs-hosts",
+    "crates/shellrs-mobile",
+]
+default-members = [".", "crates/shellrs-sync", "crates/shellrs-ssh", "crates/shellrs-hosts"]
 resolver = "3"
 
 [dependencies]
@@ -50,6 +58,8 @@ gpui-kit = { version = "0.6.1", features = [
 ] }
 alacritty_terminal = "0.26"
 anyhow = "1"
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+subtle = "2"
 async-channel = "2"
 # A terminal's parser thread waits for output only until a synchronized
 # update has to be drawn.
@@ -90,6 +100,12 @@ keyring = "4"
 # Sync between devices; its own crate, under MIT, so the mobile apps can
 # link it too.
 shellrs-sync = { path = "crates/shellrs-sync" }
+# Logins, channels and the SFTP engine; its own crate, under MIT, so the
+# mobile apps can link it too.
+shellrs-ssh = { path = "crates/shellrs-ssh" }
+# The hosts, their database and the sync rounds; its own crate, under MIT,
+# so the mobile apps can link it too.
+shellrs-hosts = { path = "crates/shellrs-hosts" }
 trash = "5"
 # Online update: the signed manifest, its versions and the downloads. The
 # default features keep rustls with the OS trust store and the system proxy
@@ -127,14 +143,17 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 [target.'cfg(windows)'.dependencies]
 windows-registry = "0.6"
 windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
+    "Win32_System_LibraryLoader",
     "Win32_System_Pipes",
     "Win32_System_Threading",
     "Win32_System_WindowsProgramming",
     "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
 ] }
 # The window's handle, to restore it from maximized: GPUI only maximizes.
 raw-window-handle = "0.6"
@@ -153,6 +172,8 @@ tempfile = "3"
 minisign = "0.7"
 # The portable installer's tests build and unpack zips on every platform.
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+# The hosts core's fixtures, such as a database in memory.
+shellrs-hosts = { path = "crates/shellrs-hosts", features = ["testing"] }
 
 # What the release workflow ships: smaller and faster than the default, at
 # the cost of a longer build.

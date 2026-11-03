@@ -1,7 +1,7 @@
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Sizable as _,
     button::{Button, ButtonVariants as _},
-    dock::{BasePanel, Panel, PanelControl, PanelEvent},
+    dock::{BasePanel, DockPlacement, Panel, PanelControl, PanelEvent},
     h_flex,
     menu::PopupMenu,
     v_flex,
@@ -13,6 +13,24 @@ use crate::credential::CredentialPanel;
 use crate::forward::ForwardPanel;
 use crate::host::{HostPanel, import_menu_items};
 use crate::i18n::t;
+
+/// The left sidebar opens at this width and cannot be dragged narrower.
+pub(super) const SIDEBAR_WIDTH: Pixels = px(280.);
+
+impl super::Workspace {
+    pub(super) fn hold_sidebar_width(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let narrower = self
+            .dock_area
+            .read(cx)
+            .dock_size(DockPlacement::Left)
+            .is_some_and(|width| width < SIDEBAR_WIDTH);
+        if narrower {
+            self.dock_area.update(cx, |area, cx| {
+                area.set_dock_size(DockPlacement::Left, SIDEBAR_WIDTH, window, cx);
+            });
+        }
+    }
+}
 
 /// Which list the left dock is showing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -166,6 +184,8 @@ impl Render for Sidebar {
             SidebarMode::Credentials => self.credentials.clone().into_any_element(),
         };
         v_flex()
+            .id("workspace-sidebar")
+            .test_support()
             .size_full()
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)

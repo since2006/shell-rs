@@ -1,8 +1,9 @@
 # The Windows build, which the Macs this is developed on cannot compile:
 # the whole workspace through clippy, the external CLI's tests, including
 # the named pipe between two processes, the updater's, the local SFTP pane's
-# paths (std canonicalizes to `\\?\C:\…` there), and the sync crate's, whose
-# folder store replaces files the Windows way.
+# paths (std canonicalizes to `\\?\C:\…` there), the SSH core's but for
+# the SFTP engine's, and the sync crate's, whose folder store replaces files
+# the Windows way.
 #
 # A push runs it only when it touches code that differs on Windows (the
 # files with `cfg(windows)` and friends, and the portable copy's), the
@@ -21,19 +22,30 @@ on:
       - "src/app/mod.rs"
       - "src/app/paths.rs"
       - "src/app/computer.rs"
-      - "src/host/private_key.rs"
+      - "crates/shellrs-hosts/Cargo.toml"
+      - "crates/shellrs-hosts/src/private_key.rs"
       - "src/app/window_hiding.rs"
+      - "src/app/tray.rs"
+      - "src/app/tray/**"
+      - "src/app/quit.rs"
+      - "src/settings/apply.rs"
       - "src/app/system_hotkey.rs"
       - "src/main.rs"
       - "src/bin/**"
-      - "src/ssh/connection.rs"
-      - "src/ssh/probe.rs"
+      - "crates/shellrs-ssh/Cargo.toml"
+      - "crates/shellrs-ssh/src/connection.rs"
+      - "crates/shellrs-ssh/src/probe.rs"
       - "src/ssh/transport.rs"
       - "tests/ui/connection.rs"
-      - "src/sftp/download.rs"
-      - "src/sftp/model.rs"
-      - "src/sftp/upload.rs"
-      - "src/sftp/sync.rs"
+      - "tests/ui/settings.rs"
+      - "tests/ui/editor.rs"
+      - "crates/shellrs-ssh/src/sftp/download.rs"
+      - "crates/shellrs-ssh/src/sftp/journal.rs"
+      - "crates/shellrs-ssh/src/sftp/model.rs"
+      - "crates/shellrs-ssh/src/sftp/upload.rs"
+      - "crates/shellrs-ssh/src/sftp/sync.rs"
+      - "crates/shellrs-ssh/src/sftp/tests.rs"
+      - "src/sftp/local.rs"
       - "src/credential/credential_dialog.rs"
       - "src/settings/model.rs"
       - "src/settings/settings_panel.rs"
@@ -48,6 +60,8 @@ on:
       - "src/testing.rs"
       - "tests/cli_bin.rs"
       - "build.rs"
+      - ".cargo/config.toml"
+      - "scripts/windows-runtime.ps1"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
@@ -71,14 +85,22 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: "cargo test --locked --lib ssh::"
+      - run: "cargo test --locked -p shellrs-ssh -- --skip sftp::"
       - run: "cargo test --locked --test ui connection::"
+      - run: "cargo test --locked --test ui settings::closing_to_the_tray"
+      - run: "cargo test --locked --test ui editor::quitting_with_unsaved_changes"
+      - run: "cargo test --locked --lib settings::"
+      - run: "cargo test --locked --lib app::tray::"
       - run: "cargo test --lib cli::"
       - run: "cargo test --lib update::"
       - run: "cargo test --lib app::paths"
-      - run: "cargo test --lib host::private_key"
-      - run: "cargo test --lib sftp::tests::local_listing"
+      - run: "cargo test --locked -p shellrs-hosts private_key::"
+      - run: "cargo test --lib sftp::local::tests::local_listing"
       - run: "cargo test --lib terminal::local_shell"
       - run: "cargo test --lib serial::"
       - run: "cargo test --lib settings::model"
       - run: cargo test --test cli_bin
+      # The programs cli_bin built start without the Visual C++ runtime.
+      - run: ./scripts/windows-runtime.ps1 target/debug
+        shell: pwsh
       - run: cargo test --locked -p shellrs-sync

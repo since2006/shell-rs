@@ -8,6 +8,7 @@ use crate::host::ConnectionState;
 use crate::i18n::t;
 use crate::sftp::{
     LocalDirectoryProvider, PermissionEdit, RemoteOperation, RemotePath, SftpCommand,
+    describe_sftp_chain,
 };
 use anyhow::Result;
 use gpui_kit::component::{WindowExt as _, notification::Notification};
@@ -179,7 +180,9 @@ impl ExplorerPanel {
                     request_id: id,
                     operation,
                 }),
-                Err(error) => self.finish_operation(id, Err(format!("{error:#}")), window, cx),
+                Err(error) => {
+                    self.finish_operation(id, Err(describe_sftp_chain(&error)), window, cx)
+                }
             }
         } else {
             let provider = self.local_provider.clone();
@@ -275,7 +278,7 @@ impl ExplorerPanel {
                 request_id: id,
                 operation: RemoteOperation::Delete { paths },
             }),
-            Err(error) => self.finish_operation(id, Err(format!("{error:#}")), window, cx),
+            Err(error) => self.finish_operation(id, Err(describe_sftp_chain(&error)), window, cx),
         }
     }
 

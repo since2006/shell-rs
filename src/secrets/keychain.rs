@@ -24,7 +24,27 @@ impl KeychainSecretStore {
     }
 
     fn entry(&self, secret: &SecretRef) -> Result<Entry> {
-        Entry::new(SERVICE, &secret.account()).map_err(|error| describe(Action::Open, error))
+        Self::account_entry(&secret.account())
+    }
+
+    fn account_entry(account: &str) -> Result<Entry> {
+        Entry::new(SERVICE, account).map_err(|error| describe(Action::Open, error))
+    }
+
+    /// Read a shared application record. Blocking, like the SecretStore API.
+    pub(crate) fn read_account(account: &str) -> Result<Option<Zeroizing<String>>> {
+        match Self::account_entry(account)?.get_password() {
+            Ok(value) => Ok(Some(Zeroizing::new(value))),
+            Err(Error::NoEntry) => Ok(None),
+            Err(error) => Err(describe(Action::Read, error)),
+        }
+    }
+
+    /// Write a shared application record. Blocking, like the SecretStore API.
+    pub(crate) fn write_account(account: &str, value: &str) -> Result<()> {
+        Self::account_entry(account)?
+            .set_password(value)
+            .map_err(|error| describe(Action::Write, error))
     }
 }
 
@@ -36,17 +56,11 @@ impl Default for KeychainSecretStore {
 
 impl SecretStore for KeychainSecretStore {
     fn get(&self, secret: &SecretRef) -> Result<Option<Zeroizing<String>>> {
-        match self.entry(secret)?.get_password() {
-            Ok(value) => Ok(Some(Zeroizing::new(value))),
-            Err(Error::NoEntry) => Ok(None),
-            Err(error) => Err(describe(Action::Read, error)),
-        }
+        Self::read_account(&secret.account())
     }
 
     fn set(&self, secret: &SecretRef, value: &str) -> Result<()> {
-        self.entry(secret)?
-            .set_password(value)
-            .map_err(|error| describe(Action::Write, error))
+        Self::write_account(&secret.account(), value)
     }
 
     fn delete(&self, secret: &SecretRef) -> Result<()> {

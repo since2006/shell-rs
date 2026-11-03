@@ -1,0 +1,36 @@
+# The SSH core (crates/shellrs-ssh), on its own: it builds without GPUI,
+# so this takes minutes. Its tests also run with the app's (`cargo test`)
+# and, but for the SFTP engine's, on Windows (windows.yml); the engine's
+# against OpenSSH's own sftp-server only here and on the Macs. The
+# `testing` feature holds the test server other crates' tests use.
+name: ssh
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "crates/shellrs-ssh/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ssh.yml"
+  workflow_dispatch:
+
+jobs:
+  ssh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml picks the toolchain; this installs it with the
+      # components it lists before the cache key is computed.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      # The SFTP engine's protocol tests talk to a local sftp-server.
+      - run: sudo apt-get update && sudo apt-get install -y openssh-sftp-server
+      - run: cargo fmt -p shellrs-ssh --check
+      - run: cargo clippy -p shellrs-ssh --all-targets -- -D warnings
+      - run: cargo clippy -p shellrs-ssh --all-targets --features testing -- -D warnings
+      - run: cargo test --locked -p shellrs-ssh

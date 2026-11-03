@@ -23,7 +23,7 @@ use crate::{
     connection::{ConnectionPromptKind, ConnectionPromptReply, ConnectionSecret},
     host::{
         AuthKind, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, Host,
-        HostDraft, HostId, HostLogin,
+        HostDraft, HostId, HostLogin, HostLoginExt,
     },
     secrets::{InMemorySecretStore, SecretRef, SecretStore as _},
     ssh::{SshConnectionConfig, SshConnector, SshPrompts},

@@ -14,8 +14,9 @@ use gpui_kit::*;
 use zeroize::Zeroizing;
 
 use crate::host::{
-    CredentialDraft, CredentialId, CredentialKind, DEFAULT_USER, GeneratedKey, HostStore,
-    KeyAlgorithm, PastedKey, PastedKeyError, SecretFields, join_sentences, read_public_key,
+    CredentialDraft, CredentialId, CredentialKind, DEFAULT_USER, ErrorMessage as _, GeneratedKey,
+    HostStore, KeyAlgorithm, KindLabel as _, PastedKey, PastedKeyError, SecretFields,
+    join_sentences, read_public_key,
 };
 use crate::i18n::{t, tn};
 use crate::secrets::SecretRef;
@@ -391,7 +392,7 @@ impl CredentialForm {
         .validated();
         let mut draft = match draft {
             Ok(draft) => draft,
-            Err(error) => return self.fail(error.to_string(), window, cx),
+            Err(error) => return self.fail(error.message(), window, cx),
         };
         // Secrets never ride along in the draft, which derives `Debug`.
         let password_change = password_change.filter(|_| draft.kind == CredentialKind::Password);
@@ -410,7 +411,7 @@ impl CredentialForm {
                 Ok(None) => {}
                 Err(error) => {
                     return self.fail(
-                        t!("credential.dialog.key_not_copied", error = error),
+                        t!("credential.dialog.key_not_copied", error = error.message()),
                         window,
                         cx,
                     );
@@ -422,7 +423,7 @@ impl CredentialForm {
         if self.source == KeySource::Paste {
             let pasted = match PastedKey::parse(&self.key_text.read(cx).value()) {
                 Ok(pasted) => pasted,
-                Err(error) => return self.fail(error.to_string(), window, cx),
+                Err(error) => return self.fail(error.message(), window, cx),
             };
             // Only an encrypted key has a passphrase to keep; an empty one
             // clears what a key replaced in place had.
@@ -507,7 +508,7 @@ impl CredentialForm {
                 Ok(path) => draft.key_path = Some(path),
                 Err(error) => {
                     return self.fail(
-                        t!("credential.dialog.key_not_saved", error = error),
+                        t!("credential.dialog.key_not_saved", error = error.message()),
                         window,
                         cx,
                     );

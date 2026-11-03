@@ -281,7 +281,7 @@ impl Workspace {
     /// while hidden.
     fn host_tool(&self, host: HostId, cx: &App) -> Option<ToolKind> {
         match self.store.read(cx).host(host) {
-            Some(host) => host.sidebar_tool,
+            Some(host) => host.sidebar_tool.as_deref().and_then(ToolKind::from_key),
             None => self.deleted_host_tools.get(&host).copied(),
         }
     }
@@ -290,8 +290,9 @@ impl Workspace {
     /// or here for one deleted while its terminals are open.
     fn remember_host_tool(&mut self, host: HostId, tool: Option<ToolKind>, cx: &mut Context<Self>) {
         if self.store.read(cx).host(host).is_some() {
-            self.store
-                .update(cx, |store, cx| store.set_host_sidebar_tool(host, tool, cx));
+            self.store.update(cx, |store, cx| {
+                store.set_host_sidebar_tool(host, tool.map(|tool| tool.key().into()), cx)
+            });
         } else if let Some(tool) = tool {
             self.deleted_host_tools.insert(host, tool);
         } else {

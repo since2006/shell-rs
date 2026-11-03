@@ -66,28 +66,65 @@ fn main() {
                 .open_window(options, |window, cx| {
                     window.activate_window();
                     window.set_window_title("ShellRS");
+                    #[cfg(windows)]
+                    shellrs::app::listen_for_tray(window, cx);
                     shellrs::app::hide_when_closed(window, cx);
                     // Drawn by the processor (a virtual machine without 3D),
                     // ShellRS draws fewer frames.
                     shellrs::app::note_renderer(window, cx);
-                    let (store, problem) = open_store();
-                    let store = cx.new(|_| store);
-                    let settings = cx.new(|_| settings);
-                    let workspace = cx
-                        .new(|cx| shellrs::workspace::Workspace::new(store, settings, window, cx));
-                    // Not pushed here: the window has no `Root` to show it yet.
-                    let settings_problem = settings_problem.map(|problem| problem.message());
-                    for problem in [problem, settings_problem].into_iter().flatten() {
-                        shellrs::workspace::notify_once_open(
-                            Notification::error(problem),
+                    let lock = cx.new(|cx| {
+                        shellrs::app_lock::AppLock::new(
+                            std::sync::Arc::new(shellrs::app_lock::KeychainLockStore),
+                            cx,
+                        )
+                    });
+                    shellrs::app_lock::AppLock::install(lock.clone(), cx);
+                    shellrs::settings::apply(settings.settings(), window, cx);
+                    let server =
+                        match shellrs::cli::CliServer::reserve(shellrs::app::cli_socket_path()) {
+                            Ok(server) => server,
+                            Err(error) => {
+                                let failure =
+                                    cx.new(|_| shellrs::workspace::StartupFailure::new(&error));
+                                return cx.new(|cx| Root::new(failure, window, cx));
+                            }
+                        };
+                    let background_cli = settings.settings().is_external_cli_allowed(true);
+                    let shell = cx.new(|cx| {
+                        shellrs::workspace::AppShell::new(
+                            lock,
+                            Some(server),
+                            background_cli,
+                            move |server, pending_links, window, cx| {
+                                let (store, problem) = open_store();
+                                let store = cx.new(|_| store);
+                                let settings = cx.new(|_| settings);
+                                let workspace = cx.new(|cx| {
+                                    shellrs::workspace::Workspace::new_with_cli_server(
+                                        store, settings, server, window, cx,
+                                    )
+                                });
+                                let settings_problem =
+                                    settings_problem.map(|problem| problem.message());
+                                for problem in [problem, settings_problem].into_iter().flatten() {
+                                    shellrs::workspace::notify_once_open(
+                                        Notification::error(problem),
+                                        window,
+                                        cx,
+                                    );
+                                }
+                                for link in link.into_iter().chain(pending_links) {
+                                    shellrs::workspace::open_link_once_open(
+                                        &workspace, link, window, cx,
+                                    );
+                                }
+                                workspace.into()
+                            },
                             window,
                             cx,
-                        );
-                    }
-                    if let Some(link) = link {
-                        shellrs::workspace::open_link_once_open(&workspace, link, window, cx);
-                    }
-                    cx.new(|cx| Root::new(workspace, window, cx))
+                        )
+                    });
+                    cx.new(|cx| Root::new(shell, window, cx))
                 })
                 .expect("failed to open window");
             cx.update(|cx| cx.set_global(shellrs::app::MainWindow(window.into())));

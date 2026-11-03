@@ -9,7 +9,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 
-use crate::host::{HostStore, SnippetCategoryId, SnippetDraft, SnippetId, SnippetScope, by_name};
+use crate::host::{
+    ErrorMessage as _, HostStore, SnippetCategoryId, SnippetDraft, SnippetId, SnippetScope, by_name,
+};
 use crate::i18n::t;
 use crate::shared::{commit_footer, dismiss_form_error, form_error_notification};
 
@@ -123,7 +125,7 @@ impl SnippetForm {
                 ..draft.with_run_on_click(self.run_on_click)
             },
             Err(error) => {
-                window.push_notification(form_error_notification(error), cx);
+                window.push_notification(form_error_notification(error.message()), cx);
                 return false;
             }
         };

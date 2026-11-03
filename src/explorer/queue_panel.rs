@@ -525,7 +525,11 @@ fn item_results(
                         .min_w_0()
                         .child(detail.path().to_string())
                         .when_some(detail.reason(), |this, reason| {
-                            this.child(div().text_color(danger).child(reason.to_string()))
+                            this.child(
+                                div()
+                                    .text_color(danger)
+                                    .child(crate::sftp::describe_reason(reason)),
+                            )
                         }),
                 )
         }))

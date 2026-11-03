@@ -28,16 +28,16 @@ use crate::app::{
     CenterTab, ClearTerminal, CloseActiveTab, CloseEditor, CloseExplorer, CloseLocalTerminal,
     CloseSettings, CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectHost,
     CopyAgentSkill, CopyHostAddress, CopyHostId, CopyTerminal, DeleteGroup, DeleteHost,
-    DisconnectTerminal, DismissTerminalFind, DuplicateHost, EditHost, ExpandAllGroups,
-    ExplorerAction, ExplorerCommand, ExplorerShortcut, FindInTerminal, FindNextInTerminal,
-    FindPreviousInTerminal, FocusSearch, InstallAgentSkill, InstallCliCommand, MaximizeWindow,
-    MoveHostNode, NewChildGroup, NewGroup, NewHost, NewHostInGroup, NewLocalTerminal,
-    NewTemporaryConnection, OpenExplorer, OpenSettings, PasteTerminal, QuickConnect,
-    ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, RenameExplorer,
-    RenameGroup, RenameTerminal, RestartLocalTerminal, RestoreWindow, SelectAllTerminal, SendBreak,
-    SendCommands, SendCommandsLocal, SetFileSizeFormat, ShowOrHideApp, ToggleHiddenFiles,
-    ToggleHostPanel, ToggleTheme, ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn,
-    ZoomTerminalOut, ZoomTerminalReset,
+    DisconnectTerminal, DismissTerminalFind, DuplicateHost, DuplicateTerminal, EditHost,
+    ExpandAllGroups, ExplorerAction, ExplorerCommand, ExplorerShortcut, FindInTerminal,
+    FindNextInTerminal, FindPreviousInTerminal, FocusSearch, InstallAgentSkill, InstallCliCommand,
+    MaximizeWindow, MoveHostNode, NewChildGroup, NewGroup, NewHost, NewHostInGroup,
+    NewLocalTerminal, NewTemporaryConnection, OpenExplorer, OpenSettings, PasteTerminal,
+    QuickConnect, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand,
+    RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal, RestoreWindow,
+    SelectAllTerminal, SendBreak, SendCommands, SendCommandsLocal, SetFileSizeFormat,
+    ShowOrHideApp, ToggleHiddenFiles, ToggleHostPanel, ToggleTheme, ToolKind, ZoomIn, ZoomOut,
+    ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
 };
 use crate::cli::{CliIntegration, CliServer, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -69,13 +69,17 @@ use crate::sftp::{
     SystemLocalDirectoryProvider, TransferDirection,
 };
 use crate::shared::{commit_footer, confirm_danger, open_rename_tab_dialog};
-use crate::sync::{SyncEvent, SyncService, SyncServices};
+use crate::ssh::{
+    authentication_fields, authentication_instructions, authentication_title,
+    unknown_host_description,
+};
+use crate::sync::{SyncEvent, SyncService};
 use crate::terminal::{
     DEFAULT_FONT_SIZE, HostTerminalTransports, LocalPtyTransportProvider, LocalTerminalId,
     LocalTerminalPanel, LocalTerminalPanelEvent, RemoteTerminalId, SavedName, SearchDirection,
     SharedLocalTerminalTransportProvider, SharedRemoteTerminalTransportProvider,
     SharedSerialTerminalTransportProvider, SharedTelnetTerminalTransportProvider,
-    SharedTerminalTransportFactory, TerminalPanel, TerminalPanelEvent, TerminalView,
+    SharedTerminalTransportFactory, TerminalCopy, TerminalPanel, TerminalPanelEvent, TerminalView,
 };
 use crate::update::{UpdateServices, Updater, UpdaterEvent};
 
@@ -84,9 +88,9 @@ use super::{
     compose_pane::ComposePane,
     dock_skin::WorkspaceDockSkin,
     recent_hosts::RecentHosts,
-    sidebar::Sidebar,
+    sidebar::{SIDEBAR_WIDTH, Sidebar},
     status_bar::WorkspaceStatus,
-    title_bar::render_title_bar,
+    title_bar::{render_sidebar_toggle, render_title_bar},
     tool_sidebar::{ToolSidebar, render_tool_switch},
     tools::{TOOL_SIDEBAR_WIDTH, set_right_dock_open},
     window_state::{WindowState, window_placement},
@@ -194,6 +198,7 @@ pub struct Workspace {
     /// Answers the `shellrs` command. Production only: UI tests never
     /// listen on the real socket.
     pub(super) cli_server: Option<CliServer>,
+    pub(super) locked_links: Vec<crate::cli::OpenLink>,
     /// Looks for, downloads and installs newer versions. Without services
     /// in UI tests, so it never reaches the network unless a test hands it
     /// fakes.
@@ -256,9 +261,20 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::new_with_cli_server(store, settings, None, window, cx)
+    }
+
+    /// Take over the activation listener reserved by the startup password gate.
+    pub fn new_with_cli_server(
+        store: Entity<HostStore>,
+        settings: Entity<SettingsStore>,
+        server: Option<CliServer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let connector = crate::ssh::SshConnector::new(
             crate::app::data_dir().join("known_hosts"),
-            store.read(cx).secrets(),
+            crate::secrets::KeychainSource::shared(store.read(cx).secrets()),
         );
         let remote = Arc::new(crate::ssh::SshTerminalTransportProvider::with_connector(
             connector.clone(),
@@ -292,10 +308,15 @@ impl Workspace {
             integration.update_outdated(cx);
         });
         let secrets = this.store.read(cx).secrets();
-        match CliServer::start(
-            crate::app::cli_socket_path(),
-            Arc::new(SshCliBackend::new(connector, sftp, secrets)),
-        ) {
+        let backend = Arc::new(SshCliBackend::new(connector, sftp, secrets));
+        let server = match server {
+            Some(server) => {
+                server.set_backend(backend);
+                Ok(server)
+            }
+            None => CliServer::start(crate::app::cli_socket_path(), backend),
+        };
+        match server {
             Ok(server) => {
                 this.cli_server = Some(server);
                 this.serve_cli(window, cx);
@@ -314,8 +335,9 @@ impl Workspace {
             updater.set_services(UpdateServices::system(bundle), cx);
             updater.start(cx);
         });
-        this.sync
-            .update(cx, |sync, cx| sync.set_services(SyncServices::system(), cx));
+        this.sync.update(cx, |sync, cx| {
+            sync.set_services(crate::sync::system_services(), cx)
+        });
         if let Some(services) = AnalyticsServices::system() {
             let enabled = this.settings.read(cx).settings().analytics.enabled;
             this.set_analytics(Analytics::start(services, enabled), window, cx);
@@ -329,7 +351,16 @@ impl Workspace {
     /// the hosts as they are now.
     fn sync_cli_server(&self, cx: &App) {
         if let Some(server) = &self.cli_server {
-            server.set_enabled(self.settings.read(cx).settings().external_cli.enabled);
+            let ready =
+                crate::app_lock::AppLock::global(cx).is_none_or(|lock| lock.read(cx).is_ready());
+            server.set_enabled(
+                ready
+                    && self
+                        .settings
+                        .read(cx)
+                        .settings()
+                        .is_external_cli_allowed(crate::app_lock::is_locked(cx)),
+            );
             server.set_hosts(self.store.read(cx));
         }
     }
@@ -406,16 +437,32 @@ impl Workspace {
         // Before the first frame, so a dark theme never starts out light.
         crate::settings::apply(settings.read(cx).settings(), window, cx);
 
+        let mut sidebar_width = dock_area.read(cx).dock_size(DockPlacement::Left);
         let mut subscriptions = vec![
             // What the saved terminals show, for the next launch to draw: the
             // workspace goes with its window, as ShellRS quits (and on
             // Windows and Linux as the window closes, before it quits).
             cx.on_release(|this, cx| this.keep_on_close(cx)),
-            // The right sidebar is never dragged narrower than it opens, nor
+            // Neither sidebar is dragged narrower than it opens, nor
             // 撰写窗格 lower than a line or two.
-            cx.observe_in(&dock_area, window, |this, _, window, cx| {
+            cx.observe_in(&dock_area, window, move |this, area, window, cx| {
+                this.hold_sidebar_width(window, cx);
                 this.hold_tool_sidebar_width(window, cx);
                 this.hold_compose_height(window, cx);
+                // Keep every entry point, including search and the list
+                // switches that reopen the sidebar, for the next launch.
+                let collapsed = !area.read(cx).is_dock_open(DockPlacement::Left);
+                if this.settings.read(cx).settings().sidebar_collapsed != collapsed {
+                    this.settings.update(cx, |store, cx| {
+                        store.update(|settings| settings.sidebar_collapsed = collapsed, cx);
+                    });
+                }
+                // The title-bar toggle follows the left dock's current width.
+                let width = area.read(cx).dock_size(DockPlacement::Left);
+                if sidebar_width != width {
+                    sidebar_width = width;
+                    cx.notify();
+                }
             }),
             cx.observe_in(&store, window, |this, _, window, cx| {
                 this.sync_cli_server(cx);
@@ -535,8 +582,15 @@ impl Workspace {
         for id in connected {
             let terminal_id = RemoteTerminalId(next_remote_terminal_id);
             next_remote_terminal_id += 1;
-            let (panel, subscription) =
-                new_terminal_panel(&store, host_terminals.clone(), terminal_id, id, window, cx);
+            let (panel, subscription) = new_terminal_panel(
+                &store,
+                host_terminals.clone(),
+                terminal_id,
+                id,
+                None,
+                window,
+                cx,
+            );
             center = center.panel_view(panel_handle(panel.clone()), cx);
             subscriptions.push(subscription);
             let focus = panel.read(cx).focus_handle(cx);
@@ -601,8 +655,11 @@ impl Workspace {
                 cx,
             );
             // Dock geometry is an API boundary that takes `Pixels`.
-            area.set_dock_size(DockPlacement::Left, px(280.), window, cx);
+            area.set_dock_size(DockPlacement::Left, SIDEBAR_WIDTH, window, cx);
             area.set_dock_collapsible(DockPlacement::Left, true, window, cx);
+            if launch_settings.sidebar_collapsed {
+                area.toggle_dock(DockPlacement::Left, window, cx);
+            }
             area.set_dock(
                 DockPlacement::Right,
                 DockLayout::tabs().panel_view(panel_handle(tools.clone()), cx),
@@ -617,11 +674,23 @@ impl Workspace {
         // Settled before the first `LayoutChanged` arrives, so the handler
         // does not take the initial state for a tab having just closed.
         skin.set_center_empty(center_empty, cx);
+        if let Some(lock) = crate::app_lock::AppLock::global(cx) {
+            lock.update(cx, |lock, cx| lock.record_activity(cx));
+            Self::watch_idle_lock(lock.clone(), window, cx);
+            subscriptions.push(cx.observe_in(&lock, window, |this, _, window, cx| {
+                this.sync_cli_server(cx);
+                if !crate::app_lock::is_locked(cx) {
+                    for link in std::mem::take(&mut this.locked_links) {
+                        this.open_link(link, window, cx);
+                    }
+                }
+            }));
+        }
         // Rules marked to start with the application. What they need to ask
         // arrives as events, once the workspace is there to show it.
         forwards.update(cx, |forwards, cx| forwards.start_automatic(cx));
 
-        Self {
+        let this = Self {
             store,
             dock_area,
             skin,
@@ -641,6 +710,7 @@ impl Workspace {
             settings,
             cli_integration: cx.new(|_| CliIntegration::new(None)),
             cli_server: None,
+            locked_links: Vec::new(),
             updater,
             sync,
             analytics: None,
@@ -667,7 +737,17 @@ impl Workspace {
             window_state_save: None,
             ssh_dir: None,
             _subscriptions: subscriptions,
+        };
+        if launch_settings.sidebar_collapsed {
+            // The hidden host panel cannot provide a keyboard dispatch path.
+            let focus = this
+                .visible_center_tabs(cx)
+                .first()
+                .and_then(|tab| this.tab_focus_handle(*tab, cx))
+                .unwrap_or_else(|| this.recent.read(cx).focus_handle(cx));
+            window.focus(&focus, cx);
         }
+        this
     }
 
     /// The center tab in front.
@@ -922,7 +1002,10 @@ impl Workspace {
                         if this.prompt_queue.is_empty() {
                             return true;
                         }
-                        if this.active_prompt.is_some() || window.has_active_dialog(cx) {
+                        if crate::app_lock::is_locked(cx)
+                            || this.active_prompt.is_some()
+                            || window.has_active_dialog(cx)
+                        {
                             return false;
                         }
                         this.open_next_prompt(window, cx);
@@ -969,7 +1052,7 @@ impl Workspace {
         };
         match prompt.kind().clone() {
             ConnectionPromptKind::UnknownHost(prompt) => {
-                let description = introduced(prompt.description());
+                let description = introduced(unknown_host_description(&prompt));
                 window.open_alert_dialog(cx, move |alert, _, _| {
                     alert
                         .title(t!("workspace.host_key.unknown_title"))
@@ -1058,9 +1141,9 @@ impl Workspace {
                 });
             }
             ConnectionPromptKind::Authentication(prompt) => {
-                let title = prompt.title().to_string();
-                let instructions = introduced(prompt.instructions().to_string());
-                let fields = prompt.fields().to_vec();
+                let title = authentication_title(&prompt);
+                let instructions = introduced(authentication_instructions(&prompt));
+                let fields = authentication_fields(&prompt);
                 let dialog_title: SharedString = if title.trim().is_empty() {
                     t!("workspace.auth.title")
                 } else {
@@ -1256,6 +1339,30 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_remote_terminal(host_id, None, window, cx);
+    }
+
+    fn on_duplicate_terminal(
+        &mut self,
+        action: &DuplicateTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source) = self.terminals.get(&action.0) else {
+            return;
+        };
+        let source = source.read(cx);
+        let (host_id, copy) = (source.host_id(), source.copy_for_new_tab(cx));
+        self.open_remote_terminal(host_id, Some(copy), window, cx);
+    }
+
+    fn open_remote_terminal(
+        &mut self,
+        host_id: HostId,
+        copy: Option<TerminalCopy>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.store.read(cx).host(host_id).is_none() {
             return;
         }
@@ -1266,6 +1373,7 @@ impl Workspace {
             self.host_terminals.clone(),
             terminal_id,
             host_id,
+            copy,
             window,
             cx,
         );
@@ -2556,11 +2664,16 @@ fn new_terminal_panel(
     transports: HostTerminalTransports,
     terminal_id: RemoteTerminalId,
     host_id: HostId,
+    copy: Option<TerminalCopy>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> (Entity<TerminalPanel>, Subscription) {
-    let panel = cx
-        .new(|cx| TerminalPanel::new(terminal_id, host_id, store.clone(), transports, window, cx));
+    let panel = cx.new(|cx| match copy {
+        Some(copy) => {
+            TerminalPanel::from_copy(terminal_id, copy, store.clone(), transports, window, cx)
+        }
+        None => TerminalPanel::new(terminal_id, host_id, store.clone(), transports, window, cx),
+    });
     let subscription = cx.subscribe_in(
         &panel,
         window,
@@ -2936,6 +3049,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_rename_group))
             .on_action(cx.listener(Self::on_delete_group))
             .on_action(cx.listener(Self::on_connect_host))
+            .on_action(cx.listener(Self::on_duplicate_terminal))
             .on_action(cx.listener(Self::on_connect_group))
             .on_action(cx.listener(Self::on_reconnect_terminal))
             .on_action(cx.listener(Self::on_disconnect_terminal))
@@ -2949,6 +3063,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_editor_action))
             .on_action(cx.listener(Self::on_editor_shortcut))
             .on_action(cx.listener(Self::on_close_local_terminal))
+            .on_action(cx.listener(Self::on_enable_app_lock))
+            .on_action(cx.listener(Self::on_change_app_lock_password))
+            .on_action(cx.listener(Self::on_disable_app_lock))
+            .on_action(cx.listener(Self::on_lock_app))
             .on_action(cx.listener(Self::on_open_settings))
             .on_action(cx.listener(Self::on_install_cli_command))
             .on_action(cx.listener(Self::on_remove_cli_command))
@@ -3082,6 +3200,14 @@ impl Render for Workspace {
                 self.updater.read(cx).snapshot().badge(),
                 &self.focus_handle,
                 cx,
+            ))
+            .child(render_sidebar_toggle(
+                sidebar.is_some(),
+                self.dock_area
+                    .read(cx)
+                    .dock_size(DockPlacement::Left)
+                    .unwrap_or_default(),
+                &self.focus_handle,
             ))
             .child(
                 h_flex()

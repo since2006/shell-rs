@@ -1,0 +1,262 @@
+//! Saved logins that hosts share: a user name with a password, a private key
+//! file or the SSH agent. They live with the hosts because hosts refer to
+//! them and they are stored in the same database; the `credential` module
+//! that lists and edits them depends on this one, never the reverse.
+
+use std::path::Path;
+
+use gpui_shared_string::SharedString;
+
+use crate::secrets::SecretRef;
+
+use super::private_key::is_kept_in;
+use super::{AuthKind, PublicId};
+
+/// Stable identity of a credential. Never reused within a process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CredentialId(pub u64);
+
+/// What a credential logs in with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum CredentialKind {
+    /// A password kept in the system keychain under the credential's own
+    /// entry.
+    #[default]
+    Password,
+    /// A private key file on this machine: one of the user's, or one
+    /// ShellRS keeps in its data directory because the key was pasted or
+    /// generated. Its passphrase, if any, is kept under the file's path
+    /// like every other key's.
+    Key,
+    /// Whatever keys the SSH agent holds.
+    Agent,
+}
+
+impl CredentialKind {
+    /// Every kind, in the order the form lists them.
+    pub const ALL: [CredentialKind; 3] = [
+        CredentialKind::Password,
+        CredentialKind::Key,
+        CredentialKind::Agent,
+    ];
+
+    /// The stored spelling. Kept apart from the label the app shows, so
+    /// translating the UI cannot rewrite what is already in the database.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CredentialKind::Password => "password",
+            CredentialKind::Key => "key",
+            CredentialKind::Agent => "agent",
+        }
+    }
+
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "password" => Some(CredentialKind::Password),
+            "key" => Some(CredentialKind::Key),
+            "agent" => Some(CredentialKind::Agent),
+            _ => None,
+        }
+    }
+
+    /// How a host that used a credential of this kind logs in once the
+    /// credential is deleted: the nearest it gets on its own. A password
+    /// credential's host is asked for its password; a key's or the agent's
+    /// tries the agent and the default keys.
+    pub fn without_credential(self) -> AuthKind {
+        match self {
+            CredentialKind::Password => AuthKind::Password,
+            CredentialKind::Key | CredentialKind::Agent => AuthKind::NoPassword,
+        }
+    }
+}
+
+/// Why a draft cannot be saved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialDraftError {
+    Name,
+    KeyPath,
+}
+
+/// The user name a login falls back to when none is given, as in the host
+/// form.
+pub const DEFAULT_USER: &str = "root";
+
+/// The values the credential form commits. Never holds a secret: those go
+/// straight to the keychain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CredentialDraft {
+    pub name: SharedString,
+    pub kind: CredentialKind,
+    pub user: SharedString,
+    /// The private key file. Set exactly for [`CredentialKind::Key`].
+    pub key_path: Option<SharedString>,
+}
+
+impl CredentialDraft {
+    pub fn new(
+        name: impl Into<SharedString>,
+        kind: CredentialKind,
+        user: impl Into<SharedString>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            kind,
+            user: user.into(),
+            key_path: None,
+        }
+    }
+
+    pub fn with_key_path(mut self, path: impl Into<SharedString>) -> Self {
+        let path = path.into();
+        self.key_path = (!path.trim().is_empty()).then_some(path);
+        self
+    }
+
+    /// The draft with surrounding blanks removed, an empty user name taken
+    /// as [`DEFAULT_USER`] and a key file kept only by a key credential, or
+    /// the first thing wrong with it.
+    pub fn validated(mut self) -> Result<Self, CredentialDraftError> {
+        self.name = self.name.trim().to_string().into();
+        if self.name.is_empty() {
+            return Err(CredentialDraftError::Name);
+        }
+        let user = self.user.trim();
+        self.user = if user.is_empty() {
+            DEFAULT_USER.into()
+        } else {
+            user.to_string().into()
+        };
+        self.key_path = match self.kind {
+            CredentialKind::Key => Some(
+                self.key_path
+                    .map(|path| path.trim().to_string())
+                    .filter(|path| !path.is_empty())
+                    .ok_or(CredentialDraftError::KeyPath)?
+                    .into(),
+            ),
+            CredentialKind::Password | CredentialKind::Agent => None,
+        };
+        Ok(self)
+    }
+}
+
+/// A saved credential.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Credential {
+    pub id: CredentialId,
+    /// Names the credential's password in the keychain. Random rather than
+    /// derived from `id`, which can come back after a restart: a new
+    /// credential must never find the password an old one left behind.
+    pub keychain_id: PublicId,
+    pub name: SharedString,
+    pub kind: CredentialKind,
+    pub user: SharedString,
+    pub key_path: Option<SharedString>,
+    /// Position in the credential list.
+    pub sort_order: i64,
+    /// When the user last changed it; see [`super::Host::edited_ms`].
+    pub edited_ms: u64,
+}
+
+impl Credential {
+    /// A credential with a fresh keychain id. The store makes sure it is not
+    /// one another credential already has.
+    pub fn new(id: CredentialId, draft: CredentialDraft) -> Self {
+        Self {
+            id,
+            keychain_id: PublicId::generate(),
+            name: draft.name,
+            kind: draft.kind,
+            user: draft.user,
+            key_path: draft.key_path,
+            sort_order: 0,
+            edited_ms: 0,
+        }
+    }
+
+    /// The editable fields, for pre-filling the credential form.
+    pub fn draft(&self) -> CredentialDraft {
+        CredentialDraft {
+            name: self.name.clone(),
+            kind: self.kind,
+            user: self.user.clone(),
+            key_path: self.key_path.clone(),
+        }
+    }
+
+    /// Where a password credential keeps its password.
+    pub fn password_secret(&self) -> SecretRef {
+        SecretRef::credential(self.keychain_id.as_str())
+    }
+
+    /// Whether the key is one ShellRS keeps itself in `key_dir`: pasted
+    /// into the form or generated there.
+    pub fn keeps_key_in(&self, key_dir: Option<&Path>) -> bool {
+        match (key_dir, self.key_path.as_deref()) {
+            (Some(dir), Some(path)) => is_kept_in(dir, Path::new(path)),
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_kind_round_trips_through_the_database_spelling() {
+        for kind in CredentialKind::ALL {
+            assert_eq!(CredentialKind::from_stored(kind.as_str()), Some(kind));
+        }
+        assert_eq!(CredentialKind::from_stored("otp"), None);
+    }
+
+    #[test]
+    fn a_draft_needs_a_name_and_a_key_file_for_a_key() {
+        let saved = CredentialDraft::new("  运维  ", CredentialKind::Password, "  ")
+            .validated()
+            .unwrap();
+        assert_eq!(saved.name.as_ref(), "运维");
+        assert_eq!(saved.user.as_ref(), DEFAULT_USER);
+
+        assert_eq!(
+            CredentialDraft::new(" ", CredentialKind::Password, "root").validated(),
+            Err(CredentialDraftError::Name)
+        );
+        assert_eq!(
+            CredentialDraft::new("部署", CredentialKind::Key, "deploy").validated(),
+            Err(CredentialDraftError::KeyPath)
+        );
+        let key = CredentialDraft::new("部署", CredentialKind::Key, "deploy")
+            .with_key_path(" /tmp/id_ed25519 ")
+            .validated()
+            .unwrap();
+        assert_eq!(key.key_path.as_deref(), Some("/tmp/id_ed25519"));
+    }
+
+    #[test]
+    fn only_a_key_credential_keeps_a_key_file() {
+        for kind in [CredentialKind::Password, CredentialKind::Agent] {
+            let draft = CredentialDraft::new("x", kind, "root")
+                .with_key_path("/tmp/id_ed25519")
+                .validated()
+                .unwrap();
+            assert_eq!(draft.key_path, None);
+        }
+    }
+
+    #[test]
+    fn each_credential_has_its_own_keychain_entry() {
+        let draft = CredentialDraft::new("运维", CredentialKind::Password, "root");
+        let one = Credential::new(CredentialId(1), draft.clone());
+        let other = Credential::new(CredentialId(1), draft);
+        assert_ne!(one.password_secret(), other.password_secret());
+        assert_eq!(
+            one.password_secret().account(),
+            format!("credential:{}", one.keychain_id)
+        );
+    }
+}

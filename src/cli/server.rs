@@ -204,7 +204,7 @@ struct Shared {
     enabled: AtomicBool,
     targets: RwLock<Vec<CliTarget>>,
     credentials: RwLock<Vec<CliCredential>>,
-    backend: Arc<dyn CliBackend>,
+    backend: RwLock<Option<Arc<dyn CliBackend>>>,
     /// Set when ShellRS was opened again while this one runs, with the
     /// links it was opened with, until the app has come forward and opened
     /// them.
@@ -270,11 +270,19 @@ impl CliServer {
     /// not be another running ShellRS's. Only the user running the app can
     /// connect.
     pub fn start(endpoint: PathBuf, backend: Arc<dyn CliBackend>) -> io::Result<Self> {
+        let server = Self::reserve(endpoint)?;
+        server.set_backend(backend);
+        Ok(server)
+    }
+
+    /// Reserve the single-instance endpoint before the password gate opens.
+    /// Only activation requests are accepted until a backend and hosts exist.
+    pub fn reserve(endpoint: PathBuf) -> io::Result<Self> {
         let shared = Arc::new(Shared {
             enabled: AtomicBool::new(false),
             targets: RwLock::new(Vec::new()),
             credentials: RwLock::new(Vec::new()),
-            backend,
+            backend: RwLock::new(None),
             activation: Mutex::new(None),
             changes: Mutex::new(VecDeque::new()),
             runs: Mutex::new(VecDeque::new()),
@@ -288,8 +296,41 @@ impl CliServer {
         })
     }
 
+    pub fn set_backend(&self, backend: Arc<dyn CliBackend>) {
+        *self
+            .shared
+            .backend
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = Some(backend);
+    }
+
     pub fn set_enabled(&self, enabled: bool) {
         self.shared.enabled.store(enabled, Ordering::Release);
+        if !enabled {
+            let changes = std::mem::take(
+                &mut *self
+                    .shared
+                    .changes
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            );
+            for pending in changes {
+                pending.reply.send(Err(CliError::new(
+                    ErrorCode::NotEnabled,
+                    t!("cli.server.not_enabled"),
+                )));
+            }
+            let runs = std::mem::take(
+                &mut *self
+                    .shared
+                    .runs
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            );
+            for pending in runs {
+                pending.run.fail(RunFailure::NotConnected);
+            }
+        }
     }
 
     /// What the requests see of the hosts and credentials: `store` as it
@@ -323,7 +364,17 @@ impl CliServer {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .pop_front()
-            .map(|pending| (pending.change, pending.reply))
+            .and_then(|pending| {
+                if self.shared.enabled.load(Ordering::Acquire) {
+                    Some((pending.change, pending.reply))
+                } else {
+                    pending.reply.send(Err(CliError::new(
+                        ErrorCode::NotEnabled,
+                        t!("cli.server.not_enabled"),
+                    )));
+                    None
+                }
+            })
     }
 
     /// The oldest `exec --terminal` run waiting, with the host it is for,
@@ -334,7 +385,14 @@ impl CliServer {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .pop_front()
-            .map(|pending| (pending.host, pending.run))
+            .and_then(|pending| {
+                if self.shared.enabled.load(Ordering::Acquire) {
+                    Some((pending.host, pending.run))
+                } else {
+                    pending.run.fail(RunFailure::NotConnected);
+                    None
+                }
+            })
     }
 
     /// Whether ShellRS was opened again since this was last asked, and the
@@ -656,6 +714,12 @@ fn respond(
             t!("cli.server.not_enabled"),
         ));
     }
+    let backend = shared
+        .backend
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+        .ok_or_else(|| CliError::new(ErrorCode::NotEnabled, t!("cli.server.not_enabled")))?;
     if let Some(usage) = CliUse::of(&envelope.request) {
         shared
             .usage
@@ -678,15 +742,13 @@ fn respond(
         }
         Request::Exec { host, command } => {
             let target = find_ssh(shared, &host)?;
-            let code = shared
-                .backend
-                .exec(&target, &command, &mut |stream, bytes| {
-                    let kind = match stream {
-                        ExecStream::Stdout => FrameKind::Stdout,
-                        ExecStream::Stderr => FrameKind::Stderr,
-                    };
-                    write_frame(writer, kind, bytes)
-                })?;
+            let code = backend.exec(&target, &command, &mut |stream, bytes| {
+                let kind = match stream {
+                    ExecStream::Stdout => FrameKind::Stdout,
+                    ExecStream::Stderr => FrameKind::Stderr,
+                };
+                write_frame(writer, kind, bytes)
+            })?;
             Ok(Reply::Exit { code })
         }
         Request::ExecInTerminal { host, command } => {
@@ -702,8 +764,7 @@ fn respond(
             if !source.is_absolute() {
                 return Err(not_absolute(&source));
             }
-            shared
-                .backend
+            backend
                 .upload(&target, &source, &destination, &mut |counters| {
                     write_json(writer, &Reply::Progress(counters))
                 })
@@ -718,8 +779,7 @@ fn respond(
             if !destination.is_absolute() {
                 return Err(not_absolute(&destination));
             }
-            shared
-                .backend
+            backend
                 .download(&target, &source, &destination, &mut |counters| {
                     write_json(writer, &Reply::Progress(counters))
                 })
@@ -735,8 +795,7 @@ fn respond(
             if !source.is_absolute() {
                 return Err(not_absolute(&source));
             }
-            shared
-                .backend
+            backend
                 .sync(&target, &source, &destination, delete, &mut |counters| {
                     write_json(writer, &Reply::Progress(counters))
                 })
@@ -744,7 +803,7 @@ fn respond(
         }
         Request::ShowHost { host } => {
             let target = find(shared, &host)?;
-            let saved = |secret: &SecretRef| shared.backend.is_saved(secret);
+            let saved = |secret: &SecretRef| backend.is_saved(secret);
             Ok(Reply::Host(with_saved_passwords(
                 target.details,
                 &target.secrets,
@@ -775,7 +834,7 @@ fn respond(
                 .find(|known| known.details.id == credential.trim())
                 .cloned()
                 .ok_or_else(|| credential_not_found(&credential))?;
-            let saved = |secret: &SecretRef| shared.backend.is_saved(secret);
+            let saved = |secret: &SecretRef| backend.is_saved(secret);
             Ok(Reply::Credential(with_saved_credential_secrets(
                 found.details,
                 &found.secrets,

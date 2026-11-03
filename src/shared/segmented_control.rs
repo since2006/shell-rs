@@ -23,11 +23,13 @@ pub struct SegmentedControl {
     selected: Option<usize>,
     on_change: Option<ChangeHandler>,
     size: Size,
+    compact: bool,
 }
 
 /// One segment of a [`SegmentedControl`].
 pub struct Segment {
     label: SharedString,
+    prefix: Option<AnyElement>,
     disabled: bool,
     /// Why a disabled segment cannot be chosen.
     tooltip: Option<SharedString>,
@@ -37,6 +39,7 @@ impl Segment {
     pub fn new(label: impl Into<SharedString>) -> Self {
         Self {
             label: label.into(),
+            prefix: None,
             disabled: false,
             tooltip: None,
         }
@@ -44,6 +47,12 @@ impl Segment {
 
     pub fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
+        self
+    }
+
+    /// A visual beside the label; the label remains the accessible name.
+    pub fn prefix(mut self, prefix: impl IntoElement) -> Self {
+        self.prefix = Some(prefix.into_any_element());
         self
     }
 
@@ -63,11 +72,18 @@ impl SegmentedControl {
             selected: None,
             on_change: None,
             size: Size::Medium,
+            compact: false,
         }
     }
 
     pub fn selected_index(mut self, index: Option<usize>) -> Self {
         self.selected = index;
+        self
+    }
+
+    /// Fit each segment to its content with less horizontal padding.
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
         self
     }
 
@@ -109,11 +125,12 @@ impl RenderOnce for SegmentedControl {
         let total = self.segments.len();
         let selected = self.selected;
         let on_change = self.on_change;
+        let compact = self.compact;
 
         RadioGroup::new(self.id)
             .axis(Axis::Horizontal)
             .flex()
-            .w_full()
+            .when(!compact, |track| track.w_full())
             .map(|track| match self.size {
                 Size::XSmall | Size::Small => track.h_7(),
                 _ => track.h_8(),
@@ -132,14 +149,20 @@ impl RenderOnce for SegmentedControl {
                     .disabled(segment.disabled)
                     .accessibility_label(segment.label.clone())
                     .set_position(ix + 1, total)
-                    // Equal shares of the track, whatever the labels.
-                    .flex_1()
-                    .min_w_0()
+                    .map(|radio| {
+                        if compact {
+                            radio.flex_none()
+                        } else {
+                            radio.flex_1().min_w_0()
+                        }
+                    })
                     .h_full()
                     .flex()
                     .items_center()
                     .justify_center()
+                    .gap_2()
                     .px_2()
+                    .when(compact, |radio| radio.px_1p5())
                     .rounded(inner_radius)
                     // Every segment has the border, so choosing one
                     // moves nothing.
@@ -178,6 +201,7 @@ impl RenderOnce for SegmentedControl {
                             Tooltip::new(tooltip.clone()).build(window, cx)
                         })
                     })
+                    .when_some(segment.prefix, |radio, prefix| radio.child(prefix))
                     .child(div().truncate().child(segment.label))
             }))
     }

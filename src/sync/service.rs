@@ -1,5 +1,5 @@
-//! The sync service: when rounds run and how one goes, and the jobs that
-//! set sync up, change its password and turn it off.
+//! The sync service: when rounds run ([`run_round`] says how one goes),
+//! and the jobs that set sync up, change its password and turn it off.
 //!
 //! The blocking calls run on the background executor; a round's two halves
 //! there and its middle, applying the changes, on the UI thread with the
@@ -8,93 +8,43 @@
 //! (a new password, a reset, many deletions, a WebDAV login refused) stops
 //! and says so; automatic rounds then wait until the user has dealt with it.
 
+use std::future::Future;
 use std::mem;
-use std::path::Path;
-use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui_kit::*;
 use shellrs_sync::{
-    DeviceId, DeviceInfo, JoinMode, KdfParams, LocalFolderStore, Pulled, Pushed, RemoteDevice,
-    RoundOptions, S3Location, S3Store, StoreError, SyncError, SyncState, SyncStore, WebDavStore,
+    DeviceId, DeviceInfo, JoinMode, RemoteDevice, RoundOptions, SyncError, SyncState, SyncStore,
 };
 use zeroize::Zeroizing;
 
-use super::{JobError, worker};
-use crate::host::{ApplyError, HostStore};
+use super::{
+    Attention, Blocking, JobError, RoundEnd, RoundHost, SyncLocation, SyncServices, run_round,
+    worker,
+};
+use crate::host::{HostData, HostStore};
 use crate::secrets::{SecretStore, SharedSecretStore};
-use crate::settings::SyncLocation;
 
 /// After an edit, how long the user may go on editing before a round runs.
 pub const EDIT_PAUSE: Duration = Duration::from_secs(5);
 /// A window coming forward runs a round no more often than this.
 const ACTIVATION_GAP: Duration = Duration::from_secs(60);
-/// Tries a round makes when its changes meet newer ones.
-const ATTEMPTS: usize = 3;
 /// How long quitting waits for the last round, and how often it looks.
 const QUIT_WAIT: Duration = Duration::from_secs(3);
 const QUIT_POLL: Duration = Duration::from_millis(50);
 
-/// Opens the storage at a location, a WebDAV server's with its password.
-pub type OpenStore = Arc<
-    dyn Fn(&SyncLocation, Option<&str>) -> Result<Arc<dyn SyncStore>, StoreError> + Send + Sync,
->;
-
-/// What the service works with. Production has the real ones
-/// ([`SyncServices::system`]); the UI tests share one `MemoryStore`
-/// between workspaces.
-#[derive(Clone)]
-pub struct SyncServices {
-    pub open: OpenStore,
-    /// What deriving the key of a new sync password costs.
-    pub kdf: KdfParams,
-    /// This computer, as the other devices list it.
-    pub device: DeviceInfo,
-}
-
-impl SyncServices {
-    pub fn system() -> Self {
-        let user_agent = format!("ShellRS/{}", crate::update::build_info::VERSION);
-        Self {
-            open: Arc::new(move |location, password| match location {
-                SyncLocation::Folder { path } => Ok(Arc::new(LocalFolderStore::new(path))),
-                SyncLocation::WebDav { url, username } => Ok(Arc::new(WebDavStore::new(
-                    url,
-                    username,
-                    password.unwrap_or_default(),
-                    &user_agent,
-                )?)),
-                SyncLocation::S3 {
-                    endpoint,
-                    region,
-                    bucket,
-                    prefix,
-                    path_style,
-                    access_key,
-                } => {
-                    let bucket = S3Location {
-                        endpoint: endpoint.clone(),
-                        region: region.clone(),
-                        bucket: bucket.clone(),
-                        prefix: prefix.clone(),
-                        path_style: *path_style,
-                    };
-                    Ok(Arc::new(S3Store::new(
-                        &bucket,
-                        access_key,
-                        password.unwrap_or_default(),
-                        &user_agent,
-                    )?))
-                }
-            }),
-            kdf: KdfParams::DEFAULT,
-            device: DeviceInfo {
-                name: crate::app::computer_name().unwrap_or_else(|| "ShellRS".into()),
-                platform: std::env::consts::OS.into(),
-                app_version: crate::update::build_info::VERSION.into(),
-            },
-        }
-    }
+/// The real services: the storage asked for as this version of ShellRS,
+/// and this computer by its name.
+pub fn system_services() -> SyncServices {
+    let version = crate::update::build_info::VERSION;
+    SyncServices::system(
+        &format!("ShellRS/{version}"),
+        DeviceInfo {
+            name: crate::app::computer_name().unwrap_or_else(|| "ShellRS".into()),
+            platform: std::env::consts::OS.into(),
+            app_version: version.into(),
+        },
+    )
 }
 
 /// Where sync stands.
@@ -110,25 +60,6 @@ pub enum SyncPhase {
         at_ms: u64,
     },
     Failed(JobError),
-}
-
-/// What only the user can settle. Automatic rounds wait for it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Attention {
-    /// The sync password was changed on another device, or the keychain
-    /// lost the keys: the password is needed.
-    NeedsPassword,
-    /// Sync was reset on another device: join it anew, or turn it off.
-    VaultReplaced,
-    /// This computer was removed from sync on another device: join again,
-    /// or turn it off.
-    Removed,
-    /// A round would delete `count` of the `of` records synced: delete, or
-    /// leave sync waiting.
-    MassDelete { count: u32, of: u32 },
-    /// The WebDAV server or the bucket refused the login, or the keychain
-    /// lost it: a new login is needed.
-    LoginRefused,
 }
 
 /// Everything the settings page and the dialogs show, as a plain value.
@@ -156,16 +87,6 @@ pub enum SyncEvent {
     LocationSet(SyncLocation),
     /// Sync was turned off: forget the location.
     TurnedOff,
-}
-
-/// How a round ended.
-enum Ended {
-    Synced {
-        revision: u64,
-        devices: Vec<RemoteDevice>,
-    },
-    Attention(Attention),
-    Failed(JobError),
 }
 
 pub struct SyncService {
@@ -346,25 +267,29 @@ impl SyncService {
             join: JoinMode::Merge,
         };
         let accept_removed = mem::take(&mut self.accept_removed);
-        let store = self.store.clone();
+        let store = self.store.downgrade();
         self.phase = SyncPhase::Syncing;
         cx.notify();
         self.round = Some(cx.spawn(async move |this, cx| {
-            let ended = round(store, services, location, opts, accept_removed, cx).await;
+            let host = DesktopRound {
+                store,
+                cx: cx.clone(),
+            };
+            let ended = run_round(&host, &services, &location, opts, accept_removed).await;
             this.update(cx, |this, cx| this.round_ended(ended, cx)).ok();
         }));
     }
 
-    fn round_ended(&mut self, ended: Ended, cx: &mut Context<Self>) {
+    fn round_ended(&mut self, ended: RoundEnd, cx: &mut Context<Self>) {
         self.round = None;
         self.last_round_at = Some(Instant::now());
         match ended {
-            Ended::Synced { revision, devices } => {
+            RoundEnd::Synced { revision, devices } => {
                 self.phase = SyncPhase::Synced { at_ms: now_ms() };
                 self.devices = devices;
                 self.synced_revision = Some(revision);
             }
-            Ended::Attention(attention) => {
+            RoundEnd::Attention(attention) => {
                 // What the last round that went through found still stands.
                 self.phase = match &self.phase {
                     SyncPhase::Syncing => SyncPhase::Waiting,
@@ -375,7 +300,7 @@ impl SyncService {
                     cx.emit(SyncEvent::NeedsAttention(attention));
                 }
             }
-            Ended::Failed(error) => self.phase = SyncPhase::Failed(error),
+            RoundEnd::Failed(error) => self.phase = SyncPhase::Failed(error),
         }
         cx.notify();
         if mem::take(&mut self.again) {
@@ -714,120 +639,27 @@ impl SyncService {
     }
 }
 
-/// One round, tried again while its changes meet newer ones.
-async fn round(
-    store: Entity<HostStore>,
-    services: SyncServices,
-    location: SyncLocation,
-    opts: RoundOptions,
-    accept_removed: bool,
-    cx: &mut AsyncApp,
-) -> Ended {
-    let signs_in = location.signs_in();
-    let secrets = store.read_with(cx, |store, _| store.secrets());
-    let remote = cx
-        .background_executor()
-        .spawn({
-            let (services, secrets) = (services.clone(), secrets.clone());
-            async move { worker::open(&services, &location, None, &*secrets) }
-        })
-        .await;
-    let remote = match remote {
-        Ok(remote) => remote,
-        Err(error) => return stopped(error, signs_in),
-    };
-    for _ in 0..ATTEMPTS {
-        let (export, state, key_dir) = store.read_with(cx, |store, _| {
-            (
-                store.sync_export(),
-                store.sync_state(),
-                store.key_dir().map(Path::to_path_buf),
-            )
-        });
-        let pulled =
-            cx.background_executor()
-                .spawn({
-                    let (remote, secrets, export) =
-                        (remote.clone(), secrets.clone(), export.clone());
-                    async move {
-                        worker::pull_round(&*remote, &*secrets, &export, state.as_deref(), opts)
-                    }
-                })
-                .await;
-        let (pulled, keyring) = match pulled {
-            Ok(pulled) => pulled,
-            Err(error) => return stopped(error, signs_in),
-        };
-        if pulled.report.removed && !accept_removed {
-            return Ended::Attention(Attention::Removed);
-        }
-        let state_bytes = pulled.state.to_bytes();
-        let applied = store.update(cx, |store, cx| {
-            store.apply_sync(&pulled.changes, &state_bytes, &export, cx)
-        });
-        let work = match applied {
-            Ok(work) => work,
-            Err(ApplyError::Stale) => continue,
-            Err(ApplyError::NotSaved(message)) => {
-                return Ended::Failed(JobError::NotSaved(message));
-            }
-        };
-        let Pulled { state, report, .. } = pulled;
-        let (written, pushed) = cx
-            .background_executor()
-            .spawn({
-                let (remote, secrets, device) =
-                    (remote.clone(), secrets.clone(), services.device.clone());
-                async move {
-                    worker::push_round(
-                        &*remote,
-                        &*secrets,
-                        key_dir.as_deref(),
-                        work,
-                        &keyring,
-                        &device,
-                        &state,
-                    )
-                }
-            })
-            .await;
-        store.update(cx, |store, cx| store.adopt_synced_secrets(&written, cx));
-        match pushed {
-            Ok(Pushed::Uploaded { state }) => {
-                let saved = store.update(cx, |store, _| store.save_sync_state(&state.to_bytes()));
-                if let Err(message) = saved {
-                    return Ended::Failed(JobError::NotSaved(message));
-                }
-            }
-            Ok(Pushed::Unchanged) => {}
-            Ok(Pushed::Conflict) => continue,
-            Err(error) => return stopped(error, signs_in),
-        }
-        return Ended::Synced {
-            revision: export.revision,
-            devices: report.devices,
-        };
-    }
-    Ended::Failed(JobError::Busy)
+/// A round's way to the store: on the UI thread, settled after each use,
+/// so a failure to save is reported as any edit's is.
+struct DesktopRound {
+    store: WeakEntity<HostStore>,
+    cx: AsyncApp,
 }
 
-/// A round's error, or what the user is to settle when only they can. A
-/// refusal is a login's to settle on a server or a bucket, a folder's
-/// permissions otherwise.
-fn stopped(error: JobError, signs_in: bool) -> Ended {
-    match error {
-        JobError::NoKeyring | JobError::Sync(SyncError::NeedsPassword) => {
-            Ended::Attention(Attention::NeedsPassword)
-        }
-        JobError::Sync(SyncError::VaultReplaced) => Ended::Attention(Attention::VaultReplaced),
-        JobError::Sync(SyncError::MassDelete { count, of }) => {
-            Ended::Attention(Attention::MassDelete { count, of })
-        }
-        JobError::NoLogin => Ended::Attention(Attention::LoginRefused),
-        JobError::Sync(SyncError::Store(StoreError::Unauthorized)) if signs_in => {
-            Ended::Attention(Attention::LoginRefused)
-        }
-        error => Ended::Failed(error),
+impl RoundHost for DesktopRound {
+    fn with_data<R>(&self, f: impl FnOnce(&mut HostData) -> R) -> Option<R> {
+        let mut cx = self.cx.clone();
+        self.store
+            .update(&mut cx, |store, cx| {
+                let result = f(store);
+                store.settle(cx);
+                result
+            })
+            .ok()
+    }
+
+    fn background<R: Send + 'static>(&self, work: Blocking<R>) -> impl Future<Output = R> + Send {
+        self.cx.background_executor().spawn(async move { work() })
     }
 }
 

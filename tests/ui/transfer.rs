@@ -396,7 +396,7 @@ async fn sftp_internal_drag_conflict_and_close_confirmation(cx: &mut TestAppCont
             900,
             TransferQuestionKind::Conflict,
             "/home/tester/目录/文件 甲.txt",
-            "目标已存在",
+            shellrs::sftp::Reason::from(anyhow::anyhow!("目标已存在")),
         )))
         .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {

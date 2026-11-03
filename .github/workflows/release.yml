@@ -203,6 +203,9 @@ jobs:
         run: |
           export SHELLRS_BUILD_DATE=$(date -u +%Y-%m-%d)
           cargo build --release --locked --bins
+      - name: Runtime
+        shell: pwsh
+        run: ./scripts/windows-runtime.ps1 target/release
       - name: Installer
         shell: pwsh
         run: |

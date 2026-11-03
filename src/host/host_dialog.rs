@@ -31,9 +31,10 @@ use crate::secrets::SecretRef;
 use super::secret_fields::SecretFields;
 use super::{
     AuthKind, COMMON_BAUD_RATES, Credential, CredentialId, CredentialKind, DEFAULT_USER, DataBits,
-    FlowControl, GroupId, Host, HostDraft, HostDraftError, HostId, HostLogin, HostStore, Parity,
-    Protocol, ProtocolKind, ProxyKind, ProxySettings, Route, SSH_PORT, SerialLine, SerialSettings,
-    StopBits, TELNET_PORT, TelnetSettings, group_options,
+    ErrorMessage as _, FlowControl, GroupId, Host, HostDraft, HostDraftError, HostId, HostLogin,
+    HostLoginExt, HostStore, KindLabel as _, Parity, Protocol, ProtocolKind, ProxyKind,
+    ProxySettings, Route, SSH_PORT, SerialLine, SerialSettings, StopBits, TELNET_PORT,
+    TelnetSettings, credential_summary, group_options,
 };
 pub use crate::shared::DeleteHandler;
 use crate::shared::{
@@ -403,7 +404,7 @@ impl HostForm {
             cx,
         );
         let parity = choice(
-            Parity::ALL.map(Parity::label).to_vec(),
+            Parity::ALL.map(|parity| parity.label()).to_vec(),
             Parity::ALL.iter().position(|parity| *parity == line.parity),
             window,
             cx,
@@ -419,7 +420,7 @@ impl HostForm {
             cx,
         );
         let flow = choice(
-            FlowControl::ALL.map(FlowControl::label).to_vec(),
+            FlowControl::ALL.map(|flow| flow.label()).to_vec(),
             FlowControl::ALL.iter().position(|flow| *flow == line.flow),
             window,
             cx,
@@ -557,7 +558,7 @@ impl HostForm {
             SelectState::new(
                 ProxyKind::ALL
                     .iter()
-                    .map(|kind| kind.label())
+                    .map(|kind| proxy_kind_label(*kind))
                     .collect::<Vec<_>>(),
                 Some(IndexPath::new(proxy_kind_ix)),
                 window,
@@ -1511,7 +1512,7 @@ impl HostForm {
 
     fn credential_choice(&self, choice: CredentialChoice<'_>, _: &App) -> Field {
         let summary = match choice.selected {
-            Some(credential) => Some(credential_summary(credential, self.key_dir.as_deref())),
+            Some(credential) => Some(logs_in_with(credential, self.key_dir.as_deref())),
             None if choice.none => Some(choice.hint),
             None => None,
         };
@@ -2244,12 +2245,12 @@ pub(super) fn credential_option(credential: &Credential, key_dir: Option<&Path>)
     t!(
         "host.dialog.credential_option",
         name = credential.name,
-        summary = credential.summary(key_dir)
+        summary = credential_summary(credential, key_dir)
     )
 }
 
 /// What a host using `credential` logs in as and with.
-fn credential_summary(credential: &Credential, key_dir: Option<&Path>) -> SharedString {
+fn logs_in_with(credential: &Credential, key_dir: Option<&Path>) -> SharedString {
     let user = &credential.user;
     match credential.kind {
         CredentialKind::Password => t!("host.dialog.logs_in_with.password", user = user),
@@ -2276,7 +2277,7 @@ fn ask_to_trust(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let description = prompt.description();
+    let description = crate::ssh::unknown_host_description(&prompt);
     window.open_alert_dialog(cx, move |alert, _, _| {
         let answer = |trusted: bool| {
             let reply = reply.clone();
@@ -2520,6 +2521,13 @@ pub fn join_sentences(sentences: Vec<SharedString>) -> Option<SharedString> {
         text.push_str(&sentence);
     }
     (!text.is_empty()).then(|| text.into())
+}
+
+fn proxy_kind_label(kind: ProxyKind) -> SharedString {
+    match kind {
+        ProxyKind::Http => t!("host.proxy_kind.http"),
+        ProxyKind::Socks5 => t!("host.proxy_kind.socks5"),
+    }
 }
 
 #[cfg(test)]

@@ -24,7 +24,10 @@ use crate::{
         ConnectionPrompt, ConnectionPromptKind, ConnectionPromptReply, ConnectionSecret,
         ConnectionTester as _, LoginTest, TelnetTest,
     },
-    host::{AuthKind, HostLogin, JumpLogin, LoginRoute, ProxyKind, ProxyLogin, ProxySettings},
+    host::{
+        AuthKind, HostLogin, HostLoginExt, JumpLogin, LoginRoute, ProxyKind, ProxyLogin,
+        ProxySettings,
+    },
     secrets::{InMemorySecretStore, SecretRef, SecretStore as _},
 };
 
@@ -351,7 +354,7 @@ fn answering_broker() -> (
             let reply = match prompt.kind() {
                 ConnectionPromptKind::UnknownHost(_) => ConnectionPromptReply::TrustAndSave,
                 ConnectionPromptKind::Authentication(question) => {
-                    let password = if question.instructions().starts_with("跳板主机") {
+                    let password = if question.jump_host().is_some() {
                         JUMP_PASSWORD
                     } else {
                         TARGET_PASSWORD
@@ -440,9 +443,15 @@ fn a_host_behind_two_jump_hosts_is_reached_through_them_in_order() {
         .iter()
         .map(|kind| match kind {
             ConnectionPromptKind::UnknownHost(question) => {
-                question.description().lines().next().unwrap().to_string()
+                crate::ssh::unknown_host_description(question)
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .to_string()
             }
-            ConnectionPromptKind::Authentication(question) => question.instructions().to_string(),
+            ConnectionPromptKind::Authentication(question) => {
+                crate::ssh::authentication_instructions(question)
+            }
             other => panic!("unexpected question: {other:?}"),
         })
         .collect();

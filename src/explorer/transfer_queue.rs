@@ -148,7 +148,7 @@ impl QueueEntry {
                 Some(TransferPhase::Waiting) => t!("explorer.queue.status.waiting").into(),
                 Some(TransferPhase::Reconnecting) => {
                     match progress.and_then(TransferProgress::note) {
-                        Some(note) => note.into(),
+                        Some(note) => crate::sftp::describe_reason_link(note),
                         None => t!("explorer.queue.status.reconnecting").into(),
                     }
                 }
@@ -460,7 +460,7 @@ mod tests {
         queue.on_progress(
             TransferProgress::new(TransferPhase::Completed).with_details(vec![
                 TransferDetail::done("/srv/a"),
-                TransferDetail::failed("/srv/b", "permission denied"),
+                TransferDetail::failed("/srv/b", anyhow::anyhow!("permission denied")),
             ]),
         );
         assert_eq!(status(&queue, 1), "部分失败（1 项）");

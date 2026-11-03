@@ -1,94 +1,27 @@
+//! The app's side of an SFTP worker: the events as the explorer and the
+//! external CLI take them, worded, and the provider that starts workers on
+//! their own threads.
+
 use super::{
-    DirectoryListing, DownloadRequest, FileBytes, FileStamp, PermissionEdit, ReadFailure,
-    RemotePath, SaveFailure, TextFile, TransferAnswer, TransferProgress, TransferQuestion,
-    UploadRequest,
+    DirectoryListing, EngineEvent, EventSink, FileBytes, FileStamp, ReadFailure, RemotePath,
+    SaveFailure, SftpChannelOpener, SftpCommand, SftpWorker, TerminalNotConnected, TextFile,
+    TransferProgress, TransferQuestion, describe_disconnect, describe_reason, describe_reason_link,
 };
 use crate::{
-    connection::{ConnectionPrompt, ConnectionPromptReply, Latency},
+    connection::{ConnectionPrompt, Latency},
     host::HostLogin,
+    ssh::{SftpChannel, SshConnector},
     terminal::TerminalChannels,
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_channel::{Receiver, Sender};
-use std::sync::Arc;
+use futures::future::BoxFuture;
+use shellrs_ssh::sftp as engine;
+use std::{path::PathBuf, sync::Arc};
 
-/// A one-shot change to remote files. None of them follows symbolic links:
-/// deleting a link removes the link, and permission changes skip links.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RemoteOperation {
-    /// Delete files, links, and directories with everything inside them.
-    Delete {
-        paths: Vec<RemotePath>,
-    },
-    /// Rename without replacing an existing item.
-    Rename {
-        from: RemotePath,
-        to: RemotePath,
-    },
-    CreateDirectory {
-        path: RemotePath,
-    },
-    /// Create an empty file; fails if the name exists.
-    CreateFile {
-        path: RemotePath,
-    },
-    SetPermissions {
-        paths: Vec<RemotePath>,
-        edit: PermissionEdit,
-        recursive: bool,
-        add_x_to_dirs: bool,
-    },
-}
-
-#[derive(Debug)]
-pub enum SftpCommand {
-    List {
-        request_id: u64,
-        path: RemotePath,
-    },
-    /// Runs alongside listings and transfers; answered by `Operated`.
-    Operate {
-        request_id: u64,
-        operation: RemoteOperation,
-    },
-    /// Read a whole text file for the editor; answered by `FileRead`. Runs
-    /// alongside listings and transfers, like an operation.
-    ReadFile {
-        request_id: u64,
-        path: RemotePath,
-    },
-    /// Read a whole file as it is, up to `limit` bytes, for a preview;
-    /// answered by `BytesRead`.
-    ReadBytes {
-        request_id: u64,
-        path: RemotePath,
-        limit: u64,
-    },
-    /// Write the editor's text over a file in place; answered by
-    /// `FileWritten`. With `expected`, only if the file still matches it.
-    WriteFile {
-        request_id: u64,
-        path: RemotePath,
-        bytes: Vec<u8>,
-        expected: Option<FileStamp>,
-    },
-    Upload(UploadRequest),
-    /// A download batch; like an upload, one batch runs at a time.
-    Download(DownloadRequest),
-    PromptReply {
-        request_id: u64,
-        reply: ConnectionPromptReply,
-    },
-    Answer {
-        request_id: u64,
-        answer: TransferAnswer,
-    },
-    Cancel,
-    Resume,
-    Discard,
-    Disconnect,
-    Shutdown,
-}
+/// What a worker says, with every failure in words: those of the
+/// interface language when it happened. Progress and questions keep theirs
+/// as they are, worded when shown.
 #[derive(Clone, Debug)]
 pub enum SftpEvent {
     Connecting,
@@ -149,3 +82,102 @@ pub trait SftpTransportProvider: Send + Sync + 'static {
     fn create(&self, login: &HostLogin, route: SftpRoute) -> Box<dyn SftpTransport>;
 }
 pub type SharedSftpTransportProvider = Arc<dyn SftpTransportProvider>;
+
+pub struct SshSftpTransportProvider {
+    connector: SshConnector,
+    resume_dir: PathBuf,
+    download_resume_dir: PathBuf,
+}
+impl SshSftpTransportProvider {
+    /// Upload and download resume records live in separate directories.
+    pub fn new(connector: SshConnector, resume_dir: PathBuf, download_resume_dir: PathBuf) -> Self {
+        Self {
+            connector,
+            resume_dir,
+            download_resume_dir,
+        }
+    }
+}
+impl SftpTransportProvider for SshSftpTransportProvider {
+    fn create(&self, login: &HostLogin, route: SftpRoute) -> Box<dyn SftpTransport> {
+        let route = match route {
+            SftpRoute::Login => engine::SftpRoute::Login(login.clone()),
+            SftpRoute::Terminal(channels) => engine::SftpRoute::Channel {
+                endpoint: login.endpoint(),
+                opener: Arc::new(channels),
+            },
+        };
+        Box::new(SshSftpTransport(SftpWorker::new(
+            self.connector.clone(),
+            route,
+            self.resume_dir.clone(),
+            self.download_resume_dir.clone(),
+        )))
+    }
+}
+
+struct SshSftpTransport(SftpWorker);
+
+impl SftpTransport for SshSftpTransport {
+    fn run(
+        self: Box<Self>,
+        commands: Receiver<SftpCommand>,
+        events: Sender<SftpEvent>,
+    ) -> Result<()> {
+        // Worded here, on the worker's thread, as each event happens.
+        let events = EventSink::new(move |event| events.try_send(app_event(event)).is_ok());
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(self.0.run(commands, events))
+    }
+}
+
+/// `event` as the app takes it.
+fn app_event(event: EngineEvent) -> SftpEvent {
+    match event {
+        EngineEvent::Connecting => SftpEvent::Connecting,
+        EngineEvent::Connected { home } => SftpEvent::Connected { home },
+        EngineEvent::Disconnected(why) => SftpEvent::Disconnected(describe_disconnect(&why)),
+        EngineEvent::Prompt(prompt) => SftpEvent::Prompt(prompt),
+        EngineEvent::Listed { request_id, result } => SftpEvent::Listed {
+            request_id,
+            result: result.map_err(|why| describe_reason(&why)),
+        },
+        EngineEvent::Operated { request_id, result } => SftpEvent::Operated {
+            request_id,
+            result: result.map_err(|why| describe_reason(&why)),
+        },
+        EngineEvent::FileRead { request_id, result } => SftpEvent::FileRead {
+            request_id,
+            result: result.map_err(|failure| failure.map_failed(|why| describe_reason(&why))),
+        },
+        EngineEvent::FileWritten { request_id, result } => SftpEvent::FileWritten {
+            request_id,
+            result: result.map_err(|failure| failure.map_failed(|why| describe_reason(&why))),
+        },
+        EngineEvent::BytesRead { request_id, result } => SftpEvent::BytesRead {
+            request_id,
+            result: result.map_err(|failure| failure.map_failed(|why| describe_reason(&why))),
+        },
+        EngineEvent::Progress(progress) => SftpEvent::Progress(progress),
+        EngineEvent::Question(question) => SftpEvent::Question(question),
+        EngineEvent::Notice(why) => SftpEvent::Notice(describe_reason_link(&why)),
+        EngineEvent::Idle => SftpEvent::Idle,
+        EngineEvent::Latency(latency) => SftpEvent::Latency(latency),
+    }
+}
+
+/// 文件 opens its channels on the terminal's connection, whichever it has
+/// now.
+impl SftpChannelOpener for TerminalChannels {
+    fn open(&self) -> BoxFuture<'static, Result<SftpChannel>> {
+        let answer = self.open_sftp();
+        Box::pin(async move {
+            answer
+                .await
+                .map_err(|_| TerminalNotConnected)?
+                .map_err(|refusal| anyhow!(refusal))
+        })
+    }
+}

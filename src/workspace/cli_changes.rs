@@ -20,7 +20,7 @@ use crate::cli::{
     find_host, find_saved_host, host_details, host_info, host_secrets, plan_credential, plan_host,
     with_saved_credential_secrets, with_saved_passwords,
 };
-use crate::host::{CredentialId, CredentialKind, HostId, HostStore};
+use crate::host::{CredentialId, CredentialKind, ErrorMessage as _, HostId, HostStore};
 use crate::i18n::t;
 use crate::secrets::{SecretRef, SharedSecretStore};
 use crate::terminal::{RunFailure, RunHandle, TerminalLifecycle, TerminalPanel};
@@ -65,8 +65,12 @@ impl Workspace {
                     }
                     if let Some(links) = links {
                         crate::app::bring_forward(window, cx);
-                        for link in links {
-                            this.open_link(link, window, cx);
+                        if crate::app_lock::is_locked(cx) {
+                            this.locked_links.extend(links);
+                        } else {
+                            for link in links {
+                                this.open_link(link, window, cx);
+                            }
                         }
                     }
                     change.map(|(change, reply)| (this.apply_cli_change(change, window, cx), reply))
@@ -354,7 +358,7 @@ fn save_credential(
             .map_err(|error| {
                 CliError::new(
                     ErrorCode::SaveFailed,
-                    t!("cli.change.key_not_saved", error = error),
+                    t!("cli.change.key_not_saved", error = error.message()),
                 )
             })?;
         draft = draft.with_key_path(path);
@@ -368,7 +372,7 @@ fn save_credential(
         let kept = store.keep_key_file(existing, &path).map_err(|error| {
             CliError::new(
                 ErrorCode::SaveFailed,
-                t!("cli.change.key_not_copied", error = error),
+                t!("cli.change.key_not_copied", error = error.message()),
             )
         })?;
         if let Some(kept) = kept {

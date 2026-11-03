@@ -1,0 +1,43 @@
+[package]
+name = "shellrs-ssh"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "ShellRS SSH core: logins, host keys, channels and the SFTP transfer engine"
+license = "MIT"
+repository = "https://github.com/since2006/shell-rs"
+
+[dependencies]
+anyhow = "1"
+async-channel = "2"
+# HTTP proxies' Basic authentication.
+base64 = "0.22"
+# Where the default private keys are looked for, unless told otherwise.
+dirs = "6"
+# Canonical local paths without the `\\?\` prefix std adds on Windows.
+dunce = "1"
+futures = "0.3"
+russh = "0.63"
+russh-sftp = "=3.0.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Resume records are named by a digest of what they resume; the names are
+# kept across versions, so the digest stays this one.
+sha2 = "0.10"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+uuid = { version = "1", features = ["v4"] }
+zeroize = "1"
+
+[features]
+# An SSH server in the process for the tests of what builds on this crate
+# (`testing`): the mobile bindings take it as a dev-dependency.
+testing = ["tokio/process"]
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+# Plain `fsync(2)` for resume records: std's `sync_all` is the much slower
+# `F_FULLFSYNC` there.
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["process", "test-util"] }
+tempfile = "3"

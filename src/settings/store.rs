@@ -165,7 +165,12 @@ mod tests {
         let (mut store, _) = SettingsStore::load(path.clone());
         let written = store.update_unnotified(|settings| {
             settings.appearance = Appearance::Dark;
+            settings.app_lock_idle_minutes = 15;
+            settings.app_lock_allow_cli = true;
+            settings.window.close_to_tray = true;
             settings.language = InterfaceLanguage::English;
+            settings.terminal_interaction.cursor_style = crate::terminal::TerminalCursorStyle::Beam;
+            settings.terminal_interaction.cursor_blinking = false;
             settings
                 .sidebar_tools
                 .set(crate::app::ToolKind::Kubernetes, true);
@@ -175,7 +180,15 @@ mod tests {
         let (reloaded, problem) = SettingsStore::load(path);
         assert!(problem.is_none());
         assert_eq!(reloaded.settings().appearance, Appearance::Dark);
+        assert_eq!(reloaded.settings().app_lock_idle_minutes, 15);
+        assert!(reloaded.settings().app_lock_allow_cli);
+        assert!(reloaded.settings().window.close_to_tray);
         assert_eq!(reloaded.settings().language, InterfaceLanguage::English);
+        assert_eq!(
+            reloaded.settings().terminal_interaction.cursor_style,
+            crate::terminal::TerminalCursorStyle::Beam
+        );
+        assert!(!reloaded.settings().terminal_interaction.cursor_blinking);
         assert!(
             reloaded
                 .settings()

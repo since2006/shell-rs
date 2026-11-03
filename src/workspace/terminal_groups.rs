@@ -153,12 +153,9 @@ impl Workspace {
                 }
             });
         }
-        let hosts_open = (!area.is_zoomed() && area.is_dock_collapsible(DockPlacement::Left))
-            .then(|| area.is_dock_open(DockPlacement::Left));
         self.skin.set_center_groups(groups, cx);
         self.skin.set_broadcast(
             first,
-            hosts_open,
             self.broadcast.enabled,
             self.broadcast.selected.len(),
             cx,

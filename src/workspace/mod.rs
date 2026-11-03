@@ -3,6 +3,8 @@
 //! the center shows while no tab is open.
 
 mod analytics;
+mod app_lock;
+mod app_shell;
 mod cli_changes;
 mod compose;
 mod compose_pane;
@@ -35,3 +37,5 @@ mod zmodem;
 pub use links::open_link_once_open;
 pub use window_state::WindowState;
 pub use workspace_view::{Workspace, notify_once_open, window_options};
+
+pub use app_shell::{AppShell, StartupFailure};

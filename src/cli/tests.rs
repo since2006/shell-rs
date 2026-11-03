@@ -1344,3 +1344,66 @@ fn a_run_that_cannot_be_typed_says_why() {
     assert_eq!(run(&socket, request, false).0, 255);
     assert!(fixture.server.take_run().is_none());
 }
+
+#[test]
+fn the_startup_password_gate_accepts_activation_without_exposing_hosts() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = cli_endpoint(dir.path());
+    let server = CliServer::reserve(socket.clone()).unwrap();
+    assert!(client::activate_running_app(&socket, None));
+    assert_eq!(server.take_activation(), Some(Vec::new()));
+    let (code, _, stderr) = run(&socket, Request::List { query: None }, true);
+    assert_eq!(code, 255);
+    assert!(String::from_utf8(stderr).unwrap().contains("[not_enabled]"));
+    server.set_backend(Arc::new(FakeBackend::default()));
+    server.set_hosts(&store());
+    server.set_enabled(true);
+    assert_eq!(run(&socket, Request::List { query: None }, true).0, 0);
+    server.set_enabled(false);
+    assert_eq!(run(&socket, Request::List { query: None }, true).0, 255);
+    assert!(client::activate_running_app(&socket, None));
+    server.set_enabled(true);
+    assert_eq!(run(&socket, Request::List { query: None }, true).0, 0);
+}
+
+#[test]
+fn app_lock_cli_permission_controls_requests_without_turning_on_the_global_switch() {
+    let fixture = fixture();
+    let mut settings = crate::settings::AppSettings::default();
+    settings.external_cli.enabled = true;
+    fixture
+        .server
+        .set_enabled(settings.is_external_cli_allowed(true));
+    assert_eq!(
+        run(&fixture.socket, Request::List { query: None }, true).0,
+        255
+    );
+    settings.app_lock_allow_cli = true;
+    fixture
+        .server
+        .set_enabled(settings.is_external_cli_allowed(true));
+    assert_eq!(
+        run(&fixture.socket, Request::List { query: None }, true).0,
+        0
+    );
+    assert_eq!(
+        run(
+            &fixture.socket,
+            Request::Exec {
+                host: id(&fixture.web),
+                command: "echo background".into()
+            },
+            false
+        )
+        .0,
+        3
+    );
+    settings.external_cli.enabled = false;
+    fixture
+        .server
+        .set_enabled(settings.is_external_cli_allowed(true));
+    assert_eq!(
+        run(&fixture.socket, Request::List { query: None }, true).0,
+        255
+    );
+}

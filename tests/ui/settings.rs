@@ -481,6 +481,257 @@ fn the_window_settings_are_on_until_turned_off(cx: &mut TestAppContext) {
     assert!(settings.remember_size && !settings.remember_position);
 }
 
+/// The tray preference belongs only to Windows. Other platforms must not
+/// offer a switch that cannot take effect; Windows starts off and can reset it.
+#[gpui_kit::test]
+fn closing_to_the_tray_is_off_and_offered_only_on_windows(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-7", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        let offered = gpui_kit::base::test_support::snapshots(window)
+            .iter()
+            .any(|element| {
+                ["settings", "group-0", "item-2"]
+                    .iter()
+                    .all(|id| element.path().contains(&ElementId::from(*id)))
+            });
+        assert_eq!(offered, cfg!(windows));
+    });
+    #[cfg(windows)]
+    {
+        in_frame(cx, handle, |window, cx| {
+            assert_eq!(
+                window
+                    .within("settings")
+                    .within("group-0")
+                    .within("item-2")
+                    .find("check")
+                    .checked(),
+                Some(false)
+            );
+            window
+                .within("settings")
+                .within("group-0")
+                .within("item-2")
+                .click("check", cx);
+        });
+        cx.update(|cx| {
+            assert!(
+                workspace
+                    .read(cx)
+                    .settings()
+                    .read(cx)
+                    .settings()
+                    .window
+                    .close_to_tray
+            );
+        });
+        in_frame(cx, handle, |window, cx| {
+            window.within("settings").click("reset", cx);
+        });
+    }
+    cx.update(|cx| {
+        assert!(
+            !workspace
+                .read(cx)
+                .settings()
+                .read(cx)
+                .settings()
+                .window
+                .close_to_tray
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn terminal_cursor_settings_apply_to_open_and_restarted_terminals(cx: &mut TestAppContext) {
+    use alacritty_terminal::vte::ansi::CursorShape;
+    use shellrs::terminal::{
+        SessionLogIdentity, TerminalCursorStyle, TerminalEngine, TerminalInteraction,
+    };
+
+    let (handle, workspace) = open_workspace(cx);
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    let identity = SessionLogIdentity {
+        name: "cursor-test".into(),
+        address: "local".into(),
+    };
+    let engine = cx.update(|cx| {
+        cx.new(|cx| {
+            TerminalEngine::new(
+                Arc::new(FakeTerminalFactory::default()),
+                identity.clone(),
+                cx,
+            )
+        })
+    });
+    let assert_cursor = |shape, blinking, cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            let snapshot = engine.read(cx).snapshot();
+            assert_eq!(snapshot.cursor_shape, shape);
+            assert_eq!(snapshot.cursor_blinking, blinking);
+            assert_eq!(engine.read(cx).cursor_blinking(), blinking);
+        });
+    };
+    assert_cursor(CursorShape::Block, true, cx);
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-1", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        let position = window.find("terminal-font-preview").bounds().center();
+        window.dispatch_event(
+            gpui_kit::ScrollWheelEvent {
+                position,
+                delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-450.))),
+                modifiers: gpui_kit::Modifiers::default(),
+                touch_phase: gpui_kit::TouchPhase::Moved,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        let mut page = window.within("settings");
+        let mut group = page.within("group-1");
+        assert_eq!(
+            group
+                .within("item-2")
+                .within("terminal-cursor-style")
+                .find(0usize)
+                .checked(),
+            Some(true)
+        );
+        let bounds = [0usize, 1, 2].map(|ix| {
+            let item = group
+                .within("item-2")
+                .within("terminal-cursor-style")
+                .find(ix);
+            assert!(item.visible());
+            item.bounds()
+        });
+        for segment in &bounds[1..] {
+            assert_eq!(segment.top(), bounds[0].top());
+            assert_eq!(segment.size.height, bounds[0].size.height);
+        }
+        assert!(bounds[0].right() <= bounds[1].left());
+        assert!(bounds[1].right() <= bounds[2].left());
+        let mut row = group.within("item-3");
+        assert!(row.find("check").visible());
+        assert_eq!(row.find("check").checked(), Some(true));
+        row.click("check", cx);
+    });
+    assert_cursor(CursorShape::Block, false, cx);
+    cx.update(|cx| {
+        assert!(
+            !settings
+                .read(cx)
+                .settings()
+                .terminal_interaction
+                .cursor_blinking
+        );
+        assert!(!TerminalInteraction::current(cx).cursor_blinking);
+    });
+    for (ix, style, shape, label) in [
+        (
+            1usize,
+            TerminalCursorStyle::Underline,
+            CursorShape::Underline,
+            "下划线",
+        ),
+        (2usize, TerminalCursorStyle::Beam, CursorShape::Beam, "竖线"),
+    ] {
+        in_frame(cx, handle, |window, cx| {
+            if ix == 1 {
+                window.within("terminal-cursor-style").click(ix, cx);
+            } else {
+                // The same choice is reachable through keyboard focus and Space.
+                for _ in 0..64 {
+                    window.focus_next(cx);
+                    window.render_frame(cx);
+                    if window.within("terminal-cursor-style").find(ix).focused() == Some(true) {
+                        break;
+                    }
+                }
+                assert_eq!(
+                    window.within("terminal-cursor-style").find(ix).focused(),
+                    Some(true)
+                );
+                window.press("space", cx);
+                window.dispatch_event(
+                    gpui_kit::PlatformInput::KeyUp(gpui_kit::KeyUpEvent {
+                        keystroke: gpui_kit::Keystroke::parse("space").unwrap(),
+                    }),
+                    cx,
+                );
+            }
+        });
+        assert_cursor(shape, false, cx);
+        cx.update(|cx| {
+            assert_eq!(
+                settings
+                    .read(cx)
+                    .settings()
+                    .terminal_interaction
+                    .cursor_style,
+                style
+            );
+        });
+        in_frame(cx, handle, |window, _| {
+            let segments = window.within("terminal-cursor-style");
+            for segment in 0..3usize {
+                assert_eq!(segments.find(segment).checked(), Some(segment == ix));
+            }
+            assert_eq!(segments.find(ix).label(), Some(label));
+        });
+    }
+    cx.update(|cx| engine.update(cx, |engine, cx| engine.restart(cx)));
+    assert_cursor(CursorShape::Beam, false, cx);
+    let new_engine = cx.update(|cx| {
+        cx.new(|cx| {
+            TerminalEngine::new(
+                Arc::new(FakeTerminalFactory::default()),
+                identity.clone(),
+                cx,
+            )
+        })
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            new_engine.read(cx).snapshot().cursor_shape,
+            CursorShape::Beam
+        );
+        assert!(!new_engine.read(cx).cursor_blinking());
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("reset", cx);
+    });
+    assert_cursor(CursorShape::Block, true, cx);
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window
+                .within("terminal-cursor-style")
+                .find(0usize)
+                .checked(),
+            Some(true)
+        );
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            settings.read(cx).settings().terminal_interaction,
+            TerminalInteraction::default()
+        );
+        assert_eq!(
+            new_engine.read(cx).snapshot().cursor_shape,
+            CursorShape::Block
+        );
+        assert!(new_engine.read(cx).cursor_blinking());
+    });
+}
+
 /// 外观 › 常规 › 界面字号: the platform's default (16, or 14 on Windows),
 /// marked as such, until changed; a change sizes the interface at once.
 #[gpui_kit::test]

@@ -2,6 +2,8 @@
 
 use super::*;
 
+type WritesByRun = Arc<Mutex<Vec<(usize, Vec<u8>)>>>;
+
 #[derive(Clone, Copy, Default)]
 pub enum FakeBehavior {
     #[default]
@@ -34,6 +36,7 @@ pub struct FakeTerminalFactory {
     pub starts: AtomicUsize,
     pub behavior: FakeBehavior,
     pub writes: Arc<Mutex<Vec<Vec<u8>>>>,
+    pub writes_by_run: WritesByRun,
     pub resizes: Arc<Mutex<Vec<TerminalSize>>>,
     /// What the commands run beside the shell print, one after another; the
     /// last one repeats. With none the requests are dropped, the way a
@@ -156,6 +159,7 @@ impl TerminalTransportFactory for FakeTerminalFactory {
             run,
             behavior: self.behavior,
             writes: self.writes.clone(),
+            writes_by_run: self.writes_by_run.clone(),
             resizes: self.resizes.clone(),
             exec_outputs: self.exec_outputs.clone(),
             exec_commands: self.exec_commands.clone(),
@@ -170,6 +174,7 @@ pub struct FakeTerminalTransport {
     pub run: usize,
     pub behavior: FakeBehavior,
     pub writes: Arc<Mutex<Vec<Vec<u8>>>>,
+    pub writes_by_run: WritesByRun,
     pub resizes: Arc<Mutex<Vec<TerminalSize>>>,
     pub exec_outputs: Arc<Mutex<std::collections::VecDeque<String>>>,
     pub exec_commands: Arc<Mutex<Vec<String>>>,
@@ -220,6 +225,10 @@ impl TerminalTransport for FakeTerminalTransport {
         while let Ok(command) = commands.recv() {
             match command {
                 TerminalTransportCommand::Write(bytes) => {
+                    self.writes_by_run
+                        .lock()
+                        .unwrap()
+                        .push((self.run, bytes.clone()));
                     self.writes
                         .lock()
                         .unwrap_or_else(|error| error.into_inner())

@@ -1,0 +1,3807 @@
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use gpui_shared_string::SharedString;
+use zeroize::Zeroizing;
+
+use crate::secrets::{
+    NoSecretStore, SecretRef, SecretsUnavailable, SharedSecretStore, TemporarySecretStore,
+};
+
+use super::database::{now_millis, now_seconds};
+use super::private_key::{is_kept_in, moved_key, write_key_file};
+use super::{
+    AuthKind, BookmarkSide, Credential, CredentialDraft, CredentialId, CredentialKind,
+    ForwardDraft, ForwardId, ForwardRule, GroupDraft, GroupId, GroupPathError, GroupPlan, Host,
+    HostConnection, HostDatabase, HostDraft, HostGroup, HostId, HostLogin, HostLoginExt, HostNode,
+    HostOs, JumpLogin, LoginRoute, NodeDrop, Protocol, ProxyLogin, PublicId, Route, SavedTerminal,
+    SavedTerminalTab, SerialLine, Snippet, SnippetCategory, SnippetScope, StoredData, TelnetLogin,
+    TerminalGroup,
+};
+
+mod saved_terminals;
+mod snippets;
+mod sync;
+
+pub use sync::{
+    ApplyError, SecretEndpoint, SecretPlace, SecretSource, SecretWork, SecretsRead, SecretsWritten,
+    SyncExport, read_secrets,
+};
+
+/// The single source of truth for hosts, groups, the rules that belong
+/// to hosts (bookmarks, port forwards), the credentials hosts log in with,
+/// the command snippets and the saved local terminals. The desktop holds it
+/// in its GPUI `HostStore`, which every panel and dialog observes.
+///
+/// A host using a credential keeps a copy of the credential's user name,
+/// so everything that shows or keys by `user@host:port` reads the host
+/// alone. The store keeps the copy in step: it takes it from the credential
+/// when a host is saved or loaded and rewrites it when the credential
+/// changes. The copy lives in memory only; the database keeps the user name
+/// on the credential alone.
+///
+/// Mutators mirror the change into the database and say what observers
+/// should know as [`HostEvent`]s, which whoever holds the data takes with
+/// [`Self::take_events`] after each one; the `*_unnotified` variants are pure
+/// in-memory and exist for tests, for loading, and for callers that batch
+/// several changes before one notification.
+///
+/// Memory is authoritative. A failed write costs persistence, never the edit:
+/// the change stands and a [`Failure`] is said so the user can be told.
+///
+/// Passwords and private-key passphrases never reach the database. They go to
+/// the system keychain through `secrets`, on a background thread (see
+/// [`Self::take_secret_jobs`]), and report failures the same way.
+///
+/// A temporary host is one connected to without saving it, kept apart from
+/// the saved ones: found by id like any host, so its tabs work as a saved
+/// host's do, but never listed, never written to the database and gone with
+/// its last tab; its password stays in `secrets`' memory. There are two
+/// kinds: a 临时连接 typed into ShellRS's own dialog, with every feature, and
+/// an external one, which a bastion host opened with an `ssh://` or
+/// `sftp://` link (外部连接, the app's `SshLink`) and whose terminals get one
+/// channel alone.
+pub struct HostData {
+    groups: Vec<HostGroup>,
+    hosts: Vec<Host>,
+    /// Hosts connected to without saving them: not listed. Their ids come
+    /// from `next_host_id` like a saved host's, so they never meet.
+    temporary: Vec<Host>,
+    /// The temporary hosts a link from outside opened (外部连接).
+    external: HashSet<HostId>,
+    next_host_id: u64,
+    next_group_id: u64,
+    /// A fixture's hosts whose terminals are open from the start: the
+    /// seed's web-01 and staging-api. Empty for a real database.
+    starting_terminals: Vec<HostId>,
+    /// Hosts in the order they last connected, most recent first.
+    recent: Vec<HostId>,
+    /// SFTP bookmarks per host and pane, in the order they were added.
+    bookmarks: HashMap<(HostId, BookmarkSide), Vec<String>>,
+    /// Each bookmark's place in its pane and when it was last edited.
+    bookmark_meta: HashMap<(HostId, BookmarkSide, String), BookmarkMeta>,
+    /// Port-forwarding rules, in the order the forward list shows them.
+    forwards: Vec<ForwardRule>,
+    next_forward_id: u64,
+    /// Credentials, in the order the credential list shows them.
+    credentials: Vec<Credential>,
+    next_credential_id: u64,
+    /// Command snippets and their categories, in the order they were made.
+    snippets: Vec<Snippet>,
+    next_snippet_id: u64,
+    snippet_categories: Vec<SnippetCategory>,
+    next_snippet_category_id: u64,
+    /// 项目's groups and the local terminals in them, each in the order
+    /// made.
+    terminal_groups: Vec<TerminalGroup>,
+    next_terminal_group_id: u64,
+    saved_terminals: Vec<SavedTerminal>,
+    next_saved_terminal_id: u64,
+    /// The saved terminals open as the workspace last said, in tab order.
+    saved_terminal_tabs: Vec<SavedTerminalTab>,
+    /// `None` for a memory-only store, as used by tests.
+    database: Option<HostDatabase>,
+    /// Where passwords go: the keychain given to `with_secrets`, under a
+    /// layer that keeps the links' passwords in memory. Defaults to a store
+    /// that keeps nothing, so unit tests never touch the machine's keychain.
+    secrets: Arc<TemporarySecretStore>,
+    /// Where the private keys pasted into or generated by the credential
+    /// form are kept. `None` without a database to remember them, which is
+    /// also how most tests run: the form then offers key files only.
+    key_dir: Option<PathBuf>,
+    /// Where the saved terminals' kept output goes, a file each. `None`
+    /// without a database, as in most tests: nothing is kept then.
+    terminal_output_dir: Option<PathBuf>,
+    /// What happened that whoever holds the data has yet to pass on.
+    events: RefCell<Vec<HostEvent>>,
+    /// The keychain writes waiting for whoever holds the data to run them.
+    secret_jobs: Vec<SecretJob>,
+    /// Inside a capture (see [`Self::begin_capture`]), the failures reported
+    /// so far, besides the events that report them.
+    capturing: RefCell<Option<Vec<Failure>>>,
+    /// Inside a batch (see [`Self::begin_batch`]).
+    batch: RefCell<Option<Batch>>,
+    /// Goes up with every edit of what syncs: a sync round that read the
+    /// records before one is not applied over it.
+    sync_revision: u64,
+    /// When each secret was last edited, by its sync record's kind and id.
+    /// Never the secret.
+    secret_edits: HashMap<(String, String), u64>,
+    /// The secrets a round brought that are not written yet: until they
+    /// are, rounds are told the store does not hold them as it should.
+    sync_pending: BTreeSet<shellrs_sync::RecordKey>,
+    /// The sync state as last stored, `None` while sync is not set up.
+    sync_state: Option<Vec<u8>>,
+}
+
+/// A bookmark's order among its pane's, and when it was last edited
+/// (added or moved).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BookmarkMeta {
+    pub sort_order: i64,
+    pub edited_ms: u64,
+}
+
+/// When an edit made now is dated: now, or just after `previous` should
+/// the clock not have moved on, so an edit is never dated like the last.
+fn edited_after(previous: u64) -> u64 {
+    now_millis().max(previous.saturating_add(1))
+}
+
+/// How many hosts the start page lists as recently connected.
+const MAX_RECENT: usize = 10;
+
+/// A change the data writes through to the database, to say which one
+/// could not be saved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Change {
+    NewHost,
+    SaveHost,
+    DeleteHost,
+    DuplicateHost,
+    HostOrder,
+    NewGroup,
+    SaveGroup,
+    AddBookmark,
+    DeleteBookmark,
+    BookmarkOrder,
+    NewForward,
+    SaveForward,
+    DeleteForward,
+    NewCredential,
+    SaveCredential,
+    DeleteCredential,
+    GroupExpanded,
+    AllGroupsExpanded,
+    MoveHostNode,
+    DeleteGroup,
+    Recent,
+    HostOs,
+    SidebarTool,
+    NewSnippet,
+    SaveSnippet,
+    DeleteSnippet,
+    NewSnippetCategory,
+    RenameSnippetCategory,
+    DeleteSnippetCategory,
+    NewTerminalGroup,
+    SaveTerminalGroup,
+    DeleteTerminalGroup,
+    NewSavedTerminal,
+    SaveSavedTerminal,
+    DeleteSavedTerminal,
+    MoveTerminalNode,
+    SavedTerminalTabs,
+    Batch,
+}
+
+/// What could not be kept. The change stands in memory all the same.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Failure {
+    /// `change` is not in the database, which said `error`.
+    NotSaved { change: Change, error: String },
+    /// A key file ShellRS kept and nothing uses any more is still there.
+    KeyNotDeleted { error: String },
+    /// The keychain did not write `secret` (or delete it, not `writing`).
+    Secret {
+        secret: SecretRef,
+        writing: bool,
+        error: SecretError,
+    },
+    /// A secret a sync round brought is not kept; the round brings it again.
+    SyncedSecret(SecretError),
+}
+
+/// Why a secret is not kept.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SecretError {
+    /// This computer has no system keychain.
+    Unavailable,
+    /// The keychain's own failure, as it put it.
+    Keychain(String),
+    /// There is no folder to keep private keys in.
+    NoKeyDir,
+    /// A private key's file could not be written.
+    KeyFile(String),
+}
+
+impl SecretError {
+    /// A keychain call's failure.
+    pub fn of(error: &anyhow::Error) -> Self {
+        if error.downcast_ref::<SecretsUnavailable>().is_some() {
+            SecretError::Unavailable
+        } else {
+            SecretError::Keychain(error.to_string())
+        }
+    }
+}
+
+/// What happened to the data, for whoever holds it to pass on: the GPUI
+/// `HostStore` as events and notifications.
+#[derive(Debug)]
+pub enum HostEvent {
+    /// Something could not be kept; the change stands in memory.
+    Failed(Failure),
+    /// A port forward's rule changed in a way its running forward has to
+    /// restart for.
+    ForwardSettingsChanged(ForwardId),
+    /// What observers see has changed.
+    Changed,
+}
+
+/// A keychain write, to run on a background thread: the call blocks, and on
+/// macOS may raise a system authorization dialog.
+pub struct SecretJob {
+    secrets: SharedSecretStore,
+    secret: SecretRef,
+    value: Option<Zeroizing<String>>,
+}
+
+impl SecretJob {
+    /// Write the secret, or delete it.
+    pub fn run(self) -> SecretOutcome {
+        let writing = self.value.is_some();
+        let result = match &self.value {
+            Some(value) => self.secrets.set(&self.secret, value),
+            None => self.secrets.delete(&self.secret),
+        };
+        SecretOutcome {
+            secret: self.secret,
+            writing,
+            error: result.err().map(|error| SecretError::of(&error)),
+        }
+    }
+}
+
+/// How a [`SecretJob`] went.
+pub struct SecretOutcome {
+    secret: SecretRef,
+    writing: bool,
+    error: Option<SecretError>,
+}
+
+impl SecretOutcome {
+    /// What it could not do, if anything.
+    pub fn failure(&self) -> Option<Failure> {
+        self.error.clone().map(|error| Failure::Secret {
+            secret: self.secret.clone(),
+            writing: self.writing,
+            error,
+        })
+    }
+}
+
+/// Why a private key is not kept among ShellRS's own.
+#[derive(Debug)]
+pub enum KeyFileError {
+    /// There is no folder to keep private keys in.
+    NoKeyDir,
+    /// The user's key file could not be read.
+    Unreadable,
+    /// Writing the copy failed.
+    Io(io::Error),
+}
+
+impl From<io::Error> for KeyFileError {
+    fn from(error: io::Error) -> Self {
+        KeyFileError::Io(error)
+    }
+}
+
+/// For logs; the app words it for the user.
+impl std::fmt::Display for KeyFileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KeyFileError::NoKeyDir => f.write_str("there is no folder to keep private keys in"),
+            KeyFileError::Unreadable => f.write_str("the key file cannot be read"),
+            KeyFileError::Io(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for KeyFileError {}
+
+/// A batch of database writes in one transaction.
+struct Batch {
+    /// Whether the database began one.
+    begun: bool,
+    /// The failures said already, so a burst of writes failing the same way
+    /// says so once.
+    reported: HashSet<Failure>,
+}
+
+impl HostData {
+    /// An empty memory-only store.
+    pub fn empty() -> Self {
+        Self {
+            groups: Vec::new(),
+            hosts: Vec::new(),
+            temporary: Vec::new(),
+            external: HashSet::new(),
+            next_host_id: 1,
+            next_group_id: 1,
+            starting_terminals: Vec::new(),
+            recent: Vec::new(),
+            bookmarks: HashMap::new(),
+            bookmark_meta: HashMap::new(),
+            forwards: Vec::new(),
+            next_forward_id: 1,
+            credentials: Vec::new(),
+            next_credential_id: 1,
+            snippets: Vec::new(),
+            next_snippet_id: 1,
+            snippet_categories: Vec::new(),
+            next_snippet_category_id: 1,
+            terminal_groups: Vec::new(),
+            next_terminal_group_id: 1,
+            saved_terminals: Vec::new(),
+            next_saved_terminal_id: 1,
+            saved_terminal_tabs: Vec::new(),
+            database: None,
+            secrets: Arc::new(TemporarySecretStore::new(Arc::new(NoSecretStore))),
+            key_dir: None,
+            terminal_output_dir: None,
+            events: RefCell::new(Vec::new()),
+            secret_jobs: Vec::new(),
+            capturing: RefCell::new(None),
+            batch: RefCell::new(None),
+            sync_revision: 0,
+            secret_edits: HashMap::new(),
+            sync_pending: BTreeSet::new(),
+            sync_state: None,
+        }
+    }
+
+    /// Attach the system keychain. `main` does this once at startup; the UI
+    /// tests attach an in-memory store instead.
+    pub fn with_secrets(mut self, secrets: SharedSecretStore) -> Self {
+        self.secrets = Arc::new(TemporarySecretStore::new(secrets));
+        self
+    }
+
+    /// Keep pasted and generated private keys in `dir`. `main` puts it
+    /// beside the database; UI tests use a temporary directory.
+    pub fn with_key_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.key_dir = Some(dir.into());
+        self
+    }
+
+    /// Keep the saved terminals' output in `dir`. `main` puts it beside
+    /// the database; UI tests use a temporary directory. What is kept there
+    /// for terminals no longer saved goes.
+    pub fn with_terminal_output_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.terminal_output_dir = Some(dir.into());
+        self.forget_kept_outputs_but_saved();
+        self
+    }
+
+    /// Point the key credentials whose file ShellRS kept in another key
+    /// folder at that file in this one (see `moved_key`): a portable copy
+    /// moved to another drive letter, or another copy's data copied in.
+    /// Writes straight to the database, before the store is in use, and
+    /// says what could not be saved. The new path asks for the key's
+    /// passphrase once more: the keychain knows it by the old one.
+    pub fn adopt_moved_keys(&mut self) -> Option<Failure> {
+        let dir = self.key_dir.clone()?;
+        let mut problem = None;
+        for credential in &mut self.credentials {
+            let Some(moved) = credential
+                .key_path
+                .as_deref()
+                .and_then(|path| moved_key(&dir, Path::new(path)))
+            else {
+                continue;
+            };
+            credential.key_path = Some(moved.display().to_string().into());
+            if let Some(database) = &self.database
+                && let Err(error) = database.update_credential(credential)
+            {
+                problem.get_or_insert_with(|| Failure::NotSaved {
+                    change: Change::SaveCredential,
+                    error: error.to_string(),
+                });
+            }
+        }
+        problem
+    }
+
+    /// Read everything back from `database` and keep writing to it. Ids carry
+    /// over from disk, so the allocators resume past the largest stored id.
+    pub fn load(database: HostDatabase) -> rusqlite::Result<Self> {
+        let StoredData {
+            groups,
+            mut hosts,
+            mut recent,
+            bookmarks: stored_bookmarks,
+            forwards,
+            credentials,
+            snippet_categories,
+            snippets,
+            terminal_groups,
+            saved_terminals,
+            saved_terminal_tabs,
+            secret_edits,
+            sync_pending,
+        } = database.load()?;
+        let sync_state = database.sync_state()?;
+        recent.truncate(MAX_RECENT);
+        let mut bookmarks: HashMap<_, Vec<String>> = HashMap::new();
+        let mut bookmark_meta = HashMap::new();
+        for (host, side, path, sort_order, edited_ms) in stored_bookmarks {
+            let meta = BookmarkMeta {
+                sort_order,
+                edited_ms,
+            };
+            bookmark_meta.insert((host, side, path.clone()), meta);
+            bookmarks.entry((host, side)).or_default().push(path);
+        }
+        // A host using a credential has no user name of its own on disk:
+        // memory keeps a copy of the credential's, taken here.
+        for host in &mut hosts {
+            let draft = normalized(&credentials, host.draft());
+            host.user = draft.user;
+            host.auth = draft.auth;
+            host.credential = draft.credential;
+        }
+        Ok(Self {
+            next_group_id: groups.iter().map(|group| group.id.0).max().unwrap_or(0) + 1,
+            next_host_id: hosts.iter().map(|s| s.id.0).max().unwrap_or(0) + 1,
+            next_forward_id: forwards.iter().map(|rule| rule.id.0).max().unwrap_or(0) + 1,
+            next_credential_id: credentials.iter().map(|c| c.id.0).max().unwrap_or(0) + 1,
+            next_snippet_id: snippets.iter().map(|s| s.id.0).max().unwrap_or(0) + 1,
+            next_snippet_category_id: snippet_categories
+                .iter()
+                .map(|category| category.id.0)
+                .max()
+                .unwrap_or(0)
+                + 1,
+            next_terminal_group_id: terminal_groups.iter().map(|g| g.id.0).max().unwrap_or(0) + 1,
+            next_saved_terminal_id: saved_terminals.iter().map(|t| t.id.0).max().unwrap_or(0) + 1,
+            forwards,
+            credentials,
+            snippets,
+            snippet_categories,
+            terminal_groups,
+            saved_terminals,
+            saved_terminal_tabs,
+            groups,
+            hosts,
+            temporary: Vec::new(),
+            external: HashSet::new(),
+            starting_terminals: Vec::new(),
+            recent,
+            bookmarks,
+            bookmark_meta,
+            database: Some(database),
+            secrets: Arc::new(TemporarySecretStore::new(Arc::new(NoSecretStore))),
+            key_dir: None,
+            terminal_output_dir: None,
+            events: RefCell::new(Vec::new()),
+            secret_jobs: Vec::new(),
+            capturing: RefCell::new(None),
+            batch: RefCell::new(None),
+            sync_revision: 0,
+            secret_edits,
+            sync_pending: sync_pending
+                .into_iter()
+                .filter_map(|(kind, id)| {
+                    Some(shellrs_sync::RecordKey::new(
+                        shellrs_sync::Kind::parse(&kind)?,
+                        id,
+                    ))
+                })
+                .collect(),
+            sync_state,
+        })
+    }
+
+    /// Sample data for tests. Production starts from an empty database, so
+    /// nothing outside `tests/` builds a store this way; the UI tests depend
+    /// on the exact shape (ids 1..=6 in the order listed here).
+    pub fn seed() -> Self {
+        let mut store = Self::empty();
+        // Test data in Chinese, as the UI tests look for it.
+        let [production, staging, development] =
+            ["生产", "测试", "开发"] // i18n: keep
+                .map(|name| store.insert_group_unnotified(GroupDraft::new(name, None)));
+        let drafts = [
+            HostDraft::new(
+                "web-01",
+                "10.0.1.12",
+                22,
+                "root",
+                AuthKind::Password,
+                Some(production),
+            ),
+            HostDraft::new(
+                "web-02",
+                "10.0.1.13",
+                22,
+                "root",
+                AuthKind::Password,
+                Some(production),
+            ),
+            HostDraft::new(
+                "db-01",
+                "10.0.2.5",
+                22,
+                "postgres",
+                AuthKind::Password,
+                Some(production),
+            ),
+            HostDraft::new(
+                "staging-api",
+                "10.0.9.20",
+                2222,
+                "deploy",
+                AuthKind::Password,
+                Some(staging),
+            ),
+            HostDraft::new(
+                "qa-runner",
+                "10.0.9.31",
+                22,
+                "ci",
+                AuthKind::Password,
+                Some(staging),
+            ),
+            HostDraft::new(
+                "dev-box",
+                "192.168.1.20",
+                22,
+                "xuz",
+                AuthKind::Password,
+                Some(development),
+            ),
+        ];
+        for draft in drafts {
+            store.insert_unnotified(draft);
+        }
+        for name in ["web-01", "staging-api"] {
+            if let Some(id) = store.hosts.iter().find(|s| s.name == name).map(|s| s.id) {
+                store.record_connection_unnotified(id);
+                store.starting_terminals.push(id);
+            }
+        }
+        store
+    }
+
+    /// The hosts whose terminals a fixture opens from the start.
+    pub fn starting_terminals(&self) -> &[HostId] {
+        &self.starting_terminals
+    }
+
+    pub fn groups(&self) -> &[HostGroup] {
+        &self.groups
+    }
+
+    /// The saved hosts. Never the temporary ones.
+    pub fn hosts(&self) -> &[Host] {
+        &self.hosts
+    }
+
+    /// The saved SSH hosts: what a forward or a jump can go through.
+    pub fn ssh_hosts(&self) -> impl Iterator<Item = &Host> {
+        self.hosts.iter().filter(|host| host.is_ssh())
+    }
+
+    /// A saved host, or a temporary one.
+    pub fn host(&self, id: HostId) -> Option<&Host> {
+        self.saved_host(id)
+            .or_else(|| self.temporary.iter().find(|host| host.id == id))
+    }
+
+    /// A saved host only: what the database's foreign keys may point at.
+    pub fn saved_host(&self, id: HostId) -> Option<&Host> {
+        self.hosts.iter().find(|host| host.id == id)
+    }
+
+    /// A saved SSH host: what a jump host or a forward may go through.
+    pub fn saved_ssh_host(&self, id: HostId) -> Option<&Host> {
+        self.saved_host(id).filter(|host| host.is_ssh())
+    }
+
+    fn host_mut(&mut self, id: HostId) -> Option<&mut Host> {
+        self.hosts
+            .iter_mut()
+            .chain(self.temporary.iter_mut())
+            .find(|host| host.id == id)
+    }
+
+    /// The temporary hosts (临时连接 and 外部连接), oldest first. Only the
+    /// external CLI lists them; nothing else that lists hosts does.
+    pub fn temporary_hosts(&self) -> &[Host] {
+        &self.temporary
+    }
+
+    /// Whether `id` is connected to without being saved.
+    pub fn is_temporary(&self, id: HostId) -> bool {
+        self.temporary.iter().any(|host| host.id == id)
+    }
+
+    /// Whether `id` is a temporary host a link from outside opened (外部连接),
+    /// whose terminals get their own channel alone.
+    pub fn is_external(&self, id: HostId) -> bool {
+        self.external.contains(&id)
+    }
+
+    /// Connect to what a link from outside names (the app's `ssh://` or
+    /// `sftp://`, see `SshLink`) without saving it (外部连接): a temporary
+    /// host the tabs find by id, kept in memory until
+    /// [`Self::remove_temporary`], with the link's password in memory too.
+    pub fn insert_external(
+        &mut self,
+        draft: HostDraft,
+        password: Option<Zeroizing<String>>,
+    ) -> HostId {
+        let id = self.insert_external_unnotified(draft, password);
+        self.changed();
+        id
+    }
+
+    pub fn insert_external_unnotified(
+        &mut self,
+        draft: HostDraft,
+        password: Option<Zeroizing<String>>,
+    ) -> HostId {
+        let id = self.insert_temporary_unnotified(draft, password);
+        self.external.insert(id);
+        id
+    }
+
+    /// Connect to `draft` without saving it (临时连接): a temporary host the
+    /// tabs find by id, kept in memory until [`Self::remove_temporary`], with
+    /// `password` in memory too. It may log in with a saved credential; its
+    /// group, route and notes are not looked at, it goes directly.
+    pub fn insert_temporary(
+        &mut self,
+        draft: HostDraft,
+        password: Option<Zeroizing<String>>,
+    ) -> HostId {
+        let id = self.insert_temporary_unnotified(draft, password);
+        self.changed();
+        id
+    }
+
+    pub fn insert_temporary_unnotified(
+        &mut self,
+        draft: HostDraft,
+        password: Option<Zeroizing<String>>,
+    ) -> HostId {
+        let mut draft = normalized(&self.credentials, draft);
+        draft.group = None;
+        draft.route = Route::Direct;
+        let id = HostId(self.next_host_id);
+        self.next_host_id += 1;
+        let mut host = Host::new(id, draft);
+        // What the external CLI knows it by while it lasts.
+        host.public_id = self.unused_public_id();
+        self.temporary.push(host);
+        if let Some(password) = password.filter(|password| !password.is_empty()) {
+            self.secrets.remember(id.0, password);
+        }
+        id
+    }
+
+    /// Forget a temporary host, with its password and the bookmarks its SFTP
+    /// tabs made. Its tabs are gone by now.
+    pub fn remove_temporary(&mut self, id: HostId) {
+        if self.remove_temporary_unnotified(id) {
+            self.changed();
+        }
+    }
+
+    pub fn remove_temporary_unnotified(&mut self, id: HostId) -> bool {
+        let Some(index) = self.temporary.iter().position(|host| host.id == id) else {
+            return false;
+        };
+        self.temporary.remove(index);
+        self.external.remove(&id);
+        self.secrets.forget(id.0);
+        self.bookmarks.retain(|(host, _), _| *host != id);
+        true
+    }
+
+    pub fn group(&self, id: GroupId) -> Option<&HostGroup> {
+        self.groups.iter().find(|g| g.id == id)
+    }
+
+    /// Every group below `id`, at any depth. Shared by the cascading delete
+    /// and by the check that keeps a group from being moved into itself.
+    pub fn descendant_groups(&self, id: GroupId) -> Vec<GroupId> {
+        let mut found = Vec::new();
+        let mut frontier = vec![id];
+        while let Some(current) = frontier.pop() {
+            for child in self.groups.iter().filter(|g| g.parent == Some(current)) {
+                found.push(child.id);
+                frontier.push(child.id);
+            }
+        }
+        found
+    }
+
+    /// Every host inside `id` or any group below it. What deleting the
+    /// group takes with it.
+    pub fn hosts_under(&self, id: GroupId) -> Vec<HostId> {
+        let mut doomed = self.descendant_groups(id);
+        doomed.push(id);
+        self.hosts
+            .iter()
+            .filter(|host| host.group.is_some_and(|group| doomed.contains(&group)))
+            .map(|host| host.id)
+            .collect()
+    }
+
+    /// The groups above `id`, nearest parent first. Used to open the folders
+    /// over a row that has to be revealed.
+    pub fn ancestor_groups(&self, id: GroupId) -> Vec<GroupId> {
+        let mut chain = Vec::new();
+        let mut current = self.group(id).and_then(|group| group.parent);
+        while let Some(parent) = current {
+            if chain.len() > self.groups.len() {
+                break;
+            }
+            chain.push(parent);
+            current = self.group(parent).and_then(|group| group.parent);
+        }
+        chain
+    }
+
+    /// The group's full path, e.g. `生产 / 数据库`, as the forms list it.
+    pub fn group_path(&self, id: GroupId) -> String {
+        self.group_names(id).join(" / ")
+    }
+
+    /// The group a path such as `生产/数据库` names, or the groups to make
+    /// for it. The whole path is looked for first, so a name with a `/` in
+    /// it still matches; then level by level, making what is missing.
+    pub fn resolve_group_path(&self, path: &str) -> Result<GroupPlan, GroupPathError> {
+        let path = path.trim();
+        if path.is_empty() {
+            return Ok(GroupPlan::Existing(None));
+        }
+        let names: Vec<&str> = path.split('/').map(str::trim).collect();
+        if names.iter().any(|name| name.is_empty()) {
+            return Err(GroupPathError::EmptyLevel {
+                path: path.to_string(),
+            });
+        }
+        let wanted = names.join("/");
+        let ambiguous = |count: usize, path: String| GroupPathError::Ambiguous { count, path };
+        let whole: Vec<GroupId> = self
+            .groups
+            .iter()
+            .filter(|group| self.group_names(group.id).join("/") == wanted)
+            .map(|group| group.id)
+            .collect();
+        match whole.as_slice() {
+            [id] => return Ok(GroupPlan::Existing(Some(*id))),
+            [] => {}
+            many => return Err(ambiguous(many.len(), wanted)),
+        }
+        let mut parent = None;
+        for (level, name) in names.iter().enumerate() {
+            let children: Vec<GroupId> = self
+                .groups
+                .iter()
+                .filter(|group| group.parent == parent && group.name.as_ref() == *name)
+                .map(|group| group.id)
+                .collect();
+            match children.as_slice() {
+                [] => {
+                    return Ok(GroupPlan::Create {
+                        parent,
+                        names: names[level..].iter().map(ToString::to_string).collect(),
+                    });
+                }
+                [id] => parent = Some(*id),
+                many => return Err(ambiguous(many.len(), names[..=level].join("/"))),
+            }
+        }
+        Ok(GroupPlan::Existing(parent))
+    }
+
+    /// The group a host goes into, made first when it is new.
+    pub fn place_group(&mut self, plan: GroupPlan) -> Option<GroupId> {
+        match plan {
+            GroupPlan::Existing(group) => group,
+            GroupPlan::Create { parent, names } => {
+                names.into_iter().fold(parent, |parent, name| {
+                    Some(self.insert_group(GroupDraft::new(name, parent)))
+                })
+            }
+        }
+    }
+
+    /// The names along the path to a group, from the top level down to it.
+    pub fn group_names(&self, id: GroupId) -> Vec<&str> {
+        let mut parts: Vec<&str> = Vec::new();
+        let mut current = Some(id);
+        while let Some(group) = current.and_then(|id| self.group(id)) {
+            parts.push(group.name.as_ref());
+            // A cycle is rejected on the way in; refuse to hang if one ever
+            // reaches here anyway.
+            if parts.len() > self.groups.len() {
+                break;
+            }
+            current = group.parent;
+        }
+        parts.reverse();
+        parts
+    }
+
+    /// Hosts in the order they last connected, most recent first. A
+    /// host joins (or moves to the front) each time one of its terminals
+    /// or SFTP tabs connects.
+    pub fn recent_hosts(&self) -> impl Iterator<Item = &Host> {
+        self.recent.iter().filter_map(|id| self.host(*id))
+    }
+
+    pub fn insert(&mut self, draft: HostDraft) -> HostId {
+        let id = self.insert_unnotified(draft);
+        if let Some(host) = self.host(id) {
+            self.persist(Change::NewHost, |db| db.insert_host(host));
+        }
+        self.changed();
+        id
+    }
+
+    pub fn insert_unnotified(&mut self, draft: HostDraft) -> HostId {
+        let mut draft = normalized(&self.credentials, draft);
+        draft.route = self.normalized_route(draft.route, None);
+        let sort_order = self.last_host_order(draft.group, None);
+        let id = HostId(self.next_host_id);
+        self.next_host_id += 1;
+        let mut host = Host::new(id, draft);
+        host.public_id = self.unused_public_id();
+        host.sort_order = sort_order;
+        host.edited_ms = edited_after(0);
+        self.hosts.push(host);
+        self.sync_revision += 1;
+        id
+    }
+
+    /// The count of edits to what syncs; see `sync_revision`.
+    pub fn sync_revision(&self) -> u64 {
+        self.sync_revision
+    }
+
+    /// A [`PublicId`] no host in the store has yet.
+    fn unused_public_id(&self) -> PublicId {
+        PublicId::generate_unused(|id| {
+            self.hosts
+                .iter()
+                .chain(&self.temporary)
+                .any(|host| &host.public_id == id)
+        })
+    }
+
+    /// Replace the editable fields of a host; connection state is kept.
+    /// The host reconnects when its login changed, and so does every
+    /// host using it as a jump host.
+    /// Change a host. What is connected stays connected as it was: a new
+    /// login is the next connection's, as in Xshell.
+    pub fn update(&mut self, id: HostId, draft: HostDraft) -> bool {
+        let previous = self.connection(id);
+        let updated = self.update_unnotified(id, draft);
+        if updated {
+            if let Some(host) = self.host(id) {
+                self.persist(Change::SaveHost, |db| db.update_host(host));
+            }
+            if let Some(previous) = previous {
+                // The host no longer reads the password it did, say
+                // because it moved to another endpoint, so that keychain
+                // entry is an orphan unless another host still uses it.
+                self.forget_passwords_of(&previous);
+            }
+            self.changed();
+        }
+        updated
+    }
+
+    /// A draft of another protocol is taken, except that an SSH host other
+    /// hosts or port forwards go through stays one: they would be left
+    /// without a way through.
+    pub fn update_unnotified(&mut self, id: HostId, draft: HostDraft) -> bool {
+        if self.saved_host(id).is_some_and(|host| {
+            host.is_ssh() && !draft.protocol.kind().is_ssh() && self.ssh_dependents(id) != (0, 0)
+        }) {
+            return false;
+        }
+        let mut draft = normalized(&self.credentials, draft);
+        draft.route = self.normalized_route(draft.route, Some(id));
+        let new_order = self.last_host_order(draft.group, Some(id));
+        let Some(host) = self.hosts.iter_mut().find(|s| s.id == id) else {
+            return false;
+        };
+        // The form owns none of these, so rebuilding from the draft must not
+        // drop them.
+        let (os, sidebar_tool) = (host.os, host.sidebar_tool.clone());
+        let sort_order = host.sort_order;
+        let old_group = host.group;
+        let public_id = host.public_id.clone();
+        let edited_ms = host.edited_ms;
+        *host = Host::new(id, draft);
+        host.public_id = public_id;
+        host.os = os;
+        host.sidebar_tool = sidebar_tool;
+        host.sort_order = if host.group == old_group {
+            sort_order
+        } else {
+            new_order
+        };
+        host.edited_ms = edited_after(edited_ms);
+        self.sync_revision += 1;
+        true
+    }
+
+    /// Delete a host. The hosts that went through it keep its place in
+    /// their jump hosts, empty, and are not reconnected: deleting a host does
+    /// not drop a working connection behind it.
+    pub fn remove(&mut self, id: HostId) -> bool {
+        let connection = self.connection(id);
+        let emptied = self.jumping_through(&[id]);
+        let removed = self.remove_unnotified(id);
+        if removed {
+            self.persist(Change::DeleteHost, |db| db.remove_host(id));
+            self.write_hops_emptied(&emptied);
+            if let Some(connection) = connection {
+                self.forget_passwords_of(&connection);
+            }
+            self.changed();
+        }
+        removed
+    }
+
+    pub fn remove_unnotified(&mut self, id: HostId) -> bool {
+        let before = self.hosts.len();
+        self.hosts.retain(|s| s.id != id);
+        if self.hosts.len() == before {
+            return false;
+        }
+        // As the database's `ON DELETE SET NULL` does, which is an edit of
+        // those hosts on the user's behalf (`write_hops_emptied`).
+        for host in &mut self.hosts {
+            if let Route::Jump(hops) = &mut host.route
+                && hops.contains(&Some(id))
+            {
+                for hop in hops.iter_mut().filter(|hop| **hop == Some(id)) {
+                    *hop = None;
+                }
+                host.edited_ms = edited_after(host.edited_ms);
+            }
+        }
+        self.sync_revision += 1;
+        self.recent.retain(|recent| *recent != id);
+        // The database drops both through `ON DELETE CASCADE`.
+        self.bookmarks.retain(|(host, _), _| *host != id);
+        self.bookmark_meta.retain(|(host, _, _), _| *host != id);
+        self.forwards.retain(|rule| rule.host != id);
+        self.snippets
+            .retain(|snippet| snippet.scope != SnippetScope::Host(id));
+        true
+    }
+
+    /// Copy a host as `name` (the app's `<name> 副本`), placed right after
+    /// the original.
+    pub fn duplicate(&mut self, id: HostId, name: SharedString) -> Option<HostId> {
+        let copy = self.duplicate_unnotified(id, name)?;
+        if let Some(host) = self.host(copy) {
+            self.persist(Change::DuplicateHost, |db| db.insert_host(host));
+            self.persist(Change::HostOrder, |db| {
+                db.save_tree_order(&self.groups, &self.hosts)
+            });
+        }
+        self.changed();
+        Some(copy)
+    }
+
+    pub fn duplicate_unnotified(&mut self, id: HostId, name: SharedString) -> Option<HostId> {
+        let ix = self.hosts.iter().position(|s| s.id == id)?;
+        let mut draft = self.hosts[ix].draft();
+        draft.name = name;
+        // Same host, so the copy already knows what it will find there,
+        // and opens the sidebar as the original does.
+        let (os, sidebar_tool) = (self.hosts[ix].os, self.hosts[ix].sidebar_tool.clone());
+        let copy_id = HostId(self.next_host_id);
+        self.next_host_id += 1;
+        let mut copy = Host::new(copy_id, draft);
+        // A copy is another host, so a third party must not confuse the two.
+        copy.public_id = self.unused_public_id();
+        copy.os = os;
+        copy.sidebar_tool = sidebar_tool;
+        copy.sort_order = self.hosts[ix].sort_order + 1;
+        copy.edited_ms = edited_after(0);
+        for host in &mut self.hosts {
+            if host.group == copy.group && host.sort_order >= copy.sort_order {
+                host.sort_order += 1;
+                host.edited_ms = edited_after(host.edited_ms);
+            }
+        }
+        self.hosts.insert(ix + 1, copy);
+        self.sync_revision += 1;
+        Some(copy_id)
+    }
+
+    pub fn insert_group(&mut self, draft: GroupDraft) -> GroupId {
+        let id = self.insert_group_unnotified(draft);
+        if let Some(group) = self.group(id) {
+            self.persist(Change::NewGroup, |db| db.insert_group(group));
+        }
+        self.changed();
+        id
+    }
+
+    pub fn insert_group_unnotified(&mut self, draft: GroupDraft) -> GroupId {
+        let sort_order = self.last_group_order(draft.parent, None);
+        let id = GroupId(self.next_group_id);
+        self.next_group_id += 1;
+        let mut group = HostGroup::new(id, draft);
+        group.sort_order = sort_order;
+        group.sync_id = self.unused_group_sync_id();
+        group.edited_ms = edited_after(0);
+        self.groups.push(group);
+        self.sync_revision += 1;
+        id
+    }
+
+    /// A sync id no group in the store has yet.
+    fn unused_group_sync_id(&self) -> PublicId {
+        PublicId::generate_unused(|id| self.groups.iter().any(|group| &group.sync_id == id))
+    }
+
+    /// Rename a group, and optionally move it under a different parent.
+    pub fn update_group(&mut self, id: GroupId, draft: GroupDraft) -> bool {
+        let updated = self.update_group_unnotified(id, draft);
+        if updated {
+            if let Some(group) = self.group(id) {
+                self.persist(Change::SaveGroup, |db| db.update_group(group));
+            }
+            self.changed();
+        }
+        updated
+    }
+
+    /// Returns whether the group changed. Moving a group into its own subtree
+    /// would cut that subtree off from the root, so it is refused here as well
+    /// as being left out of the form's parent list.
+    pub fn update_group_unnotified(&mut self, id: GroupId, draft: GroupDraft) -> bool {
+        if self.group(id).is_none() {
+            return false;
+        }
+        if let Some(parent) = draft.parent
+            && (parent == id || self.descendant_groups(id).contains(&parent))
+        {
+            return false;
+        }
+        let new_order = self.last_group_order(draft.parent, Some(id));
+        let Some(group) = self.groups.iter_mut().find(|g| g.id == id) else {
+            return false;
+        };
+        let old_parent = group.parent;
+        let old_order = group.sort_order;
+        let expanded = group.expanded;
+        let sync_id = group.sync_id.clone();
+        let edited_ms = group.edited_ms;
+        *group = HostGroup::new(id, draft);
+        group.expanded = expanded;
+        group.sort_order = if group.parent == old_parent {
+            old_order
+        } else {
+            new_order
+        };
+        group.sync_id = sync_id;
+        group.edited_ms = edited_after(edited_ms);
+        self.sync_revision += 1;
+        true
+    }
+
+    /// A host's SFTP bookmarks for one pane, oldest first.
+    pub fn bookmarks(&self, id: HostId, side: BookmarkSide) -> &[String] {
+        self.bookmarks
+            .get(&(id, side))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    pub fn add_bookmark(&mut self, id: HostId, side: BookmarkSide, path: &str) -> bool {
+        if !self.add_bookmark_unnotified(id, side, path) {
+            return false;
+        }
+        // A link's host is not in the database: its bookmarks live as long
+        // as it does.
+        if !self.is_temporary(id) {
+            let meta = self.bookmark_meta(id, side, path);
+            self.persist(Change::AddBookmark, |db| {
+                db.insert_bookmark(id, side, path, meta.sort_order, meta.edited_ms)
+            });
+        }
+        self.changed();
+        true
+    }
+
+    pub fn add_bookmark_unnotified(&mut self, id: HostId, side: BookmarkSide, path: &str) -> bool {
+        if self.host(id).is_none() || path.is_empty() {
+            return false;
+        }
+        let list = self.bookmarks.entry((id, side)).or_default();
+        if list.iter().any(|existing| existing == path) {
+            return false;
+        }
+        list.push(path.to_string());
+        let sort_order = list
+            .iter()
+            .filter_map(|other| self.bookmark_meta.get(&(id, side, other.clone())))
+            .map(|meta| meta.sort_order + 1)
+            .max()
+            .unwrap_or_default();
+        let meta = BookmarkMeta {
+            sort_order,
+            edited_ms: edited_after(0),
+        };
+        self.bookmark_meta
+            .insert((id, side, path.to_string()), meta);
+        self.sync_revision += 1;
+        true
+    }
+
+    /// A bookmark's order and edit time.
+    pub fn bookmark_meta(&self, id: HostId, side: BookmarkSide, path: &str) -> BookmarkMeta {
+        self.bookmark_meta
+            .get(&(id, side, path.to_string()))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn remove_bookmark(&mut self, id: HostId, side: BookmarkSide, path: &str) -> bool {
+        if !self.remove_bookmark_unnotified(id, side, path) {
+            return false;
+        }
+        if !self.is_temporary(id) {
+            self.persist(Change::DeleteBookmark, |db| {
+                db.remove_bookmark(id, side, path)
+            });
+        }
+        self.changed();
+        true
+    }
+
+    pub fn remove_bookmark_unnotified(
+        &mut self,
+        id: HostId,
+        side: BookmarkSide,
+        path: &str,
+    ) -> bool {
+        let Some(list) = self.bookmarks.get_mut(&(id, side)) else {
+            return false;
+        };
+        let before = list.len();
+        list.retain(|existing| existing != path);
+        if list.len() == before {
+            return false;
+        }
+        self.bookmark_meta.remove(&(id, side, path.to_string()));
+        self.sync_revision += 1;
+        true
+    }
+
+    /// Move a bookmark to position `to` of its pane's list (WinSCP's 上移 /
+    /// 下移).
+    pub fn move_bookmark(&mut self, id: HostId, side: BookmarkSide, path: &str, to: usize) -> bool {
+        if !self.move_bookmark_unnotified(id, side, path, to) {
+            return false;
+        }
+        if !self.is_temporary(id) {
+            let order: Vec<(String, i64, u64)> = self
+                .bookmarks(id, side)
+                .iter()
+                .map(|path| {
+                    let meta = self.bookmark_meta(id, side, path);
+                    (path.clone(), meta.sort_order, meta.edited_ms)
+                })
+                .collect();
+            self.persist(Change::BookmarkOrder, |db| {
+                db.set_bookmark_order(id, side, &order)
+            });
+        }
+        self.changed();
+        true
+    }
+
+    pub fn move_bookmark_unnotified(
+        &mut self,
+        id: HostId,
+        side: BookmarkSide,
+        path: &str,
+        to: usize,
+    ) -> bool {
+        let Some(list) = self.bookmarks.get_mut(&(id, side)) else {
+            return false;
+        };
+        let Some(from) = list.iter().position(|existing| existing == path) else {
+            return false;
+        };
+        let to = to.min(list.len() - 1);
+        if from == to {
+            return false;
+        }
+        let path = list.remove(from);
+        list.insert(to, path);
+        // The pane is numbered again; what moved is edited.
+        for (order, moved) in (0_i64..).zip(list.iter()) {
+            let meta = self
+                .bookmark_meta
+                .entry((id, side, moved.clone()))
+                .or_default();
+            if meta.sort_order != order {
+                meta.sort_order = order;
+                meta.edited_ms = edited_after(meta.edited_ms);
+            }
+        }
+        self.sync_revision += 1;
+        true
+    }
+
+    /// Every port-forwarding rule, in list order.
+    pub fn forwards(&self) -> &[ForwardRule] {
+        &self.forwards
+    }
+
+    pub fn forward(&self, id: ForwardId) -> Option<&ForwardRule> {
+        self.forwards.iter().find(|rule| rule.id == id)
+    }
+
+    /// The rules that go through `host`: what deleting it takes along.
+    pub fn forwards_of(&self, host: HostId) -> impl Iterator<Item = &ForwardRule> {
+        self.forwards.iter().filter(move |rule| rule.host == host)
+    }
+
+    /// Add a rule at the end of the list. `None` when the draft names a
+    /// host that is not there.
+    pub fn insert_forward(&mut self, draft: ForwardDraft) -> Option<ForwardId> {
+        let id = self.insert_forward_unnotified(draft)?;
+        if let Some(rule) = self.forward(id) {
+            self.persist(Change::NewForward, |db| db.insert_forward(rule));
+        }
+        self.changed();
+        Some(id)
+    }
+
+    pub fn insert_forward_unnotified(&mut self, draft: ForwardDraft) -> Option<ForwardId> {
+        self.saved_ssh_host(draft.host)?;
+        let sort_order = self
+            .forwards
+            .iter()
+            .map(|rule| rule.sort_order)
+            .max()
+            .unwrap_or(-1)
+            + 1;
+        let id = ForwardId(self.next_forward_id);
+        self.next_forward_id += 1;
+        let mut rule = ForwardRule::new(id, draft);
+        rule.sort_order = sort_order;
+        rule.sync_id = self.unused_forward_sync_id();
+        rule.edited_ms = edited_after(0);
+        self.forwards.push(rule);
+        self.sync_revision += 1;
+        Some(id)
+    }
+
+    /// A sync id no forwarding rule in the store has yet.
+    fn unused_forward_sync_id(&self) -> PublicId {
+        PublicId::generate_unused(|id| self.forwards.iter().any(|rule| &rule.sync_id == id))
+    }
+
+    /// Replace the editable fields of a rule; its place in the list is kept.
+    pub fn update_forward(&mut self, id: ForwardId, draft: ForwardDraft) -> bool {
+        let needs_restart = self
+            .forward(id)
+            .is_some_and(|rule| rule.needs_restart(&draft));
+        if !self.update_forward_unnotified(id, draft) {
+            return false;
+        }
+        if let Some(rule) = self.forward(id) {
+            self.persist(Change::SaveForward, |db| db.update_forward(rule));
+        }
+        if needs_restart {
+            self.event(HostEvent::ForwardSettingsChanged(id));
+        }
+        self.changed();
+        true
+    }
+
+    pub fn update_forward_unnotified(&mut self, id: ForwardId, draft: ForwardDraft) -> bool {
+        if self.saved_ssh_host(draft.host).is_none() {
+            return false;
+        }
+        let Some(rule) = self.forwards.iter_mut().find(|rule| rule.id == id) else {
+            return false;
+        };
+        let sort_order = rule.sort_order;
+        let sync_id = rule.sync_id.clone();
+        // Whether it starts with ShellRS is each device's own: changing
+        // only that is no edit.
+        let edited = rule.draft().with_auto_start(draft.auto_start) != draft;
+        let edited_ms = rule.edited_ms;
+        *rule = ForwardRule::new(id, draft);
+        rule.sort_order = sort_order;
+        rule.sync_id = sync_id;
+        rule.edited_ms = edited_ms;
+        if edited {
+            rule.edited_ms = edited_after(edited_ms);
+            self.sync_revision += 1;
+        }
+        true
+    }
+
+    pub fn remove_forward(&mut self, id: ForwardId) -> bool {
+        if !self.remove_forward_unnotified(id) {
+            return false;
+        }
+        self.persist(Change::DeleteForward, |db| db.remove_forward(id));
+        self.changed();
+        true
+    }
+
+    pub fn remove_forward_unnotified(&mut self, id: ForwardId) -> bool {
+        let before = self.forwards.len();
+        self.forwards.retain(|rule| rule.id != id);
+        if self.forwards.len() == before {
+            return false;
+        }
+        self.sync_revision += 1;
+        true
+    }
+
+    /// Every credential, in list order.
+    pub fn credentials(&self) -> &[Credential] {
+        &self.credentials
+    }
+
+    pub fn credential(&self, id: CredentialId) -> Option<&Credential> {
+        self.credentials
+            .iter()
+            .find(|credential| credential.id == id)
+    }
+
+    /// The hosts that log in with `credential`.
+    pub fn hosts_using(&self, credential: CredentialId) -> impl Iterator<Item = &Host> {
+        self.hosts
+            .iter()
+            .filter(move |host| host.credential == Some(credential))
+    }
+
+    /// How a host logs in, with its credential and its jump hosts' logins
+    /// looked up. What the terminal, SFTP, forward and CLI workers are given.
+    pub fn login(&self, id: HostId) -> Option<HostLogin> {
+        self.host(id).map(|host| self.login_of(host))
+    }
+
+    /// How a host's terminal connects: its login for an SSH host, its
+    /// address, route and 自动登录 for a Telnet one, its device and line for
+    /// a serial one.
+    pub fn connection(&self, id: HostId) -> Option<HostConnection> {
+        self.host(id).map(|host| self.connection_of(host))
+    }
+
+    pub fn connection_of(&self, host: &Host) -> HostConnection {
+        match &host.protocol {
+            Protocol::Ssh => HostConnection::Ssh(self.login_of(host)),
+            Protocol::Telnet(settings) => {
+                let credential = host.credential.and_then(|id| self.credential(id));
+                let mut login = TelnetLogin::of(host, settings, credential)
+                    .with_route(self.route_login(&host.route));
+                // As an SSH host's: a temporary host's password is its own.
+                if self.is_temporary(host.id)
+                    && let Some(auto_login) = &mut login.auto_login
+                    && matches!(auto_login.password, Some(SecretRef::Password { .. }))
+                {
+                    auto_login.password = Some(SecretRef::temporary(host.id.0));
+                }
+                HostConnection::Telnet(login)
+            }
+            Protocol::Serial(settings) => HostConnection::Serial(SerialLine {
+                device: host.address.to_string(),
+                settings: *settings,
+            }),
+        }
+    }
+
+    pub fn login_of(&self, host: &Host) -> HostLogin {
+        let mut login = self
+            .direct_login(host)
+            .with_route(self.route_login(&host.route));
+        // A temporary host's password is its own, never a saved host's for
+        // the same `user@host:port` (a password credential's is still the
+        // credential's); and a bastion host that opened a link gets the
+        // terminal alone.
+        if self.is_temporary(host.id) && matches!(login.password, SecretRef::Password { .. }) {
+            login.password = SecretRef::temporary(host.id.0);
+        }
+        login.shell_only = self.is_external(host.id);
+        login
+    }
+
+    /// How `host` logs in once the connection has reached it.
+    fn direct_login(&self, host: &Host) -> HostLogin {
+        HostLogin::of(host, host.credential.and_then(|id| self.credential(id)))
+    }
+
+    /// `route` with every jump host's login looked up. A jump host is
+    /// reached through the one before it, so its own route plays no part.
+    pub fn route_login(&self, route: &Route) -> LoginRoute {
+        match route {
+            Route::Direct => LoginRoute::Direct,
+            Route::Jump(hops) => LoginRoute::Jump(
+                hops.iter()
+                    .map(|hop| match hop.and_then(|id| self.saved_host(id)) {
+                        Some(host) => JumpLogin::Host {
+                            name: host.name.to_string(),
+                            login: Box::new(self.direct_login(host)),
+                        },
+                        None => JumpLogin::Deleted,
+                    })
+                    .collect(),
+            ),
+            Route::Proxy(proxy) => LoginRoute::Proxy(ProxyLogin::from(proxy)),
+        }
+    }
+
+    /// How many hosts other than `ids` go through one of them as a jump
+    /// host: what deleting `ids` leaves without a way through.
+    pub fn jump_users(&self, ids: &[HostId]) -> usize {
+        self.hosts
+            .iter()
+            .filter(|host| {
+                !ids.contains(&host.id) && host.route.jump_hosts().any(|hop| ids.contains(&hop))
+            })
+            .count()
+    }
+
+    /// The hosts other than `ids` that go through one of them.
+    fn jumping_through(&self, ids: &[HostId]) -> Vec<HostId> {
+        self.hosts
+            .iter()
+            .filter(|host| {
+                !ids.contains(&host.id) && host.route.jump_hosts().any(|hop| ids.contains(&hop))
+            })
+            .map(|host| host.id)
+            .collect()
+    }
+
+    /// Record when `hosts` lost a hop to a deleted host: the database
+    /// empties the hop itself (`ON DELETE SET NULL`).
+    fn write_hops_emptied(&self, hosts: &[HostId]) {
+        let edits: Vec<(HostId, u64)> = hosts
+            .iter()
+            .filter_map(|id| self.saved_host(*id))
+            .map(|host| (host.id, host.edited_ms))
+            .collect();
+        if !edits.is_empty() {
+            self.persist(Change::SaveHost, |db| db.set_hosts_edited(&edits));
+        }
+    }
+
+    /// What keeps a host an SSH host: the hosts that go through it as a
+    /// jump host, and the port forwards that go via it.
+    pub fn ssh_dependents(&self, id: HostId) -> (usize, usize) {
+        (self.jump_users(&[id]), self.forwards_of(id).count())
+    }
+
+    /// Every host's connection, temporary ones included, to tell afterwards
+    /// which passwords they read.
+    fn logins(&self) -> Vec<(HostId, HostConnection)> {
+        self.hosts
+            .iter()
+            .chain(&self.temporary)
+            .map(|host| (host.id, self.connection_of(host)))
+            .collect()
+    }
+
+    /// Add a credential at the end of the list.
+    pub fn insert_credential(&mut self, draft: CredentialDraft) -> CredentialId {
+        let id = self.insert_credential_unnotified(draft);
+        if let Some(credential) = self.credential(id) {
+            self.persist(Change::NewCredential, |db| db.insert_credential(credential));
+        }
+        self.date_private_key(id);
+        self.changed();
+        id
+    }
+
+    /// A key credential saved has its key file written just before (see
+    /// [`Self::save_private_key`]): date the key for sync, whether its
+    /// text changed or not, which costs a round nothing.
+    fn date_private_key(&mut self, id: CredentialId) {
+        if let Some(credential) = self
+            .credential(id)
+            .filter(|credential| credential.kind == CredentialKind::Key)
+        {
+            let keychain_id = credential.keychain_id.to_string();
+            self.stamp_secret(shellrs_sync::Kind::SecretPrivateKey, keychain_id);
+        }
+    }
+
+    pub fn insert_credential_unnotified(&mut self, draft: CredentialDraft) -> CredentialId {
+        let sort_order = self
+            .credentials
+            .iter()
+            .map(|credential| credential.sort_order)
+            .max()
+            .unwrap_or(-1)
+            + 1;
+        let id = CredentialId(self.next_credential_id);
+        self.next_credential_id += 1;
+        let mut credential = Credential::new(id, draft);
+        credential.keychain_id = PublicId::generate_unused(|candidate| {
+            self.credentials
+                .iter()
+                .any(|credential| &credential.keychain_id == candidate)
+        });
+        credential.sort_order = sort_order;
+        credential.edited_ms = edited_after(0);
+        self.credentials.push(credential);
+        self.sync_revision += 1;
+        id
+    }
+
+    /// Replace the editable fields of a credential. Every host using it
+    /// takes the new user name; what is connected stays as it was.
+    pub fn update_credential(&mut self, id: CredentialId, draft: CredentialDraft) -> bool {
+        let Some(previous) = self.credential(id).cloned() else {
+            return false;
+        };
+        let logins = self.logins();
+        if !self.update_credential_unnotified(id, draft) {
+            return false;
+        }
+        if let Some(credential) = self.credential(id) {
+            self.persist(Change::SaveCredential, |db| {
+                db.update_credential(credential)
+            });
+        }
+        self.date_private_key(id);
+        if previous.kind == CredentialKind::Password
+            && self
+                .credential(id)
+                .is_some_and(|credential| credential.kind != CredentialKind::Password)
+        {
+            self.save_secret(previous.password_secret(), None);
+        }
+        if let Some(path) = previous.key_path.as_deref()
+            && self
+                .credential(id)
+                .is_some_and(|credential| credential.key_path.as_deref() != Some(path))
+        {
+            self.forget_key_file(path);
+        }
+        for (host, before) in &logins {
+            if self.host(*host).is_some_and(|s| s.credential == Some(id)) {
+                self.forget_passwords_of(before);
+            }
+        }
+        self.changed();
+        true
+    }
+
+    pub fn update_credential_unnotified(
+        &mut self,
+        id: CredentialId,
+        draft: CredentialDraft,
+    ) -> bool {
+        let Some(credential) = self
+            .credentials
+            .iter_mut()
+            .find(|credential| credential.id == id)
+        else {
+            return false;
+        };
+        let keychain_id = credential.keychain_id.clone();
+        let sort_order = credential.sort_order;
+        let edited_ms = credential.edited_ms;
+        *credential = Credential::new(id, draft);
+        credential.keychain_id = keychain_id;
+        credential.sort_order = sort_order;
+        credential.edited_ms = edited_after(edited_ms);
+        self.sync_revision += 1;
+        let user = credential.user.clone();
+        for host in self.hosts.iter_mut().chain(&mut self.temporary) {
+            if host.credential == Some(id) {
+                host.user = user.clone();
+            }
+        }
+        true
+    }
+
+    /// Delete a credential. The hosts using it log in on their own again,
+    /// automatically and as the same user, and are returned. They are not
+    /// reconnected: deleting a credential does not drop a working connection.
+    pub fn remove_credential(&mut self, id: CredentialId) -> Vec<HostId> {
+        let Some(credential) = self.credential(id).cloned() else {
+            return Vec::new();
+        };
+        let released = self.remove_credential_unnotified(id);
+        let auth = credential.kind.without_credential();
+        let edited_ms = released
+            .iter()
+            .filter_map(|host| self.saved_host(*host))
+            .map(|host| host.edited_ms)
+            .max()
+            .unwrap_or_else(|| edited_after(0));
+        self.persist(Change::DeleteCredential, |db| {
+            db.remove_credential(id, auth, edited_ms)
+        });
+        if credential.kind == CredentialKind::Password {
+            self.save_secret(credential.password_secret(), None);
+        }
+        if let Some(path) = credential.key_path.as_deref() {
+            self.forget_key_file(path);
+        }
+        self.changed();
+        released
+    }
+
+    pub fn remove_credential_unnotified(&mut self, id: CredentialId) -> Vec<HostId> {
+        let Some(index) = self
+            .credentials
+            .iter()
+            .position(|credential| credential.id == id)
+        else {
+            return Vec::new();
+        };
+        let auth = self.credentials.remove(index).kind.without_credential();
+        let mut released = Vec::new();
+        // The released hosts are edited on the user's behalf, all at one
+        // time, as the database records it.
+        let edited_ms = self
+            .hosts
+            .iter()
+            .filter(|host| host.credential == Some(id))
+            .map(|host| edited_after(host.edited_ms))
+            .max()
+            .unwrap_or_default();
+        // A temporary host using it goes on as its saved ones do, though
+        // the database never hears of it.
+        for host in self.hosts.iter_mut().chain(&mut self.temporary) {
+            if host.credential == Some(id) {
+                host.credential = None;
+                host.auth = auth;
+                host.edited_ms = edited_ms;
+                released.push(host.id);
+            }
+        }
+        self.sync_revision += 1;
+        released
+    }
+
+    /// Persist a group's expanded or collapsed state after a tree interaction.
+    pub fn set_group_expanded(&mut self, id: GroupId, expanded: bool) -> bool {
+        let Some(group) = self.groups.iter_mut().find(|group| group.id == id) else {
+            return false;
+        };
+        if group.expanded == expanded {
+            return false;
+        }
+        group.expanded = expanded;
+        self.persist(Change::GroupExpanded, |db| {
+            db.set_group_expanded(id, expanded)
+        });
+        self.changed();
+        true
+    }
+
+    /// Apply one expansion choice to the whole tree and persist it together.
+    pub fn set_all_groups_expanded(&mut self, expanded: bool) -> bool {
+        if self.groups.iter().all(|group| group.expanded == expanded) {
+            return false;
+        }
+        for group in &mut self.groups {
+            group.expanded = expanded;
+        }
+        self.persist(Change::AllGroupsExpanded, |db| {
+            db.set_all_groups_expanded(expanded)
+        });
+        self.changed();
+        true
+    }
+
+    /// Move a group or host in the tree and persist its new location and
+    /// sibling order in one transaction.
+    pub fn move_node(&mut self, source: HostNode, drop: NodeDrop) -> bool {
+        if !self.move_node_unnotified(source, drop) {
+            return false;
+        }
+        self.persist(Change::MoveHostNode, |db| {
+            db.save_tree_order(&self.groups, &self.hosts)
+        });
+        self.changed();
+        true
+    }
+
+    pub fn move_node_unnotified(&mut self, source: HostNode, drop: NodeDrop) -> bool {
+        let (parent, target, after) = match drop {
+            NodeDrop::Before(target) => (self.node_parent(target), Some(target), false),
+            NodeDrop::After(target) => (self.node_parent(target), Some(target), true),
+            NodeDrop::Into(group) if self.group(group).is_some() => {
+                (Some(Some(group)), None, false)
+            }
+            NodeDrop::Root => (Some(None), None, false),
+            _ => return false,
+        };
+        let Some(parent) = parent else {
+            return false;
+        };
+        if target == Some(source) {
+            return false;
+        }
+        match source {
+            HostNode::Group(id) => {
+                if self.group(id).is_none() {
+                    return false;
+                }
+                if parent == Some(id)
+                    || parent.is_some_and(|parent| self.descendant_groups(id).contains(&parent))
+                {
+                    return false;
+                }
+                let target = match target {
+                    Some(HostNode::Group(target)) => Some(target),
+                    Some(HostNode::Host(_)) => return false,
+                    None => None,
+                };
+                let siblings = self
+                    .groups
+                    .iter()
+                    .filter(|g| g.parent == parent)
+                    .map(|g| (g.sort_order, g.id))
+                    .collect();
+                let Some(ids) = reordered(siblings, id, target, after) else {
+                    return false;
+                };
+                for group in &mut self.groups {
+                    let before = (group.parent, group.sort_order);
+                    if group.id == id {
+                        group.parent = parent;
+                    }
+                    if let Some(order) = ids.iter().position(|sibling| *sibling == group.id) {
+                        group.sort_order = order as i64;
+                    }
+                    if (group.parent, group.sort_order) != before {
+                        group.edited_ms = edited_after(group.edited_ms);
+                    }
+                }
+            }
+            HostNode::Host(id) => {
+                if self.saved_host(id).is_none() {
+                    return false;
+                }
+                let target = match target {
+                    Some(HostNode::Host(target)) => Some(target),
+                    Some(HostNode::Group(_)) => return false,
+                    None => None,
+                };
+                let siblings = self
+                    .hosts
+                    .iter()
+                    .filter(|s| s.group == parent)
+                    .map(|s| (s.sort_order, s.id))
+                    .collect();
+                let Some(ids) = reordered(siblings, id, target, after) else {
+                    return false;
+                };
+                for host in &mut self.hosts {
+                    let before = (host.group, host.sort_order);
+                    if host.id == id {
+                        host.group = parent;
+                    }
+                    if let Some(order) = ids.iter().position(|sibling| *sibling == host.id) {
+                        host.sort_order = order as i64;
+                    }
+                    if (host.group, host.sort_order) != before {
+                        host.edited_ms = edited_after(host.edited_ms);
+                    }
+                }
+            }
+        }
+        self.sync_revision += 1;
+        true
+    }
+
+    fn node_parent(&self, node: HostNode) -> Option<Option<GroupId>> {
+        match node {
+            HostNode::Group(id) => self.group(id).map(|g| g.parent),
+            HostNode::Host(id) => self.saved_host(id).map(|s| s.group),
+        }
+    }
+
+    /// Delete a group with its subgroups and every host inside them.
+    /// Returns the hosts that went with it, so the workspace can close
+    /// their tabs.
+    pub fn remove_group(&mut self, id: GroupId) -> Vec<HostId> {
+        if self.group(id).is_none() {
+            return Vec::new();
+        }
+        let passwords = self.passwords_of(&self.hosts_under(id));
+        let emptied = self.jumping_through(&self.hosts_under(id));
+        let removed = self.remove_group_unnotified(id);
+        // One delete mirrors the whole subtree: both foreign keys cascade.
+        self.persist(Change::DeleteGroup, |db| db.remove_group(id));
+        self.write_hops_emptied(&emptied);
+        for password in passwords {
+            self.forget_password(password);
+        }
+        self.changed();
+        removed
+    }
+
+    pub fn remove_group_unnotified(&mut self, id: GroupId) -> Vec<HostId> {
+        if self.group(id).is_none() {
+            return Vec::new();
+        }
+        let removed = self.hosts_under(id);
+        let mut doomed = self.descendant_groups(id);
+        doomed.push(id);
+        self.groups.retain(|group| !doomed.contains(&group.id));
+        self.sync_revision += 1;
+        // As the database's `ON DELETE CASCADE` does.
+        self.snippets.retain(|snippet| match snippet.scope {
+            SnippetScope::Group(group) => !doomed.contains(&group),
+            _ => true,
+        });
+        for host in &removed {
+            self.remove_unnotified(*host);
+        }
+        removed
+    }
+
+    /// A terminal or SFTP tab of the host connected: a saved host goes to
+    /// the front of the recent list.
+    pub fn record_connection(&mut self, id: HostId) {
+        if !self.record_connection_unnotified(id) {
+            return;
+        }
+        self.persist(Change::Recent, |db| db.touch_connected(id, now_seconds()));
+        self.changed();
+    }
+
+    /// Returns whether it was a saved host's: one not saved, a link's
+    /// included, never joins the recent list.
+    pub fn record_connection_unnotified(&mut self, id: HostId) -> bool {
+        if self.saved_host(id).is_none() {
+            return false;
+        }
+        self.recent.retain(|recent| *recent != id);
+        self.recent.insert(0, id);
+        self.recent.truncate(MAX_RECENT);
+        true
+    }
+
+    /// Record what a connection found on the host. Called after every
+    /// successful connection, so a rebuilt machine corrects itself.
+    pub fn set_host_os(&mut self, id: HostId, os: Option<HostOs>) {
+        if !self.set_host_os_unnotified(id, os) {
+            return;
+        }
+        if !self.is_temporary(id) {
+            self.persist(Change::HostOs, |db| db.set_host_os(id, os));
+        }
+        self.changed();
+    }
+
+    /// Returns whether the recorded system changed.
+    pub fn set_host_os_unnotified(&mut self, id: HostId, os: Option<HostOs>) -> bool {
+        let Some(host) = self.host_mut(id) else {
+            return false;
+        };
+        if host.os == os {
+            return false;
+        }
+        host.os = os;
+        true
+    }
+
+    /// Remember the right sidebar's tool (its key) for the host's
+    /// terminals, `None` for hidden. Only a saved host keeps it for the next
+    /// launch.
+    pub fn set_host_sidebar_tool(&mut self, id: HostId, tool: Option<SharedString>) {
+        if !self.set_host_sidebar_tool_unnotified(id, tool.clone()) {
+            return;
+        }
+        if !self.is_temporary(id) {
+            self.persist(Change::SidebarTool, |db| {
+                db.set_host_sidebar_tool(id, tool.as_deref())
+            });
+        }
+        self.changed();
+    }
+
+    /// Returns whether the remembered tool changed.
+    pub fn set_host_sidebar_tool_unnotified(
+        &mut self,
+        id: HostId,
+        tool: Option<SharedString>,
+    ) -> bool {
+        let Some(host) = self.host_mut(id) else {
+            return false;
+        };
+        if host.sidebar_tool == tool {
+            return false;
+        }
+        host.sidebar_tool = tool;
+        true
+    }
+
+    /// Where passwords are read from. The host form uses this to pre-fill
+    /// its field; the workspace hands it to the SSH provider.
+    pub fn secrets(&self) -> SharedSecretStore {
+        self.secrets.clone()
+    }
+
+    /// Where pasted and generated private keys are kept, if anywhere.
+    pub fn key_dir(&self) -> Option<&Path> {
+        self.key_dir.as_deref()
+    }
+
+    /// Save the text of a private key pasted into or generated by the form
+    /// for `credential` (`None` while it is being created) and say where it
+    /// went.
+    ///
+    /// A key file of ShellRS's own that nothing else logs in with is written
+    /// over: the credential keeps its path, so the hosts using it are not
+    /// reconnected with a key no server has been given yet. Anything else
+    /// gets a new file. Writes on the calling thread, like the database:
+    /// it is one small file, and the credential must not refer to it before
+    /// it is there.
+    pub fn save_private_key(
+        &self,
+        credential: Option<CredentialId>,
+        text: &str,
+    ) -> Result<SharedString, KeyFileError> {
+        let dir = self.key_dir.as_deref().ok_or(KeyFileError::NoKeyDir)?;
+        let replace = credential
+            .and_then(|id| self.credential(id))
+            .and_then(|credential| credential.key_path.as_deref())
+            .filter(|path| self.keeps_key(path) && self.key_file_users(path) == 1)
+            .map(Path::new);
+        let path = write_key_file(dir, replace, text)?;
+        Ok(path.display().to_string().into())
+    }
+
+    /// Keep a copy of the user's key file at `path` among ShellRS's own
+    /// keys, for `credential` as [`Self::save_private_key`] does, and say
+    /// where it went: what ShellRS keeps is what syncs. The user's file is
+    /// read once and never touched. `None` when there is nothing to do: the
+    /// file is one ShellRS keeps already, or there is no folder to keep
+    /// keys in.
+    pub fn keep_key_file(
+        &self,
+        credential: Option<CredentialId>,
+        path: &str,
+    ) -> Result<Option<SharedString>, KeyFileError> {
+        if self.key_dir.is_none() || self.keeps_key(path) {
+            return Ok(None);
+        }
+        let text =
+            super::private_key::read_small(Path::new(path)).ok_or(KeyFileError::Unreadable)?;
+        self.save_private_key(credential, &text).map(Some)
+    }
+
+    /// Whether `path` is a key file ShellRS keeps itself.
+    pub fn keeps_key_file(&self, path: &str) -> bool {
+        self.keeps_key(path)
+    }
+
+    /// Whether `path` is a key file ShellRS keeps itself.
+    fn keeps_key(&self, path: &str) -> bool {
+        self.key_dir
+            .as_deref()
+            .is_some_and(|dir| is_kept_in(dir, Path::new(path)))
+    }
+
+    /// How many credentials log in with the key file at `path`. Hosts have
+    /// no key files of their own.
+    fn key_file_users(&self, path: &str) -> usize {
+        self.credentials
+            .iter()
+            .filter(|credential| credential.key_path.as_deref() == Some(path))
+            .count()
+    }
+
+    /// Delete a key file ShellRS keeps, with its saved passphrase, once
+    /// nothing logs in with it any more. A key file anywhere else is the
+    /// user's and is never touched.
+    fn forget_key_file(&mut self, path: &str) {
+        if !self.keeps_key(path) || self.key_file_users(path) > 0 {
+            return;
+        }
+        if let Err(error) = std::fs::remove_file(path)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            self.report(Failure::KeyNotDeleted {
+                error: error.to_string(),
+            });
+        }
+        self.save_secret(SecretRef::passphrase(path), None);
+    }
+
+    /// Write a secret to the system keychain, or delete it when `value` is
+    /// `None`.
+    ///
+    /// The keychain call blocks and on macOS may raise a system authorization
+    /// dialog, so it is not made here: the write waits in
+    /// [`Self::take_secret_jobs`] for whoever holds the data to run it on a
+    /// background thread. A failure costs persistence, never the edit: it
+    /// comes back as [`Failure::Secret`], exactly like a failed database
+    /// write.
+    pub fn save_secret(&mut self, secret: SecretRef, value: Option<String>) {
+        let job = self.secret_job(secret, value);
+        self.secret_jobs.push(job);
+    }
+
+    /// The keychain write [`Self::save_secret`] queues, for a caller that
+    /// runs it itself to know how it went. Hand what it comes to back to
+    /// [`Self::secret_done`].
+    pub fn secret_job(&self, secret: SecretRef, value: Option<String>) -> SecretJob {
+        SecretJob {
+            secrets: self.secrets(),
+            secret,
+            value: value.map(Zeroizing::new),
+        }
+    }
+
+    /// The keychain writes waiting to run, oldest first.
+    pub fn take_secret_jobs(&mut self) -> Vec<SecretJob> {
+        std::mem::take(&mut self.secret_jobs)
+    }
+
+    /// Take how a [`SecretJob`] went. A secret saved is dated for sync once
+    /// it is in the keychain: dated before, a round in between could take
+    /// the old value for the edit.
+    pub fn secret_done(&mut self, outcome: SecretOutcome) {
+        match outcome.failure() {
+            None => {
+                self.note_secret_edit(&outcome.secret);
+                self.changed();
+            }
+            // Never in a batch or a capture: those are over by the time a
+            // keychain write is.
+            Some(failure) => self.event(HostEvent::Failed(failure)),
+        }
+    }
+
+    /// The distinct password entries these hosts log in with, their
+    /// proxies' included.
+    fn passwords_of(&self, ids: &[HostId]) -> Vec<SecretRef> {
+        let mut passwords: Vec<SecretRef> = Vec::new();
+        for connection in ids.iter().filter_map(|id| self.connection(*id)) {
+            for secret in connection.password_entries() {
+                if !passwords.contains(&secret) {
+                    passwords.push(secret);
+                }
+            }
+        }
+        passwords
+    }
+
+    /// Forget the endpoint and proxy passwords `connection` used, those that
+    /// no host uses any more.
+    fn forget_passwords_of(&mut self, connection: &HostConnection) {
+        for secret in connection.password_entries() {
+            self.forget_password(secret);
+        }
+    }
+
+    /// Delete an endpoint's or a proxy's saved password once no host logs
+    /// in with it. A credential's password is left alone: it goes with the
+    /// credential, not with the hosts using it.
+    fn forget_password(&mut self, secret: SecretRef) {
+        if matches!(secret, SecretRef::Password { .. } | SecretRef::Proxy { .. })
+            && !self.password_in_use(&secret)
+        {
+            self.save_secret(secret, None);
+        }
+    }
+
+    /// Whether any host still logs in with this password entry, or goes
+    /// through a proxy with it. Entries are shared, so one may only be
+    /// cleaned up once the last host using it is gone.
+    fn password_in_use(&self, secret: &SecretRef) -> bool {
+        self.hosts
+            .iter()
+            .any(|host| self.connection_of(host).password_entries().contains(secret))
+    }
+
+    /// Write a change through to the database, when there is one. A failed
+    /// write becomes an event; the in-memory change stands.
+    fn persist(&self, change: Change, write: impl FnOnce(&HostDatabase) -> rusqlite::Result<()>) {
+        if let Some(database) = &self.database
+            && let Err(error) = write(database)
+        {
+            self.report(Failure::NotSaved {
+                change,
+                error: error.to_string(),
+            });
+        }
+    }
+
+    /// Say that something could not be kept, as an event, and to the
+    /// capture when one is listening (see [`Self::begin_capture`]).
+    fn report(&self, failure: Failure) {
+        if let Some(failures) = self.capturing.borrow_mut().as_mut() {
+            failures.push(failure.clone());
+        }
+        let first = self
+            .batch
+            .borrow_mut()
+            .as_mut()
+            .is_none_or(|batch| batch.reported.insert(failure.clone()));
+        if first {
+            self.event(HostEvent::Failed(failure));
+        }
+    }
+
+    /// Say what observers of the data should know.
+    fn event(&self, event: HostEvent) {
+        self.events.borrow_mut().push(event);
+    }
+
+    /// Say that what observers see has changed.
+    fn changed(&self) {
+        self.event(HostEvent::Changed);
+    }
+
+    /// What happened since last asked, in order.
+    pub fn take_events(&mut self) -> Vec<HostEvent> {
+        std::mem::take(self.events.get_mut())
+    }
+
+    /// Start writing every change to the database in one transaction, until
+    /// [`Self::end_batch`]: a burst of them (an import) pays for one commit
+    /// rather than one each. Each write still lands whole or not at all, and
+    /// the memory changes stand as they always do. A failure repeated within
+    /// it is said once.
+    ///
+    /// Inside a batch already this joins it and returns false: end only
+    /// the batch that this returned true for.
+    pub fn begin_batch(&mut self) -> bool {
+        if self.batch.get_mut().is_some() {
+            return false;
+        }
+        let begun = self
+            .database
+            .as_ref()
+            .is_some_and(|database| database.begin_batch().is_ok());
+        *self.batch.get_mut() = Some(Batch {
+            begun,
+            reported: HashSet::new(),
+        });
+        true
+    }
+
+    /// Commit the batch [`Self::begin_batch`] began.
+    pub fn end_batch(&mut self) {
+        let Some(batch) = self.batch.get_mut().take() else {
+            return;
+        };
+        if batch.begun
+            && let Some(database) = &self.database
+            && let Err(error) = database.end_batch()
+        {
+            self.report(Failure::NotSaved {
+                change: Change::Batch,
+                error: error.to_string(),
+            });
+        }
+    }
+
+    /// Start listening for what cannot be written to the database (or a
+    /// key file deleted), for a caller that answers someone who cannot see
+    /// the events: the external CLI. The failures are events all the same.
+    /// Keychain writes are not among them: they finish later. Returns the
+    /// capture this one is inside of, to hand to [`Self::end_capture`].
+    pub fn begin_capture(&mut self) -> Option<Vec<Failure>> {
+        self.capturing.replace(Some(Vec::new()))
+    }
+
+    /// What could not be kept since [`Self::begin_capture`] returned `outer`.
+    pub fn end_capture(&mut self, outer: Option<Vec<Failure>>) -> Vec<Failure> {
+        self.capturing.replace(outer).unwrap_or_default()
+    }
+
+    /// The sort order that puts a host last in `group`, among the
+    /// hosts other than `except`.
+    fn last_host_order(&self, group: Option<GroupId>, except: Option<HostId>) -> i64 {
+        self.hosts
+            .iter()
+            .filter(|s| Some(s.id) != except && s.group == group)
+            .map(|s| s.sort_order)
+            .max()
+            .unwrap_or(-1)
+            + 1
+    }
+
+    /// The sort order that puts a group last under `parent`, among the
+    /// groups other than `except`.
+    fn last_group_order(&self, parent: Option<GroupId>, except: Option<GroupId>) -> i64 {
+        self.groups
+            .iter()
+            .filter(|g| Some(g.id) != except && g.parent == parent)
+            .map(|g| g.sort_order)
+            .max()
+            .unwrap_or(-1)
+            + 1
+    }
+}
+
+/// The order `id` and its new siblings end up in: `id` goes before or after
+/// `target`, or to the end without one. `siblings` are the rows under the new
+/// parent as `(sort_order, id)`, with `id` among them when it is not changing
+/// parent. `None` when `target` is not one of them, or nothing would move.
+fn reordered<Id: Copy + Ord>(
+    mut siblings: Vec<(i64, Id)>,
+    id: Id,
+    target: Option<Id>,
+    after: bool,
+) -> Option<Vec<Id>> {
+    siblings.sort();
+    let old_index = siblings.iter().position(|(_, sibling)| *sibling == id);
+    let mut ids: Vec<Id> = siblings
+        .into_iter()
+        .map(|(_, sibling)| sibling)
+        .filter(|sibling| *sibling != id)
+        .collect();
+    let index = match target {
+        Some(target) => ids.iter().position(|sibling| *sibling == target)? + usize::from(after),
+        None => ids.len(),
+    };
+    if old_index == Some(index) {
+        return None;
+    }
+    ids.insert(index, id);
+    Some(ids)
+}
+
+impl HostData {
+    /// `route` as the store keeps it for host `own` (`None` while it is
+    /// being created): no host jumps through itself, a jump host that is
+    /// not there is a deleted one, and a jump with no hosts is no jump.
+    fn normalized_route(&self, route: Route, own: Option<HostId>) -> Route {
+        match route {
+            Route::Jump(hops) => {
+                let hops: Vec<_> = hops
+                    .into_iter()
+                    .filter(|hop| hop.is_none() || *hop != own)
+                    .map(|hop| hop.filter(|id| self.saved_ssh_host(*id).is_some()))
+                    .collect();
+                if hops.is_empty() {
+                    Route::Direct
+                } else {
+                    Route::Jump(hops)
+                }
+            }
+            route => route,
+        }
+    }
+}
+
+/// `draft` as the store keeps it. A host using a credential logs in as
+/// the credential's user and keeps nothing of its own login; one naming a
+/// credential that is not there logs in on its own. A Telnet host is kept
+/// as an SSH one: its credential is its 自动登录's.
+fn normalized(credentials: &[Credential], mut draft: HostDraft) -> HostDraft {
+    if draft.protocol.is_serial() {
+        // Nothing of a login: no credential to count it as a user of, no
+        // jump hosts to keep alive.
+        draft.credential = None;
+        draft.route = Route::Direct;
+        return draft;
+    }
+    let credential = draft
+        .credential
+        .and_then(|id| credentials.iter().find(|credential| credential.id == id));
+    match credential {
+        Some(credential) => {
+            draft.user = credential.user.clone();
+            draft.auth = AuthKind::default();
+        }
+        None => draft.credential = None,
+    }
+    draft
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{ForwardEndpoint, ForwardKind, LoginMethod, ProxyKind, ProxySettings};
+    use super::*;
+
+    fn draft(name: &str, group: Option<GroupId>) -> HostDraft {
+        HostDraft::new(name, "10.0.0.1", 22, "root", AuthKind::Password, group)
+    }
+
+    /// What the user changes is dated, each time anew, for sync to tell an
+    /// edit; what only this device keeps is not.
+    #[test]
+    fn edits_are_dated_and_what_only_this_device_keeps_is_not() {
+        let mut store = HostData::empty();
+        let group = store.insert_group_unnotified(GroupDraft::new("生产", None));
+        let web = store.insert_unnotified(draft("web", Some(group)));
+        let created = store.host(web).unwrap().edited_ms;
+        assert!(created > 0);
+
+        let revision = store.sync_revision();
+        store.set_host_os_unnotified(web, Some(HostOs::Debian));
+        store.record_connection_unnotified(web);
+        assert_eq!(store.host(web).unwrap().edited_ms, created);
+        assert_eq!(store.sync_revision(), revision);
+
+        // Two edits in one millisecond are still two.
+        let mut renamed = store.host(web).unwrap().draft();
+        renamed.name = "web-01".into();
+        store.update_unnotified(web, renamed.clone());
+        let first = store.host(web).unwrap().edited_ms;
+        store.update_unnotified(web, renamed);
+        let second = store.host(web).unwrap().edited_ms;
+        assert!(created < first && first < second);
+        assert!(store.sync_revision() > revision);
+        assert!(PublicId::has_shape(
+            store.host(web).unwrap().public_id.as_str()
+        ));
+
+        // A group keeps its sync id through an edit.
+        let sync_id = store.group(group).unwrap().sync_id.clone();
+        store.update_group_unnotified(group, GroupDraft::new("prod", None));
+        assert_eq!(store.group(group).unwrap().sync_id, sync_id);
+
+        // Whether a forward starts with ShellRS is this device's own.
+        let rule = store
+            .insert_forward_unnotified(ForwardDraft::new(
+                ForwardKind::Dynamic,
+                web,
+                ForwardEndpoint::new("127.0.0.1", 1080),
+                None,
+            ))
+            .unwrap();
+        let before = store.forward(rule).unwrap().clone();
+        let started = before.draft().with_auto_start(true);
+        store.update_forward_unnotified(rule, started);
+        let after = store.forward(rule).unwrap();
+        assert!(after.auto_start);
+        assert_eq!(
+            (&after.sync_id, after.edited_ms),
+            (&before.sync_id, before.edited_ms)
+        );
+
+        // Deleting a jump host edits the hosts that went through it.
+        let inner =
+            store.insert_unnotified(draft("inner", None).with_route(Route::Jump(vec![Some(web)])));
+        let inner_before = store.host(inner).unwrap().edited_ms;
+        store.remove_unnotified(web);
+        let inner_after = store.host(inner).unwrap();
+        assert_eq!(inner_after.route, Route::Jump(vec![None]));
+        assert!(inner_after.edited_ms > inner_before);
+    }
+
+    #[test]
+    fn bookmarks_are_per_pane_and_leave_with_their_host() {
+        let mut store = HostData::empty();
+        let group = store.insert_group_unnotified(GroupDraft::new("生产", None));
+        let web = store.insert_unnotified(draft("web", Some(group)));
+        let db = store.insert_unnotified(draft("db", None));
+        assert!(store.add_bookmark_unnotified(web, BookmarkSide::Remote, "/var/log"));
+        assert!(!store.add_bookmark_unnotified(web, BookmarkSide::Remote, "/var/log"));
+        assert!(store.add_bookmark_unnotified(web, BookmarkSide::Local, "/tmp"));
+        assert!(store.add_bookmark_unnotified(db, BookmarkSide::Remote, "/srv"));
+        assert!(!store.add_bookmark_unnotified(HostId(99), BookmarkSide::Remote, "/x"));
+        assert_eq!(store.bookmarks(web, BookmarkSide::Remote), ["/var/log"]);
+        assert_eq!(store.bookmarks(web, BookmarkSide::Local), ["/tmp"]);
+        assert!(store.remove_bookmark_unnotified(db, BookmarkSide::Remote, "/srv"));
+        assert!(store.bookmarks(db, BookmarkSide::Remote).is_empty());
+
+        assert!(store.add_bookmark_unnotified(web, BookmarkSide::Remote, "/etc"));
+        assert!(store.add_bookmark_unnotified(web, BookmarkSide::Remote, "/opt"));
+        assert!(store.move_bookmark_unnotified(web, BookmarkSide::Remote, "/opt", 0));
+        assert!(!store.move_bookmark_unnotified(web, BookmarkSide::Remote, "/opt", 0));
+        assert!(store.move_bookmark_unnotified(web, BookmarkSide::Remote, "/var/log", 9));
+        assert_eq!(
+            store.bookmarks(web, BookmarkSide::Remote),
+            ["/opt", "/etc", "/var/log"]
+        );
+        assert!(!store.move_bookmark_unnotified(web, BookmarkSide::Remote, "/missing", 0));
+
+        // Removing a group matches the database cascade.
+        store.remove_group_unnotified(group);
+        assert!(store.bookmarks(web, BookmarkSide::Remote).is_empty());
+        assert!(store.bookmarks(web, BookmarkSide::Local).is_empty());
+    }
+
+    #[test]
+    fn a_serial_host_is_no_way_through() {
+        let mut store = HostData::empty();
+        let web = store.insert_unnotified(draft("web", None));
+        let console = store.insert_unnotified(HostDraft::serial(
+            "console",
+            "COM3",
+            super::super::SerialSettings::default(),
+            None,
+        ));
+        assert_eq!(
+            store.ssh_hosts().map(|host| host.id).collect::<Vec<_>>(),
+            [web]
+        );
+        assert_eq!(
+            store.insert_forward_unnotified(forward_draft(console, 8080)),
+            None
+        );
+        assert!(
+            store
+                .insert_forward_unnotified(forward_draft(web, 8080))
+                .is_some()
+        );
+        // A serial host is no jump host: the hop reads as a deleted one.
+        let through = store.insert_unnotified(
+            draft("behind", None).with_route(Route::Jump(vec![Some(console), Some(web)])),
+        );
+        assert_eq!(
+            store.host(through).unwrap().route,
+            Route::Jump(vec![None, Some(web)])
+        );
+        // It has no password to keep, nor to look for.
+        assert!(store.passwords_of(&[console]).is_empty());
+        // An SSH host a forward goes via stays one; the serial host may
+        // become one.
+        assert!(!store.update_unnotified(
+            web,
+            HostDraft::serial("web", "COM4", super::super::SerialSettings::default(), None)
+        ));
+        assert!(store.host(web).unwrap().is_ssh());
+        assert!(store.update_unnotified(console, draft("console", None)));
+        assert!(store.host(console).unwrap().is_ssh());
+    }
+
+    #[test]
+    fn an_ssh_host_changes_protocol_once_nothing_goes_through_it() {
+        let mut store = HostData::empty();
+        let jump = store.insert_unnotified(draft("jump", None));
+        let behind =
+            store.insert_unnotified(draft("behind", None).with_route(jump_through(&[jump])));
+        let switch = HostDraft::telnet("jump", "10.0.0.1", 23, None);
+        assert_eq!(store.ssh_dependents(jump), (1, 0));
+        assert!(!store.update_unnotified(jump, switch.clone()));
+        // Through no other host any more, it may be another protocol, and
+        // back again.
+        store.update_unnotified(behind, draft("behind", None));
+        assert_eq!(store.ssh_dependents(jump), (0, 0));
+        assert!(store.update_unnotified(jump, switch));
+        assert!(store.host(jump).unwrap().protocol.telnet().is_some());
+        assert!(store.update_unnotified(jump, draft("jump", None)));
+        assert!(store.host(jump).unwrap().is_ssh());
+    }
+
+    #[test]
+    fn a_telnet_host_is_no_way_through() {
+        let mut store = HostData::empty();
+        let web = store.insert_unnotified(draft("web", None));
+        let switch = store.insert_unnotified(HostDraft::telnet("switch", "10.0.0.5", 23, None));
+        assert_eq!(
+            store.ssh_hosts().map(|host| host.id).collect::<Vec<_>>(),
+            [web]
+        );
+        assert_eq!(
+            store.insert_forward_unnotified(forward_draft(switch, 8080)),
+            None
+        );
+        let through = store.insert_unnotified(
+            draft("behind", None).with_route(Route::Jump(vec![Some(switch), Some(web)])),
+        );
+        assert_eq!(
+            store.host(through).unwrap().route,
+            Route::Jump(vec![None, Some(web)])
+        );
+        // A Telnet host goes through jump hosts as an SSH host does.
+        let behind = store.insert_unnotified(
+            HostDraft::telnet("behind", "10.0.0.6", 23, None)
+                .with_route(Route::Jump(vec![Some(web)])),
+        );
+        assert_eq!(
+            store.host(behind).unwrap().route,
+            Route::Jump(vec![Some(web)])
+        );
+        assert!(store.update_unnotified(
+            switch,
+            HostDraft::telnet("switch-2", "10.0.0.5", 2323, None)
+        ));
+        // Without 自动登录 it has no password to keep.
+        assert!(store.passwords_of(&[switch]).is_empty());
+        // The jump host the Telnet host goes through stays an SSH host.
+        assert!(!store.update_unnotified(web, HostDraft::telnet("web", "10.0.0.1", 23, None)));
+        let serial = HostDraft::serial("x", "COM3", super::super::SerialSettings::default(), None);
+        assert!(store.update_unnotified(switch, serial));
+        assert!(store.host(switch).unwrap().is_serial());
+    }
+
+    #[test]
+    fn a_telnet_password_is_kept_while_a_host_types_it() {
+        let mut store = HostData::empty();
+        let mut typing = HostDraft::telnet("switch", "10.0.0.5", 23, None);
+        typing.auth = AuthKind::Password;
+        typing.user = "admin".into();
+        let switch = store.insert_unnotified(typing.clone());
+        let entry = SecretRef::password("admin", "10.0.0.5", 23);
+        assert_eq!(store.passwords_of(&[switch]), std::slice::from_ref(&entry));
+        assert!(store.password_in_use(&entry));
+        let HostConnection::Telnet(login) = store.connection(switch).unwrap() else {
+            panic!("a Telnet host connects over Telnet");
+        };
+        let auto_login = login.auto_login.unwrap();
+        assert_eq!(auto_login.user, "admin");
+        assert_eq!(auto_login.password, Some(entry.clone()));
+
+        // A temporary host's is its own, in memory.
+        let temporary = store.insert_temporary_unnotified(typing, None);
+        let HostConnection::Telnet(login) = store.connection(temporary).unwrap() else {
+            panic!("a Telnet host connects over Telnet");
+        };
+        assert_eq!(
+            login.auto_login.unwrap().password,
+            Some(SecretRef::temporary(temporary.0))
+        );
+    }
+
+    fn forward_draft(host: HostId, port: u16) -> ForwardDraft {
+        ForwardDraft::new(
+            ForwardKind::Local,
+            host,
+            ForwardEndpoint::new("127.0.0.1", port),
+            Some(ForwardEndpoint::new("db.internal", 3306)),
+        )
+    }
+
+    #[test]
+    fn forwards_keep_their_order_and_leave_with_their_host() {
+        let mut store = HostData::empty();
+        let group = store.insert_group_unnotified(GroupDraft::new("生产", None));
+        let web = store.insert_unnotified(draft("web", Some(group)));
+        let db = store.insert_unnotified(draft("db", None));
+        assert_eq!(
+            store.insert_forward_unnotified(forward_draft(HostId(99), 1)),
+            None,
+            "a rule needs a host to go through"
+        );
+        let first = store
+            .insert_forward_unnotified(forward_draft(web, 8080))
+            .unwrap();
+        let second = store
+            .insert_forward_unnotified(forward_draft(db, 8081))
+            .unwrap();
+        let third = store
+            .insert_forward_unnotified(forward_draft(web, 8082))
+            .unwrap();
+        assert_eq!([first, second, third].map(|id| id.0), [1, 2, 3]);
+        assert_eq!(
+            store
+                .forwards()
+                .iter()
+                .map(|rule| rule.sort_order)
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(store.forwards_of(web).count(), 2);
+
+        // Editing keeps the rule's place; it cannot move to a missing host.
+        assert!(store.update_forward_unnotified(second, forward_draft(web, 9000)));
+        assert_eq!(store.forward(second).unwrap().bind.port, 9000);
+        assert_eq!(store.forward(second).unwrap().sort_order, 1);
+        assert!(!store.update_forward_unnotified(second, forward_draft(HostId(99), 1)));
+        assert!(!store.update_forward_unnotified(ForwardId(99), forward_draft(web, 1)));
+
+        assert!(store.remove_forward_unnotified(first));
+        assert!(!store.remove_forward_unnotified(first));
+        // A copy of a host starts without forwards, like bookmarks.
+        let copy = store.duplicate_unnotified(web, "copy".into()).unwrap();
+        assert_eq!(store.forwards_of(copy).count(), 0);
+
+        // Removing a group matches the database cascade.
+        store.remove_group_unnotified(group);
+        assert!(store.forwards().is_empty());
+        // Ids are not handed out again within a run.
+        assert_eq!(
+            store.insert_forward_unnotified(forward_draft(db, 1)),
+            Some(ForwardId(4))
+        );
+    }
+
+    #[test]
+    fn load_resumes_the_forward_id_sequence() {
+        let database = HostDatabase::in_memory().unwrap();
+        database
+            .insert_host(&Host::new(HostId(1), draft("web", None)))
+            .unwrap();
+        database
+            .insert_forward(&ForwardRule::new(
+                ForwardId(5),
+                forward_draft(HostId(1), 8080),
+            ))
+            .unwrap();
+
+        let mut store = HostData::load(database).unwrap();
+        assert_eq!(store.forwards().len(), 1);
+        assert_eq!(
+            store.insert_forward_unnotified(forward_draft(HostId(1), 8081)),
+            Some(ForwardId(6))
+        );
+    }
+
+    fn password_credential(store: &mut HostData, user: &str) -> CredentialId {
+        store.insert_credential_unnotified(CredentialDraft::new(
+            "运维",
+            CredentialKind::Password,
+            user,
+        ))
+    }
+
+    #[test]
+    fn a_host_using_a_credential_logs_in_as_its_user() {
+        let mut store = HostData::empty();
+        let credential = password_credential(&mut store, "deploy");
+        let mut form = draft("web", None).with_credential(credential);
+        // Whatever the form still held of its own login is dropped.
+        form.auth = AuthKind::NoPassword;
+        let web = store.insert_unnotified(form);
+
+        let host = store.host(web).unwrap();
+        assert_eq!(host.credential, Some(credential));
+        assert_eq!(host.user.as_ref(), "deploy");
+        assert_eq!(host.auth, AuthKind::Password);
+        let login = store.login(web).unwrap();
+        assert_eq!(login.user, "deploy");
+        assert_eq!(
+            login.password,
+            store.credential(credential).unwrap().password_secret()
+        );
+        assert_eq!(store.hosts_using(credential).count(), 1);
+    }
+
+    #[test]
+    fn a_draft_naming_a_missing_credential_is_saved_as_manual() {
+        let mut store = HostData::empty();
+        let web = store.insert_unnotified(draft("web", None).with_credential(CredentialId(9)));
+        let host = store.host(web).unwrap();
+        assert_eq!(host.credential, None);
+        assert_eq!(host.user.as_ref(), "root");
+    }
+
+    #[test]
+    fn renaming_a_credentials_user_renames_every_host_using_it() {
+        let mut store = HostData::empty();
+        let credential = password_credential(&mut store, "deploy");
+        let web = store.insert_unnotified(draft("web", None).with_credential(credential));
+        let db = store.insert_unnotified(draft("db", None));
+
+        let mut edited = store.credential(credential).unwrap().draft();
+        edited.user = "admin".into();
+        assert!(store.update_credential_unnotified(credential, edited));
+        assert_eq!(store.host(web).unwrap().user.as_ref(), "admin");
+        assert_eq!(store.host(web).unwrap().endpoint(), "admin@10.0.0.1:22");
+        assert_eq!(store.host(db).unwrap().user.as_ref(), "root");
+        assert!(!store.update_credential_unnotified(
+            CredentialId(9),
+            CredentialDraft::new("x", CredentialKind::Agent, "x")
+        ));
+    }
+
+    #[test]
+    fn changing_only_a_credentials_name_changes_no_login() {
+        let mut store = HostData::empty();
+        let credential = password_credential(&mut store, "deploy");
+        let web = store.insert_unnotified(draft("web", None).with_credential(credential));
+        let before = store.login(web);
+        let keychain_id = store.credential(credential).unwrap().keychain_id.clone();
+
+        let mut edited = store.credential(credential).unwrap().draft();
+        edited.name = "生产运维".into();
+        assert!(store.update_credential_unnotified(credential, edited));
+        assert_eq!(store.login(web), before);
+        // The keychain entry stays the credential's.
+        assert_eq!(
+            store.credential(credential).unwrap().keychain_id,
+            keychain_id
+        );
+    }
+
+    #[test]
+    fn deleting_a_credential_leaves_its_hosts_on_their_own_with_the_user() {
+        let mut store = HostData::empty();
+        let credential = store.insert_credential_unnotified(
+            CredentialDraft::new("部署", CredentialKind::Key, "deploy").with_key_path("/tmp/id"),
+        );
+        let web = store.insert_unnotified(draft("web", None).with_credential(credential));
+        let db = store.insert_unnotified(draft("db", None));
+
+        assert_eq!(store.remove_credential_unnotified(credential), [web]);
+        assert!(store.credentials().is_empty());
+        let host = store.host(web).unwrap();
+        assert_eq!(host.credential, None);
+        // Without its key, it tries the agent and the default keys.
+        assert_eq!(host.auth, AuthKind::NoPassword);
+        assert_eq!(host.user.as_ref(), "deploy");
+        assert_eq!(store.host(db).unwrap().user.as_ref(), "root");
+        assert!(store.remove_credential_unnotified(credential).is_empty());
+
+        // Without its password, it asks for one.
+        let credential = password_credential(&mut store, "deploy");
+        let api = store.insert_unnotified(draft("api", None).with_credential(credential));
+        store.remove_credential_unnotified(credential);
+        assert_eq!(store.host(api).unwrap().auth, AuthKind::Password);
+    }
+
+    #[test]
+    fn a_copy_of_a_host_uses_the_same_credential() {
+        let mut store = HostData::empty();
+        let credential = password_credential(&mut store, "deploy");
+        let web = store.insert_unnotified(draft("web", None).with_credential(credential));
+        let copy = store.duplicate_unnotified(web, "copy".into()).unwrap();
+        assert_eq!(store.host(copy).unwrap().credential, Some(credential));
+        assert_eq!(store.hosts_using(credential).count(), 2);
+    }
+
+    #[test]
+    fn a_host_with_a_password_credential_does_not_keep_the_endpoint_password_in_use() {
+        let mut store = HostData::empty();
+        let credential = password_credential(&mut store, "root");
+        let web = store.insert_unnotified(draft("web", None));
+        let endpoint = store.host(web).unwrap().password_secret();
+        assert!(store.password_in_use(&endpoint));
+
+        store.update_unnotified(web, draft("web", None).with_credential(credential));
+        // Same user, host and port, but the password comes from elsewhere.
+        assert_eq!(store.host(web).unwrap().password_secret(), endpoint);
+        assert!(!store.password_in_use(&endpoint));
+        let secret = store.credential(credential).unwrap().password_secret();
+        assert!(store.password_in_use(&secret));
+    }
+
+    #[test]
+    fn load_resumes_the_credential_id_sequence_and_repairs_usernames() {
+        let database = HostDatabase::in_memory().unwrap();
+        let credential = Credential::new(
+            CredentialId(4),
+            CredentialDraft::new("运维", CredentialKind::Agent, "deploy"),
+        );
+        database.insert_credential(&credential).unwrap();
+        let mut stale = Host::new(HostId(1), draft("web", None));
+        stale.credential = Some(credential.id);
+        stale.auth = AuthKind::NoPassword;
+        database.insert_host(&stale).unwrap();
+
+        let mut store = HostData::load(database).unwrap();
+        let host = store.host(HostId(1)).unwrap();
+        assert_eq!(host.user.as_ref(), "deploy");
+        assert_eq!(host.auth, AuthKind::Password);
+        assert_eq!(
+            store.credential(CredentialId(4)).unwrap().keychain_id,
+            credential.keychain_id
+        );
+        assert_eq!(
+            store.insert_credential_unnotified(CredentialDraft::new(
+                "x",
+                CredentialKind::Agent,
+                "x"
+            )),
+            CredentialId(5)
+        );
+    }
+
+    fn key_credential(store: &mut HostData, path: &str) -> CredentialId {
+        store.insert_credential_unnotified(
+            CredentialDraft::new("部署", CredentialKind::Key, "deploy").with_key_path(path),
+        )
+    }
+
+    fn read(path: &str) -> String {
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    #[test]
+    fn a_pasted_key_gets_a_file_of_its_own_and_keeps_it_when_replaced() {
+        let data = tempfile::tempdir().unwrap();
+        let keys = data.path().join("keys");
+        let mut store = HostData::empty().with_key_dir(&keys);
+
+        // A credential being created: a new file in the key directory.
+        let path = store.save_private_key(None, "one").unwrap();
+        assert!(Path::new(path.as_ref()).starts_with(&keys));
+        let credential = key_credential(&mut store, &path);
+        assert!(
+            store
+                .credential(credential)
+                .unwrap()
+                .keeps_key_in(store.key_dir())
+        );
+
+        // Another key for it goes over the same file: the hosts using it
+        // keep their login, and nothing is left behind.
+        assert_eq!(
+            store.save_private_key(Some(credential), "two").unwrap(),
+            path
+        );
+        assert_eq!(read(&path), "two");
+
+        // Not when another credential logs in with that file as well.
+        key_credential(&mut store, &path);
+        let moved = store.save_private_key(Some(credential), "three").unwrap();
+        assert_ne!(moved, path);
+        assert_eq!(read(&path), "two");
+        assert_eq!(read(&moved), "three");
+
+        // A key file of the user's is never written over.
+        let mine = data.path().join("id_mine");
+        std::fs::write(&mine, "mine").unwrap();
+        let theirs = key_credential(&mut store, &mine.display().to_string());
+        let saved = store.save_private_key(Some(theirs), "new").unwrap();
+        assert!(Path::new(saved.as_ref()).starts_with(&keys));
+        assert_eq!(std::fs::read_to_string(&mine).unwrap(), "mine");
+    }
+
+    #[test]
+    fn without_a_key_directory_no_key_is_saved() {
+        assert!(HostData::empty().save_private_key(None, "one").is_err());
+    }
+
+    #[test]
+    fn a_group_path_names_a_group_or_the_groups_to_make() {
+        let mut store = HostData::empty();
+        let production = store.insert_group_unnotified(GroupDraft::new("生产", None));
+        let east = store.insert_group_unnotified(GroupDraft::new("华东", Some(production)));
+        assert_eq!(
+            store.resolve_group_path("  "),
+            Ok(GroupPlan::Existing(None))
+        );
+        assert_eq!(
+            store.resolve_group_path(" 生产 / 华东 "),
+            Ok(GroupPlan::Existing(Some(east)))
+        );
+        assert_eq!(
+            store.resolve_group_path("生产/华北/一区"),
+            Ok(GroupPlan::Create {
+                parent: Some(production),
+                names: vec!["华北".into(), "一区".into()],
+            })
+        );
+        assert_eq!(
+            store.resolve_group_path("生产//华东"),
+            Err(GroupPathError::EmptyLevel {
+                path: "生产//华东".into()
+            })
+        );
+        store.insert_group_unnotified(GroupDraft::new("生产", None));
+        assert_eq!(
+            store.resolve_group_path("生产/华北"),
+            Err(GroupPathError::Ambiguous {
+                count: 2,
+                path: "生产".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_key_file_of_the_users_is_copied_and_left_as_it_was() {
+        let data = tempfile::tempdir().unwrap();
+        let mine = data.path().join("id_mine");
+        std::fs::write(&mine, "mine").unwrap();
+        let store = HostData::empty().with_key_dir(data.path().join("keys"));
+        let kept = store
+            .keep_key_file(None, &mine.display().to_string())
+            .unwrap()
+            .unwrap();
+        assert!(store.keeps_key_file(&kept));
+        assert_eq!(read(&kept), "mine");
+        assert_eq!(std::fs::read_to_string(&mine).unwrap(), "mine");
+        // One ShellRS keeps already stays where it is.
+        assert_eq!(store.keep_key_file(None, &kept).unwrap(), None);
+        // A file that is not there is not taken for an empty key.
+        let missing = data.path().join("missing").display().to_string();
+        assert!(store.keep_key_file(None, &missing).is_err());
+        // Without a folder to keep keys in, the file is used where it is.
+        let nowhere = HostData::empty();
+        assert_eq!(
+            nowhere
+                .keep_key_file(None, &mine.display().to_string())
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_kept_key_goes_with_the_last_credential_using_it() {
+        use crate::secrets::SecretStore as _;
+
+        let data = tempfile::tempdir().unwrap();
+        let secrets = Arc::new(crate::secrets::InMemorySecretStore::default());
+        let mut store = HostData::empty()
+            .with_secrets(secrets.clone())
+            .with_key_dir(data.path().join("keys"));
+        let kept = store.save_private_key(None, "kept").unwrap();
+        let one = key_credential(&mut store, &kept);
+        let two = key_credential(&mut store, &kept);
+        let passphrase = SecretRef::passphrase(kept.as_ref());
+        secrets.set(&passphrase, "correct horse").unwrap();
+        let mine = data.path().join("id_mine");
+        std::fs::write(&mine, "mine").unwrap();
+        let theirs = key_credential(&mut store, &mine.display().to_string());
+
+        store.remove_credential(one);
+        run_secret_jobs(&mut store);
+        assert!(
+            Path::new(kept.as_ref()).exists(),
+            "another credential still logs in with it"
+        );
+
+        store.update_credential(
+            two,
+            CredentialDraft::new("部署", CredentialKind::Agent, "deploy"),
+        );
+        run_secret_jobs(&mut store);
+        assert!(!Path::new(kept.as_ref()).exists());
+        assert!(secrets.get(&passphrase).unwrap().is_none());
+
+        // The user's own key file stays, whatever becomes of the credential.
+        store.remove_credential(theirs);
+        run_secret_jobs(&mut store);
+        assert_eq!(std::fs::read_to_string(&mine).unwrap(), "mine");
+    }
+
+    #[test]
+    fn the_detected_system_survives_an_edit() {
+        let mut store = HostData::empty();
+        let id = store.insert_unnotified(draft("web", None));
+        assert!(store.set_host_os_unnotified(id, Some(HostOs::Debian)));
+        assert!(!store.set_host_os_unnotified(id, Some(HostOs::Debian)));
+
+        store.update_unnotified(id, draft("web-renamed", None));
+        assert_eq!(store.host(id).unwrap().os, Some(HostOs::Debian));
+    }
+
+    #[test]
+    fn a_copy_inherits_the_detected_system() {
+        let mut store = HostData::empty();
+        let id = store.insert_unnotified(draft("web", None));
+        store.set_host_os_unnotified(id, Some(HostOs::Alpine));
+
+        let copy = store.duplicate_unnotified(id, "copy".into()).unwrap();
+        assert_eq!(store.host(copy).unwrap().os, Some(HostOs::Alpine));
+    }
+
+    #[test]
+    fn the_sidebar_tool_survives_an_edit_and_goes_with_a_copy() {
+        let mut store = HostData::empty();
+        let id = store.insert_unnotified(draft("web", None));
+        let tool = |store: &HostData, id| store.host(id).unwrap().sidebar_tool.clone();
+        assert_eq!(tool(&store, id), None);
+        assert!(store.set_host_sidebar_tool_unnotified(id, Some("files".into())));
+        assert!(!store.set_host_sidebar_tool_unnotified(id, Some("files".into())));
+        assert!(!store.set_host_sidebar_tool_unnotified(HostId(99), Some("files".into())));
+
+        store.update_unnotified(id, draft("web-renamed", None));
+        assert_eq!(tool(&store, id).as_deref(), Some("files"));
+        let copy = store.duplicate_unnotified(id, "copy".into()).unwrap();
+        assert_eq!(tool(&store, copy).as_deref(), Some("files"));
+    }
+
+    #[test]
+    fn only_a_saved_host_keeps_its_sidebar_tool_for_the_next_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        let mut store = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        let saved = store.insert(draft("web", None));
+        let temporary = store.insert_temporary(draft("quick", None), None);
+        store.set_host_sidebar_tool(saved, Some("files".into()));
+        store.set_host_sidebar_tool(temporary, Some("docker".into()));
+        let tool_of =
+            |store: &HostData, id| store.host(id).and_then(|host| host.sidebar_tool.clone());
+        assert_eq!(tool_of(&store, temporary).as_deref(), Some("docker"));
+        let reopened = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        assert_eq!(tool_of(&reopened, saved).as_deref(), Some("files"));
+        assert!(reopened.host(temporary).is_none());
+
+        // Hidden is kept the same way.
+        store.set_host_sidebar_tool(saved, None);
+        let reopened = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        assert_eq!(tool_of(&reopened, saved), None);
+    }
+
+    #[test]
+    fn probing_an_unknown_host_changes_nothing() {
+        let mut store = HostData::empty();
+        assert!(!store.set_host_os_unnotified(HostId(99), Some(HostOs::Linux)));
+    }
+
+    #[test]
+    fn an_endpoint_is_in_use_while_a_host_still_logs_into_it() {
+        let mut store = HostData::empty();
+        let id = store.insert_unnotified(draft("web", None));
+        let endpoint = store.host(id).unwrap().password_secret();
+        assert!(store.password_in_use(&endpoint));
+
+        store.remove_unnotified(id);
+        assert!(!store.password_in_use(&endpoint));
+    }
+
+    #[test]
+    fn two_hosts_on_one_account_share_an_endpoint() {
+        let mut store = HostData::empty();
+        let first = store.insert_unnotified(draft("web-01", None));
+        let second = store.insert_unnotified(draft("web-02", None));
+        let endpoint = store.host(first).unwrap().password_secret();
+        assert_eq!(endpoint, store.host(second).unwrap().password_secret());
+
+        store.remove_unnotified(first);
+        assert!(store.password_in_use(&endpoint));
+    }
+
+    #[test]
+    fn a_different_port_is_a_different_endpoint() {
+        let mut store = HostData::empty();
+        let id = store.insert_unnotified(draft("web", None));
+        let endpoint = store.host(id).unwrap().password_secret();
+        let moved = HostDraft::new("web", "10.0.0.1", 2222, "root", AuthKind::Password, None);
+        store.update_unnotified(id, moved);
+        assert!(!store.password_in_use(&endpoint));
+    }
+
+    #[test]
+    fn endpoints_of_a_group_are_deduplicated() {
+        let mut store = HostData::empty();
+        let group = store.insert_group_unnotified(GroupDraft::new("生产", None));
+        store.insert_unnotified(draft("web-01", Some(group)));
+        store.insert_unnotified(draft("web-02", Some(group)));
+        let other = HostDraft::new(
+            "db",
+            "10.0.0.2",
+            22,
+            "root",
+            AuthKind::Password,
+            Some(group),
+        );
+        store.insert_unnotified(other);
+
+        let proxy = ProxySettings::new(ProxyKind::Socks5, "127.0.0.1", 7890).with_user("me");
+        for name in ["abroad-1", "abroad-2"] {
+            store.insert_unnotified(
+                draft(name, Some(group)).with_route(Route::Proxy(proxy.clone())),
+            );
+        }
+
+        let passwords = store.passwords_of(&store.hosts_under(group));
+        assert_eq!(passwords.len(), 3);
+        assert!(passwords.contains(&SecretRef::proxy("me", "127.0.0.1", 7890)));
+    }
+
+    fn jump_through(hops: &[HostId]) -> Route {
+        Route::Jump(hops.iter().copied().map(Some).collect())
+    }
+
+    #[test]
+    fn a_host_behind_jump_hosts_logs_in_through_their_own_logins() {
+        let mut store = HostData::empty();
+        let credential = store.insert_credential_unnotified(CredentialDraft::new(
+            "跳板账号",
+            CredentialKind::Agent,
+            "jumper",
+        ));
+        let first = store.insert_unnotified(
+            HostDraft::new(
+                "阿里云99",
+                "120.25.220.186",
+                22,
+                "root",
+                AuthKind::Password,
+                None,
+            )
+            .with_credential(credential),
+        );
+        // Its own route plays no part when another host jumps through it.
+        let second = store.insert_unnotified(
+            HostDraft::new(
+                "禅道",
+                "8.138.95.125",
+                22,
+                "ops",
+                AuthKind::NoPassword,
+                None,
+            )
+            .with_route(jump_through(&[first])),
+        );
+        let target =
+            store.insert_unnotified(draft("db", None).with_route(jump_through(&[first, second])));
+
+        let login = store.login(target).unwrap();
+        let LoginRoute::Jump(hops) = &login.route else {
+            panic!("not a jump: {:?}", login.route);
+        };
+        let hops: Vec<_> = hops
+            .iter()
+            .map(|hop| match hop {
+                JumpLogin::Host { name, login } => (
+                    name.as_str(),
+                    login.user.as_str(),
+                    login.method,
+                    login.route.clone(),
+                ),
+                JumpLogin::Deleted => panic!("no hop was deleted"),
+            })
+            .collect();
+        assert_eq!(
+            hops,
+            [
+                ("阿里云99", "jumper", LoginMethod::Agent, LoginRoute::Direct),
+                ("禅道", "ops", LoginMethod::NoPassword, LoginRoute::Direct),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_route_never_jumps_through_its_own_host_or_one_that_is_not_there() {
+        let mut store = HostData::empty();
+        let jump = store.insert_unnotified(draft("jump", None));
+        let id = store.insert_unnotified(draft("web", None));
+        store.update_unnotified(
+            id,
+            draft("web", None).with_route(Route::Jump(vec![
+                Some(id),
+                Some(jump),
+                Some(HostId(99)),
+            ])),
+        );
+        assert_eq!(
+            store.host(id).unwrap().route,
+            Route::Jump(vec![Some(jump), None])
+        );
+
+        // A jump through nothing is no jump.
+        store.update_unnotified(
+            id,
+            draft("web", None).with_route(Route::Jump(vec![Some(id)])),
+        );
+        assert_eq!(store.host(id).unwrap().route, Route::Direct);
+    }
+
+    #[test]
+    fn deleting_a_jump_host_leaves_its_place_and_is_counted() {
+        let mut store = HostData::empty();
+        let group = store.insert_group_unnotified(GroupDraft::new("跳板", None));
+        let jump = store.insert_unnotified(draft("jump", Some(group)));
+        let inside =
+            store.insert_unnotified(draft("inside", Some(group)).with_route(jump_through(&[jump])));
+        let outside = store.insert_unnotified(draft("db", None).with_route(jump_through(&[jump])));
+        let direct = store.insert_unnotified(draft("web", None));
+
+        assert_eq!(store.jump_users(&[jump]), 2);
+        // Deleting the group takes `inside` too: only `outside` is left
+        // without a way through.
+        assert_eq!(store.jump_users(&store.hosts_under(group)), 1);
+        assert_eq!(store.jump_users(&[direct]), 0);
+
+        store.remove_unnotified(jump);
+        assert_eq!(store.host(outside).unwrap().route, Route::Jump(vec![None]));
+        assert_eq!(
+            store.login(outside).unwrap().route,
+            LoginRoute::Jump(vec![JumpLogin::Deleted])
+        );
+        assert_eq!(store.jump_users(&[inside]), 0);
+    }
+
+    #[test]
+    fn a_copy_takes_the_same_way_there() {
+        let mut store = HostData::empty();
+        let jump = store.insert_unnotified(draft("jump", None));
+        let id = store.insert_unnotified(draft("db", None).with_route(jump_through(&[jump])));
+        let copy = store.duplicate_unnotified(id, "copy".into()).unwrap();
+        assert_eq!(store.host(copy).unwrap().route, jump_through(&[jump]));
+    }
+
+    #[test]
+    fn notes_stay_through_an_edit_and_go_with_a_copy() {
+        let mut store = HostData::empty();
+        let id = store.insert_unnotified(draft("db", None).with_notes("只读副本"));
+        store.update_unnotified(id, draft("db-01", None).with_notes("只读副本，勿写"));
+        assert_eq!(store.host(id).unwrap().notes.as_ref(), "只读副本，勿写");
+        let copy = store.duplicate_unnotified(id, "copy".into()).unwrap();
+        assert_eq!(store.host(copy).unwrap().notes.as_ref(), "只读副本，勿写");
+    }
+
+    #[test]
+    fn a_proxy_password_goes_when_no_host_uses_the_proxy() {
+        use crate::secrets::SecretStore as _;
+
+        let secrets = Arc::new(crate::secrets::InMemorySecretStore::default());
+        let mut store = HostData::empty().with_secrets(secrets.clone());
+        let proxy =
+            Route::Proxy(ProxySettings::new(ProxyKind::Http, "proxy.test", 8080).with_user("me"));
+        let one = store.insert_unnotified(draft("one", None).with_route(proxy.clone()));
+        let two = store.insert_unnotified(draft("two", None).with_route(proxy));
+        let secret = SecretRef::proxy("me", "proxy.test", 8080);
+        secrets.set(&secret, "hunter2").unwrap();
+
+        store.update(one, draft("one", None));
+        run_secret_jobs(&mut store);
+        assert!(secrets.get(&secret).unwrap().is_some(), "two still uses it");
+
+        store.remove(two);
+        run_secret_jobs(&mut store);
+        assert!(secrets.get(&secret).unwrap().is_none());
+    }
+
+    #[test]
+    fn seed_has_three_groups_and_two_hosts_with_terminals() {
+        let store = HostData::seed();
+        assert_eq!(store.groups().len(), 3);
+        assert_eq!(store.hosts().len(), 6);
+        let open: Vec<_> = store
+            .starting_terminals()
+            .iter()
+            .map(|id| store.host(*id).unwrap().name.as_ref())
+            .collect();
+        assert_eq!(open, ["web-01", "staging-api"]);
+    }
+
+    #[test]
+    fn groups_and_hosts_have_independent_id_sequences() {
+        let mut store = HostData::seed();
+        let group_ids: Vec<_> = store.groups().iter().map(|g| g.id).collect();
+        assert_eq!(group_ids, [GroupId(1), GroupId(2), GroupId(3)]);
+        assert_eq!(store.hosts()[0].id, HostId(1));
+        assert_eq!(store.hosts()[5].id, HostId(6));
+        assert_eq!(
+            store.insert_group_unnotified(GroupDraft::new("预发", None)),
+            GroupId(4)
+        );
+        assert_eq!(store.insert_unnotified(draft("new", None)), HostId(7));
+    }
+
+    #[test]
+    fn insert_assigns_increasing_ids_and_keeps_order() {
+        let mut store = HostData::empty();
+        let a = store.insert_unnotified(draft("a", Some(GroupId(1))));
+        let b = store.insert_unnotified(draft("b", Some(GroupId(1))));
+        assert!(a < b);
+        assert_eq!(store.hosts()[1].id, b);
+    }
+
+    #[test]
+    fn duplicate_places_a_copy_after_the_original() {
+        let mut store = HostData::seed();
+        let web01 = store.hosts()[0].id;
+        let mut draft = store.host(web01).unwrap().draft();
+        draft.auth = AuthKind::NoPassword;
+        assert!(store.update_unnotified(web01, draft));
+        let copy = store
+            .duplicate_unnotified(web01, "web-01 copy".into())
+            .unwrap();
+        assert_eq!(store.hosts()[1].id, copy);
+        assert_eq!(store.hosts()[1].name.as_ref(), "web-01 copy");
+        assert_eq!(store.hosts()[1].auth, AuthKind::NoPassword);
+        assert_ne!(
+            store.hosts()[1].public_id,
+            store.host(web01).unwrap().public_id
+        );
+    }
+
+    #[test]
+    fn a_public_id_survives_editing_and_is_never_shared() {
+        let mut store = HostData::seed();
+        let web01 = store.hosts()[0].id;
+        let before = store.host(web01).unwrap().public_id.clone();
+        let mut draft = store.host(web01).unwrap().draft();
+        draft.name = "web".into();
+        draft.address = "10.0.1.99".into();
+        draft.group = None;
+        assert!(store.update_unnotified(web01, draft));
+        assert_eq!(store.host(web01).unwrap().public_id, before);
+
+        let ids: std::collections::HashSet<_> =
+            store.hosts().iter().map(|s| &s.public_id).collect();
+        assert_eq!(ids.len(), store.hosts().len());
+    }
+
+    #[test]
+    fn update_keeps_the_system_found() {
+        let mut store = HostData::seed();
+        let web01 = store.hosts()[0].id;
+        store.set_host_os_unnotified(web01, Some(HostOs::Ubuntu));
+        let mut draft = store.host(web01).unwrap().draft();
+        draft.port = 2200;
+        assert!(store.update_unnotified(web01, draft));
+        let host = store.host(web01).unwrap();
+        assert_eq!((host.port, host.os), (2200, Some(HostOs::Ubuntu)));
+        assert!(!store.update_unnotified(HostId(999), host.draft()));
+        assert!(store.remove_unnotified(web01));
+        assert!(!store.remove_unnotified(web01));
+    }
+
+    #[test]
+    fn seed_lists_connected_hosts_as_recent_newest_first() {
+        let store = HostData::seed();
+        let recent: Vec<_> = store.recent_hosts().map(|s| s.name.as_ref()).collect();
+        assert_eq!(recent, ["staging-api", "web-01"]);
+    }
+
+    #[test]
+    fn connecting_moves_a_host_to_the_front_of_recent() {
+        let mut store = HostData::seed();
+        let web01 = store.hosts()[0].id;
+        let db01 = store.hosts()[2].id;
+        assert!(store.record_connection_unnotified(db01));
+        assert!(store.record_connection_unnotified(db01));
+        assert!(store.record_connection_unnotified(web01));
+        let recent: Vec<_> = store.recent_hosts().map(|s| s.name.as_ref()).collect();
+        assert_eq!(recent, ["web-01", "db-01", "staging-api"]);
+    }
+
+    #[test]
+    fn remove_drops_the_host_from_recent() {
+        let mut store = HostData::seed();
+        let web01 = store.hosts()[0].id;
+        assert!(store.remove_unnotified(web01));
+        let recent: Vec<_> = store.recent_hosts().map(|s| s.name.as_ref()).collect();
+        assert_eq!(recent, ["staging-api"]);
+    }
+
+    #[test]
+    fn recent_keeps_only_the_newest_entries() {
+        let mut store = HostData::empty();
+        for ix in 0..(MAX_RECENT + 2) {
+            let id = store.insert_unnotified(draft(&format!("s{ix}"), None));
+            store.record_connection_unnotified(id);
+        }
+        assert_eq!(store.recent_hosts().count(), MAX_RECENT);
+        let newest = store.recent_hosts().next().unwrap();
+        assert_eq!(newest.name.as_ref(), "s11");
+    }
+
+    #[test]
+    fn nested_groups_report_descendants_and_path() {
+        let mut store = HostData::empty();
+        let production = store.insert_group_unnotified(GroupDraft::new("生产", None));
+        let databases = store.insert_group_unnotified(GroupDraft::new("数据库", Some(production)));
+        let replicas = store.insert_group_unnotified(GroupDraft::new("只读副本", Some(databases)));
+        let staging = store.insert_group_unnotified(GroupDraft::new("测试", None));
+
+        let mut descendants = store.descendant_groups(production);
+        descendants.sort();
+        assert_eq!(descendants, [databases, replicas]);
+        assert!(store.descendant_groups(replicas).is_empty());
+
+        assert_eq!(store.group_path(replicas), "生产 / 数据库 / 只读副本");
+        assert_eq!(store.group_path(staging), "测试");
+    }
+
+    #[test]
+    fn removing_a_group_takes_its_subtree_and_its_hosts() {
+        let mut store = HostData::empty();
+        let production = store.insert_group_unnotified(GroupDraft::new("生产", None));
+        let databases = store.insert_group_unnotified(GroupDraft::new("数据库", Some(production)));
+        let staging = store.insert_group_unnotified(GroupDraft::new("测试", None));
+        let web = store.insert_unnotified(draft("web-01", Some(production)));
+        let db = store.insert_unnotified(draft("db-01", Some(databases)));
+        let qa = store.insert_unnotified(draft("qa", Some(staging)));
+        let jump = store.insert_unnotified(draft("jump", None));
+        store.record_connection_unnotified(db);
+
+        let mut removed = store.remove_group_unnotified(production);
+        removed.sort();
+        assert_eq!(removed, [web, db]);
+        assert_eq!(
+            store.groups().iter().map(|g| g.id).collect::<Vec<_>>(),
+            [staging]
+        );
+        // The root-level host and the untouched group's host survive.
+        assert_eq!(
+            store.hosts().iter().map(|s| s.id).collect::<Vec<_>>(),
+            [qa, jump]
+        );
+        assert_eq!(store.recent_hosts().count(), 0);
+        // Removing it a second time finds nothing left to do.
+        assert!(store.remove_group_unnotified(production).is_empty());
+    }
+
+    #[test]
+    fn a_group_cannot_be_moved_into_its_own_subtree() {
+        let mut store = HostData::empty();
+        let production = store.insert_group_unnotified(GroupDraft::new("生产", None));
+        let databases = store.insert_group_unnotified(GroupDraft::new("数据库", Some(production)));
+        let replicas = store.insert_group_unnotified(GroupDraft::new("只读副本", Some(databases)));
+
+        assert!(
+            !store.update_group_unnotified(production, GroupDraft::new("生产", Some(replicas)))
+        );
+        assert!(
+            !store.update_group_unnotified(production, GroupDraft::new("生产", Some(production)))
+        );
+        assert!(store.group(production).unwrap().parent.is_none());
+
+        // Moving in the other direction, and plain renaming, are fine.
+        assert!(store.update_group_unnotified(replicas, GroupDraft::new("副本", Some(production))));
+        assert_eq!(store.group_path(replicas), "生产 / 副本");
+        assert!(!store.update_group_unnotified(GroupId(99), GroupDraft::new("x", None)));
+    }
+
+    #[test]
+    fn renaming_a_group_preserves_its_expansion_choice() {
+        let mut store = HostData::empty();
+        let id = store.insert_group_unnotified(GroupDraft::new("生产", None));
+        store
+            .groups
+            .iter_mut()
+            .find(|group| group.id == id)
+            .unwrap()
+            .expanded = false;
+
+        assert!(store.update_group_unnotified(id, GroupDraft::new("生产环境", None)));
+        assert!(!store.group(id).unwrap().expanded);
+    }
+
+    #[test]
+    fn dragging_reorders_peers_and_moves_hosts_between_groups() {
+        let mut store = HostData::seed();
+        let web = HostNode::Host(HostId(1));
+        let db = HostNode::Host(HostId(3));
+        assert!(store.move_node_unnotified(db, NodeDrop::Before(web)));
+        let mut production: Vec<_> = store
+            .hosts()
+            .iter()
+            .filter(|host| host.group == Some(GroupId(1)))
+            .collect();
+        production.sort_by_key(|host| host.sort_order);
+        assert_eq!(
+            production.iter().map(|host| host.id).collect::<Vec<_>>(),
+            [HostId(3), HostId(1), HostId(2)]
+        );
+        assert!(!store.move_node_unnotified(db, NodeDrop::Before(web)));
+
+        assert!(store.move_node_unnotified(web, NodeDrop::Into(GroupId(2))));
+        assert_eq!(store.host(HostId(1)).unwrap().group, Some(GroupId(2)));
+        assert!(store.move_node_unnotified(web, NodeDrop::Root));
+        assert_eq!(store.host(HostId(1)).unwrap().group, None);
+    }
+
+    #[test]
+    fn dragging_a_group_refuses_its_descendants() {
+        let mut store = HostData::empty();
+        let parent = store.insert_group_unnotified(GroupDraft::new("parent", None));
+        let child = store.insert_group_unnotified(GroupDraft::new("child", Some(parent)));
+        let peer = store.insert_group_unnotified(GroupDraft::new("peer", None));
+        assert!(!store.move_node_unnotified(HostNode::Group(parent), NodeDrop::Into(child)));
+        assert!(!store.move_node_unnotified(HostNode::Group(parent), NodeDrop::Into(parent)));
+        assert!(store.move_node_unnotified(
+            HostNode::Group(peer),
+            NodeDrop::Before(HostNode::Group(parent))
+        ));
+        assert!(store.group(peer).unwrap().sort_order < store.group(parent).unwrap().sort_order);
+    }
+
+    #[test]
+    fn load_resumes_the_id_sequences_and_the_recent_order() {
+        let database = HostDatabase::in_memory().unwrap();
+        database
+            .insert_group(&HostGroup::new(GroupId(4), GroupDraft::new("生产", None)))
+            .unwrap();
+        database
+            .insert_host(&Host::new(HostId(7), draft("web-01", Some(GroupId(4)))))
+            .unwrap();
+        database
+            .insert_host(&Host::new(HostId(9), draft("db-01", None)))
+            .unwrap();
+        database.touch_connected(HostId(9), 100).unwrap();
+
+        let mut store = HostData::load(database).unwrap();
+        assert_eq!(store.groups().len(), 1);
+        assert_eq!(
+            store.recent_hosts().map(|s| s.id).collect::<Vec<_>>(),
+            [HostId(9)]
+        );
+        // No terminal opens on load, however recently it last connected.
+        assert!(store.starting_terminals().is_empty());
+        assert_eq!(
+            store.insert_group_unnotified(GroupDraft::new("测试", None)),
+            GroupId(5)
+        );
+        assert_eq!(store.insert_unnotified(draft("new", None)), HostId(10));
+    }
+
+    /// What a bastion host's link brings (the app's `SshLink`): a host
+    /// named for the bastion.
+    fn link(user: &str, address: &str, port: u16) -> HostDraft {
+        HostDraft::new("堡垒机", address, port, user, AuthKind::Password, None)
+    }
+
+    #[test]
+    fn a_temporary_connection_goes_directly_and_may_use_a_credential() {
+        let mut store = HostData::empty();
+        let saved = store.insert_unnotified(draft("web", None));
+        let ops = store.insert_credential_unnotified(CredentialDraft::new(
+            "运维",
+            CredentialKind::Password,
+            "ops",
+        ));
+        let deploy = store.insert_credential_unnotified(
+            CredentialDraft::new("部署", CredentialKind::Key, "deploy").with_key_path("/tmp/id"),
+        );
+        // A group and a route are a saved host's, and are not looked at.
+        let typed = store.insert_temporary_unnotified(
+            draft("typed", Some(GroupId(9))).with_route(Route::Jump(vec![Some(saved)])),
+            Some(Zeroizing::new("p@ss".into())),
+        );
+        let with_ops =
+            store.insert_temporary_unnotified(draft("with-ops", None).with_credential(ops), None);
+        let with_key = store
+            .insert_temporary_unnotified(draft("with-key", None).with_credential(deploy), None);
+        assert_eq!(store.hosts().len(), 1);
+        let host = store.host(typed).unwrap();
+        assert_eq!((host.group, &host.route), (None, &Route::Direct));
+        assert!(!store.is_external(typed));
+
+        // Its own password is in memory; a password credential's is the
+        // credential's, as for a saved host.
+        let login = store.login(typed).unwrap();
+        assert_eq!(login.password, SecretRef::temporary(typed.0));
+        assert!(!login.shell_only);
+        let login = store.login(with_ops).unwrap();
+        assert_eq!(login.user, "ops");
+        assert_eq!(
+            login.password,
+            store.credential(ops).unwrap().password_secret()
+        );
+        assert_eq!(
+            store.login(with_key).unwrap().password,
+            SecretRef::temporary(with_key.0)
+        );
+
+        // It follows the credential, and logs in on its own once that goes.
+        store.update_credential_unnotified(
+            ops,
+            CredentialDraft::new("运维", CredentialKind::Password, "admin"),
+        );
+        assert_eq!(store.host(with_ops).unwrap().user.as_ref(), "admin");
+        assert_eq!(store.remove_credential_unnotified(deploy), [with_key]);
+        let host = store.host(with_key).unwrap();
+        assert_eq!((host.credential, host.user.as_ref()), (None, "deploy"));
+    }
+
+    #[test]
+    fn a_link_host_is_found_by_id_but_never_listed() {
+        let keychain = Arc::new(crate::secrets::InMemorySecretStore::default());
+        let mut store = HostData::empty().with_secrets(keychain.clone());
+        let saved = store.insert_unnotified(draft("web", None));
+        let id = store.insert_external_unnotified(
+            link("token", "10.0.0.9", 2222),
+            Some(Zeroizing::new("p@ss".to_owned())),
+        );
+        assert_ne!(id, saved);
+        assert!(store.is_temporary(id));
+        assert!(store.is_external(id));
+        assert!(!store.is_temporary(saved));
+        assert!(!store.is_external(saved));
+        assert_eq!(store.hosts().len(), 1);
+        assert_eq!(store.host(id).unwrap().name.as_ref(), "堡垒机");
+
+        // It logs in with the link's password, which only memory holds.
+        let login = store.login(id).unwrap();
+        assert_eq!(
+            (login.host.as_str(), login.port, login.user.as_str()),
+            ("10.0.0.9", 2222, "token")
+        );
+        assert_eq!(login.method, LoginMethod::Password);
+        assert_eq!(login.route, LoginRoute::Direct);
+        assert_eq!(login.password, SecretRef::temporary(id.0));
+        assert!(login.shell_only);
+        assert!(!store.login(saved).unwrap().shell_only);
+        assert_eq!(
+            store
+                .secrets()
+                .get(&login.password)
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
+            Some("p@ss")
+        );
+        assert!(keychain.is_empty());
+
+        // Connecting is not remembered as a recent connection.
+        assert!(!store.record_connection_unnotified(id));
+        assert!(store.recent_hosts().next().is_none());
+        assert!(store.set_host_os_unnotified(id, Some(HostOs::Ubuntu)));
+        assert!(store.add_bookmark_unnotified(id, BookmarkSide::Remote, "/tmp"));
+
+        assert!(store.remove_temporary_unnotified(id));
+        assert!(!store.remove_temporary_unnotified(id));
+        assert!(store.host(id).is_none());
+        assert!(!store.is_external(id));
+        assert!(store.bookmarks(id, BookmarkSide::Remote).is_empty());
+        assert!(store.secrets().get(&login.password).unwrap().is_none());
+        // Only memory gave it an id: the next one still moves on.
+        assert!(store.insert_unnotified(draft("db", None)).0 > id.0);
+    }
+
+    #[test]
+    fn a_saved_host_cannot_lean_on_a_link_host() {
+        let mut store = HostData::empty();
+        let id = store.insert_external_unnotified(link("token", "10.0.0.9", 22), None);
+        let behind = store.insert_unnotified(
+            HostDraft::new("db", "10.0.0.8", 22, "root", AuthKind::Password, None)
+                .with_route(jump_through(&[id])),
+        );
+        // Saved as a jump host that is not there, like a deleted one.
+        assert_eq!(store.host(behind).unwrap().route, Route::Jump(vec![None]));
+        assert!(
+            store
+                .insert_forward_unnotified(forward_draft(id, 8080))
+                .is_none()
+        );
+        // Nor is it moved into the tree.
+        assert!(!store.move_node_unnotified(HostNode::Host(id), NodeDrop::Root));
+    }
+
+    #[test]
+    fn a_moved_data_folder_finds_its_keys_again() {
+        let data = tempfile::tempdir().unwrap();
+        let keys = data.path().join("keys");
+        std::fs::create_dir(&keys).unwrap();
+        let name = PublicId::generate();
+        std::fs::write(keys.join(name.as_str()), "kept").unwrap();
+        let path = data.path().join("shellrs.db");
+        // Saved while the folder was on another drive; and a key of the
+        // user's own, which stays where it is.
+        let before = format!("/Volumes/OLD/ShellRS/data/keys/{name}");
+        let mine = "/Users/me/.ssh/keys/id_rsa";
+        let database = HostDatabase::open(&path).unwrap();
+        for (id, key) in [(1, before.as_str()), (2, mine)] {
+            let draft =
+                CredentialDraft::new("部署", CredentialKind::Key, "deploy").with_key_path(key);
+            database
+                .insert_credential(&Credential::new(CredentialId(id), draft))
+                .unwrap();
+        }
+        drop(database);
+
+        let mut store = HostData::load(HostDatabase::open(&path).unwrap())
+            .unwrap()
+            .with_key_dir(&keys);
+        assert_eq!(store.adopt_moved_keys(), None);
+        let moved = keys.join(name.as_str()).display().to_string();
+        let key_of = |store: &HostData, id| {
+            store
+                .credential(CredentialId(id))
+                .and_then(|credential| credential.key_path.clone())
+        };
+        assert_eq!(key_of(&store, 1).as_deref(), Some(moved.as_str()));
+        let reopened = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        assert_eq!(key_of(&reopened, 1).as_deref(), Some(moved.as_str()));
+        assert_eq!(key_of(&reopened, 2).as_deref(), Some(mine));
+    }
+
+    #[test]
+    fn a_link_host_never_reaches_the_database() {
+        let data = tempfile::tempdir().unwrap();
+        let path = data.path().join("shellrs.db");
+        let mut store = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+
+        let id = store.insert_external(link("token", "10.0.0.9", 22), None);
+        store.record_connection(id);
+        store.set_host_os(id, Some(HostOs::Debian));
+        store.add_bookmark(id, BookmarkSide::Remote, "/var/log");
+        store.add_bookmark(id, BookmarkSide::Remote, "/tmp");
+        store.move_bookmark(id, BookmarkSide::Remote, "/tmp", 0);
+        store.remove_bookmark(id, BookmarkSide::Remote, "/var/log");
+        run_secret_jobs(&mut store);
+        let failures: Vec<HostEvent> = store
+            .take_events()
+            .into_iter()
+            .filter(|event| matches!(event, HostEvent::Failed(_)))
+            .collect();
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(store.host(id).is_some());
+
+        let reopened = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        assert!(reopened.hosts().is_empty());
+        assert!(reopened.host(id).is_none());
+        assert!(reopened.recent_hosts().next().is_none());
+        assert!(reopened.bookmarks(id, BookmarkSide::Remote).is_empty());
+    }
+
+    /// Run the keychain writes the changes queued, as the app does on a
+    /// background thread.
+    fn run_secret_jobs(store: &mut HostData) {
+        for job in store.take_secret_jobs() {
+            let outcome = job.run();
+            store.secret_done(outcome);
+        }
+    }
+
+    #[test]
+    fn a_batch_says_a_repeated_failure_once_and_a_capture_hears_each() {
+        let mut store = HostData::load(HostDatabase::in_memory().unwrap()).unwrap();
+        let outer = store.begin_capture();
+        assert!(store.begin_batch());
+        // Nested: joins the outer batch.
+        assert!(!store.begin_batch());
+        store.insert(draft("web", None));
+        // Three hosts in a group the database never heard of.
+        for name in ["a", "b", "c"] {
+            store.insert(draft(name, Some(GroupId(99))));
+        }
+        store.end_batch();
+        let captured = store.end_capture(outer);
+        assert_eq!(captured.len(), 3, "{captured:?}");
+        assert!(matches!(
+            &captured[0],
+            Failure::NotSaved {
+                change: Change::NewHost,
+                ..
+            }
+        ));
+        let failed: Vec<Failure> = store
+            .take_events()
+            .into_iter()
+            .filter_map(|event| match event {
+                HostEvent::Failed(failure) => Some(failure),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(failed, [captured[0].clone()]);
+        // Nothing listening afterwards; the events are taken.
+        assert!(store.take_events().is_empty());
+        let outer = store.begin_capture();
+        store.insert(draft("db", None));
+        assert!(store.end_capture(outer).is_empty());
+    }
+
+    #[test]
+    fn a_keychain_write_waits_for_its_runner_and_says_how_it_went() {
+        let mut store = HostData::empty();
+        let secret = SecretRef::password("root", "10.0.0.1", 22);
+        store.save_secret(secret.clone(), Some("hunter2".into()));
+        assert!(store.take_events().is_empty(), "nothing written yet");
+        let jobs = store.take_secret_jobs();
+        assert_eq!(jobs.len(), 1);
+        for job in jobs {
+            // A store without a keychain keeps nothing.
+            let outcome = job.run();
+            assert_eq!(
+                outcome.failure(),
+                Some(Failure::Secret {
+                    secret: secret.clone(),
+                    writing: true,
+                    error: SecretError::Unavailable,
+                })
+            );
+            store.secret_done(outcome);
+        }
+        assert!(matches!(
+            store.take_events().as_slice(),
+            [HostEvent::Failed(Failure::Secret { .. })]
+        ));
+    }
+}

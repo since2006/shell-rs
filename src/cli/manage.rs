@@ -8,10 +8,10 @@ use std::path::Path;
 use gpui_kit::SharedString;
 
 use crate::host::{
-    AuthKind, Credential, CredentialDraft, CredentialId, CredentialKind, DataBits, FlowControl,
-    GroupId, GroupPathError, GroupPlan, Host, HostConnection, HostDraft, HostId, HostStore, Parity,
-    PastedKey, Protocol, ProxyKind, ProxySettings, Route, SSH_PORT, SerialSettings, StopBits,
-    TELNET_PORT,
+    AuthKind, Credential, CredentialDraft, CredentialId, CredentialKind, DataBits,
+    ErrorMessage as _, FlowControl, GroupId, GroupPathError, GroupPlan, Host, HostConnection,
+    HostDraft, HostId, HostStore, Parity, PastedKey, Protocol, ProxyKind, ProxySettings, Route,
+    SSH_PORT, SerialSettings, StopBits, TELNET_PORT,
 };
 use crate::i18n::{t, tn};
 use crate::secrets::SecretRef;
@@ -795,7 +795,7 @@ pub fn plan_credential(
             None
         }
         (None, Some(text)) => {
-            let pasted = PastedKey::parse(text.expose()).map_err(|error| bad(error.to_string()))?;
+            let pasted = PastedKey::parse(text.expose()).map_err(|error| bad(error.message()))?;
             if store.key_dir().is_none() {
                 return Err(CliError::new(
                     ErrorCode::SaveFailed,
@@ -809,7 +809,7 @@ pub fn plan_credential(
         }
         (None, None) => None,
     };
-    let draft = draft.validated().map_err(|error| bad(error.to_string()))?;
+    let draft = draft.validated().map_err(|error| bad(error.message()))?;
     let passphrase = match &private_key {
         // Only an encrypted key has a passphrase to keep; any other
         // clears what a key replaced in place had, as the form does.
@@ -1150,14 +1150,12 @@ mod tests {
     fn a_host_that_moves_takes_its_passwords_along() {
         let (mut store, web, _) = store();
         let proxy = ProxySettings::new(ProxyKind::Http, "proxy", 3128).with_user("me");
-        store.update_unnotified(
-            web,
-            store
-                .host(web)
-                .unwrap()
-                .draft()
-                .with_route(Route::Proxy(proxy.clone())),
-        );
+        let draft = store
+            .host(web)
+            .unwrap()
+            .draft()
+            .with_route(Route::Proxy(proxy.clone()));
+        store.update_unnotified(web, draft);
         let plan = plan_host(
             fields(serde_json::json!({ "port": 2222 })),
             Some(web),

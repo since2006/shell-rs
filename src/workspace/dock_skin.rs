@@ -4,34 +4,32 @@ use std::{
     sync::Arc,
 };
 
-use crate::app::{CatalogIcon, ToggleHostPanel, ToggleTerminalBroadcast};
+use crate::app::{CatalogIcon, ToggleTerminalBroadcast};
 use crate::i18n::t;
 use gpui_kit::component::dock::{
     BasePanelView, DockArea, DockAreaRenderer, DockContext, DockSkin, DropIndicator, NodeId,
     PanelState, PanelStyle, TabGroupContext, TabGroupRenderer, TilesRenderer,
 };
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _,
+    ActiveTheme as _, Icon, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-/// What the leading center tab bar shows ahead of its tabs: the sidebar
-/// switch and 命令广播's. Renderers consume this value, never the Workspace
+/// What the leading center tab bar shows ahead of its tabs: 命令广播's
+/// switch. Renderers consume this value, never the Workspace
 /// entity being rendered.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct TabBarControls {
     node: Option<NodeId>,
-    hosts_open: Option<bool>,
     enabled: bool,
     count: usize,
 }
 
 impl TabBarControls {
     fn controls(self, target: &FocusHandle, cx: &App) -> impl IntoElement {
-        let hosts = target.clone();
         let broadcast = target.clone();
         let label = if !self.enabled {
             t!("workspace.broadcast.title")
@@ -53,26 +51,6 @@ impl TabBarControls {
             .border_b_1()
             .border_r_1()
             .border_color(cx.theme().border)
-            .when_some(self.hosts_open, |row, open| {
-                row.child(
-                    Button::new("toggle-dock:Left")
-                        .ghost()
-                        .xsmall()
-                        .icon(if open {
-                            IconName::PanelLeft
-                        } else {
-                            IconName::PanelLeftOpen
-                        })
-                        .tooltip(if open {
-                            t!("workspace.title_bar.hide_sidebar")
-                        } else {
-                            t!("workspace.title_bar.show_sidebar")
-                        })
-                        .on_click(move |_, window, cx| {
-                            hosts.dispatch_action(&ToggleHostPanel, window, cx)
-                        }),
-                )
-            })
             .child(
                 Button::new("toggle-terminal-broadcast")
                     .ghost()
@@ -100,8 +78,8 @@ pub(super) struct WorkspaceDockSkin {
     skin: Rc<DockSkin>,
     // The center's bars: always tabs, so a lone tab looks selected as it
     // does among others, while the sidebars keep their plain title. The
-    // leading one replaces the built-in sidebar toggle, so its two
-    // controls can sit together; no other center bar shows a toggle.
+    // leading one adds the broadcast control. Center bars hide the built-in
+    // sidebar toggle, which the workspace title bar provides.
     center_skin: Rc<DockSkin>,
     /// The center's tab groups, which the workspace keeps in step with the
     /// layout (`set_center_groups`).
@@ -154,14 +132,12 @@ impl WorkspaceDockSkin {
     pub(super) fn set_broadcast(
         &self,
         node: Option<NodeId>,
-        hosts_open: Option<bool>,
         enabled: bool,
         count: usize,
         cx: &mut App,
     ) {
         let state = TabBarControls {
             node,
-            hosts_open,
             enabled,
             count,
         };

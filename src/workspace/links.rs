@@ -17,6 +17,10 @@ impl Workspace {
     /// a terminal or an SFTP tab by the link's scheme, or say what is wrong
     /// with it.
     pub fn open_link(&mut self, link: OpenLink, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::app_lock::is_locked(cx) {
+            self.locked_links.push(link);
+            return;
+        }
         match SshLink::parse(&link.url, link.tab.as_deref()) {
             Ok(link) => {
                 let kind = link.kind;

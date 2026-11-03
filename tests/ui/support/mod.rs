@@ -21,7 +21,7 @@ pub use shellrs::app::{
 };
 pub use shellrs::cli::{AgentKind, IntegrationPaths};
 pub use shellrs::connection::{
-    ConnectionPrompt, ConnectionPromptField, ConnectionPromptKind, ConnectionPromptReply,
+    AuthenticationRequest, ConnectionPrompt, ConnectionPromptKind, ConnectionPromptReply,
     ConnectionTester, Latency, LoginTest, TelnetTest, TrustCallback,
 };
 pub use shellrs::explorer::ExplorerId;
@@ -31,8 +31,8 @@ pub use shellrs::forward::{
 pub use shellrs::host::{
     AuthKind, ConnectionState, CredentialDraft, CredentialId, CredentialKind, ForwardDraft,
     ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GeneratedKey, GroupDraft, GroupId,
-    HostDatabase, HostDraft, HostId, HostLogin, HostOs, HostStore, JumpLogin, KeyAlgorithm,
-    LoginMethod, LoginRoute, PastedKey, ProxyKind, ProxySettings, Route, SerialLine,
+    HostDatabase, HostDraft, HostId, HostLogin, HostLoginExt, HostOs, HostStore, JumpLogin,
+    KeyAlgorithm, LoginMethod, LoginRoute, PastedKey, ProxyKind, ProxySettings, Route, SerialLine,
     read_public_key,
 };
 pub use shellrs::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};

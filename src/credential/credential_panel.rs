@@ -18,7 +18,9 @@ use crate::app::{
     EditCredential, EditSelectedCredential, GenerateCredentialKey, NewCredential,
     SelectNextCredential, SelectPreviousCredential,
 };
-use crate::host::{CredentialId, CredentialKind, HostStore, matches_credential_query};
+use crate::host::{
+    CredentialId, CredentialKind, HostStore, credential_summary, matches_credential_query,
+};
 use crate::i18n::{UiLocale, t, tn};
 use crate::shared::{RowTooltip, RowTooltips};
 
@@ -166,7 +168,7 @@ impl CredentialPanel {
             .filter(|credential| matches_credential_query(credential, &self.query))
             .map(|credential| {
                 let hosts = store.hosts_using(credential.id).count();
-                let summary = credential.summary(store.key_dir());
+                let summary = credential_summary(credential, store.key_dir());
                 let detail = match hosts {
                     0 => summary.into(),
                     hosts => tn!("credential.panel.detail", hosts, summary = summary),

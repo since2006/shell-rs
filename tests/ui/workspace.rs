@@ -248,7 +248,34 @@ async fn quick_connect_finds_saved_hosts_and_connects_one(cx: &mut TestAppContex
     let row = |id: HostId| ("quick-connect-host", id.0);
 
     in_frame(cx, handle, |window, cx| {
-        window.click("recent-quick-connect", cx)
+        let controls = [
+            "toggle-hosts",
+            "title-quick-connect",
+            "temporary-connection",
+            "new-local-terminal",
+        ]
+        .map(|id| window.find(id).bounds());
+        for pair in controls.windows(2) {
+            assert!(pair[0].right() <= pair[1].left());
+            assert_eq!(pair[0].size, pair[1].size);
+        }
+        assert!(
+            (controls[0].left()
+                - window.find("workspace-sidebar").bounds().right()
+                - window.rem_size() * 0.5)
+                .abs()
+                <= px(1.)
+        );
+        assert_eq!(
+            window.find("title-quick-connect").label(),
+            Some("快速连接…")
+        );
+        assert_eq!(
+            window.find("temporary-connection").label(),
+            Some("临时连接…")
+        );
+        assert_eq!(window.find("new-local-terminal").label(), Some("本地终端"));
+        window.click("title-quick-connect", cx)
     });
     in_frame(cx, handle, |window, cx| {
         // Every saved host, by name while none has been connected to.
@@ -475,7 +502,7 @@ fn both_tabs_of_one_host_stay_closable(cx: &mut TestAppContext) {
 /// single click only selects the tab.
 #[gpui_kit::test]
 async fn double_clicking_a_tab_toggles_the_host_sidebar(cx: &mut TestAppContext) {
-    let (handle, _) = open_workspace(cx);
+    let (handle, workspace) = open_workspace(cx);
     cx.run_until_parked();
     let sidebar_shown = |cx: &mut TestAppContext| {
         cx.update_window(handle.into(), |_, window, cx| {
@@ -495,6 +522,17 @@ async fn double_clicking_a_tab_toggles_the_host_sidebar(cx: &mut TestAppContext)
         .unwrap();
         cx.run_until_parked();
         assert_eq!(sidebar_shown(cx), shown);
+        cx.update(|cx| {
+            assert_eq!(
+                workspace
+                    .read(cx)
+                    .settings()
+                    .read(cx)
+                    .settings()
+                    .sidebar_collapsed,
+                !shown
+            );
+        });
     }
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -503,6 +541,75 @@ async fn double_clicking_a_tab_toggles_the_host_sidebar(cx: &mut TestAppContext)
     .unwrap();
     cx.run_until_parked();
     assert!(sidebar_shown(cx));
+}
+
+/// Both states survive a fresh settings load and workspace, including the
+/// search/list commands that reopen a hidden sidebar. An empty start still
+/// has a keyboard dispatch path when the sidebar starts hidden.
+#[gpui_kit::test]
+fn the_left_sidebar_keeps_its_visibility_after_reopening(cx: &mut TestAppContext) {
+    use shellrs::app::ShowForwards;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let open = |cx: &mut TestAppContext, hosts| {
+        let (mut settings, problem) = SettingsStore::load(path.clone());
+        assert!(problem.is_none());
+        settings
+            .update_unnotified(|settings| settings.language = InterfaceLanguage::SimplifiedChinese);
+        open_workspace_with_settings_and_tester(
+            cx,
+            hosts,
+            settings,
+            Arc::new(FakeConnectionTester::default()),
+        )
+    };
+    let assert_shown = |cx: &mut TestAppContext, handle, shown| {
+        in_frame(cx, handle, |window, _| {
+            assert_eq!(
+                window
+                    .try_find("workspace-sidebar")
+                    .is_some_and(|sidebar| sidebar.visible()),
+                shown
+            );
+            assert_eq!(
+                window.find("toggle-hosts").label(),
+                Some(if shown {
+                    "隐藏侧栏"
+                } else {
+                    "显示侧栏"
+                })
+            );
+        });
+        let (settings, problem) = SettingsStore::load(path.clone());
+        assert!(problem.is_none());
+        assert_eq!(settings.settings().sidebar_collapsed, !shown);
+    };
+
+    let (handle, _) = open(cx, HostStore::empty());
+    assert_shown(cx, handle, true);
+    in_frame(cx, handle, |window, cx| window.click("toggle-hosts", cx));
+    assert_shown(cx, handle, false);
+
+    let (handle, _) = open(cx, HostStore::empty());
+    assert_shown(cx, handle, false);
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("recent-hosts").focused(), Some(true));
+        window.dispatch_action(Box::new(FocusSearch), cx);
+    });
+    assert_shown(cx, handle, true);
+
+    let (handle, _) = open(cx, HostStore::seed());
+    assert_shown(cx, handle, true);
+    in_frame(cx, handle, |window, cx| window.click("toggle-hosts", cx));
+    assert_shown(cx, handle, false);
+
+    let (handle, _) = open(cx, HostStore::seed());
+    assert_shown(cx, handle, false);
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ShowForwards), cx);
+    });
+    assert_shown(cx, handle, true);
 }
 
 /// A middle click on a tab's title closes the tab, as its × does; the
@@ -1167,9 +1274,13 @@ fn each_host_keeps_its_own_tool_sidebar(cx: &mut TestAppContext) {
 
     let kept = cx.update(|cx| {
         let store = workspace.read(cx).store().read(cx);
-        [WEB_01, STAGING_API].map(|id| store.host(HostId(id)).and_then(|host| host.sidebar_tool))
+        [WEB_01, STAGING_API].map(|id| {
+            store
+                .host(HostId(id))
+                .and_then(|host| host.sidebar_tool.clone())
+        })
     });
-    assert_eq!(kept, [None, Some(ToolKind::Snippets)]);
+    assert_eq!(kept, [None, Some(ToolKind::Snippets.key().into())]);
 }
 
 /// The tool a host kept from the last launch: its terminal opens with it,
@@ -1179,7 +1290,7 @@ fn a_host_brings_back_the_tool_it_kept_from_the_last_launch(cx: &mut TestAppCont
     use shellrs::app::ToolKind;
 
     let mut store = HostStore::seed();
-    store.set_host_sidebar_tool_unnotified(HostId(WEB_01), Some(ToolKind::Snippets));
+    store.set_host_sidebar_tool_unnotified(HostId(WEB_01), Some(ToolKind::Snippets.key().into()));
     let (handle, _) = open_workspace_with_store(cx, store);
     in_frame(cx, handle, |window, cx| {
         window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
@@ -1477,4 +1588,83 @@ fn the_tool_sidebar_drags_wider_but_never_narrower_than_it_opens(cx: &mut TestAp
         (narrowed.size.width - opened.size.width).abs() < px(1.),
         "{opened:?} → {narrowed:?}"
     );
+}
+
+/// The title-bar toggle sits just past the actual dock edge, including
+/// after a pointer resize, interface zoom and a hide/show round trip.
+#[gpui_kit::test]
+fn the_sidebar_toggle_tracks_the_host_panel_edge(cx: &mut TestAppContext) {
+    use gpui_kit::component::dock::DockPlacement;
+
+    let (handle, workspace) = open_workspace(cx);
+    let aligned = |cx: &mut TestAppContext| {
+        in_frame(cx, handle, |window, cx| {
+            let button = window.find("toggle-hosts");
+            let panel = window.find("workspace-sidebar").bounds();
+            let gap = window.rem_size() * 0.5;
+            assert!(
+                (button.bounds().left() - panel.right() - gap).abs() <= px(1.),
+                "button {:?}, panel {:?}, gap {:?}",
+                button.bounds(),
+                panel,
+                gap
+            );
+            assert!(button.bounds().left() >= window.find("show-credentials").bounds().right());
+            assert_eq!(button.label(), Some("隐藏侧栏"));
+            let area = workspace.read(cx).dock_area().read(cx);
+            assert!(area.is_dock_open(DockPlacement::Left));
+            (button.bounds(), panel)
+        })
+    };
+    let (opened, panel) = aligned(cx);
+    in_frame(cx, handle, |window, cx| {
+        let from = point(panel.right() - px(2.), panel.center().y);
+        window.drag(from, point(from.x + px(100.), from.y), cx);
+    });
+    let (resized, resized_panel) = aligned(cx);
+    assert!(resized_panel.size.width > panel.size.width + px(80.));
+    assert!(
+        (resized.left() - opened.left() - (resized_panel.right() - panel.right())).abs() <= px(1.)
+    );
+
+    in_frame(cx, handle, |window, cx| window.click("toggle-hosts", cx));
+    in_frame(cx, handle, |window, cx| {
+        let button = window.find("toggle-hosts");
+        assert_eq!(button.label(), Some("显示侧栏"));
+        assert_eq!(button.bounds().left(), resized.left());
+        assert!(
+            !workspace
+                .read(cx)
+                .dock_area()
+                .read(cx)
+                .is_dock_open(DockPlacement::Left)
+        );
+        window.click("toggle-hosts", cx);
+    });
+    aligned(cx);
+    for font_size in [12., 20., 16.] {
+        cx.update(|cx| {
+            workspace
+                .read(cx)
+                .settings()
+                .clone()
+                .update(cx, |store, cx| {
+                    store.update(|settings| settings.interface.font_size = font_size, cx);
+                });
+        });
+        cx.run_until_parked();
+        aligned(cx);
+    }
+    cx.simulate_window_resize(handle.into(), size(px(1000.), px(700.)));
+    aligned(cx);
+    // The panel can be made wider, then dragged back only as far as the
+    // width it opened at. The title-bar toggle follows the clamped edge.
+    in_frame(cx, handle, |window, cx| {
+        let wide = window.find("workspace-sidebar").bounds();
+        let from = point(wide.right() - px(2.), wide.center().y);
+        window.drag(from, point(panel.right() - px(100.), from.y), cx);
+    });
+    let (narrowed_button, narrowed_panel) = aligned(cx);
+    assert_eq!(narrowed_panel.size.width, panel.size.width);
+    assert_eq!(narrowed_button.left(), opened.left());
 }

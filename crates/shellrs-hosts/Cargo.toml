@@ -1,0 +1,37 @@
+[package]
+name = "shellrs-hosts"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "ShellRS hosts core: the saved hosts, credentials and rules, their database, and sync"
+license = "MIT"
+repository = "https://github.com/since2006/shell-rs"
+
+[dependencies]
+anyhow = "1"
+# The sync keys, as the keychain keeps them.
+base64 = "0.22"
+# The text type of the models: GPUI's own, from its small crate of its own
+# (serde and smol_str only), so the desktop app takes the models as they are.
+# Unpinned within 0.3, it is the one the app's GPUI uses.
+gpui-pre-shared-string = "0.3.2"
+rand = "0.9"
+rusqlite = { version = "0.40", features = ["bundled"] }
+# Generating and reading private keys.
+russh = "0.63"
+serde = { version = "1", features = ["derive"] }
+shellrs-ssh = { path = "../shellrs-ssh" }
+shellrs-sync = { path = "../shellrs-sync" }
+# The address of a WebDAV server or an S3 service, as typed.
+url = "2"
+zeroize = "1"
+
+[features]
+# Fixtures for the tests of what builds on this crate: the desktop app's
+# take it as a dev-dependency.
+testing = []
+
+[dev-dependencies]
+# The settings file's spelling of each sync location, pinned.
+serde_json = "1"
+tempfile = "3"

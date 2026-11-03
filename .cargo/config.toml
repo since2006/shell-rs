@@ -3,3 +3,11 @@
 # after each build.
 [target.'cfg(target_os = "macos")']
 runner = "scripts/macos-run.sh"
+
+# On Windows the C runtime goes into the programs themselves. Linked as a
+# DLL it needs VCRUNTIME140.dll, which Windows leaves to the Visual C++
+# Redistributable: LTSC editions and fresh installs without it cannot start
+# ShellRS. The C code of dependencies (aws-lc, SQLite) follows the flag.
+# scripts/windows-runtime.ps1 checks the programs in CI.
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

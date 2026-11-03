@@ -78,7 +78,7 @@ impl TerminalTransport for TelnetTransport {
             let password = auto_login
                 .password
                 .as_ref()
-                .and_then(|secret| self.connector.secrets().get(secret).ok().flatten());
+                .and_then(|secret| self.connector.secrets().secret(secret).ok().flatten());
             AutoLogin::new(
                 &auto_login.user,
                 password,

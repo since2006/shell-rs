@@ -19,7 +19,7 @@ use crate::app::{
     CatalogIcon, DeleteForward, EditForward, FORWARD_PANEL_CONTEXT, NewForward, NewHost,
     SelectNextForward, SelectPreviousForward, StartForward, StopForward, ToggleSelectedForward,
 };
-use crate::host::{ForwardId, ForwardKind, HostStore, matches_forward_query};
+use crate::host::{ForwardId, ForwardKind, HostStore, KindLabel as _, matches_forward_query};
 use crate::i18n::{UiLocale, t};
 use crate::shared::{RowTooltip, RowTooltips};
 

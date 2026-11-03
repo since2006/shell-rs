@@ -23,9 +23,9 @@ use gpui_kit::*;
 use zeroize::Zeroizing;
 
 use super::sync_dialog::{JoinReason, PasswordDialog, open_password_dialog};
-use super::{JobError, SyncService};
+use super::{JobError, LoginError, S3Form, SyncLocation, SyncService, WebDavForm};
+use crate::host::ErrorMessage as _;
 use crate::i18n::t;
-use crate::settings::SyncLocation;
 use crate::shared::{dismiss_form_error, form_error_notification};
 
 /// Which kind of place.
@@ -154,32 +154,19 @@ impl RemoteForm {
     }
 
     /// The place and the login the fields name, or what is wrong with them.
-    fn login(&self, cx: &App) -> Result<(SyncLocation, Zeroizing<String>), SharedString> {
-        let text = |field: &Entity<InputState>| field.read(cx).value().trim().to_string();
-        let address = |text: &str| {
-            url::Url::parse(text).ok().is_some_and(|address| {
-                matches!(address.scheme(), "http" | "https") && address.host_str().is_some()
-            })
-        };
+    fn login(&self, cx: &App) -> Result<(SyncLocation, Zeroizing<String>), LoginError> {
+        let text = |field: &Entity<InputState>| field.read(cx).value();
         match &self.fields {
             Fields::WebDav {
                 url,
                 username,
                 password,
-            } => {
-                let (url, username) = (text(url), text(username));
-                let password = Zeroizing::new(password.read(cx).value().to_string());
-                if !address(&url) {
-                    return Err(t!("sync.webdav.url_invalid"));
-                }
-                if username.is_empty() {
-                    return Err(t!("sync.webdav.username_missing"));
-                }
-                if password.is_empty() {
-                    return Err(t!("sync.webdav.password_missing"));
-                }
-                Ok((SyncLocation::WebDav { url, username }, password))
+            } => WebDavForm {
+                url: &text(url),
+                username: &text(username),
+                password: &text(password),
             }
+            .login(),
             Fields::S3 {
                 endpoint,
                 region,
@@ -188,33 +175,16 @@ impl RemoteForm {
                 access_key,
                 secret_key,
                 path_style,
-            } => {
-                let endpoint = text(endpoint);
-                let bucket = text(bucket);
-                let access_key = text(access_key);
-                let secret_key = Zeroizing::new(secret_key.read(cx).value().trim().to_string());
-                if !address(&endpoint) {
-                    return Err(t!("sync.s3.endpoint_invalid"));
-                }
-                if bucket.is_empty() || bucket.contains(['/', '\\', ' ']) {
-                    return Err(t!("sync.s3.bucket_invalid"));
-                }
-                if access_key.is_empty() {
-                    return Err(t!("sync.s3.access_key_missing"));
-                }
-                if secret_key.is_empty() {
-                    return Err(t!("sync.s3.secret_key_missing"));
-                }
-                let location = SyncLocation::S3 {
-                    endpoint,
-                    region: text(region),
-                    bucket,
-                    prefix: text(prefix).trim_matches('/').to_string(),
-                    path_style: *path_style,
-                    access_key,
-                };
-                Ok((location, secret_key))
+            } => S3Form {
+                endpoint: &text(endpoint),
+                region: &text(region),
+                bucket: &text(bucket),
+                prefix: &text(prefix),
+                path_style: *path_style,
+                access_key: &text(access_key),
+                secret_key: &text(secret_key),
             }
+            .login(),
         }
     }
 
@@ -225,7 +195,7 @@ impl RemoteForm {
         let (location, login) = match self.login(cx) {
             Ok(login) => login,
             Err(error) => {
-                window.push_notification(form_error_notification(error), cx);
+                window.push_notification(form_error_notification(error.message()), cx);
                 return;
             }
         };
@@ -255,7 +225,7 @@ impl RemoteForm {
         let (location, login) = match self.login(cx) {
             Ok(login) => login,
             Err(error) => {
-                window.push_notification(form_error_notification(error), cx);
+                window.push_notification(form_error_notification(error.message()), cx);
                 return false;
             }
         };
@@ -298,7 +268,7 @@ impl RemoteForm {
                         }
                     }
                     Err(error) => {
-                        window.push_notification(form_error_notification(error.describe()), cx)
+                        window.push_notification(form_error_notification(error.message()), cx)
                     }
                 }
             })
@@ -414,7 +384,7 @@ impl RemoteForm {
 fn tested(result: Result<(), JobError>) -> Notification {
     match result {
         Ok(()) => Notification::success(t!("sync.webdav.test_ok")),
-        Err(error) => Notification::error(error.describe()).title(t!("sync.webdav.test_failed")),
+        Err(error) => Notification::error(error.message()).title(t!("sync.webdav.test_failed")),
     }
 }
 

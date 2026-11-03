@@ -29,7 +29,7 @@ impl RenderOnce for LatencyLabel {
             LatencyLevel::Fair => cx.theme().warning,
             LatencyLevel::Poor => cx.theme().danger,
         };
-        let label = self.latency.label();
+        let label = crate::ssh::latency_label(self.latency);
         div()
             .id(self.id)
             .test_support()

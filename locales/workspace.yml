@@ -82,10 +82,13 @@ workspace.title_bar.show_sidebar:
   zh-CN: 显示侧栏
   en: Show sidebar
 workspace.title_bar.quick_connect:
+  zh-CN: 快速连接…
+  en: Find a host…
+workspace.title_bar.temporary_connection:
   zh-CN: 临时连接…
-  en: Quick connect…
-workspace.title_bar.quick_connect_tooltip:
-  zh-CN: 连接一台主机，不保存
+  en: Temporary connection…
+workspace.title_bar.temporary_connection_tooltip:
+  zh-CN: 临时连接，不保存
   en: Connect to a host without saving it
 workspace.title_bar.local_terminal:
   zh-CN: 本地终端

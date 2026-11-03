@@ -51,11 +51,11 @@ impl TerminalTransport for PromptTerminalTransport {
     ) -> anyhow::Result<()> {
         let request_id = 9001;
         let kind = match self.behavior {
-            PromptBehavior::Authentication => ConnectionPromptKind::authentication(
-                "SSH 登录",
-                "请输入密码",
-                vec![ConnectionPromptField::new("密码", false)],
-            ),
+            PromptBehavior::Authentication => {
+                ConnectionPromptKind::authentication(AuthenticationRequest::Password {
+                    saved_rejected: false,
+                })
+            }
             PromptBehavior::UnknownHost => ConnectionPromptKind::unknown_host(
                 "example.test",
                 22,

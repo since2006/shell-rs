@@ -1,0 +1,8 @@
+[bindings.swift]
+module_name = "ShellRSCore"
+ffi_module_name = "ShellRSCoreFFI"
+ffi_module_filename = "ShellRSCoreFFI"
+
+[bindings.kotlin]
+package_name = "com.shellrs.core"
+cdylib_name = "shellrs_mobile"

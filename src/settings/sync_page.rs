@@ -19,6 +19,7 @@ use crate::app::{
     CatalogIcon, ChangeSyncLogin, ChangeSyncPassword, RemoveSyncDevice, ReviewSync, SetUpS3Sync,
     SetUpSync, SetUpWebDavSync, SyncNow, TurnOffSync,
 };
+use crate::host::ErrorMessage as _;
 use crate::i18n::{t, tn};
 use crate::settings::SyncLocation;
 use crate::sync::{Attention, JobError, SyncPhase, SyncService, SyncSnapshot};
@@ -68,7 +69,7 @@ fn set_up_group(available: bool) -> SettingGroup {
     let description = if available {
         t!("settings.sync.description")
     } else {
-        JobError::Unavailable.describe()
+        JobError::Unavailable.message()
     };
     SettingGroup::new()
         .title(t!("settings.sync.set_up"))
@@ -176,7 +177,7 @@ fn status_item(snapshot: SyncSnapshot) -> SettingItem {
         let (text, color) = match (snapshot.attention, &snapshot.phase) {
             (Some(attention), _) => (attention_text(attention), cx.theme().warning),
             (None, SyncPhase::Failed(error)) => (
-                t!("settings.sync.failed", reason = error.describe()),
+                t!("settings.sync.failed", reason = error.message()),
                 cx.theme().danger,
             ),
             (None, phase) => (phase_text(phase), cx.theme().muted_foreground),
@@ -234,7 +235,7 @@ fn phase_text(phase: &SyncPhase) -> SharedString {
         SyncPhase::Off | SyncPhase::Waiting => t!("settings.sync.waiting"),
         SyncPhase::Syncing => t!("settings.sync.syncing"),
         SyncPhase::Synced { at_ms } => t!("settings.sync.synced", time = format_time(*at_ms)),
-        SyncPhase::Failed(error) => error.describe(),
+        SyncPhase::Failed(error) => error.message(),
     }
 }
 

@@ -1,5 +1,5 @@
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Selectable as _, Sizable as _, TitleBar,
+    ActiveTheme as _, IconName, Selectable as _, Sizable as _, TITLE_BAR_HEIGHT, TitleBar,
     button::{Button, ButtonGroup, ButtonVariants as _},
     h_flex,
 };
@@ -7,8 +7,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, NewLocalTerminal, NewTemporaryConnection, ShowCredentials, ShowForwards,
-    ShowHosts, ShowUpdate, ToggleHostPanel, ToggleTheme,
+    CatalogIcon, NewLocalTerminal, NewTemporaryConnection, QuickConnect, ShowCredentials,
+    ShowForwards, ShowHosts, ShowUpdate, ToggleHostPanel, ToggleTheme,
 };
 use crate::i18n::t;
 use crate::shared::tinted;
@@ -32,7 +32,7 @@ pub fn render_title_bar(
     cx: &App,
 ) -> TitleBar {
     let dark = cx.theme().is_dark();
-    let (mode, toggle, temporary, new_local, theme, show_update) = (
+    let (mode, quick, temporary, new_local, theme, show_update) = (
         target.clone(),
         target.clone(),
         target.clone(),
@@ -111,17 +111,14 @@ pub fn render_title_bar(
                 .gap_1()
                 .on_mouse_down(MouseButton::Left, no_drag)
                 .child(
-                    Button::new("toggle-hosts")
+                    Button::new("title-quick-connect")
                         .ghost()
                         .small()
-                        .icon(IconName::PanelLeft)
-                        .tooltip(if sidebar.is_some() {
-                            t!("workspace.title_bar.hide_sidebar")
-                        } else {
-                            t!("workspace.title_bar.show_sidebar")
-                        })
+                        .icon(IconName::Search)
+                        .tooltip(t!("workspace.title_bar.quick_connect"))
+                        .accessibility_label(t!("workspace.title_bar.quick_connect"))
                         .on_click(move |_, window, cx| {
-                            toggle.dispatch_action(&ToggleHostPanel, window, cx)
+                            quick.dispatch_action(&QuickConnect, window, cx)
                         }),
                 )
                 .child(
@@ -130,9 +127,9 @@ pub fn render_title_bar(
                     Button::new("temporary-connection")
                         .ghost()
                         .small()
-                        .icon(CatalogIcon::Plug)
-                        .label(t!("workspace.title_bar.quick_connect"))
-                        .tooltip(t!("workspace.title_bar.quick_connect_tooltip"))
+                        .icon(CatalogIcon::Zap)
+                        .accessibility_label(t!("workspace.title_bar.temporary_connection"))
+                        .tooltip(t!("workspace.title_bar.temporary_connection_tooltip"))
                         .on_click(move |_, window, cx| {
                             temporary.dispatch_action(&NewTemporaryConnection, window, cx)
                         }),
@@ -142,7 +139,7 @@ pub fn render_title_bar(
                         .ghost()
                         .small()
                         .icon(CatalogIcon::Terminal)
-                        .label(t!("workspace.title_bar.local_terminal"))
+                        .accessibility_label(t!("workspace.title_bar.local_terminal"))
                         .tooltip_with_action(
                             t!("workspace.title_bar.new_local_terminal"),
                             &NewLocalTerminal,
@@ -186,5 +183,43 @@ pub fn render_title_bar(
                             theme.dispatch_action(&ToggleTheme, window, cx)
                         }),
                 ),
+        )
+}
+
+/// Position against the workspace, whose left edge is also the dock's,
+/// rather than against TitleBar's platform-dependent traffic-light inset.
+/// The closed dock keeps its width, so the reopen button stays put.
+pub(super) fn render_sidebar_toggle(
+    open: bool,
+    sidebar_width: Pixels,
+    target: &FocusHandle,
+) -> impl IntoElement {
+    let target = target.clone();
+    let label = if open {
+        t!("workspace.title_bar.hide_sidebar")
+    } else {
+        t!("workspace.title_bar.show_sidebar")
+    };
+    h_flex()
+        .absolute()
+        .top_0()
+        .left(sidebar_width)
+        .h(TITLE_BAR_HEIGHT)
+        .pl_2()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            Button::new("toggle-hosts")
+                .ghost()
+                .small()
+                .icon(if open {
+                    IconName::PanelLeft
+                } else {
+                    IconName::PanelLeftOpen
+                })
+                .tooltip(label.clone())
+                .accessibility_label(label)
+                .on_click(move |_, window, cx| {
+                    target.dispatch_action(&ToggleHostPanel, window, cx)
+                }),
         )
 }

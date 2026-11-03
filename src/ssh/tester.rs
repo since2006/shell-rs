@@ -1,6 +1,6 @@
 //! Log in once with the host form's values, for its 「测试连接」 button.
 use std::{
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{Arc, Mutex, MutexGuard, OnceLock, Weak},
     time::Duration,
 };
 
@@ -8,18 +8,17 @@ use anyhow::Result;
 use tokio::sync::watch;
 use zeroize::Zeroizing;
 
-use super::connection::{
-    MissingCredential, PasswordWanted, RouteFailure, SshConnectionConfig, SshConnector, SshPrompts,
-    lock, timeout_excluding_prompts,
+use super::describe::{describe_login_error, describe_missing_credential};
+use super::{
+    ConnectionPrompt, ConnectionPromptKind, ConnectionPromptReply, MissingCredential,
+    PasswordWanted, RouteFailure, SshConnectionConfig, SshConnector, SshPrompts, find_cause,
+    timeout_excluding_prompts,
 };
 use crate::{
-    connection::{
-        ConnectionPrompt, ConnectionPromptKind, ConnectionPromptReply, ConnectionTester, LoginTest,
-        TelnetTest, TrustCallback,
-    },
+    connection::{ConnectionTester, LoginTest, TelnetTest, TrustCallback},
     host::{JumpLogin, LoginMethod, LoginRoute},
     i18n::t,
-    secrets::{SecretRef, SecretStore, SharedSecretStore},
+    secrets::{SecretRef, SecretSource, SharedSecretSource},
 };
 
 /// How long a test may take, not counting the time a person spends deciding
@@ -84,7 +83,7 @@ impl SshConnectionTester {
         } else {
             SshConnectionConfig::from(request.login())
         };
-        let secrets: SharedSecretStore =
+        let secrets: SharedSecretSource =
             Arc::new(FormSecrets::new(&request, self.connector.secrets().clone()));
         let (broker, host_trust, _shutdown) = test_broker(trust);
 
@@ -107,10 +106,12 @@ impl SshConnectionTester {
             // 「无密码」, is what to tell someone who chose 「密码」.
             Err(error)
                 if without_password
-                    && error.downcast_ref::<RouteFailure>().is_none()
+                    && find_cause::<RouteFailure>(&error).is_none()
                     && error.chain().any(|cause| cause.is::<PasswordWanted>()) =>
             {
-                Err(MissingCredential::Password { rejected: false }.to_string())
+                Err(describe_missing_credential(MissingCredential::Password {
+                    rejected: false,
+                }))
             }
             Err(error) => Err(describe_test_failure(&error, *lock(&host_trust))),
         }
@@ -120,7 +121,7 @@ impl SshConnectionTester {
     /// the device's business.
     async fn run_telnet(&self, request: TelnetTest, trust: TrustCallback) -> Result<(), String> {
         resolve_first_leg(request.route(), request.host(), request.port()).await?;
-        let secrets: SharedSecretStore = Arc::new(FormSecrets::for_proxy(
+        let secrets: SharedSecretSource = Arc::new(FormSecrets::for_proxy(
             request.route(),
             request.proxy_password(),
             self.connector.secrets().clone(),
@@ -226,6 +227,12 @@ fn test_broker(
     (broker, host_trust, shutdown_tx)
 }
 
+/// Lock a mutex that a panicking thread may have poisoned; the data it guards
+/// here stays usable either way.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|error| error.into_inner())
+}
+
 /// Why a test failed, in the words the notification shows.
 fn describe_test_failure(error: &anyhow::Error, host_trust: HostTrust) -> String {
     if host_trust.key_changed {
@@ -237,63 +244,6 @@ fn describe_test_failure(error: &anyhow::Error, host_trust: HostTrust) -> String
     describe_login_error(error)
 }
 
-/// Why a login failed, from the error alone: where on the way to the host
-/// it failed, a credential that was missing, the network's own answer, the
-/// algorithms the server would not agree on, or whatever the error says,
-/// down to its cause: 「无法建立 SSH 连接」 alone does not say what to fix.
-pub fn describe_login_error(error: &anyhow::Error) -> String {
-    if let Some(failure) = error.downcast_ref::<RouteFailure>() {
-        return failure.to_string();
-    }
-    for cause in error.chain() {
-        if let Some(need) = cause.downcast_ref::<MissingCredential>() {
-            return need.to_string();
-        }
-        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
-            return describe_connect_error(io);
-        }
-        match cause.downcast_ref::<russh::Error>() {
-            // russh wraps the socket's own error rather than chaining it.
-            Some(russh::Error::IO(io)) => return describe_connect_error(io),
-            Some(russh::Error::ConnectionTimeout) => return t!("ssh.error.timeout").into(),
-            Some(russh::Error::NoCommonAlgo { kind, theirs, .. }) => {
-                return no_common_algorithm(kind, &theirs.join(&*t!("common.list.separator")));
-            }
-            _ => {}
-        }
-    }
-    format!("{error:#}")
-}
-
-/// That the server has none of the algorithms of `kind` that ShellRS has,
-/// and which it has: `theirs`.
-fn no_common_algorithm(kind: &russh::AlgorithmKind, theirs: &str) -> String {
-    match kind {
-        russh::AlgorithmKind::Kex => t!("ssh.error.no_common.kex", theirs = theirs),
-        russh::AlgorithmKind::Key => t!("ssh.error.no_common.host_key", theirs = theirs),
-        russh::AlgorithmKind::Cipher => t!("ssh.error.no_common.cipher", theirs = theirs),
-        russh::AlgorithmKind::Mac => t!("ssh.error.no_common.mac", theirs = theirs),
-        russh::AlgorithmKind::Compression => {
-            t!("ssh.error.no_common.compression", theirs = theirs)
-        }
-    }
-    .into()
-}
-
-/// A connect error in plain words. The common kinds get an explanation;
-/// anything else keeps the system's own description.
-fn describe_connect_error(error: &std::io::Error) -> String {
-    use std::io::ErrorKind;
-    match error.kind() {
-        ErrorKind::ConnectionRefused => t!("ssh.error.refused").into(),
-        ErrorKind::TimedOut => t!("ssh.error.timeout").into(),
-        ErrorKind::HostUnreachable | ErrorKind::NetworkUnreachable => {
-            t!("ssh.error.unreachable").into()
-        }
-        _ => t!("ssh.error.connect_failed", error = error).into(),
-    }
-}
-
 /// The secrets a test logs in with. For a login typed into the form, the
 /// form is authoritative for the login password and for the passphrase of
 /// the key it names, whether or not they were saved; anything else (a
@@ -301,11 +251,11 @@ fn describe_connect_error(error: &std::io::Error) -> String {
 /// credential reads everything from the keychain. Nothing is ever written.
 struct FormSecrets {
     typed: Vec<(SecretRef, Option<Zeroizing<String>>)>,
-    fallback: SharedSecretStore,
+    fallback: SharedSecretSource,
 }
 
 impl FormSecrets {
-    fn new(request: &LoginTest, fallback: SharedSecretStore) -> Self {
+    fn new(request: &LoginTest, fallback: SharedSecretSource) -> Self {
         let owned = |value: Option<&str>| value.map(|value| Zeroizing::new(value.to_string()));
         let mut typed = Vec::new();
         let login = request.login();
@@ -324,7 +274,7 @@ impl FormSecrets {
 
     /// Only the proxy's password from the form, for a test that logs in
     /// nowhere but the jump hosts, with what they saved.
-    fn for_proxy(route: &LoginRoute, password: Option<&str>, fallback: SharedSecretStore) -> Self {
+    fn for_proxy(route: &LoginRoute, password: Option<&str>, fallback: SharedSecretSource) -> Self {
         let typed = route
             .proxy_password()
             .map(|proxy| {
@@ -339,38 +289,20 @@ impl FormSecrets {
     }
 }
 
-impl SecretStore for FormSecrets {
-    fn get(&self, secret: &SecretRef) -> anyhow::Result<Option<Zeroizing<String>>> {
+impl SecretSource for FormSecrets {
+    fn secret(&self, secret: &SecretRef) -> anyhow::Result<Option<Zeroizing<String>>> {
         match self.typed.iter().find(|(key, _)| key == secret) {
             Some((_, value)) => Ok(value.clone()),
-            None => self.fallback.get(secret),
+            None => self.fallback.secret(secret),
         }
-    }
-
-    fn set(&self, _: &SecretRef, _: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn delete(&self, _: &SecretRef) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    fn is_available(&self) -> bool {
-        false
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Error, ErrorKind};
-
     use anyhow::anyhow;
 
-    use super::{HostTrust, MissingCredential, RouteFailure, describe_test_failure};
-
-    fn reason(error: anyhow::Error) -> String {
-        describe_test_failure(&error, HostTrust::default())
-    }
+    use super::{HostTrust, describe_test_failure};
 
     #[test]
     fn host_trust_outranks_the_connect_error() {
@@ -388,112 +320,11 @@ mod tests {
             describe_test_failure(&error, declined),
             "未信任该主机的密钥"
         );
-    }
-
-    #[test]
-    fn missing_credentials_name_what_was_wrong() {
-        assert_eq!(
-            reason(MissingCredential::Password { rejected: true }.into()),
-            "用户名或密码错误"
-        );
-        assert_eq!(
-            reason(MissingCredential::Password { rejected: false }.into()),
-            "未填写密码"
-        );
-        assert_eq!(
-            reason(MissingCredential::Passphrase { rejected: true }.into()),
-            "私钥口令错误"
-        );
-        assert_eq!(
-            reason(MissingCredential::Passphrase { rejected: false }.into()),
-            "私钥已加密，未填写口令"
-        );
-        assert!(reason(MissingCredential::KeyboardInteractive.into()).contains("键盘交互"));
-    }
-
-    #[test]
-    fn network_errors_are_explained_under_any_context() {
-        let refused = anyhow::Error::from(Error::from(ErrorKind::ConnectionRefused))
-            .context("无法建立 SSH 连接");
-        assert_eq!(reason(refused), "连接被拒绝，该端口上没有服务在监听");
-        assert_eq!(
-            reason(Error::from(ErrorKind::HostUnreachable).into()),
-            "主机不可达"
-        );
-        assert_eq!(reason(russh::Error::ConnectionTimeout.into()), "连接超时");
-        let wrapped =
-            anyhow::Error::from(russh::Error::IO(Error::from(ErrorKind::ConnectionRefused)))
-                .context("无法建立 SSH 连接");
-        assert_eq!(reason(wrapped), "连接被拒绝，该端口上没有服务在监听");
-    }
-
-    #[test]
-    fn a_failure_on_the_way_says_where_it_happened() {
-        let missing = anyhow::Error::from(MissingCredential::Password { rejected: false })
-            .context(RouteFailure("跳板主机「阿里云99」：未填写密码".into()));
-        assert_eq!(reason(missing), "跳板主机「阿里云99」：未填写密码");
-    }
-
-    #[test]
-    fn anything_else_keeps_the_connector_wording() {
-        assert_eq!(
-            reason(anyhow!("服务器未接受指定的私钥")),
-            "服务器未接受指定的私钥"
-        );
-        // With what lies under it, which says what to fix.
-        let kex = anyhow::Error::from(russh::Error::Kex)
-            .context("无法建立 SSH 连接，请检查地址、端口和主机密钥");
-        assert_eq!(
-            reason(kex),
-            "无法建立 SSH 连接，请检查地址、端口和主机密钥: Key exchange failed"
-        );
-    }
-
-    #[test]
-    fn reasons_read_as_english_sentences() {
         crate::i18n::isolate_thread();
         crate::i18n::set_locale("en");
-        let refused = anyhow::Error::from(Error::from(ErrorKind::ConnectionRefused))
-            .context("Couldn’t establish an SSH connection");
-        assert_eq!(
-            reason(refused),
-            "Connection refused: nothing is listening on that port"
-        );
-        assert_eq!(
-            reason(MissingCredential::Password { rejected: true }.into()),
-            "Incorrect username or password"
-        );
-        let mac = anyhow::Error::from(russh::Error::NoCommonAlgo {
-            kind: russh::AlgorithmKind::Mac,
-            ours: vec!["hmac-sha2-256".into()],
-            theirs: vec!["hmac-sha1".into(), "hmac-md5".into()],
-        });
-        assert_eq!(
-            reason(mac),
-            "Couldn’t establish an SSH connection: no MAC algorithm in common with the \
-             server, which supports hmac-sha1, hmac-md5"
-        );
-        let declined = HostTrust {
-            declined: true,
-            ..HostTrust::default()
-        };
         assert_eq!(
             describe_test_failure(&anyhow!("x"), declined),
             "The host key wasn’t trusted"
-        );
-    }
-
-    #[test]
-    fn a_server_of_other_algorithms_says_which_it_has() {
-        let mac = anyhow::Error::from(russh::Error::NoCommonAlgo {
-            kind: russh::AlgorithmKind::Mac,
-            ours: vec!["hmac-sha2-256".into()],
-            theirs: vec!["hmac-sha1".into(), "hmac-md5".into()],
-        })
-        .context("无法建立 SSH 连接，请检查地址、端口和主机密钥");
-        assert_eq!(
-            reason(mac),
-            "无法建立 SSH 连接：和服务器没有共同的消息校验（MAC）算法，服务器支持的是 hmac-sha1、hmac-md5"
         );
     }
 }

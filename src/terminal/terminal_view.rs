@@ -333,6 +333,10 @@ impl TerminalView {
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
             cx.observe(&engine, |_, _, cx| cx.notify()),
+            cx.observe_global::<TerminalInteraction>(|this, cx| {
+                this.cursor_visible = true;
+                cx.notify();
+            }),
             // The panel hears the engine's events through the view.
             cx.subscribe(&engine, |_, _, event: &TerminalEvent, cx| {
                 cx.emit(event.clone())

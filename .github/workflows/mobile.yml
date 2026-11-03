@@ -1,0 +1,74 @@
+# The core of the mobile apps (crates/shellrs-mobile), which `cargo test`
+# leaves out: built for iOS and Android as scripts/build-ios.sh and
+# build-android.sh do, with its Swift and Kotlin interfaces built and run
+# against a build of it for the runner.
+name: mobile
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "crates/shellrs-mobile/**"
+      - "crates/shellrs-ssh/**"
+      - "crates/shellrs-hosts/**"
+      - "crates/shellrs-sync/**"
+      - "scripts/build-ios.sh"
+      - "scripts/build-android.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/mobile.yml"
+  workflow_dispatch:
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml picks the toolchain; this installs it with the
+      # components it lists before the cache key is computed.
+      - run: rustup toolchain install
+      - run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt -p shellrs-mobile --check
+      - run: cargo clippy -p shellrs-mobile --all-targets -- -D warnings
+      - run: cargo test --locked -p shellrs-mobile
+      - run: scripts/build-ios.sh
+      - run: crates/shellrs-mobile/tests/swift/run.sh
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install
+      - run: rustup target add aarch64-linux-android x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-ndk --version 4.1.2 --locked
+      # The SFTP test talks to a local sftp-server.
+      - run: sudo apt-get update && sudo apt-get install -y openssh-sftp-server
+      - run: cargo test --locked -p shellrs-mobile
+      # NDK r28 or later lays the libraries out for 16 KB pages, as Google
+      # Play wants.
+      - run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" scripts/build-android.sh
+      # With the runner's kotlinc and pinned jars, checked against their
+      # digests.
+      - name: Kotlin interface
+        env:
+          COROUTINES: org/jetbrains/kotlinx/kotlinx-coroutines-core-jvm/1.9.0/kotlinx-coroutines-core-jvm-1.9.0.jar
+          COROUTINES_SHA256: ad89c2892235e670f222d819cb3d81188143cb19a05b59df9889ae4269f5c70a
+          JNA: net/java/dev/jna/jna/5.18.1/jna-5.18.1.jar
+          JNA_SHA256: 260c4b1e22b1db9e110ee441c4f13ce115f841fa48c41d78750986214b395557
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/coroutines.jar" "https://repo1.maven.org/maven2/$COROUTINES"
+          curl -sSfL -o "$RUNNER_TEMP/jna.jar" "https://repo1.maven.org/maven2/$JNA"
+          echo "$COROUTINES_SHA256  $RUNNER_TEMP/coroutines.jar" | sha256sum -c -
+          echo "$JNA_SHA256  $RUNNER_TEMP/jna.jar" | sha256sum -c -
+          stdlib="$(dirname "$(readlink -f "$(command -v kotlinc)")")/../lib/kotlin-stdlib.jar"
+          CLASSPATH="$stdlib:$RUNNER_TEMP/coroutines.jar:$RUNNER_TEMP/jna.jar" \
+            crates/shellrs-mobile/tests/kotlin/run.sh

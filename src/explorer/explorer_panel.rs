@@ -18,7 +18,7 @@ use crate::{
     sftp::{
         DownloadRequest, RemotePath, SftpCommand, SftpEvent, SftpRoute,
         SharedLocalDirectoryProvider, SharedSftpTransportProvider, TextFile, TransferDirection,
-        TransferPhase, TransferQuestion, UploadRequest,
+        TransferPhase, TransferQuestion, UploadRequest, describe_sftp_error,
     },
     shared::{ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items},
 };
@@ -182,7 +182,8 @@ impl ExplorerPanel {
             .name("shellrs-sftp".into())
             .spawn(move || {
                 if let Err(error) = transport.run(receiver, sender.clone()) {
-                    let _ = sender.send_blocking(SftpEvent::Disconnected(error.to_string()));
+                    let _ =
+                        sender.send_blocking(SftpEvent::Disconnected(describe_sftp_error(&error)));
                 }
             })
         {
@@ -456,9 +457,10 @@ impl ExplorerPanel {
                     self.send(command);
                 }
                 Err(error) => {
+                    let message = describe_sftp_error(&error);
                     self.queue
-                        .abandon_head(Removal::NotStarted(error.to_string()));
-                    window.push_notification(Notification::error(error.to_string()), cx);
+                        .abandon_head(Removal::NotStarted(message.clone()));
+                    window.push_notification(Notification::error(message), cx);
                 }
             }
         }
@@ -470,7 +472,7 @@ impl ExplorerPanel {
         }
         // Refused now rather than when its turn comes.
         if let Err(error) = transfer_command(&job) {
-            window.push_notification(Notification::error(error.to_string()), cx);
+            window.push_notification(Notification::error(describe_sftp_error(&error)), cx);
             return;
         }
         self.queue.push(job);
@@ -671,7 +673,7 @@ impl ExplorerPanel {
                     path,
                 }),
                 Err(e) => pane.update(cx, |pane, cx| {
-                    pane.apply_listing(id, Err(e.to_string()), window, cx)
+                    pane.apply_listing(id, Err(describe_sftp_error(&e)), window, cx)
                 }),
             }
         } else {

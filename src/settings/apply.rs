@@ -61,6 +61,9 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
         cx.set_global(UiLocale(locale));
         window.refresh();
     }
+    // Only the production main window installs the native tray service.
+    #[cfg(windows)]
+    crate::app::sync_window_tray(settings.window.close_to_tray, window, cx);
 
     let font = settings.terminal_font;
     let font = TerminalFont {
@@ -77,7 +80,7 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
         window.refresh();
     }
 
-    // Read when the mouse acts, so nothing is redrawn.
+    // Terminals observe cursor changes; mouse behavior is read on input.
     if cx.try_global::<TerminalInteraction>() != Some(&settings.terminal_interaction) {
         cx.set_global(settings.terminal_interaction);
     }

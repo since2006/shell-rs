@@ -16,17 +16,14 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use rand::Rng as _;
 use zeroize::Zeroizing;
 
-use super::{JobError, SyncService};
+use super::{
+    JobError, SyncLocation, SyncService, check_new_password, check_password, random_password,
+};
+use crate::host::ErrorMessage as _;
 use crate::i18n::t;
-use crate::settings::SyncLocation;
 use crate::shared::{commit_footer, dismiss_form_error, form_error_notification};
-
-/// The shortest new sync password, in characters: it guards every secret
-/// in the folder against anyone who gets a copy of it.
-pub const MIN_PASSWORD: usize = 12;
 
 /// What a password dialog does.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,18 +164,12 @@ impl PasswordForm {
             return false;
         }
         let password = Zeroizing::new(self.password.read(cx).value().to_string());
-        let error = match &self.repeat {
-            Some(_) if password.chars().count() < MIN_PASSWORD => {
-                Some(t!("sync.dialog.too_short", count = MIN_PASSWORD))
-            }
-            Some(repeat) if repeat.read(cx).value().as_ref() != password.as_str() => {
-                Some(t!("sync.dialog.mismatch"))
-            }
-            None if password.is_empty() => Some(t!("sync.dialog.password_missing")),
-            _ => None,
+        let checked = match &self.repeat {
+            Some(repeat) => check_new_password(&password, &repeat.read(cx).value()),
+            None => check_password(&password),
         };
-        if let Some(error) = error {
-            window.push_notification(form_error_notification(error), cx);
+        if let Err(error) = checked {
+            window.push_notification(form_error_notification(error.message()), cx);
             return false;
         }
         let (dialog, login) = (self.dialog.clone(), self.login.clone());
@@ -230,23 +221,8 @@ fn finish(result: Result<(), JobError>, window: &mut Window, cx: &mut App) {
             dismiss_form_error(window, cx);
             window.close_dialog(cx);
         }
-        Err(error) => window.push_notification(form_error_notification(error.describe()), cx),
+        Err(error) => window.push_notification(form_error_notification(error.message()), cx),
     }
-}
-
-/// Twenty letters and digits that cannot be mistaken for one another, in
-/// groups of five: about a hundred bits.
-fn random_password() -> Zeroizing<String> {
-    const ALPHABET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
-    let mut rng = rand::rng();
-    let mut password = Zeroizing::new(String::with_capacity(23));
-    for ix in 0..20 {
-        if ix > 0 && ix % 5 == 0 {
-            password.push('-');
-        }
-        password.push(ALPHABET[rng.random_range(0..ALPHABET.len())] as char);
-    }
-    password
 }
 
 impl Render for PasswordForm {
@@ -449,19 +425,4 @@ pub fn open_turn_off_dialog(service: Entity<SyncService>, window: &mut Window, c
                 .on_close(|_, window, cx| dismiss_form_error(window, cx))
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{MIN_PASSWORD, random_password};
-
-    #[test]
-    fn a_random_password_is_long_and_plain_to_read() {
-        let one = random_password();
-        assert_eq!(one.len(), 23);
-        assert!(one.chars().count() >= MIN_PASSWORD);
-        assert_eq!(one.split('-').count(), 4);
-        assert!(!one.contains(['0', 'o', '1', 'l', 'i']));
-        assert_ne!(*one, *random_password());
-    }
 }

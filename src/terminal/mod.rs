@@ -58,8 +58,8 @@ pub use log::{
     valid_timestamp_format,
 };
 pub use model::{
-    LocalTerminalId, RemoteTerminalId, RightClick, TerminalInteraction, TerminalLifecycle,
-    TerminalSize, TerminalStatus,
+    LocalTerminalId, RemoteTerminalId, RightClick, TerminalCursorStyle, TerminalInteraction,
+    TerminalLifecycle, TerminalSize, TerminalStatus,
 };
 pub use notices::TerminalNotice;
 pub use run::{
@@ -69,6 +69,7 @@ pub use run::{
 pub use search::{SearchDirection, SearchMark, SearchPosition};
 pub use send::{CHARACTER_DELAY_RANGE, LINE_DELAY_RANGE, SendDelay, delayed_steps};
 pub use send_commands::open_send_commands_dialog;
+pub(crate) use terminal_panel::TerminalCopy;
 pub use terminal_panel::{TerminalPanel, TerminalPanelEvent};
 pub(crate) use terminal_view::terminal_key_bindings;
 pub use terminal_view::{

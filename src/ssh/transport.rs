@@ -1,13 +1,12 @@
+use super::describe::{describe_channel_error, describe_error, describe_login_error};
 use super::{
-    connection::{SshConnectionConfig, SshConnector, SshHandle, SshPrompts},
-    latency::{LATENCY_INTERVAL, round_trip},
-    probe::{HostOsProbe, ProbeOutcome},
-    run_terminal_worker,
-    tester::describe_login_error,
+    ChannelError, ConnectError, HostOsProbe, LATENCY_INTERVAL, ProbeOutcome, PtySize,
+    SshConnectionConfig, SshConnector, SshHandle, SshPrompts, open_probe, open_sftp_channel,
+    open_shell, resize_pty, round_trip, run_exec, run_terminal_worker, write_shell,
 };
 use crate::{
     connection::Latency,
-    host::HostLogin,
+    host::{HostLogin, HostOs},
     i18n::t,
     terminal::{
         ExecRequest, RemoteTerminalTransportProvider, SftpChannel, SftpChannelRequest,
@@ -17,7 +16,7 @@ use crate::{
 };
 use anyhow::{Result, anyhow, bail};
 use async_channel::Sender;
-use russh::{ChannelMsg, client};
+use russh::ChannelMsg;
 use std::{
     collections::VecDeque,
     future::Future,
@@ -96,29 +95,11 @@ impl SshTerminalTransport {
             .map_err(|error| anyhow!(describe_login_error(&error)))?;
         let mut shutdown = broker.shutdown_receiver();
         let mut channel = tokio::select! {
-            result = handle.channel_open_session() => {
-                result.map_err(|_| anyhow!(t!("ssh.terminal.session_failed")))?
+            result = open_shell(&handle, "xterm-256color", pty_size(initial_size)) => {
+                result.map_err(|error| anyhow!(describe_error(&error)))?
             }
-            _ = shutdown.changed() => bail!(t!("ssh.connect.cancelled")),
+            _ = shutdown.changed() => bail!(describe_error(&ConnectError::Cancelled.into())),
         };
-        tokio::select! {
-            result = channel.request_pty(
-                true,
-                "xterm-256color",
-                dimension(initial_size.columns()),
-                dimension(initial_size.rows()),
-                pixel_dimension(initial_size.columns(), initial_size.cell_width()),
-                pixel_dimension(initial_size.rows(), initial_size.cell_height()),
-                &[],
-            ) => result.map_err(|_| anyhow!(t!("ssh.terminal.pty_refused")))?,
-            _ = shutdown.changed() => bail!(t!("ssh.connect.cancelled")),
-        }
-        tokio::select! {
-            result = channel.request_shell(true) => {
-                result.map_err(|_| anyhow!(t!("ssh.terminal.shell_refused")))?
-            }
-            _ = shutdown.changed() => bail!(t!("ssh.connect.cancelled")),
-        }
         events
             .send(TerminalTransportEvent::Started)
             .await
@@ -168,14 +149,12 @@ impl SshTerminalTransport {
             tokio::select! {
                 command = io_rx.recv() => match command {
                     Some(TerminalTransportCommand::Write(bytes) | TerminalTransportCommand::WriteData(bytes)) => {
-                        channel.data_bytes(bytes).await.map_err(|_| anyhow!(t!("ssh.terminal.write_failed")))?;
+                        write_shell(&channel, bytes).await.map_err(|error| anyhow!(describe_error(&error)))?;
                     }
                     Some(TerminalTransportCommand::Resize(size)) => {
-                        channel.window_change(
-                            dimension(size.columns()), dimension(size.rows()),
-                            pixel_dimension(size.columns(), size.cell_width()),
-                            pixel_dimension(size.rows(), size.cell_height()),
-                        ).await.map_err(|_| anyhow!(t!("ssh.terminal.resize_failed")))?;
+                        resize_pty(&channel, pty_size(size))
+                            .await
+                            .map_err(|error| anyhow!(describe_error(&error)))?;
                     }
                     Some(TerminalTransportCommand::Shutdown) | None => {
                         let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, async {
@@ -192,16 +171,16 @@ impl SshTerminalTransport {
                     Some(TerminalTransportCommand::Exec(request)) if shell_only => {
                         // The answer for a terminal that carries nothing
                         // beside the shell.
-                        let _ = request.reply.send(Err(t!("ssh.terminal.shell_only").into()));
+                        let _ = request.reply.send(Err(describe_channel_error(&ChannelError::ShellOnly)));
                     }
                     Some(TerminalTransportCommand::Exec(request)) => {
-                        side_queue.push_back(Box::pin(run_exec(&handle, request)));
+                        side_queue.push_back(Box::pin(answer_exec(&handle, request)));
                     }
                     Some(TerminalTransportCommand::OpenSftp(request)) if shell_only => {
-                        let _ = request.reply.send(Err(t!("ssh.terminal.shell_only_sftp").into()));
+                        let _ = request.reply.send(Err(describe_channel_error(&ChannelError::ShellOnlySftp)));
                     }
                     Some(TerminalTransportCommand::OpenSftp(request)) => {
-                        side_queue.push_back(Box::pin(open_sftp(&handle, fingerprint.clone(), request)));
+                        side_queue.push_back(Box::pin(answer_sftp(&handle, fingerprint.clone(), request)));
                     }
                     Some(TerminalTransportCommand::PromptReply { .. })
                     | Some(TerminalTransportCommand::SendBreak) => {}
@@ -221,10 +200,12 @@ impl SshTerminalTransport {
                         Some(ChannelMsg::Eof | ChannelMsg::Close) | None => {
                             probe_channel = None;
                             match probe.finish() {
-                                ProbeOutcome::Detected(os) => {
-                                    let _ = events
-                                        .send(TerminalTransportEvent::HostOsDetected(os))
-                                        .await;
+                                ProbeOutcome::Detected(key) => {
+                                    if let Some(os) = HostOs::from_stored(key) {
+                                        let _ = events
+                                            .send(TerminalTransportEvent::HostOsDetected(os))
+                                            .await;
+                                    }
                                 }
                                 ProbeOutcome::AskWindows => {
                                     probe_channel = open_probe(&handle, probe.command()).await;
@@ -267,6 +248,15 @@ impl SshTerminalTransport {
     }
 }
 
+fn pty_size(size: TerminalSize) -> PtySize {
+    PtySize {
+        columns: dimension(size.columns()),
+        rows: dimension(size.rows()),
+        width: pixel_dimension(size.columns(), size.cell_width()),
+        height: pixel_dimension(size.rows(), size.cell_height()),
+    }
+}
+
 fn dimension(value: usize) -> u32 {
     value.min(u32::MAX as usize) as u32
 }
@@ -278,34 +268,13 @@ fn pixel_dimension(cells: usize, cell_size: u16) -> u32 {
 }
 
 /// Run one command beside the shell and answer its request: what it printed
-/// on standard output, or why it did not run. Its standard error is dropped.
-async fn run_exec(handle: &SshHandle, request: ExecRequest) {
+/// on standard output, or why it did not run.
+async fn answer_exec(handle: &SshHandle, request: ExecRequest) {
     let ExecRequest { command, reply } = request;
-    let result = tokio::time::timeout(EXEC_TIMEOUT, async {
-        let mut channel = handle
-            .channel_open_session()
-            .await
-            .map_err(|_| t!("ssh.exec.channel_failed").to_string())?;
-        channel
-            .exec(true, command)
-            .await
-            .map_err(|_| t!("ssh.exec.send_failed").to_string())?;
-        let mut output = Vec::new();
-        loop {
-            match channel.wait().await {
-                Some(ChannelMsg::Data { data }) => {
-                    let room = EXEC_OUTPUT_LIMIT.saturating_sub(output.len());
-                    output.extend_from_slice(&data[..data.len().min(room)]);
-                }
-                Some(ChannelMsg::Failure) => return Err(t!("ssh.exec.refused").to_string()),
-                Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
-                _ => {}
-            }
-        }
-        Ok(String::from_utf8_lossy(&output).into_owned())
-    })
-    .await
-    .unwrap_or_else(|_| Err(t!("ssh.exec.timeout").to_string()));
+    let result = run_exec(handle, &command, EXEC_OUTPUT_LIMIT, EXEC_TIMEOUT)
+        .await
+        .map(|output| String::from_utf8_lossy(&output).into_owned())
+        .map_err(|error| describe_error(&error));
     // The asker may have stopped waiting.
     let _ = reply.send(result);
 }
@@ -313,65 +282,28 @@ async fn run_exec(handle: &SshHandle, request: ExecRequest) {
 /// Open an SFTP channel beside the shell and answer its request with the
 /// channel's stream. The stream goes on to the SFTP worker's own runtime;
 /// the connection's session task stays here, on the terminal's.
-async fn open_sftp(handle: &SshHandle, fingerprint: String, request: SftpChannelRequest) {
-    let result = tokio::time::timeout(EXEC_TIMEOUT, async {
-        let mut channel = handle
-            .channel_open_session()
-            .await
-            .map_err(|_| t!("ssh.exec.channel_failed").to_string())?;
-        channel
-            .request_subsystem(true, "sftp")
-            .await
-            .map_err(|_| t!("ssh.terminal.sftp_refused").to_string())?;
-        // russh sends the request without waiting for the answer: wait here,
-        // so a server without SFTP says so rather than ending the stream,
-        // which would read as a dropped connection worth retrying.
-        loop {
-            match channel.wait().await {
-                Some(ChannelMsg::Success) => break,
-                Some(ChannelMsg::Failure | ChannelMsg::Eof | ChannelMsg::Close) | None => {
-                    return Err(t!("ssh.terminal.sftp_refused").to_string());
-                }
-                _ => {}
-            }
-        }
-        Ok(SftpChannel {
-            stream: Box::new(channel.into_stream()),
+async fn answer_sftp(handle: &SshHandle, fingerprint: String, request: SftpChannelRequest) {
+    let result = open_sftp_channel(handle, EXEC_TIMEOUT)
+        .await
+        .map(|stream| SftpChannel {
+            stream,
             fingerprint,
         })
-    })
-    .await
-    .unwrap_or_else(|_| Err(t!("ssh.terminal.sftp_timeout").to_string()));
+        .map_err(|error| describe_error(&error));
     // The asker may have stopped waiting.
     let _ = request.reply.send(result);
-}
-
-/// Open a channel and run one probe command on it. Best effort throughout: a
-/// server that refuses the channel or the command just leaves the host's
-/// recorded operating system as it was.
-async fn open_probe(
-    handle: &SshHandle,
-    command: Option<&'static str>,
-) -> Option<russh::Channel<client::Msg>> {
-    let command = command?;
-    let channel = handle.channel_open_session().await.ok()?;
-    // No reply wanted: the answer is the output, and waiting for the
-    // acknowledgement would cost another round trip for nothing.
-    channel.exec(false, command).await.ok()?;
-    Some(channel)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::HostOs;
     use crate::secrets::{
-        InMemorySecretStore, NoSecretStore, SecretRef, SecretStore as _, SharedSecretStore,
+        InMemorySecretStore, NoSecretStore, SecretRef, SecretStore as _, SharedSecretSource,
     };
-    use crate::ssh::probe::{PROBE_COMMAND, WINDOWS_PROBE_COMMAND};
+    use crate::ssh::{HOST_OS_KEYS, PROBE_COMMAND, WINDOWS_PROBE_COMMAND};
     use crate::{
         connection::{ConnectionPromptKind, ConnectionPromptReply, ConnectionSecret},
-        host::{AuthKind, Host},
+        host::{AuthKind, Host, HostLoginExt},
     };
     use russh::keys::{PublicKey, known_hosts::learn_known_hosts_path};
     use russh::server::{self, Server as _};
@@ -763,7 +695,7 @@ mod tests {
     fn connect_with_secrets(
         host: Host,
         known_hosts: &Path,
-        secrets: SharedSecretStore,
+        secrets: SharedSecretSource,
         answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
     ) -> ConnectionReport {
         connect(
@@ -808,7 +740,7 @@ mod tests {
     fn connect(
         login: HostLogin,
         known_hosts: &Path,
-        secrets: SharedSecretStore,
+        secrets: SharedSecretSource,
         wait_for_host_os: bool,
         execs: &[&str],
         mut answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
@@ -900,6 +832,13 @@ mod tests {
             .unwrap();
         worker.join().unwrap();
         report
+    }
+
+    #[test]
+    fn every_system_a_probe_finds_has_a_mark() {
+        for key in HOST_OS_KEYS {
+            assert!(HostOs::from_stored(key).is_some(), "{key}");
+        }
     }
 
     #[test]
@@ -1156,7 +1095,7 @@ mod tests {
             .unwrap();
 
         let (result, stdout, stderr) = run_cli_command(&host, &known_hosts, keychain);
-        assert_eq!(result, Ok(crate::ssh::ExecExit::Code(3)));
+        assert_eq!(result.unwrap(), crate::ssh::ExecExit::Code(3));
         assert_eq!(stdout, b"out");
         assert_eq!(stderr, b"err");
         assert!(
@@ -1186,7 +1125,7 @@ mod tests {
         let (result, stdout, _) = run_cli_command(&host, &known_hosts, keychain);
         let error = result.unwrap_err();
         assert_eq!(error.kind, crate::ssh::ExecErrorKind::HostKeyUnknown);
-        assert!(error.message.contains("请先在 ShellRS 中连接一次"));
+        assert!(crate::ssh::describe_exec_error(&error).contains("请先在 ShellRS 中连接一次"));
         assert!(stdout.is_empty());
         // Nothing was trusted on the user's behalf.
         assert!(!known_hosts.exists());
@@ -1461,7 +1400,7 @@ mod tests {
         );
         let error = result.unwrap_err();
         assert_eq!(error.kind, crate::ssh::ExecErrorKind::MissingCredential);
-        assert!(error.message.contains("没有保存密码"));
+        assert!(crate::ssh::describe_exec_error(&error).contains("没有保存密码"));
     }
 
     #[test]
@@ -1669,7 +1608,9 @@ mod tests {
             .prompts
             .iter()
             .find_map(|kind| match kind {
-                ConnectionPromptKind::Authentication(prompt) => Some(prompt.instructions()),
+                ConnectionPromptKind::Authentication(prompt) => {
+                    Some(crate::ssh::authentication_instructions(prompt))
+                }
                 _ => None,
             })
             .expect("被拒绝的密码应当退回认证弹框");
@@ -1939,10 +1880,14 @@ mod tests {
                 ConnectionPromptKind::UnknownHost(_) => ConnectionPromptReply::TrustAndSave,
                 ConnectionPromptKind::Authentication(authentication) => {
                     saw_challenge = true;
-                    assert_eq!(authentication.title(), "双字段验证");
-                    assert_eq!(authentication.fields().len(), 2);
-                    assert!(authentication.fields()[0].echo());
-                    assert!(!authentication.fields()[1].echo());
+                    let fields = crate::ssh::authentication_fields(authentication);
+                    assert_eq!(
+                        crate::ssh::authentication_title(authentication),
+                        "双字段验证"
+                    );
+                    assert_eq!(fields.len(), 2);
+                    assert!(fields[0].echo());
+                    assert!(!fields[1].echo());
                     ConnectionPromptReply::Answers(vec![
                         ConnectionSecret::new("tester"),
                         ConnectionSecret::new("123456"),
@@ -2005,7 +1950,7 @@ mod tests {
         };
 
         let (result, stdout, _) = run_cli_command(&host, &known_hosts, saved(Some(TEST_PASSWORD)));
-        assert_eq!(result, Ok(crate::ssh::ExecExit::Code(3)));
+        assert_eq!(result.unwrap(), crate::ssh::ExecExit::Code(3));
         assert_eq!(stdout, b"out");
 
         for (password, message) in [
@@ -2015,7 +1960,8 @@ mod tests {
             let (result, _, _) = run_cli_command(&host, &known_hosts, saved(password));
             let error = result.unwrap_err();
             assert_eq!(error.kind, crate::ssh::ExecErrorKind::MissingCredential);
-            assert!(error.message.contains(message), "{}", error.message);
+            let text = crate::ssh::describe_exec_error(&error);
+            assert!(text.contains(message), "{text}");
         }
     }
 
@@ -2038,12 +1984,13 @@ mod tests {
                 ConnectionPromptKind::UnknownHost(_) => ConnectionPromptReply::TrustAndSave,
                 ConnectionPromptKind::Authentication(authentication) => {
                     assert_eq!(
-                        authentication.instructions(),
+                        crate::ssh::authentication_instructions(authentication),
                         "已保存的密码被服务器拒绝，请重新输入"
                     );
-                    assert_eq!(authentication.fields().len(), 1);
-                    assert_eq!(authentication.fields()[0].label(), "Password: ");
-                    assert!(!authentication.fields()[0].echo());
+                    let fields = crate::ssh::authentication_fields(authentication);
+                    assert_eq!(fields.len(), 1);
+                    assert_eq!(fields[0].label(), "Password: ");
+                    assert!(!fields[0].echo());
                     ConnectionPromptReply::Answers(vec![ConnectionSecret::new(TEST_PASSWORD)])
                 }
                 other => panic!("unexpected prompt: {other:?}"),

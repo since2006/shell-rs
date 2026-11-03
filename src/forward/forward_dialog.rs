@@ -16,8 +16,8 @@ use super::{
     forward_panel::kind_icon,
 };
 use crate::host::{
-    DEFAULT_BIND_HOST, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, HostId, HostStore,
-    join_sentences,
+    DEFAULT_BIND_HOST, ErrorMessage as _, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind,
+    HostId, HostStore, KindLabel as _, join_sentences,
 };
 use crate::i18n::t;
 use crate::shared::{commit_footer, dismiss_form_error, form_error_notification, parse_port};
@@ -235,9 +235,7 @@ impl ForwardForm {
     /// Validate and write to the store. Returns whether the dialog may close.
     pub fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let draft = match self.draft(cx) {
-            Some(draft) => draft
-                .validated()
-                .map_err(|error| SharedString::from(error.to_string())),
+            Some(draft) => draft.validated().map_err(|error| error.message()),
             None => Err(t!("forward.dialog.choose_host_error")),
         };
         let draft = match draft {

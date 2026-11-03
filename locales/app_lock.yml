@@ -1,0 +1,117 @@
+_version: 2
+
+app_lock.title:
+  zh-CN: 应用锁
+  en: App lock
+app_lock.description:
+  zh-CN: 每次启动 ShellRS 时需要输入应用锁密码。
+  en: Require the app lock password each time ShellRS starts.
+app_lock.enabled:
+  zh-CN: 已启用应用锁
+  en: App lock is on
+app_lock.disabled:
+  zh-CN: 未启用应用锁
+  en: App lock is off
+app_lock.enable:
+  zh-CN: 启用…
+  en: Enable…
+app_lock.change:
+  zh-CN: 修改密码…
+  en: Change password…
+app_lock.disable:
+  zh-CN: 关闭…
+  en: Turn off…
+app_lock.lock_now:
+  zh-CN: 立即锁定
+  en: Lock now
+app_lock.enable_title:
+  zh-CN: 启用应用锁
+  en: Enable app lock
+app_lock.change_title:
+  zh-CN: 修改应用锁密码
+  en: Change app lock password
+app_lock.disable_title:
+  zh-CN: 关闭应用锁
+  en: Turn off app lock
+app_lock.current_password:
+  zh-CN: 应用锁密码
+  en: App lock password
+app_lock.new_password:
+  zh-CN: 新密码
+  en: New password
+app_lock.repeat_password:
+  zh-CN: 确认新密码
+  en: Confirm new password
+app_lock.password_help:
+  zh-CN: 至少 8 个字符。请妥善保管，应用锁密码无法找回。
+  en: At least 8 characters. Keep it safe; the app lock password cannot be recovered.
+app_lock.enable_commit:
+  zh-CN: 启用
+  en: Enable
+app_lock.change_commit:
+  zh-CN: 保存密码
+  en: Save password
+app_lock.disable_commit:
+  zh-CN: 关闭应用锁
+  en: Turn off app lock
+app_lock.locked:
+  zh-CN: ShellRS 已锁定
+  en: ShellRS is locked
+app_lock.unlock_description:
+  zh-CN: 输入应用锁密码以继续。
+  en: Enter your app lock password to continue.
+app_lock.unlock:
+  zh-CN: 解锁
+  en: Unlock
+app_lock.too_short:
+  zh-CN: 密码至少需要 8 个字符。
+  en: Use at least 8 characters for the password.
+app_lock.mismatch:
+  zh-CN: 两次输入的密码不一致。
+  en: The passwords do not match.
+app_lock.enter_password:
+  zh-CN: 请输入应用锁密码。
+  en: Enter the app lock password.
+app_lock.wrong_password:
+  zh-CN: 应用锁密码不正确，请重新输入。
+  en: The app lock password is incorrect. Try again.
+app_lock.unavailable:
+  zh-CN: 应用锁当前不可修改，请稍后重试。
+  en: App lock cannot be changed right now. Try again later.
+app_lock.failed:
+  zh-CN: 无法验证应用锁密码：%{error}
+  en: "Could not verify the app lock password: %{error}"
+app_lock.save_failed:
+  zh-CN: 未能保存应用锁，原有设置保持不变：%{error}
+  en: "Could not save app lock. Its previous settings are unchanged: %{error}"
+app_lock.load_failed:
+  zh-CN: 无法读取系统钥匙串中的应用锁，暂时无法进入。请允许钥匙串访问后重试：%{error}
+  en: "Could not read app lock from the system keychain. Allow keychain access and retry: %{error}"
+app_lock.keywords:
+  zh-CN: 应用锁,密码,安全,启动,解锁,锁定
+  en: app lock,password,security,startup,unlock,lock
+
+app_lock.start_failed:
+  zh-CN: 无法启动 ShellRS。请检查是否已有 ShellRS 正在运行，以及数据目录的访问权限，然后重新启动：%{error}
+  en: "Could not start ShellRS. Check whether another copy is running and whether the data folder is accessible, then restart: %{error}"
+
+app_lock.idle_title:
+  zh-CN: 多久未操作自动锁定
+  en: Lock after inactivity
+app_lock.idle_description:
+  zh-CN: 单位为分钟，设为 0 时不自动锁定。
+  en: In minutes. Set to 0 to turn off automatic locking.
+
+app_lock.allow_cli:
+  zh-CN: 锁定时允许外部 CLI 访问
+  en: Allow external CLI access while locked
+app_lock.allow_cli_description:
+  zh-CN: 需先启用外部 CLI。界面锁定时后台 Agent 仍可通过 CLI 工作。
+  en: Requires external CLI to be enabled. Lets background agents use the CLI while the interface is locked.
+
+app_lock.loading:
+  zh-CN: 正在读取系统钥匙串…
+  en: Reading the system keychain…
+app_lock.retry:
+  zh-CN: 重试
+  en: Retry

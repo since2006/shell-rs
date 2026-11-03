@@ -2,17 +2,18 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    Icon, IconName, Sizable as _,
+    Icon, IconName, Sizable as _, WindowExt as _,
     button::Button,
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     menu::PopupMenu,
+    notification::Notification,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, CenterTab, CloseTerminal, ConnectHost, CopyHostAddress, CopyHostId,
-    DisconnectTerminal, EditHost, OpenExplorer, ReconnectTerminal, RenameTerminal, SendBreak,
+    CatalogIcon, CenterTab, CloseTerminal, CopyHostAddress, CopyHostId, DisconnectTerminal,
+    DuplicateTerminal, EditHost, OpenExplorer, ReconnectTerminal, RenameTerminal, SendBreak,
     SendCommands,
 };
 use crate::connection::{ConnectionPrompt, ConnectionPromptReply};
@@ -57,7 +58,8 @@ pub struct TerminalPanel {
     /// The host as it was when the tab opened: what the tab shows, what
     /// it offers (only SSH has SFTP, only a serial port no address to copy)
     /// and what it connects with, every reconnection included. Editing or
-    /// deleting the host leaves it alone: a new tab takes the new settings.
+    /// deleting the host leaves it alone: connecting the host anew takes
+    /// the new settings, while duplicating a tab copies its snapshot.
     /// Only the system this tab's own connections find is written in.
     host: Host,
     connection: HostConnection,
@@ -68,7 +70,18 @@ pub struct TerminalPanel {
     /// A title the user gave this tab, to tell apart several connections to
     /// the same host. Lives as long as the tab, like the rest of the layout.
     custom_title: Option<SharedString>,
+    /// Applied once, after this copy's first successful connection.
+    initial_directory: Option<ReportedDirectory>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// A new tab's own snapshot, independent of later changes to its source.
+pub(crate) struct TerminalCopy {
+    host: Host,
+    connection: HostConnection,
+    external: bool,
+    title: Option<SharedString>,
+    directory: Option<ReportedDirectory>,
 }
 
 impl TerminalPanel {
@@ -89,6 +102,52 @@ impl TerminalPanel {
             let connection = store.connection_of(&host);
             (host, connection, store.is_external(host_id))
         };
+        Self::from_copy(
+            id,
+            TerminalCopy {
+                host,
+                connection,
+                external,
+                title: None,
+                directory: None,
+            },
+            store,
+            transports,
+            window,
+            cx,
+        )
+    }
+
+    pub(crate) fn copy_for_new_tab(&self, cx: &App) -> TerminalCopy {
+        TerminalCopy {
+            host: self.host.clone(),
+            connection: self.connection.clone(),
+            external: self.external,
+            title: self.custom_title.clone(),
+            directory: self
+                .host
+                .is_ssh()
+                .then(|| self.terminal.read(cx).directory(cx))
+                .flatten(),
+        }
+    }
+
+    pub(crate) fn from_copy(
+        id: RemoteTerminalId,
+        copy: TerminalCopy,
+        store: Entity<HostStore>,
+        transports: HostTerminalTransports,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let TerminalCopy {
+            host,
+            connection,
+            external,
+            title,
+            directory,
+        } = copy;
+        let host_id = host.id;
         let protocol = host.kind();
         let identity = SessionLogIdentity {
             name: host.name.clone(),
@@ -121,13 +180,33 @@ impl TerminalPanel {
                 cx.emit(TerminalPanelEvent::StatusChanged(this.id, this.host_id));
                 cx.notify();
             }),
-            cx.subscribe(
+            cx.subscribe_in(
                 &terminal,
-                |this, _, event: &TerminalEvent, cx| match event {
+                window,
+                |this, _, event: &TerminalEvent, window, cx| match event {
                     TerminalEvent::Input(input) => {
                         cx.emit(TerminalPanelEvent::Input(this.id, input.clone()));
                     }
                     TerminalEvent::Started => {
+                        if let Some(command) = this
+                            .initial_directory
+                            .take()
+                            .and_then(|directory| directory.cd_command())
+                        {
+                            // Started means authentication and the shell channel
+                            // are ready. The command goes only to the new tab.
+                            if let Err(error) = this.terminal.update(cx, |terminal, cx| {
+                                terminal.enter_command(&command, true, false, cx)
+                            }) {
+                                window.push_notification(
+                                    Notification::error(t!(
+                                        "terminal.remote.restore_directory_failed",
+                                        error = error
+                                    )),
+                                    cx,
+                                );
+                            }
+                        }
                         cx.emit(TerminalPanelEvent::Connected(this.id, this.host_id));
                     }
                     TerminalEvent::PromptRequested(prompt) => {
@@ -173,7 +252,8 @@ impl TerminalPanel {
             external,
             tab_group: None,
             broadcast: None,
-            custom_title: None,
+            custom_title: title,
+            initial_directory: directory,
             _subscriptions: subscriptions,
         }
     }
@@ -556,9 +636,9 @@ impl TabMenu {
             )
             .when(exists, |menu| {
                 menu.menu_with_icon(
-                    t!("terminal.remote.connect_in_new_tab"),
-                    Icon::new(CatalogIcon::Plug),
-                    Box::new(ConnectHost(host_id)),
+                    t!("terminal.remote.duplicate"),
+                    Icon::new(IconName::Copy),
+                    Box::new(DuplicateTerminal(id)),
                 )
             });
         let protocol = self.protocol;
