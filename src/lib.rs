@@ -36,6 +36,7 @@ pub mod shared;
 pub mod snippets;
 pub mod ssh;
 pub mod sync;
+pub mod system_proxy;
 pub mod telnet;
 pub mod terminal;
 pub mod tmux;
