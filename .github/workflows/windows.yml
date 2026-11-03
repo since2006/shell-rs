@@ -51,6 +51,7 @@ on:
       - "src/settings/settings_panel.rs"
       - "src/terminal/local_shell.rs"
       - "src/terminal/local_pty.rs"
+      - "src/system_proxy.rs"
       - "src/project/project_panel.rs"
       - "src/terminal/zmodem.rs"
       - "src/serial/**"
