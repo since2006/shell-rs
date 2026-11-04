@@ -1,57 +1,66 @@
-//! 命令广播. Dock owns tab dragging. The workspace owns the explicitly
-//! checked, live connections that share input and the split layout they are
-//! arranged in; 撰写窗格 is their command bar. Reconnects never inherit
-//! membership.
+//! Compose routing is owned by Workspace. Selection never changes Dock layout.
+//! Manual membership is a terminal and connection generation, never a host.
 
-use gpui_kit::component::Placement;
-use gpui_kit::component::dock::{DockArea, DockPlacement, InsertTarget, PaneRef, PanelId};
+use gpui_kit::component::dock::{DockPlacement, PaneRef};
 use gpui_kit::*;
 
 use super::Workspace;
-use crate::app::{CenterTab, SetBroadcastTarget, ToggleBroadcastKeys, ToggleTerminalBroadcast};
+use crate::app::{
+    CenterTab, ComposeScope, SetComposeScope, SetComposeTarget, ToggleComposeKeySync,
+};
 use crate::shared::RenamableTab as _;
-use crate::terminal::{BroadcastSelection, TerminalInputEvent, TerminalView};
+use crate::terminal::{ComposeSelection, TerminalInputEvent, TerminalView};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ComposeIdentity {
+    pub(super) tab: CenterTab,
+    pub(super) generation: u64,
+}
 
 #[derive(Default)]
-pub(super) struct TerminalBroadcast {
-    enabled: bool,
-    /// In the order checked, which is the order of the split layout.
-    selected: Vec<(CenterTab, u64)>,
-    /// Typing in one checked terminal goes to the others as well. Off, only
-    /// 撰写窗格 broadcasts, so a password typed at one prompt stays there.
-    keys: bool,
+pub(super) struct ComposeRouting {
+    pub(super) scope: ComposeScope,
+    selected: Vec<ComposeIdentity>,
+    pub(super) keys: bool,
+    effective: Vec<ComposeIdentity>,
+    pub(super) targets_changed: bool,
 }
 
-impl TerminalBroadcast {
-    fn reconcile(&mut self, available: &[(CenterTab, u64)]) {
+impl ComposeRouting {
+    fn reconcile(&mut self, available: &[ComposeIdentity], current: Option<ComposeIdentity>) {
         self.selected.retain(|target| available.contains(target));
+        let effective = match self.scope {
+            ComposeScope::Current => current
+                .into_iter()
+                .filter(|id| available.contains(id))
+                .collect(),
+            ComposeScope::Window => available.to_vec(),
+            ComposeScope::Selected => self.selected.clone(),
+        };
+        // Hash-map iteration, renaming, or dragging cannot change membership.
+        let changed = self.effective.len() != effective.len()
+            || self.effective.iter().any(|id| !effective.contains(id));
+        if changed && self.keys {
+            self.keys = false;
+            self.targets_changed = true;
+        }
+        self.effective = effective;
     }
 
-    /// At least two terminals checked: 撰写窗格 sends to them.
-    pub(super) fn active(&self) -> bool {
-        self.enabled && self.selected.len() >= 2
-    }
-
-    pub(super) fn count(&self) -> usize {
-        self.selected.len()
-    }
-
-    pub(super) fn keys(&self) -> bool {
-        self.keys
+    fn set_scope(&mut self, scope: ComposeScope) {
+        if self.scope == scope {
+            return;
+        }
+        self.scope = scope;
+        self.keys = false;
+        self.targets_changed = false;
     }
 }
 
-/// A terminal as 撰写窗格 sends to it.
 pub(super) struct Recipient {
+    pub(super) identity: ComposeIdentity,
     pub(super) view: Entity<TerminalView>,
     pub(super) name: SharedString,
-}
-
-/// How many columns `count` terminals are laid out in: about a square.
-fn grid_columns(count: usize) -> usize {
-    (1..=count)
-        .find(|columns| columns * columns >= count)
-        .unwrap_or(1)
 }
 
 impl Workspace {
@@ -65,8 +74,9 @@ impl Workspace {
         }
     }
 
-    fn broadcast_candidates(&self, cx: &App) -> Vec<(CenterTab, u64)> {
-        self.terminals
+    fn compose_candidates(&self, cx: &App) -> Vec<ComposeIdentity> {
+        let mut tabs: Vec<_> = self
+            .terminals
             .keys()
             .copied()
             .map(CenterTab::Terminal)
@@ -76,71 +86,92 @@ impl Workspace {
                     .copied()
                     .map(CenterTab::LocalTerminal),
             )
+            .collect();
+        tabs.sort_by_key(|tab| match tab {
+            CenterTab::Terminal(id) => (0, id.0),
+            CenterTab::LocalTerminal(id) => (1, id.0),
+            _ => unreachable!(),
+        });
+        tabs.into_iter()
             .filter_map(|tab| {
                 let view = self.terminal_view_for_tab(tab, cx)?;
                 let view = view.read(cx);
-                view.lifecycle(cx)
-                    .accepts_input()
-                    .then(|| (tab, view.generation(cx)))
+                view.lifecycle(cx).accepts_input().then(|| ComposeIdentity {
+                    tab,
+                    generation: view.generation(cx),
+                })
             })
             .collect()
     }
 
-    /// A terminal tab, by its view and the name its tab shows.
     pub(super) fn recipient(&self, tab: CenterTab, cx: &App) -> Option<Recipient> {
-        match tab {
+        let (view, name) = match tab {
             CenterTab::Terminal(id) => {
                 let panel = self.terminals.get(&id)?.read(cx);
-                Some(Recipient {
-                    view: panel.terminal().clone(),
-                    name: panel.tab_title(cx),
-                })
+                (panel.terminal().clone(), panel.tab_title(cx))
             }
             CenterTab::LocalTerminal(id) => {
                 let panel = self.local_terminals.get(&id)?.read(cx);
-                Some(Recipient {
-                    view: panel.terminal().clone(),
-                    name: panel.display_title(cx),
-                })
+                (panel.terminal().clone(), panel.display_title(cx))
             }
-            _ => None,
-        }
+            _ => return None,
+        };
+        let identity = ComposeIdentity {
+            tab,
+            generation: view.read(cx).generation(cx),
+        };
+        Some(Recipient {
+            identity,
+            view,
+            name,
+        })
     }
 
-    pub(super) fn broadcast_recipients(&self, cx: &App) -> Vec<Recipient> {
-        self.broadcast
-            .selected
+    /// One immutable snapshot serves summary, commands, interrupts and key sync.
+    pub(super) fn compose_recipients(&self, cx: &App) -> Vec<Recipient> {
+        self.compose_routing
+            .effective
             .iter()
-            .filter_map(|(tab, _)| self.recipient(*tab, cx))
+            .filter_map(|identity| {
+                self.recipient(identity.tab, cx)
+                    .filter(|recipient| recipient.identity == *identity)
+            })
             .collect()
     }
 
-    pub(super) fn sync_broadcast(&mut self, cx: &mut Context<Self>) {
-        let available = self.broadcast_candidates(cx);
-        self.broadcast.reconcile(&available);
-        let target = self.focus_handle.clone();
+    pub(super) fn sync_compose_routing(&mut self, cx: &mut Context<Self>) {
+        let available = self.compose_candidates(cx);
+        let current = self
+            .tool_target(cx)
+            .and_then(|target| available.iter().find(|id| id.tab == target.tab()).copied());
+        self.compose_routing.reconcile(&available, current);
+        let requested = self.settings().read(cx).settings().compose_pane;
+        // Dock zoom hides the bottom pane too: visible controls must accompany
+        // live input forwarding, even while the visibility preference stays on.
+        let shown = requested && self.dock_area.read(cx).zoomed_group().is_none();
+        if !shown || crate::app_lock::is_locked(cx) {
+            self.compose_routing.keys = false;
+        }
+        let manual = shown && self.compose_routing.scope == ComposeScope::Selected;
         let selection = |tab| {
-            self.broadcast.enabled.then(|| {
-                BroadcastSelection::new(
-                    self.broadcast
-                        .selected
-                        .iter()
-                        .any(|(target, _)| *target == tab),
-                    available.iter().any(|(target, _)| *target == tab),
-                    target.clone(),
+            let selected = self.compose_routing.selected.iter().any(|id| id.tab == tab);
+            manual.then(|| {
+                ComposeSelection::new(
+                    selected,
+                    available.iter().any(|id| id.tab == tab),
+                    self.focus_handle.clone(),
                 )
             })
         };
         for (id, panel) in &self.terminals {
             let state = selection(CenterTab::Terminal(*id));
-            panel.update(cx, |panel, cx| panel.set_broadcast_selection(state, cx));
+            panel.update(cx, |panel, cx| panel.set_compose_selection(state, cx));
         }
         for (id, panel) in &self.local_terminals {
             let state = selection(CenterTab::LocalTerminal(*id));
-            panel.update(cx, |panel, cx| panel.set_broadcast_selection(state, cx));
+            panel.update(cx, |panel, cx| panel.set_compose_selection(state, cx));
         }
         let area = self.dock_area.read(cx);
-        let mut first = None;
         let mut groups = Vec::new();
         if let Some(tree) = area.layout(DockPlacement::Center) {
             tree.root().walk(&mut |node| {
@@ -148,227 +179,151 @@ impl Workspace {
                     return;
                 }
                 groups.push(node.id());
-                if first.is_none() && area.zoomed_group().is_none_or(|zoomed| zoomed == node.id()) {
-                    first = Some(node.id());
-                }
             });
         }
         self.skin.set_center_groups(groups, cx);
-        self.skin.set_broadcast(
-            first,
-            self.broadcast.enabled,
-            self.broadcast.selected.len(),
-            cx,
-        );
+        let presentation = self.compose_presentation(cx);
+        self.compose
+            .update(cx, |pane, cx| pane.set_presentation(presentation, cx));
     }
 
-    /// What was typed in one terminal, to the other checked ones when the
-    /// keyboard is shared.
-    pub(super) fn broadcast_input(
+    pub(super) fn sync_compose_input(
         &mut self,
         source: CenterTab,
         event: &TerminalInputEvent,
         cx: &mut Context<Self>,
     ) {
-        // Every keystroke comes through here: the cheap checks first.
-        if !self.broadcast.enabled || !self.broadcast.keys {
+        if !self.compose_routing.keys {
             return;
         }
-        self.sync_broadcast(cx);
-        if !self.broadcast.active()
-            || !self
-                .broadcast
-                .selected
-                .contains(&(source, event.generation()))
+        self.sync_compose_routing(cx);
+        if !self.compose_routing.keys
+            || !self.compose_routing.effective.contains(&ComposeIdentity {
+                tab: source,
+                generation: event.generation(),
+            })
         {
             return;
         }
-        // receive_input never emits Input, so recipients cannot form a loop.
-        let recipients: Vec<_> = self
-            .broadcast
-            .selected
-            .iter()
-            .filter(|(tab, _)| *tab != source)
-            .filter_map(|(tab, _)| self.terminal_view_for_tab(*tab, cx))
-            .collect();
-        for view in recipients {
-            view.update(cx, |view, cx| {
+        for recipient in self
+            .compose_recipients(cx)
+            .into_iter()
+            .filter(|r| r.identity.tab != source)
+        {
+            // receive_input never emits Input: each terminal encodes its own modes once.
+            recipient.view.update(cx, |view, cx| {
                 view.receive_input(event.input(), cx);
             });
         }
     }
 
-    /// Lay the checked terminals out side by side, in the order checked, in
-    /// about as many rows as columns. The first stays in its tab group,
-    /// with whatever else is there; the others are gathered there first, so
-    /// that every arrangement starts alike, then split out of it.
-    fn arrange_broadcast(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let panels: Vec<PanelId> = self
-            .broadcast
-            .selected
-            .iter()
-            .filter_map(|(tab, _)| match tab {
-                CenterTab::Terminal(id) => Some(self.terminals.get(id)?.entity_id()),
-                CenterTab::LocalTerminal(id) => Some(self.local_terminals.get(id)?.entity_id()),
-                _ => None,
-            })
-            .map(PanelId::from)
-            .collect();
-        let Some((&first, rest)) = panels.split_first() else {
-            return;
-        };
-        if rest.is_empty() {
-            return;
-        }
-        let columns = grid_columns(panels.len());
-        self.dock_area.update(cx, |area, cx| {
-            let group_of = |area: &DockArea, panel| {
-                area.layout(DockPlacement::Center)
-                    .and_then(|tree| tree.find_panel_node(panel))
-            };
-            for &panel in rest {
-                if let Some(node) = group_of(area, first) {
-                    area.move_panel(
-                        panel,
-                        InsertTarget::Tabs {
-                            node,
-                            ix: None,
-                            activate: false,
-                        },
-                        window,
-                        cx,
-                    );
-                }
-            }
-            // The first row left to right, then each below the one above.
-            for (ix, &panel) in panels.iter().enumerate().skip(1) {
-                let (beside, placement) = if ix < columns {
-                    (panels[ix - 1], Placement::Right)
-                } else {
-                    (panels[ix - columns], Placement::Bottom)
-                };
-                if let Some(node) = group_of(area, beside) {
-                    area.move_panel(
-                        panel,
-                        InsertTarget::Split {
-                            node,
-                            placement,
-                            size: None,
-                        },
-                        window,
-                        cx,
-                    );
-                }
-            }
-        });
-        // The first in front of the tabs it shares its group with.
-        match self.broadcast.selected.first().map(|(tab, _)| *tab) {
-            Some(CenterTab::Terminal(id)) => {
-                if let Some(panel) = self.terminals.get(&id).cloned() {
-                    let group = panel.read(cx).tab_group();
-                    self.activate_tab(group, panel.entity_id(), window, cx);
-                }
-            }
-            Some(CenterTab::LocalTerminal(id)) => {
-                if let Some(panel) = self.local_terminals.get(&id).cloned() {
-                    let group = panel.read(cx).tab_group();
-                    self.activate_tab(group, panel.entity_id(), window, cx);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    pub(super) fn on_toggle_terminal_broadcast(
+    pub(super) fn on_set_compose_scope(
         &mut self,
-        _: &ToggleTerminalBroadcast,
+        action: &SetComposeScope,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.broadcast = TerminalBroadcast {
-            enabled: !self.broadcast.enabled,
-            ..TerminalBroadcast::default()
-        };
-        self.sync_broadcast(cx);
+        self.sync_compose_routing(cx);
+        self.compose_routing.set_scope(action.scope());
         self.sync_compose(window, cx);
-        self.focus_center(window, cx);
-        cx.notify();
     }
 
-    pub(super) fn on_set_broadcast_target(
+    pub(super) fn on_set_compose_target(
         &mut self,
-        action: &SetBroadcastTarget,
+        action: &SetComposeTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.broadcast.enabled {
-            return;
-        }
-        let was_active = self.broadcast.active();
-        self.broadcast
-            .selected
-            .retain(|(tab, _)| *tab != action.tab());
-        let mut added = false;
-        if action.is_selected()
-            && let Some(target) = self
-                .broadcast_candidates(cx)
-                .into_iter()
-                .find(|(tab, _)| *tab == action.tab())
+        if self.compose_routing.scope != ComposeScope::Selected
+            || !self.settings().read(cx).settings().compose_pane
         {
-            self.broadcast.selected.push(target);
-            added = true;
+            return;
         }
-        self.sync_broadcast(cx);
-        if added && self.broadcast.active() {
-            self.arrange_broadcast(window, cx);
+        self.compose_routing.keys = false;
+        self.compose_routing.targets_changed = false;
+        self.compose_routing
+            .selected
+            .retain(|id| id.tab != action.tab());
+        if action.is_selected()
+            && let Some(id) = self
+                .compose_candidates(cx)
+                .into_iter()
+                .find(|id| id.tab == action.tab())
+        {
+            self.compose_routing.selected.push(id);
         }
         self.sync_compose(window, cx);
-        if self.broadcast.active() && !was_active {
-            // 撰写窗格 now sends to them all: type the command there.
-            self.focus_compose_soon(window, cx);
-        } else {
-            self.focus_center(window, cx);
-        }
-        cx.notify();
+        // No activation, focus change, reconnect or Dock operation here.
     }
 
-    pub(super) fn on_toggle_broadcast_keys(
+    pub(super) fn on_toggle_compose_key_sync(
         &mut self,
-        _: &ToggleBroadcastKeys,
+        _: &ToggleComposeKeySync,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.broadcast.keys = !self.broadcast.keys;
-        self.sync_broadcast(cx);
+        self.sync_compose_routing(cx);
+        if self.compose_routing.effective.len() >= 2
+            && self.settings().read(cx).settings().compose_pane
+            && !crate::app_lock::is_locked(cx)
+        {
+            self.compose_routing.keys = !self.compose_routing.keys;
+            self.compose_routing.targets_changed = false;
+        }
         self.sync_compose(window, cx);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{TerminalBroadcast, grid_columns};
-    use crate::{app::CenterTab, terminal::RemoteTerminalId};
-
-    #[test]
-    fn closed_or_reconnected_terminals_need_to_be_checked_again() {
-        let a = CenterTab::Terminal(RemoteTerminalId(1));
-        let b = CenterTab::Terminal(RemoteTerminalId(2));
-        for available in [vec![(a, 1)], vec![(a, 1), (b, 2)]] {
-            let mut broadcast = TerminalBroadcast {
-                enabled: true,
-                selected: vec![(a, 1), (b, 1)],
-                keys: false,
-            };
-            broadcast.reconcile(&available);
-            assert_eq!(broadcast.selected, vec![(a, 1)]);
-            broadcast.reconcile(&[(a, 1), (b, 1)]);
-            assert_eq!(broadcast.selected, vec![(a, 1)]);
+    use super::{ComposeIdentity, ComposeRouting};
+    use crate::{
+        app::{CenterTab, ComposeScope},
+        terminal::RemoteTerminalId,
+    };
+    fn id(n: u64, generation: u64) -> ComposeIdentity {
+        ComposeIdentity {
+            tab: CenterTab::Terminal(RemoteTerminalId(n)),
+            generation,
         }
     }
-
     #[test]
-    fn the_layout_is_about_square() {
-        let columns: Vec<usize> = (1..=10).map(grid_columns).collect();
-        assert_eq!(columns, [1, 2, 2, 2, 3, 3, 3, 3, 3, 4]);
+    fn selected_never_falls_back_or_rejoins_after_reconnect() {
+        let (a, b) = (id(1, 1), id(2, 1));
+        let mut routing = ComposeRouting::default();
+        routing.reconcile(&[a, b], Some(b));
+        routing.set_scope(ComposeScope::Selected);
+        assert!(routing.selected.is_empty());
+        routing.selected.push(b);
+        routing.reconcile(&[a, b], Some(a));
+        assert_eq!(routing.effective, vec![b]);
+        routing.reconcile(&[a, id(2, 2)], Some(a));
+        assert!(routing.effective.is_empty());
+        routing.reconcile(&[a, b], Some(a));
+        assert!(routing.effective.is_empty());
+    }
+    #[test]
+    fn window_is_dynamic_and_membership_changes_disable_keys() {
+        let (a, b, c) = (id(1, 1), id(2, 1), id(3, 1));
+        let mut routing = ComposeRouting {
+            scope: ComposeScope::Window,
+            ..Default::default()
+        };
+        routing.reconcile(&[a, b], Some(a));
+        routing.keys = true;
+        routing.reconcile(&[b, a], Some(b));
+        assert!(routing.keys);
+        routing.reconcile(&[a, b, c], Some(a));
+        assert_eq!(routing.effective, vec![a, b, c]);
+        assert!(!routing.keys);
+        assert!(routing.targets_changed);
+        routing.set_scope(ComposeScope::Selected);
+        assert!(routing.selected.is_empty());
+        routing.selected.push(b);
+        routing.set_scope(ComposeScope::Current);
+        routing.reconcile(&[a, b, c], Some(a));
+        routing.set_scope(ComposeScope::Selected);
+        routing.reconcile(&[a, b, c], Some(a));
+        assert_eq!(routing.effective, vec![b]);
     }
 }

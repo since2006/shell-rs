@@ -1108,7 +1108,7 @@ async fn the_status_bar_shows_the_size_of_the_terminal_in_front(cx: &mut TestApp
 
     // An SFTP tab has no terminal, so no size either.
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(OpenExplorer(HostId(WEB_01))), cx);
+        window.dispatch_action(Box::new(OpenExplorer::new(HostId(WEB_01))), cx);
     });
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
         window
@@ -1208,6 +1208,336 @@ async fn links_open_with_the_command_key_and_show_where_they_lead(cx: &mut TestA
     assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/docs"));
 }
 
+fn move_pointer(
+    window: &mut gpui_kit::Window,
+    position: gpui_kit::Point<gpui_kit::Pixels>,
+    pressed_button: Option<MouseButton>,
+    modifiers: gpui_kit::Modifiers,
+    cx: &mut App,
+) {
+    window.dispatch_event(
+        MouseMoveEvent {
+            position,
+            pressed_button,
+            modifiers,
+        }
+        .to_platform_input(),
+        cx,
+    );
+    window.render_frame(cx);
+}
+
+fn press_pointer(
+    window: &mut gpui_kit::Window,
+    position: gpui_kit::Point<gpui_kit::Pixels>,
+    modifiers: gpui_kit::Modifiers,
+    cx: &mut App,
+) {
+    window.dispatch_event(
+        gpui_kit::MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        }
+        .to_platform_input(),
+        cx,
+    );
+}
+
+#[gpui_kit::test]
+async fn pointer_modifiers_refresh_the_hovered_split_without_moving_focus(cx: &mut TestAppContext) {
+    use gpui_kit::component::dock::{DockLayout, panel_handle};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let factory = Arc::new(FakeTerminalFactory::printing("https://example.com/pointer"));
+    let (handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    in_frame(cx, handle, |window, _| window.activate_window());
+    for _ in 1..4 {
+        in_frame(cx, handle, |window, cx| {
+            window.click("new-local-terminal", cx)
+        });
+    }
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        (1..=4).all(|id| {
+            workspace
+                .read(cx)
+                .local_terminal(LocalTerminalId(id))
+                .is_some_and(|panel| {
+                    panel.read(cx).status(cx).lifecycle() == &TerminalLifecycle::Running
+                })
+        })
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        let panels: Vec<_> = (1..=4)
+            .map(|id| {
+                workspace
+                    .read(cx)
+                    .local_terminal(LocalTerminalId(id))
+                    .unwrap()
+                    .clone()
+            })
+            .collect();
+        let group = |i: usize| DockLayout::tabs().panel_view(panel_handle(panels[i].clone()), cx);
+        let layout = DockLayout::h_split()
+            .child(
+                DockLayout::v_split()
+                    .child(group(0), None)
+                    .child(group(2), None),
+                None,
+            )
+            .child(
+                DockLayout::v_split()
+                    .child(group(1), None)
+                    .child(group(3), None),
+                None,
+            );
+        workspace
+            .read(cx)
+            .dock_area()
+            .clone()
+            .update(cx, |area, cx| area.set_center(layout, window, cx));
+    });
+    // The hovered terminal is never focused, so its blink timer cannot supply
+    // an accidental redraw. Observe its real invalidation, not an aria proxy.
+    let target = cx.update(|cx| {
+        workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(2))
+            .unwrap()
+            .read(cx)
+            .terminal()
+            .clone()
+    });
+    let updates = Rc::new(Cell::new(0));
+    let _subscription = cx.update(|cx| {
+        let updates = updates.clone();
+        cx.observe(&target, move |_, _| updates.set(updates.get() + 1))
+    });
+    for focus_target in ["terminal", "find", "sidebar", "compose"] {
+        in_frame(cx, handle, |window, cx| match focus_target {
+            "terminal" => window.click(("local-terminal", 1_u64), cx),
+            "find" => window.dispatch_action(Box::new(FindInTerminal), cx),
+            "sidebar" => window.dispatch_action(Box::new(FocusSearch), cx),
+            "compose" => window.dispatch_action(Box::new(shellrs::app::ToggleComposePane), cx),
+            _ => unreachable!(),
+        });
+        if focus_target == "compose" {
+            in_frame(cx, handle, |window, cx| window.click("compose-body", cx));
+        }
+        let original_focus = in_frame(cx, handle, |window, cx| window.focused(cx));
+        assert!(original_focus.is_some(), "{focus_target} must have focus");
+        in_frame(cx, handle, |window, cx| {
+            let bounds = window.find(("local-terminal", 2_u64)).bounds();
+            let cell = *factory.resizes.lock().unwrap().last().unwrap();
+            move_pointer(
+                window,
+                point(
+                    bounds.left() + px(cell.cell_width() as f32 * 2.5),
+                    bounds.top() + px(cell.cell_height() as f32 * 1.5),
+                ),
+                None,
+                gpui_kit::Modifiers::none(),
+                cx,
+            );
+            // Keyboard modality suppresses ordinary hover while the pointer stays
+            // in split 2; its position and the focused input remain independent.
+            window.dispatch_event(
+                gpui_kit::KeyDownEvent {
+                    keystroke: gpui_kit::Keystroke::parse("left").unwrap(),
+                    is_held: false,
+                    prefer_character_input: false,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+        in_frame(cx, handle, |_, _| {});
+        for modifiers in [
+            gpui_kit::Modifiers::secondary_key(),
+            gpui_kit::Modifiers::none(),
+        ] {
+            let previous = updates.get();
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.dispatch_event(
+                    gpui_kit::ModifiersChangedEvent {
+                        modifiers,
+                        ..Default::default()
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+            })
+            .unwrap();
+            cx.run_until_parked();
+            assert!(
+                updates.get() > previous,
+                "{focus_target}: the hovered sibling must invalidate without mouse motion or a timer"
+            );
+            in_frame(cx, handle, |window, cx| {
+                assert!(!target.read(cx).focus_handle().is_focused(window));
+                assert_eq!(
+                    window.focused(cx),
+                    original_focus,
+                    "{focus_target}: modifiers must not move focus"
+                );
+            });
+        }
+    }
+}
+
+#[gpui_kit::test]
+async fn pointer_tooltip_follows_replaced_output_without_mouse_motion(cx: &mut TestAppContext) {
+    let (handle, workspace, factory) =
+        terminal_printing(cx, "https://example.com/old\r\n", "example.com/old").await;
+    in_frame(cx, handle, |window, cx| {
+        let position = cell_center(window, &factory, 2, 1);
+        move_pointer(window, position, None, gpui_kit::Modifiers::none(), cx);
+    });
+    cx.background_executor
+        .advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("terminal-link-tooltip").label(),
+            Some("https://example.com/old")
+        );
+    });
+
+    factory.print("\x1b[2;1H\x1b[2Khttps://example.net/new\r\n");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        local_screen(&workspace, cx).contains("example.net/new")
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window
+                .try_find("terminal-link-tooltip")
+                .is_none_or(|tooltip| { tooltip.label() != Some("https://example.com/old") }),
+            "the address replaced by output must not remain in the tooltip"
+        );
+    });
+    cx.background_executor
+        .advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("terminal-link-tooltip").label(),
+            Some("https://example.net/new")
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn pointer_dialog_occlusion_blocks_the_link_and_its_tooltip(cx: &mut TestAppContext) {
+    let (handle, _, factory) =
+        terminal_printing(cx, "https://example.com/covered", "example.com/covered").await;
+    let position = in_frame(cx, handle, |window, cx| {
+        let position = cell_center(window, &factory, 2, 1);
+        move_pointer(window, position, None, gpui_kit::Modifiers::none(), cx);
+        window.open_dialog(cx, |dialog, _, _| dialog.title("Link covered"));
+        position
+    });
+    in_frame(cx, handle, |_, _| {});
+    cx.background_executor
+        .advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("terminal-link-tooltip").is_none());
+        press_pointer(window, position, gpui_kit::Modifiers::secondary_key(), cx);
+    });
+    assert_eq!(cx.opened_url(), None);
+}
+
+#[gpui_kit::test]
+async fn pointer_lost_focus_cancels_hover_without_stealing_focus(cx: &mut TestAppContext) {
+    let (handle, _, factory) =
+        terminal_printing(cx, "https://example.com/unfocused", "example.com/unfocused").await;
+    in_frame(cx, handle, |window, cx| {
+        let position = cell_center(window, &factory, 2, 1);
+        move_pointer(
+            window,
+            position,
+            None,
+            gpui_kit::Modifiers::secondary_key(),
+            cx,
+        );
+        window.blur(cx);
+    });
+    in_frame(cx, handle, |_, _| {});
+    cx.background_executor
+        .advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.focused(cx).is_none());
+        assert!(window.try_find("terminal-link-tooltip").is_none());
+        window.dispatch_event(
+            gpui_kit::ModifiersChangedEvent::default().to_platform_input(),
+            cx,
+        );
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.focused(cx).is_none())
+    });
+}
+
+#[gpui_kit::test]
+async fn pointer_tooltip_cancels_pending_link_removed_by_output(cx: &mut TestAppContext) {
+    let (handle, workspace, factory) =
+        terminal_printing(cx, "https://example.com/old\r\n", "example.com/old").await;
+    in_frame(cx, handle, |window, cx| {
+        let position = cell_center(window, &factory, 2, 1);
+        move_pointer(window, position, None, gpui_kit::Modifiers::none(), cx);
+    });
+    // Remove the URL while its tooltip delay is still pending.
+    factory.print("\x1b[2;1H\x1b[2Kordinary output\r\n");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        local_screen(&workspace, cx).contains("ordinary output")
+    })
+    .await;
+    cx.background_executor
+        .advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window.try_find("terminal-link-tooltip").is_none(),
+            "a removed URL must not appear when its old delay expires"
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn pointer_text_selection_over_a_link_does_not_show_its_tooltip(cx: &mut TestAppContext) {
+    let (handle, _, factory) =
+        terminal_printing(cx, "https://example.com/docs\r\n", "example.com/docs").await;
+    in_frame(cx, handle, |window, cx| {
+        let start = cell_center(window, &factory, 1, 0);
+        move_pointer(window, start, None, gpui_kit::Modifiers::none(), cx);
+        press_pointer(window, start, gpui_kit::Modifiers::none(), cx);
+        let link = cell_center(window, &factory, 12, 1);
+        move_pointer(
+            window,
+            link,
+            Some(MouseButton::Left),
+            gpui_kit::Modifiers::secondary_key(),
+            cx,
+        );
+    });
+    cx.background_executor
+        .advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert!(
+            window.try_find("terminal-link-tooltip").is_none(),
+            "a selection drag owns the pointer even over a URL"
+        );
+    });
+    assert_eq!(cx.opened_url(), None);
+}
+
 /// A program that asks for the background and then for the cursor, as
 /// termenv does (ollama), hears the answers in that order: it takes a
 /// cursor report coming first to mean no color is coming, and the color
@@ -1272,6 +1602,239 @@ async fn programs_that_ask_for_the_mouse_hear_clicks_and_the_wheel(cx: &mut Test
         );
     });
     take_written(cx, handle, &factory, "\x1b[<64;5;2M").await;
+}
+
+#[gpui_kit::test]
+async fn pointer_missing_mouse_up_releases_the_program_drag(cx: &mut TestAppContext) {
+    // 1002 reports held-button motion, so a motion after release must be silent.
+    let (handle, _, factory) =
+        terminal_printing(cx, "\x1b[?1002h\x1b[?1006hmouse on", "mouse on").await;
+    in_frame(cx, handle, |window, cx| {
+        let start = cell_center(window, &factory, 2, 1);
+        move_pointer(window, start, None, gpui_kit::Modifiers::none(), cx);
+        press_pointer(window, start, gpui_kit::Modifiers::none(), cx);
+        let end = cell_center(window, &factory, 4, 1);
+        move_pointer(
+            window,
+            end,
+            Some(MouseButton::Left),
+            gpui_kit::Modifiers::none(),
+            cx,
+        );
+    });
+    take_written(cx, handle, &factory, "\x1b[<0;3;2M\x1b[<32;5;2M").await;
+    // The platform missed MouseUp. Its next move tells us the button is up.
+    in_frame(cx, handle, |window, cx| {
+        for column in [6, 7] {
+            let position = cell_center(window, &factory, column, 1);
+            move_pointer(window, position, None, gpui_kit::Modifiers::none(), cx);
+        }
+    });
+    // A device-status reply orders all preceding writes through the fake
+    // transport, so this also proves the later move did not report a drag.
+    factory.print("\x1b[5n");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        factory.written_text().ends_with("\x1b[0n")
+    })
+    .await;
+    assert_eq!(factory.written_text(), "\x1b[<0;7;2m\x1b[0n");
+}
+
+#[gpui_kit::test]
+async fn pointer_release_pairs_with_the_original_mouse_encoding(cx: &mut TestAppContext) {
+    let escape = char::from(27);
+    let (handle, workspace, factory) = terminal_printing(cx, "mouse mode", "mouse mode").await;
+    factory.print(&format!("{escape}[?1002h{escape}[?1006hready"));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        local_screen(&workspace, cx).contains("ready")
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        let position = cell_center(window, &factory, 2, 1);
+        move_pointer(window, position, None, gpui_kit::Modifiers::none(), cx);
+        press_pointer(window, position, gpui_kit::Modifiers::none(), cx);
+    });
+    take_written(cx, handle, &factory, &format!("{escape}[<0;3;2M")).await;
+    // The program changes modes before the release. It must still receive
+    // the matching SGR release exactly once, even with Shift now held.
+    factory.print(&format!("{escape}[?1002l{escape}[?1006loff"));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        local_screen(&workspace, cx).contains("off")
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        let position = cell_center(window, &factory, 4, 1);
+        for _ in 0..2 {
+            window.dispatch_event(
+                gpui_kit::MouseUpEvent {
+                    button: MouseButton::Left,
+                    position,
+                    modifiers: gpui_kit::Modifiers::shift(),
+                    click_count: 1,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        }
+    });
+    factory.print(&format!("{escape}[5n"));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        factory.written_text().ends_with(&format!("{escape}[0n"))
+    })
+    .await;
+    assert_eq!(
+        factory.written_text(),
+        format!("{escape}[<0;5;2m{escape}[0n")
+    );
+}
+
+#[gpui_kit::test]
+async fn pointer_window_deactivation_cancels_drag_and_pending_tooltip(cx: &mut TestAppContext) {
+    let escape = char::from(27);
+    let (handle, workspace, factory) =
+        terminal_printing(cx, "https://example.com/pointer", "example.com/pointer").await;
+    in_frame(cx, handle, |window, _| window.activate_window());
+    in_frame(cx, handle, |window, cx| {
+        let position = cell_center(window, &factory, 2, 1);
+        move_pointer(window, position, None, gpui_kit::Modifiers::none(), cx);
+    });
+    gpui_kit::VisualTestContext::from_window(handle.into(), cx).deactivate_window();
+    cx.background_executor
+        .advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("terminal-link-tooltip").is_none())
+    });
+    in_frame(cx, handle, |window, _| window.activate_window());
+    factory.print(&format!("{escape}[?1002h{escape}[?1006hready"));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        local_screen(&workspace, cx).contains("ready")
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        let position = cell_center(window, &factory, 2, 1);
+        move_pointer(window, position, None, gpui_kit::Modifiers::none(), cx);
+        press_pointer(window, position, gpui_kit::Modifiers::none(), cx);
+    });
+    take_written(cx, handle, &factory, &format!("{escape}[<0;3;2M")).await;
+    gpui_kit::VisualTestContext::from_window(handle.into(), cx).deactivate_window();
+    factory.print(&format!("{escape}[5n"));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        factory.written_text().ends_with(&format!("{escape}[0n"))
+    })
+    .await;
+    assert_eq!(
+        factory.written_text(),
+        format!("{escape}[<0;3;2m{escape}[0n")
+    );
+}
+
+#[gpui_kit::test]
+async fn pointer_reconnect_discards_the_old_connections_pressed_button(cx: &mut TestAppContext) {
+    let escape = char::from(27);
+    let (handle, workspace, factory) = terminal_printing(cx, "mouse mode", "mouse mode").await;
+    factory.print(&format!("{escape}[?1002h{escape}[?1006hready"));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        local_screen(&workspace, cx).contains("ready")
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        let position = cell_center(window, &factory, 2, 1);
+        move_pointer(window, position, None, gpui_kit::Modifiers::none(), cx);
+        press_pointer(window, position, gpui_kit::Modifiers::none(), cx);
+    });
+    take_written(cx, handle, &factory, &format!("{escape}[<0;3;2M")).await;
+    cx.update(|cx| {
+        let terminal = workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(1))
+            .unwrap()
+            .read(cx)
+            .terminal()
+            .clone();
+        terminal.update(cx, |terminal, cx| terminal.restart(cx));
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        factory.starts.load(Ordering::SeqCst) == 2
+            && workspace
+                .read(cx)
+                .local_terminal(LocalTerminalId(1))
+                .unwrap()
+                .read(cx)
+                .status(cx)
+                .lifecycle()
+                == &TerminalLifecycle::Running
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        let position = cell_center(window, &factory, 4, 1);
+        move_pointer(window, position, None, gpui_kit::Modifiers::none(), cx);
+        window.dispatch_event(
+            gpui_kit::MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: gpui_kit::Modifiers::none(),
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    factory.print(&format!("{escape}[5n"));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        factory.written_text().ends_with(&format!("{escape}[0n"))
+    })
+    .await;
+    assert_eq!(factory.written_text(), format!("{escape}[0n"));
+}
+
+#[gpui_kit::test]
+async fn pointer_shift_selection_keeps_ownership_after_shift_is_released(cx: &mut TestAppContext) {
+    // 1003 would report even unheld motion; a Shift-started selection must
+    // continue to own its moves after Shift is released.
+    let (handle, _, factory) = terminal_printing(
+        cx,
+        "\x1b[?1003h\x1b[?1006hmouse ownership sample",
+        "mouse ownership sample",
+    )
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        let start = cell_center(window, &factory, 0, 1);
+        move_pointer(window, start, None, gpui_kit::Modifiers::shift(), cx);
+        press_pointer(window, start, gpui_kit::Modifiers::shift(), cx);
+        let end = cell_center(window, &factory, 18, 1);
+        move_pointer(
+            window,
+            end,
+            Some(MouseButton::Left),
+            gpui_kit::Modifiers::none(),
+            cx,
+        );
+        window.dispatch_event(
+            gpui_kit::MouseUpEvent {
+                button: MouseButton::Left,
+                position: end,
+                modifiers: gpui_kit::Modifiers::none(),
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_action(Box::new(CopyTerminal), cx);
+    });
+    cx.update(|cx| {
+        assert!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .is_some_and(|text| text.contains("ownership"))
+        );
+    });
+    factory.print("\x1b[5n");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        factory.written_text().ends_with("\x1b[0n")
+    })
+    .await;
+    assert_eq!(factory.written_text(), "\x1b[0n");
 }
 
 #[gpui_kit::test]

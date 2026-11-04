@@ -636,6 +636,7 @@ impl Panel for EditorPanel {
             self.name(),
         )
         .modified(self.dirty)
+        .dispatch_on(Some(self.dispatch.clone()))
         .closable(("close-editor", id.0), Box::new(CloseEditor(id)))
         .context_menu(move |menu, _, cx| tab_menu(menu, id, group.clone(), panel, cx))
     }

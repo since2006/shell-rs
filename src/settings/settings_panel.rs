@@ -84,6 +84,7 @@ pub struct SettingsPanel {
     shown_category: Rc<Cell<usize>>,
     focus_handle: FocusHandle,
     tab_group: Option<WeakEntity<TabGroup>>,
+    action_target: Option<FocusHandle>,
     _subscriptions: [Subscription; 6],
     _font_scan: Task<()>,
     _lock_subscription: Option<Subscription>,
@@ -136,9 +137,15 @@ impl SettingsPanel {
             shown_category: Rc::default(),
             focus_handle: cx.focus_handle(),
             tab_group: None,
+            action_target: None,
             _subscriptions: subscriptions,
             _font_scan: font_scan,
         }
+    }
+
+    /// The window owner handles tab commands independently of keyboard focus.
+    pub(crate) fn set_action_target(&mut self, target: FocusHandle) {
+        self.action_target = Some(target);
     }
 
     pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
@@ -197,6 +204,7 @@ impl Panel for SettingsPanel {
             Icon::new(CatalogIcon::Settings).small(),
             t!("settings.tab.title"),
         )
+        .dispatch_on(self.action_target.clone())
         .closable("close-settings", Box::new(CloseSettings))
         .context_menu(move |menu, _, cx| tab_menu(menu, group.clone(), panel, cx))
     }

@@ -428,8 +428,16 @@ impl TerminalEngine {
         if !self.lifecycle.accepts_input() {
             return Err(t!("terminal.command.not_connected"));
         }
-        self.send_user_input(encode_command(command, run, replace, self.mode())?);
-        Ok(())
+        if self.runtime.transferring() {
+            return Err(t!("terminal.zmodem.busy"));
+        }
+        let bytes = encode_command(command, run, replace, self.mode())?;
+        self.prepare_for_user_input();
+        // A closed input queue is an explicit refusal, not a successful submission.
+        self.runtime
+            .commands
+            .send(TerminalTransportCommand::Write(bytes))
+            .map_err(|_| t!("terminal.command.not_connected"))
     }
 
     pub fn resize(&mut self, size: TerminalSize, cx: &mut gpui_kit::Context<Self>) {

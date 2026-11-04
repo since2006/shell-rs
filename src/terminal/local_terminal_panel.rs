@@ -54,7 +54,8 @@ pub struct LocalTerminalPanel {
     name: Option<SavedName>,
     terminal: Entity<TerminalView>,
     tab_group: Option<WeakEntity<TabGroup>>,
-    broadcast: Option<super::BroadcastSelection>,
+    action_target: Option<FocusHandle>,
+    compose_selection: Option<super::ComposeSelection>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -109,7 +110,8 @@ impl LocalTerminalPanel {
             name,
             terminal,
             tab_group: None,
-            broadcast: None,
+            action_target: None,
+            compose_selection: None,
             _subscriptions: subscriptions,
         }
     }
@@ -120,6 +122,11 @@ impl LocalTerminalPanel {
         self.name
             .as_ref()
             .map_or_else(|| default_title(self.id), |name| name.name.clone())
+    }
+
+    /// The window owner handles tab commands independently of keyboard focus.
+    pub(crate) fn set_action_target(&mut self, target: FocusHandle) {
+        self.action_target = Some(target);
     }
 
     pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
@@ -135,13 +142,13 @@ impl LocalTerminalPanel {
         self.terminal.read(cx).zmodem_reply(reply, cx);
     }
 
-    pub(crate) fn set_broadcast_selection(
+    pub(crate) fn set_compose_selection(
         &mut self,
-        selection: Option<super::BroadcastSelection>,
+        selection: Option<super::ComposeSelection>,
         cx: &mut Context<Self>,
     ) {
-        if self.broadcast != selection {
-            self.broadcast = selection;
+        if self.compose_selection != selection {
+            self.compose_selection = selection;
             cx.notify();
         }
     }
@@ -169,6 +176,7 @@ impl LocalTerminalPanel {
     pub fn set_name(&mut self, name: SavedName, cx: &mut Context<Self>) {
         if self.name.as_ref() != Some(&name) {
             self.name = Some(name);
+            cx.emit(LocalTerminalPanelEvent::StatusChanged(self.id));
             cx.notify();
         }
     }
@@ -238,8 +246,8 @@ impl BasePanel for LocalTerminalPanel {
 impl Panel for LocalTerminalPanel {
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (id, group, panel) = (self.id, self.tab_group.clone(), cx.entity_id());
-        let mark = super::BroadcastSelection::lead(
-            self.broadcast.clone(),
+        let mark = super::ComposeSelection::lead(
+            self.compose_selection.clone(),
             CenterTab::LocalTerminal(id),
             self.display_title(cx),
             Icon::new(CatalogIcon::Terminal).small(),
@@ -249,6 +257,7 @@ impl Panel for LocalTerminalPanel {
             mark,
             self.display_title(cx),
         )
+        .dispatch_on(self.action_target.clone())
         .closable(
             ("close-local-terminal", self.id.0),
             Box::new(CloseLocalTerminal(self.id)),

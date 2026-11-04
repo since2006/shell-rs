@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use gpui_kit::component::dock::{DockPlacement, panel_handle};
+use gpui_kit::component::dock::panel_handle;
 use gpui_kit::*;
 
 use super::Workspace;
@@ -100,15 +100,12 @@ impl Workspace {
         self._subscriptions
             .push(follow_focus(CenterTab::Editor(id), &focus, window, cx));
         self.editors.insert(id, editor.clone());
-        self.dock_area.update(cx, |area, cx| {
-            area.add_panel_view(
-                panel_handle(editor),
-                DockPlacement::Center,
-                None,
-                window,
-                cx,
-            );
-        });
+        self.add_center_panel(
+            panel_handle(editor),
+            Some(CenterTab::Explorer(explorer)),
+            window,
+            cx,
+        );
     }
 
     fn on_editor_event(
@@ -120,14 +117,12 @@ impl Workspace {
     ) {
         match event {
             EditorPanelEvent::Activated(id) => {
-                self.set_active_tab(Some(CenterTab::Editor(*id)), window, cx);
+                self.panel_activated(CenterTab::Editor(*id), window, cx);
                 cx.notify();
             }
             EditorPanelEvent::Closed(id) => {
                 self.editors.remove(id);
-                if self.active_tab == Some(CenterTab::Editor(*id)) {
-                    self.set_active_tab(None, window, cx);
-                }
+                self.sync_front(window, cx);
                 cx.notify();
             }
             EditorPanelEvent::Changed(id) => {
@@ -215,8 +210,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(editor) = self.editors.get(&id).cloned() {
-            self.dock_area
-                .update(cx, |area, cx| area.remove_panel(editor, window, cx));
+            self.remove_center_panel(editor, window, cx);
         }
     }
 

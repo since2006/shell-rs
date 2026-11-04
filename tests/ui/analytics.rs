@@ -101,7 +101,7 @@ async fn the_features_used_are_counted(cx: &mut TestAppContext) {
 
     // An SFTP tab, once connected.
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(OpenExplorer(host)), cx)
+        window.dispatch_action(Box::new(OpenExplorer::new(host)), cx)
     });
     let mut received = Vec::new();
     cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {

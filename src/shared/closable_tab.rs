@@ -38,6 +38,7 @@ pub struct ClosableTabTitle {
     label: SharedString,
     close: Option<(ElementId, Box<dyn Action>)>,
     menu: Option<MenuBuilder>,
+    dispatch: Option<FocusHandle>,
     modified: bool,
     connection_state: Option<ConnectionState>,
 }
@@ -56,6 +57,7 @@ impl ClosableTabTitle {
             label: label.into(),
             close: None,
             menu: None,
+            dispatch: None,
             modified: false,
             connection_state: None,
         }
@@ -78,9 +80,16 @@ impl ClosableTabTitle {
         self
     }
 
-    /// Show a close button that dispatches `action` on the focused path.
+    /// Show a close button that sends the panel's close command.
     pub fn closable(mut self, id: impl Into<ElementId>, action: Box<dyn Action>) -> Self {
         self.close = Some((id.into(), action));
+        self
+    }
+
+    /// Route title commands to a stable owner without moving keyboard focus.
+    /// A closed panel's focus path may have disappeared before the next click.
+    pub fn dispatch_on(mut self, target: Option<FocusHandle>) -> Self {
+        self.dispatch = target;
         self
     }
 
@@ -101,6 +110,8 @@ impl RenderOnce for ClosableTabTitle {
             .connection_state
             .is_some_and(|state| !state.is_connected());
         let middle_close = self.close.as_ref().map(|(_, action)| action.boxed_clone());
+        let close_dispatch = self.dispatch.clone();
+        let middle_dispatch = self.dispatch.clone();
         let row = h_flex()
             .id("title")
             .gap_1()
@@ -142,23 +153,35 @@ impl RenderOnce for ClosableTabTitle {
                         .on_click(move |_, window, cx| {
                             // Closing must not also select or drag the tab.
                             cx.stop_propagation();
-                            window.dispatch_action(action.boxed_clone(), cx);
+                            if let Some(target) = &close_dispatch {
+                                target.dispatch_action(action.as_ref(), window, cx);
+                            } else {
+                                window.dispatch_action(action.boxed_clone(), cx);
+                            }
                         }),
                 )
             });
         div()
             .id(self.id)
             // The first click selects the tab as usual.
-            .on_click(|event, window, cx| {
+            .on_click(move |event, window, cx| {
                 if event.click_count() == 2 {
-                    window.dispatch_action(Box::new(ToggleHostPanel), cx);
+                    if let Some(target) = &self.dispatch {
+                        target.dispatch_action(&ToggleHostPanel, window, cx);
+                    } else {
+                        window.dispatch_action(Box::new(ToggleHostPanel), cx);
+                    }
                 }
             })
             .when_some(middle_close, |title, action| {
                 title.on_aux_click(move |event, window, cx| {
                     if event.is_middle_click() {
                         cx.stop_propagation();
-                        window.dispatch_action(action.boxed_clone(), cx);
+                        if let Some(target) = &middle_dispatch {
+                            target.dispatch_action(action.as_ref(), window, cx);
+                        } else {
+                            window.dispatch_action(action.boxed_clone(), cx);
+                        }
                     }
                 })
             })

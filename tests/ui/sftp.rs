@@ -1125,7 +1125,7 @@ async fn sftp_panes_keep_their_split_across_tab_switches(cx: &mut TestAppContext
 
     // Another SFTP tab of the host comes to the front, then this one.
     cx.update_window(handle.into(), |_, window, cx| {
-        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx);
+        window.dispatch_action(Box::new(OpenExplorer::new(HostId(DB_01))), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -1240,6 +1240,14 @@ async fn the_sftp_tab_bar_shows_the_connection_latency_while_connected(cx: &mut 
     let latency = ("sftp-latency", SFTP_TAB);
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find(latency).is_none(), "nothing measured yet");
+        assert_eq!(
+            window.find(("open-sftp", SFTP_TAB)).bounds().size.width,
+            window
+                .find(("reconnect-sftp", SFTP_TAB))
+                .bounds()
+                .size
+                .width
+        );
     });
 
     let events = provider.events.lock().unwrap()[0].clone();
@@ -1258,6 +1266,13 @@ async fn the_sftp_tab_bar_shows_the_connection_latency_while_connected(cx: &mut 
         })
         .await;
     }
+
+    in_frame(cx, handle, |w, _| {
+        let label = w.find(latency).bounds();
+        let button = w.find(("open-sftp", SFTP_TAB)).bounds();
+        assert!(label.right() <= button.left());
+        assert!(label.top() >= button.top() && label.bottom() <= button.bottom());
+    });
 
     events
         .send_blocking(SftpEvent::Disconnected("SFTP 连接中断，请重新连接".into()))
@@ -2054,7 +2069,7 @@ async fn opening_sftp_again_opens_another_tab_of_its_own(cx: &mut TestAppContext
     open_test_explorer(cx, handle).await;
     let second = ExplorerId(SFTP_TAB + 1);
     cx.update_window(handle.into(), |_, window, cx| {
-        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx);
+        window.dispatch_action(Box::new(OpenExplorer::new(HostId(DB_01))), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
@@ -2120,7 +2135,7 @@ async fn sftp_connecting_shows_under_the_list_without_moving_it(cx: &mut TestApp
     let (handle, _) = open_workspace_with_sftp(cx, provider);
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx);
+        window.dispatch_action(Box::new(OpenExplorer::new(HostId(DB_01))), cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -2171,7 +2186,7 @@ async fn sftp_list_says_what_it_waits_for_before_saying_empty(cx: &mut TestAppCo
     };
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx);
+        window.dispatch_action(Box::new(OpenExplorer::new(HostId(DB_01))), cx);
     })
     .unwrap();
     cx.run_until_parked();

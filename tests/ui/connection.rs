@@ -316,7 +316,7 @@ async fn opening_sftp_updates_connection_state_without_terminal(cx: &mut TestApp
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(OpenExplorer(id)), cx);
+        window.dispatch_action(Box::new(OpenExplorer::new(id)), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
@@ -636,6 +636,31 @@ async fn the_tab_bar_shows_the_connection_latency_while_it_runs(cx: &mut TestApp
     })
     .await;
 
+    in_frame(cx, handle, |w, _| {
+        let terminal_bounds = w.find(("terminal", terminal)).bounds();
+        let latency_bounds = w.find(latency).bounds();
+        let sftp = w.find(("sftp", terminal));
+        let reconnect = w.find(("reconnect", terminal));
+        assert!(latency_bounds.bottom() <= terminal_bounds.top());
+        assert!(latency_bounds.right() <= sftp.bounds().left());
+        assert!(latency_bounds.center().y >= sftp.bounds().top());
+        assert!(latency_bounds.center().y <= sftp.bounds().bottom());
+        assert_eq!(sftp.bounds().size.width, reconnect.bounds().size.width);
+        assert_eq!(sftp.label(), Some("打开 SFTP"));
+    });
+
+    in_frame(cx, handle, |w, cx| {
+        w.dispatch_action(Box::new(FindInTerminal), cx)
+    });
+    in_frame(cx, handle, |w, cx| {
+        assert_eq!(w.find(latency).label(), Some("32 ms"));
+        assert!(w.find("terminal-find").visible());
+        w.press("escape", cx);
+    });
+    in_frame(cx, handle, |w, _| {
+        assert_eq!(w.find(latency).label(), Some("32 ms"))
+    });
+
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click(("close-terminal", terminal), cx);
@@ -763,7 +788,7 @@ async fn a_link_opens_a_terminal_to_a_host_that_goes_with_its_last_tab(cx: &mut 
 
     // Its SFTP tab works, bookmarks and all, without writing to disk.
     cx.update_window(handle.into(), |_, window, cx| {
-        window.dispatch_action(Box::new(OpenExplorer(LINK_HOST)), cx);
+        window.dispatch_action(Box::new(OpenExplorer::new(LINK_HOST)), cx);
     })
     .unwrap();
     cx.run_until_parked();

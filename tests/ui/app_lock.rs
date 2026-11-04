@@ -488,3 +488,44 @@ fn app_lock_keychain_failure_blocks_background_startup_and_retry_recovers(cx: &m
         assert!(window.try_find("app-lock-screen").is_none());
     });
 }
+
+#[gpui_kit::test]
+async fn compose_key_sync_stays_off_after_unlock(cx: &mut TestAppContext) {
+    use shellrs::app::{CloseSettings, ComposeScope, LockApp, SetComposeScope};
+    let (handle, lock, _) = open_locked_workspace(cx, Arc::new(InMemoryLockStore::default()));
+    app_settings(cx, handle);
+    in_frame(cx, handle, |w, cx| w.click("app-lock-enable", cx));
+    in_frame(cx, handle, |w, cx| {
+        enter(w, "app-lock-new-password", "compose password", cx);
+        enter(w, "app-lock-repeat-password", "compose password", cx);
+        w.click("app-lock-commit", cx);
+    });
+    wait_for_password(cx, &lock);
+    in_frame(cx, handle, |w, cx| {
+        w.dispatch_action(Box::new(CloseSettings), cx)
+    });
+    for _ in 0..2 {
+        in_frame(cx, handle, |w, cx| w.click("new-local-terminal", cx));
+    }
+    in_frame(cx, handle, |w, cx| w.click("toggle-compose-pane", cx));
+    in_frame(cx, handle, |w, cx| {
+        w.dispatch_action(Box::new(SetComposeScope::new(ComposeScope::Window)), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |w, _| {
+        w.try_find("compose-keys").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |w, cx| w.click("compose-keys", cx));
+    in_frame(cx, handle, |w, cx| {
+        assert_eq!(w.find("compose-keys").checked(), Some(true));
+        w.dispatch_action(Box::new(LockApp), cx);
+    });
+    in_frame(cx, handle, |w, cx| {
+        enter(w, "app-lock-password", "compose password", cx);
+        w.click("app-lock-unlock", cx);
+    });
+    wait_for_password(cx, &lock);
+    in_frame(cx, handle, |w, _| {
+        assert_eq!(w.find("compose-keys").checked(), Some(false))
+    });
+}

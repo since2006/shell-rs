@@ -267,10 +267,64 @@ impl TerminalViewport {
 /// The link under the pointer, and where the pointer is.
 #[derive(Clone, Debug, PartialEq)]
 struct HoveredLink {
-    /// Which link of the snapshot, as the cells number them.
-    index: usize,
+    /// A contiguous displayed occurrence, independent of snapshot link indices.
+    cells: Range<usize>,
     uri: SharedString,
     position: gpui_kit::Point<Pixels>,
+}
+
+/// Native cursor requests use these same priorities as click routing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PointerIntent {
+    Select,
+    Program,
+    OpenLink,
+}
+
+impl PointerIntent {
+    fn resolve(
+        accepts_input: bool,
+        mode: TermMode,
+        modifiers: Modifiers,
+        selecting: bool,
+        reporting: bool,
+        link: bool,
+    ) -> Self {
+        if selecting {
+            Self::Select
+        } else if reporting {
+            Self::Program
+        } else if link && opens_links(&modifiers) {
+            Self::OpenLink
+        } else if accepts_input && mode.intersects(TermMode::MOUSE_MODE) && !modifiers.shift {
+            Self::Program
+        } else {
+            Self::Select
+        }
+    }
+
+    fn cursor(self) -> CursorStyle {
+        match self {
+            Self::Select => CursorStyle::IBeam,
+            Self::Program => CursorStyle::Arrow,
+            Self::OpenLink => CursorStyle::PointingHand,
+        }
+    }
+}
+
+/// The most recently painted surface, for delayed hover validation.
+#[derive(Clone)]
+struct PointerSurface {
+    hitbox: Hitbox,
+    viewport: TerminalViewport,
+    links: Rc<ScreenLinks>,
+}
+
+#[derive(Clone, Copy)]
+struct ReportedPress {
+    button: ReportButton,
+    generation: u64,
+    mode: TermMode,
 }
 
 pub struct TerminalView {
@@ -309,7 +363,11 @@ pub struct TerminalView {
     link_tooltip: bool,
     link_tooltip_task: Option<Task<()>>,
     /// The button the program was told went down, until it hears it go up.
-    reported_button: Option<ReportButton>,
+    reported_press: Option<ReportedPress>,
+    pointer_modifiers: Modifiers,
+    pointer_surface: Option<PointerSurface>,
+    pointer_suspended: bool,
+    pointer_revision: u64,
     /// The cell the program last heard of: motion is reported once a cell.
     reported_cell: Option<(usize, usize)>,
     _subscriptions: Vec<Subscription>,
@@ -327,7 +385,16 @@ impl TerminalView {
         let engine = cx.new(|cx| TerminalEngine::new(factory, cx));
         let focus_handle = cx.focus_handle();
         let subscriptions = vec![
-            cx.observe(&engine, |_, _, cx| cx.notify()),
+            cx.observe(&engine, |this, engine, cx| {
+                let engine = engine.read(cx);
+                if this.reported_press.is_some_and(|press| {
+                    !engine.lifecycle().accepts_input() || press.generation != engine.generation()
+                }) {
+                    this.reported_press = None;
+                    this.reported_cell = None;
+                }
+                cx.notify();
+            }),
             cx.observe_global::<TerminalInteraction>(|this, cx| {
                 this.cursor_visible = true;
                 cx.notify();
@@ -342,10 +409,14 @@ impl TerminalView {
                 this.engine.read(cx).set_focused(true);
                 cx.notify();
             }),
-            cx.on_blur(&focus_handle, window, |this, _, cx| {
+            cx.on_blur(&focus_handle, window, |this, window, cx| {
                 this.focused = false;
                 this.cursor_visible = false;
-                this.selecting = false;
+                if this.selecting || this.reported_press.is_some() {
+                    this.cancel_pointer(window, cx);
+                    // Keyboard focus alone does not disable hover in a split.
+                    this.pointer_suspended = false;
+                }
                 this.engine.read(cx).set_focused(false);
                 cx.notify();
             }),
@@ -411,7 +482,11 @@ impl TerminalView {
             hovered_link: None,
             link_tooltip: false,
             link_tooltip_task: None,
-            reported_button: None,
+            reported_press: None,
+            pointer_modifiers: window.modifiers(),
+            pointer_surface: None,
+            pointer_suspended: false,
+            pointer_revision: 0,
             reported_cell: None,
             _subscriptions: subscriptions,
             _blink_task: blink_task,
@@ -480,8 +555,12 @@ impl TerminalView {
         self.hovered_link = None;
         self.link_tooltip = false;
         self.link_tooltip_task = None;
-        self.reported_button = None;
+        self.reported_press = None;
         self.reported_cell = None;
+        self.pointer_surface = None;
+        self.pointer_suspended = false;
+        self.pointer_revision += 1;
+        self.stop_edge_scroll();
     }
 
     pub fn shutdown(&mut self, cx: &mut Context<Self>) {
@@ -490,6 +569,11 @@ impl TerminalView {
     }
 
     pub fn stop(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.selecting = false;
+        self.stop_edge_scroll();
+        self.hover_link(None, cx);
+        self.reported_press = None;
+        self.reported_cell = None;
         self.engine
             .update(cx, |engine, cx| engine.stop(message, cx));
     }
@@ -774,9 +858,13 @@ impl TerminalView {
         modifiers: Modifiers,
         cx: &mut Context<Self>,
     ) {
-        let mode = self.engine.read(cx).mode();
-        // Shift scrolls the history even while the program has the mouse.
-        let target = if mode.intersects(TermMode::MOUSE_MODE) && !modifiers.shift {
+        let engine = self.engine.read(cx);
+        let mode = engine.mode();
+        // A selection keeps its scrollback even if Shift is released. A
+        // reported drag likewise remains the program's until it finishes.
+        let target = if self.selecting || !engine.lifecycle().accepts_input() {
+            ScrollTarget::History
+        } else if self.pointer_intent(modifiers, false, cx) == PointerIntent::Program {
             ScrollTarget::Report
         } else if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
             ScrollTarget::AlternateScreen
@@ -822,7 +910,9 @@ impl TerminalView {
         selection_type: SelectionType,
         cx: &mut Context<Self>,
     ) {
+        self.hover_link(None, cx);
         self.selecting = true;
+        cx.notify();
         self.engine.update(cx, |engine, cx| {
             engine.start_selection(point, side, selection_type, cx)
         });
@@ -886,6 +976,7 @@ impl TerminalView {
     /// goes to the clipboard; a click that selected nothing leaves it be.
     fn finish_selection(&mut self, cx: &mut Context<Self>) {
         self.selecting = false;
+        cx.notify();
         self.stop_edge_scroll();
         if TerminalInteraction::current(cx).copy_on_select {
             self.copy_selection(cx);
@@ -903,14 +994,21 @@ impl TerminalView {
         modifiers: Modifiers,
         cx: &mut Context<Self>,
     ) -> bool {
-        let mode = self.engine.read(cx).mode();
-        let held = self.reported_button.is_some();
-        if (modifiers.shift && !held) || !mouse::wants(mode, kind, held) {
+        let engine = self.engine.read(cx);
+        let mode = engine.mode();
+        let held = self.reported_press.is_some();
+        if !engine.lifecycle().accepts_input()
+            || self.selecting
+            || (modifiers.shift && !held)
+            || !mouse::wants(mode, kind, held)
+        {
             return false;
         }
         let button = match kind {
             ReportKind::Motion if self.reported_cell == Some(cell) => return true,
-            ReportKind::Motion => self.reported_button.unwrap_or(ReportButton::None),
+            ReportKind::Motion => self
+                .reported_press
+                .map_or(ReportButton::None, |press| press.button),
             _ => button,
         };
         let report = MouseReport {
@@ -921,18 +1019,26 @@ impl TerminalView {
             alt: modifiers.alt,
             control: modifiers.control,
         };
-        if let Some(bytes) = mouse::encode(report, mode) {
-            self.engine.read(cx).write(bytes);
-        }
+        let Some(bytes) = mouse::encode(report, mode) else {
+            return true;
+        };
+        engine.write(bytes);
         self.reported_cell = Some(cell);
         if kind == ReportKind::Press && matches!(button, ReportButton::Left | ReportButton::Middle)
         {
-            self.reported_button = Some(button);
+            self.reported_press = Some(ReportedPress {
+                button,
+                generation: engine.generation(),
+                mode,
+            });
+            self.hover_link(None, cx);
+            cx.notify();
         }
         true
     }
 
-    /// A button went up: the program hears of it if it heard it go down.
+    /// Release the press this connection received, even if its mouse mode or
+    /// Shift changed during the drag. Never send it to a new connection.
     fn release_mouse(
         &mut self,
         button: ReportButton,
@@ -940,33 +1046,117 @@ impl TerminalView {
         modifiers: Modifiers,
         cx: &mut Context<Self>,
     ) {
-        if self.reported_button == Some(button) {
-            self.report_mouse(button, ReportKind::Release, cell, modifiers, cx);
-            self.reported_button = None;
+        let Some(press) = self.reported_press.filter(|press| press.button == button) else {
+            return;
+        };
+        self.reported_press = None;
+        self.reported_cell = None;
+        let engine = self.engine.read(cx);
+        if engine.lifecycle().accepts_input() && engine.generation() == press.generation {
+            let report = MouseReport {
+                button,
+                kind: ReportKind::Release,
+                column: cell.0,
+                row: cell.1,
+                alt: modifiers.alt,
+                control: modifiers.control,
+            };
+            if let Some(bytes) = mouse::encode(report, press.mode) {
+                engine.write(bytes);
+            }
+        }
+        cx.notify();
+    }
+
+    fn pointer_intent(&self, modifiers: Modifiers, link: bool, cx: &App) -> PointerIntent {
+        let engine = self.engine.read(cx);
+        PointerIntent::resolve(
+            engine.lifecycle().accepts_input(),
+            engine.mode(),
+            modifiers,
+            self.selecting,
+            self.reported_press.is_some(),
+            link,
+        )
+    }
+
+    pub(crate) fn refresh_pointer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let modifiers = window.modifiers();
+        if self.pointer_suspended || self.pointer_modifiers != modifiers {
+            self.pointer_suspended = false;
+            self.pointer_modifiers = modifiers;
+            cx.notify();
         }
     }
 
-    /// The pointer moved onto a link or off one. Its address shows once the
-    /// pointer rests there.
+    pub(crate) fn cancel_pointer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(press) = self.reported_press {
+            let cell = self
+                .pointer_surface
+                .as_ref()
+                .map(|surface| surface.viewport.nearest_cell(window.mouse_position()))
+                .or(self.reported_cell)
+                .unwrap_or((0, 0));
+            self.release_mouse(press.button, cell, window.modifiers(), cx);
+        }
+        let changed = self.selecting || self.edge_scroll.is_some() || !self.pointer_suspended;
+        self.selecting = false;
+        self.stop_edge_scroll();
+        self.hover_link(None, cx);
+        self.pointer_suspended = true;
+        self.pointer_surface = None;
+        self.pointer_revision += 1;
+        if changed {
+            cx.notify();
+        }
+    }
+
+    fn current_hover(&self, window: &Window) -> Option<HoveredLink> {
+        if self.pointer_suspended || self.selecting || self.reported_press.is_some() {
+            return None;
+        }
+        let surface = self.pointer_surface.as_ref()?;
+        if !surface.hitbox.is_hovered(window) {
+            return None;
+        }
+        let position = window.mouse_position();
+        surface
+            .links
+            .hovered(surface.viewport.cell_at(position)?, position)
+    }
+
+    fn sync_hover(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.hover_link(self.current_hover(window), cx);
+        if self.hovered_link.is_some() && !self.link_tooltip && self.link_tooltip_task.is_none() {
+            self.link_tooltip_task = Some(cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(LINK_TOOLTIP_DELAY).await;
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let current = this.current_hover(window);
+                    let valid = same_link(&this.hovered_link, &current) && current.is_some();
+                    this.hover_link(current, cx);
+                    this.link_tooltip_task = None;
+                    if valid {
+                        this.link_tooltip = true;
+                        cx.notify();
+                    }
+                });
+            }));
+        }
+    }
+
+    /// Preserve the timer within one displayed link, but keep its anchor fresh.
     fn hover_link(&mut self, link: Option<HoveredLink>, cx: &mut Context<Self>) {
-        let same = match (&self.hovered_link, &link) {
-            (Some(hovered), Some(link)) => hovered.index == link.index && hovered.uri == link.uri,
-            (None, None) => true,
-            _ => false,
-        };
-        if same {
+        if same_link(&self.hovered_link, &link) {
+            if self.hovered_link != link {
+                self.hovered_link = link;
+                if self.link_tooltip {
+                    cx.notify();
+                }
+            }
             return;
         }
         self.link_tooltip = false;
-        self.link_tooltip_task = link.as_ref().map(|_| {
-            cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(LINK_TOOLTIP_DELAY).await;
-                let _ = this.update(cx, |this, cx| {
-                    this.link_tooltip = true;
-                    cx.notify();
-                });
-            })
-        });
+        self.link_tooltip_task = None;
         self.hovered_link = link;
         cx.notify();
     }
@@ -986,7 +1176,7 @@ impl TerminalView {
         true
     }
 
-    /// Apply broadcast input without emitting it again. Each terminal encodes
+    /// Apply synchronized input without emitting it again. Each terminal encodes
     /// keys and bracketed paste using its own mode; no focus is transferred.
     pub(crate) fn receive_input(&mut self, input: &TerminalInput, cx: &mut Context<Self>) -> bool {
         if !self.lifecycle(cx).accepts_input() {
@@ -1005,6 +1195,7 @@ impl TerminalView {
         }
         self.hover_link(None, cx);
         self.selecting = false;
+        self.stop_edge_scroll();
         self.scroll_accumulator.reset();
         self.cursor_visible = true;
         cx.notify();
@@ -1013,6 +1204,7 @@ impl TerminalView {
 
     fn prepare_for_user_input(&mut self, cx: &mut Context<Self>) {
         self.selecting = false;
+        self.stop_edge_scroll();
         self.scroll_accumulator.reset();
         self.cursor_visible = true;
         self.engine.read(cx).prepare_for_user_input();
@@ -1226,6 +1418,20 @@ impl EntityInputHandler for TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.engine.read(cx).snapshot();
+        let links = Rc::new(ScreenLinks::new(&snapshot));
+        self.pointer_modifiers = window.modifiers();
+        let pointer = self.pointer_intent(self.pointer_modifiers, false, cx);
+        let open_links = !self.pointer_suspended
+            && window.focused(cx).is_some()
+            && self.pointer_intent(self.pointer_modifiers, true, cx) == PointerIntent::OpenLink;
+        let current_link = self.current_hover(window).and_then(|hovered| {
+            let viewport = self.viewport?;
+            links.hovered(viewport.cell_at(hovered.position)?, hovered.position)
+        });
+        let tooltip = self
+            .hovered_link
+            .clone()
+            .filter(|_| self.link_tooltip && same_link(&self.hovered_link, &current_link));
         let font = TerminalFont::current(cx);
         let scrollback = ScrollbackHandle::new(
             self.engine.read(cx).scrollback(),
@@ -1237,11 +1443,15 @@ impl Render for TerminalView {
         let element = TerminalElement {
             view: view.clone(),
             snapshot,
+            links,
             focus_handle: self.focus_handle.clone(),
             cursor_visible: self.cursor_visible,
             marked_text: self.marked_text.clone(),
             marked_selection: self.marked_selection.clone(),
             requested_size: self.requested_size,
+            pointer,
+            open_links,
+            hovered_cells: current_link.map(|link| link.cells),
         };
 
         let terminal = div()
@@ -1279,20 +1489,17 @@ impl Render for TerminalView {
                 )
             })
             // Below the pointer, so the pointer stays on the link.
-            .when_some(
-                self.hovered_link.clone().filter(|_| self.link_tooltip),
-                |terminal, link| {
-                    terminal.child(
-                        deferred(
-                            anchored()
-                                .position(link.position + point(px(0.), px(20.)))
-                                .snap_to_window_with_margin(px(8.))
-                                .child(link_tooltip(link.uri, window, cx)),
-                        )
-                        .with_priority(1),
+            .when_some(tooltip, |terminal, link| {
+                terminal.child(
+                    deferred(
+                        anchored()
+                            .position(link.position + point(px(0.), px(20.)))
+                            .snap_to_window_with_margin(px(8.))
+                            .child(link_tooltip(link.uri, window, cx)),
                     )
-                },
-            );
+                    .with_priority(1),
+                )
+            });
 
         // The find bar is the terminal's sibling, not its child: keys typed
         // into it must not bubble to the terminal's key handler, which would
@@ -1304,9 +1511,7 @@ impl Render for TerminalView {
             // The margin and the part of a cell the grid does not fill are
             // the terminal's too.
             .bg(TerminalColors::current(cx).background())
-            // An I-beam over the text, as in other terminals; the scrollbar
-            // and a link under the open key set their own pointer over it.
-            .cursor_text()
+            .cursor(pointer.cursor())
             .child(terminal)
             // Over the whole margin, so the thumb lies mostly beside the text.
             .child(
@@ -1435,15 +1640,21 @@ impl TerminalView {
 struct TerminalElement {
     view: Entity<TerminalView>,
     snapshot: TerminalSnapshot,
+    links: Rc<ScreenLinks>,
     focus_handle: FocusHandle,
     cursor_visible: bool,
     marked_text: String,
     marked_selection: Range<usize>,
     requested_size: TerminalSize,
+    pointer: PointerIntent,
+    open_links: bool,
+    hovered_cells: Option<Range<usize>>,
 }
 
 struct TerminalPaintState {
     hitbox: Hitbox,
+    link_hitboxes: Vec<Hitbox>,
+    links: Rc<ScreenLinks>,
     viewport: TerminalViewport,
     lines: Vec<ShapedLine>,
     backgrounds: Vec<PaintQuad>,
@@ -1528,19 +1739,6 @@ impl Element for TerminalElement {
             cell_width,
             line_height,
         };
-        // The link under the pointer, lit a little brighter.
-        let hovered_link = screen_cell(
-            &geometry,
-            self.snapshot.columns,
-            self.snapshot.rows,
-            window.mouse_position(),
-        )
-        .and_then(|(column, row)| {
-            self.snapshot
-                .cells
-                .get(row * self.snapshot.columns + column)?
-                .link
-        });
         let scale = window.scale_factor();
         let metrics = CellMetrics::new(cell_width, line_height, font_size, scale);
         let mut lines = Vec::with_capacity(self.snapshot.rows);
@@ -1600,9 +1798,11 @@ impl Element for TerminalElement {
                 });
                 // Links always show as links, blue whatever color the
                 // program gave them.
-                let link = cell
-                    .link
-                    .map(|link| palette.link(hovered_link == Some(link)));
+                let link = cell.link.map(|_| {
+                    palette.link(self.hovered_cells.as_ref().is_some_and(|cells| {
+                        cells.contains(&(row_index * self.snapshot.columns + column))
+                    }))
+                });
                 // A rule colors a link's text too; the underline still says
                 // it is one.
                 let text_color = highlight.or(link).unwrap_or(foreground);
@@ -1719,8 +1919,35 @@ impl Element for TerminalElement {
             })
             .and_then(|_| cursor_quad(cursor_bounds, self.snapshot.cursor_shape, &palette));
 
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        let links = self.links.clone();
+        let link_hitboxes = if self.open_links {
+            window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                links
+                    .spans()
+                    .into_iter()
+                    .map(|(row, columns)| {
+                        let origin = point(
+                            bounds.left() + cell_width * columns.start as f32,
+                            bounds.top() + line_height * row as f32,
+                        );
+                        window.insert_hitbox(
+                            Bounds::new(
+                                origin,
+                                size(cell_width * columns.len() as f32, line_height),
+                            ),
+                            HitboxBehavior::Normal,
+                        )
+                    })
+                    .collect()
+            })
+        } else {
+            Vec::new()
+        };
         TerminalPaintState {
-            hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            hitbox,
+            link_hitboxes,
+            links,
             viewport,
             lines,
             backgrounds,
@@ -1793,21 +2020,34 @@ impl Element for TerminalElement {
         let hitbox = state.hitbox.clone();
         let view = self.view.clone();
         let viewport = state.viewport;
-        let links = Rc::new(ScreenLinks::new(&self.snapshot));
-
-        // A hand over a link while the key that opens it is held; pressing
-        // or letting go of the key changes it at once.
-        let pointer_on_link = hitbox.is_hovered(window)
-            && viewport
-                .cell_at(window.mouse_position())
-                .and_then(|cell| links.at(cell))
-                .is_some();
-        if pointer_on_link {
-            if opens_links(&window.modifiers()) {
-                window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
-            }
-            let view = view.clone();
-            window.on_modifiers_changed(move |_, _, cx| view.update(cx, |_, cx| cx.notify()));
+        let links = state.links.clone();
+        window.set_cursor_style(self.pointer.cursor(), &hitbox);
+        for link_hitbox in &state.link_hitboxes {
+            // Cursor resolution retains occlusion even after keyboard input
+            // suppresses ordinary hover. Never override the window cursor.
+            window.set_cursor_style(CursorStyle::PointingHand, link_hitbox);
+        }
+        let revision = view.update(cx, |view, _| {
+            view.pointer_surface = Some(PointerSurface {
+                hitbox: hitbox.clone(),
+                viewport,
+                links: links.clone(),
+            });
+            view.pointer_revision += 1;
+            (!links.links.is_empty() || view.hovered_link.is_some())
+                .then_some(view.pointer_revision)
+        });
+        if let Some(revision) = revision {
+            window.defer(cx, {
+                let view = view.downgrade();
+                move |window, cx| {
+                    let _ = view.update(cx, |view, cx| {
+                        if view.pointer_revision == revision {
+                            view.sync_hover(window, cx);
+                        }
+                    });
+                }
+            });
         }
 
         // A click opens a link with ⌘ held; otherwise it goes to the program
@@ -1827,7 +2067,8 @@ impl Element for TerminalElement {
                     _ => return,
                 };
                 if button == ReportButton::Left
-                    && opens_links(&event.modifiers)
+                    && view.read(cx).pointer_intent(event.modifiers, true, cx)
+                        == PointerIntent::OpenLink
                     && let Some((_, uri)) = links.at(cell)
                 {
                     cx.open_url(uri);
@@ -1860,7 +2101,7 @@ impl Element for TerminalElement {
         // program that asked for it. A drag that leaves the terminal is
         // reported at its edge.
         window.on_mouse_event({
-            let (hitbox, view, links) = (hitbox.clone(), view.clone(), links.clone());
+            let (hitbox, view) = (hitbox.clone(), view.clone());
             move |event: &MouseMoveEvent, phase, window, cx| {
                 if !phase.bubble() {
                     return;
@@ -1869,16 +2110,10 @@ impl Element for TerminalElement {
                     .is_hovered(window)
                     .then(|| viewport.cell_at(event.position))
                     .flatten();
-                let link = cell
-                    .and_then(|cell| links.at(cell))
-                    .map(|(index, uri)| HoveredLink {
-                        index,
-                        uri: uri.clone(),
-                        position: event.position,
-                    });
                 view.update(cx, |view, cx| {
-                    view.hover_link(link, cx);
-                    let cell = match (cell, view.reported_button) {
+                    view.refresh_pointer(window, cx);
+                    view.sync_hover(window, cx);
+                    let cell = match (cell, view.reported_press) {
                         (_, Some(_)) => Some(viewport.nearest_cell(event.position)),
                         (cell, None) => cell,
                     };
@@ -1890,6 +2125,34 @@ impl Element for TerminalElement {
                             event.modifiers,
                             cx,
                         );
+                    }
+                });
+            }
+        });
+
+        // A window can miss MouseUp when released outside it. Reconcile before
+        // bubble-phase motion can extend a stale drag.
+        window.on_mouse_event({
+            let view = view.clone();
+            move |event: &MouseMoveEvent, phase, _, cx| {
+                if !phase.capture() {
+                    return;
+                }
+                view.update(cx, |view, cx| {
+                    if let Some(press) = view.reported_press {
+                        let expected = match press.button {
+                            ReportButton::Left => MouseButton::Left,
+                            ReportButton::Middle => MouseButton::Middle,
+                            _ => return,
+                        };
+                        if event.pressed_button != Some(expected) {
+                            view.release_mouse(
+                                press.button,
+                                viewport.nearest_cell(event.position),
+                                event.modifiers,
+                                cx,
+                            );
+                        }
                     }
                 });
             }
@@ -1915,11 +2178,23 @@ impl Element for TerminalElement {
         });
 
         let view = self.view.clone();
+        window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
+            if phase.capture() {
+                view.update(cx, |view, cx| {
+                    view.hover_link(None, cx);
+                    // Keep a held drag's owner; the next motion reconciles
+                    // a button released outside the window.
+                    view.pointer_suspended = true;
+                });
+            }
+        });
+
+        let view = self.view.clone();
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
             if !phase.capture() || !view.read(cx).selecting {
                 return;
             }
-            if event.dragging() {
+            if event.pressed_button == Some(MouseButton::Left) {
                 let (point, side) = viewport.grid_point(event.position);
                 let lines = viewport.edge_scroll(event.position);
                 view.update(cx, |view, cx| view.drag_selection(point, side, lines, cx));
@@ -2215,9 +2490,59 @@ impl ScreenLinks {
         }
     }
 
+    fn hovered(
+        &self,
+        cell: (usize, usize),
+        position: gpui_kit::Point<Pixels>,
+    ) -> Option<HoveredLink> {
+        let (index, uri) = self.at(cell)?;
+        let offset = cell.1 * self.columns + cell.0;
+        let mut start = offset;
+        let mut end = offset + 1;
+        while start > 0 && self.cells[start - 1] == Some(index) {
+            start -= 1;
+        }
+        while self.cells.get(end) == Some(&Some(index)) {
+            end += 1;
+        }
+        Some(HoveredLink {
+            cells: start..end,
+            uri: uri.clone(),
+            position,
+        })
+    }
+
+    /// One hitbox per contiguous row segment, including wide-character cells.
+    fn spans(&self) -> Vec<(usize, Range<usize>)> {
+        let mut spans = Vec::new();
+        for (row, cells) in self.cells.chunks(self.columns).enumerate() {
+            let mut column = 0;
+            while column < cells.len() {
+                let start = column;
+                let link = cells[column];
+                column += 1;
+                while column < cells.len() && cells[column] == link {
+                    column += 1;
+                }
+                if link.is_some_and(|index| index < self.links.len()) {
+                    spans.push((row, start..column));
+                }
+            }
+        }
+        spans
+    }
+
     fn at(&self, (column, row): (usize, usize)) -> Option<(usize, &SharedString)> {
         let link = (*self.cells.get(row * self.columns + column)?)?;
         Some((link, self.links.get(link)?))
+    }
+}
+
+fn same_link(left: &Option<HoveredLink>, right: &Option<HoveredLink>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left.cells == right.cells && left.uri == right.uri,
+        (None, None) => true,
+        _ => false,
     }
 }
 
@@ -2474,6 +2799,112 @@ mod tests {
 
     fn key(source: &str) -> Keystroke {
         Keystroke::parse(source).unwrap()
+    }
+
+    #[test]
+    fn pointer_follows_mouse_reporting_not_the_alternate_screen() {
+        use super::PointerIntent::{self, Program, Select};
+        use gpui_kit::Modifiers;
+        for mode in [TermMode::empty(), TermMode::ALT_SCREEN] {
+            assert_eq!(
+                PointerIntent::resolve(true, mode, Modifiers::none(), false, false, false),
+                Select
+            );
+        }
+        for mode in [
+            TermMode::MOUSE_REPORT_CLICK,
+            TermMode::MOUSE_DRAG,
+            TermMode::MOUSE_MOTION,
+        ] {
+            assert_eq!(
+                PointerIntent::resolve(true, mode, Modifiers::none(), false, false, false),
+                Program
+            );
+            let shift = Modifiers {
+                shift: true,
+                ..Modifiers::none()
+            };
+            assert_eq!(
+                PointerIntent::resolve(true, mode, shift, false, false, false),
+                Select
+            );
+            assert_eq!(
+                PointerIntent::resolve(false, mode, Modifiers::none(), false, false, false),
+                Select
+            );
+        }
+    }
+
+    #[test]
+    fn pointer_drag_owner_precedes_link_and_modifier_changes() {
+        use super::PointerIntent::{self, OpenLink, Program, Select};
+        use gpui_kit::Modifiers;
+        for mode in [TermMode::empty(), TermMode::MOUSE_MOTION] {
+            for shift in [false, true] {
+                let modifiers = Modifiers {
+                    shift,
+                    ..Modifiers::secondary_key()
+                };
+                assert_eq!(
+                    PointerIntent::resolve(true, mode, modifiers, false, false, true),
+                    OpenLink
+                );
+                assert_eq!(
+                    PointerIntent::resolve(true, mode, modifiers, true, false, true),
+                    Select
+                );
+                assert_eq!(
+                    PointerIntent::resolve(true, mode, modifiers, false, true, true),
+                    Program
+                );
+                assert_eq!(
+                    PointerIntent::resolve(false, mode, modifiers, false, false, true),
+                    OpenLink
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pointer_link_spans_split_at_rows_gaps_and_link_boundaries() {
+        let links = super::ScreenLinks {
+            columns: 4,
+            cells: vec![
+                None,
+                Some(0),
+                Some(0),
+                Some(0),
+                Some(0),
+                None,
+                Some(1),
+                Some(1),
+            ],
+            links: vec!["https://example.com".into(), "https://example.com".into()],
+        };
+        assert_eq!(links.spans(), vec![(0, 1..4), (1, 0..1), (1, 2..4)]);
+        let first = links.hovered((1, 0), point(px(1.), px(1.)));
+        let continued = links.hovered((0, 1), point(px(1.), px(2.)));
+        let separate = links.hovered((2, 1), point(px(2.), px(2.)));
+        assert!(super::same_link(&first, &continued));
+        assert!(!super::same_link(&first, &separate));
+        let reindexed = super::ScreenLinks {
+            columns: 4,
+            cells: vec![
+                None,
+                Some(1),
+                Some(1),
+                Some(1),
+                Some(1),
+                None,
+                Some(0),
+                Some(0),
+            ],
+            links: links.links,
+        };
+        assert!(super::same_link(
+            &first,
+            &reindexed.hovered((1, 0), point(px(1.), px(1.)))
+        ));
     }
 
     #[test]

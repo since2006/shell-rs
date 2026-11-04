@@ -194,3 +194,42 @@ async fn files_dropped_on_a_remote_terminal_go_up_without_asking(cx: &mut TestAp
     assert!(!cx.did_prompt_for_paths());
     assert_eq!(counted(&signals), [Counter::ZmodemUpload]);
 }
+
+#[gpui_kit::test]
+async fn compose_refuses_zmodem_without_clearing_the_draft_and_ctrl_c_cancels(
+    cx: &mut TestAppContext,
+) {
+    use shellrs::app::{SendCompose, SendComposeInterrupt, ToggleComposePane};
+    let (handle, workspace, factory, _) = open(cx);
+    start_rz(cx, handle, &workspace).await;
+    in_frame(cx, handle, |w, cx| {
+        w.dispatch_action(Box::new(ToggleComposePane), cx)
+    });
+    in_frame(cx, handle, |w, cx| {
+        w.click("compose-pane", cx);
+        w.input("after-transfer", cx);
+        w.dispatch_action(Box::new(SendCompose), cx);
+    });
+    in_frame(cx, handle, |w, _| {
+        assert_eq!(w.find("compose-result").label(), Some("已提交 0，未发送 1"))
+    });
+    assert_eq!(factory.written_text(), "rz\r");
+    in_frame(cx, handle, |w, cx| {
+        w.dispatch_action(Box::new(SendComposeInterrupt), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        !factory.data().is_empty()
+    })
+    .await;
+    // The queued file dialog is dismissed with cancellation; the control character
+    // already ended the transfer, and the original draft remains available.
+    cx.simulate_path_prompt_response(|_| None);
+    in_frame(cx, handle, |w, cx| {
+        w.click("compose-pane", cx);
+        w.dispatch_action(Box::new(SendCompose), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        factory.written_text().ends_with("after-transfer\r")
+    })
+    .await;
+}

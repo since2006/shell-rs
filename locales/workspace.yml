@@ -1,66 +1,104 @@
 _version: 2
 
-workspace.broadcast.title:
-  zh-CN: 命令广播
-  en: Broadcast input
-workspace.broadcast.active:
-  zh-CN: "广播中 · %{count} 个终端"
-  en: "Broadcasting · %{count} terminals"
-workspace.broadcast.choose:
-  zh-CN: 命令广播 · 勾选至少两个终端
-  en: Broadcast input · Check at least two terminals
-workspace.broadcast.target:
-  zh-CN: "将“%{name}”加入命令广播"
-  en: "Include “%{name}” in input broadcast"
-workspace.broadcast.unavailable:
-  zh-CN: 终端连接后可加入命令广播
-  en: Connect this terminal to include it in input broadcast
-workspace.broadcast.end:
-  zh-CN: 结束命令广播
-  en: Stop broadcasting
-# 撰写窗格 below the terminals, the broadcast's command bar while it is on.
 workspace.compose.title:
-  zh-CN: 撰写窗格
-  en: Compose
-workspace.compose.broadcast_target:
-  zh-CN: "勾选的 %{count} 个终端"
-  en: "%{count} checked terminals"
-workspace.compose.placeholder:
-  zh-CN: 输入命令，回车执行，Shift+Enter 换行
-  en: Type commands. Enter runs them, Shift+Enter starts a new line
-workspace.compose.snippets:
-  zh-CN: 片段
-  en: Snippets
-workspace.compose.snippets_tooltip:
-  zh-CN: 发送一条命令片段
-  en: Send a snippet
-workspace.compose.no_snippets:
-  zh-CN: 还没有命令片段
-  en: No snippets yet
+  zh-CN: "撰写窗格"
+  en: "Compose pane"
+workspace.compose.scope_current:
+  zh-CN: "当前终端"
+  en: "Current terminal"
+workspace.compose.scope_window:
+  zh-CN: "本窗口全部终端"
+  en: "All terminals in this window"
+workspace.compose.scope_selected:
+  zh-CN: "手动选择"
+  en: "Manual selection"
+workspace.compose.scope_label:
+  zh-CN: "发送范围：%{scope}"
+  en: "Send scope: %{scope}"
+workspace.compose.empty:
+  zh-CN: "没有可发送的终端"
+  en: "No terminals available for input"
+workspace.compose.choose:
+  zh-CN: "请选择终端"
+  en: "Select terminals"
+workspace.compose.multiple:
+  zh-CN: "%{count} 个终端"
+  en: "%{count} terminals"
+workspace.compose.multiple_local:
+  zh-CN: "%{count} 个终端 · 本地 %{local}"
+  en: "%{count} terminals · %{local} local"
+workspace.compose.single_local:
+  zh-CN: "%{name} · 本地"
+  en: "%{name} · local"
+workspace.compose.keys_active:
+  zh-CN: "按键同步中 · %{count} 个终端"
+  en: "Syncing keys · %{count} terminals"
+workspace.compose.keys_changed:
+  zh-CN: "目标已变化，按键同步已关闭"
+  en: "Targets changed. Key sync is off"
 workspace.compose.keys:
-  zh-CN: 同步按键
-  en: Sync keys
+  zh-CN: "同步按键"
+  en: "Sync keys"
 workspace.compose.keys_tooltip:
-  zh-CN: 在任一勾选的终端里打字时，同时发给其他勾选的终端
-  en: Typing in one checked terminal goes to the others too
+  zh-CN: "在目标终端内输入的内容会同步到其他目标，包括密码。无法可靠识别所有密码提示。"
+  en: "Input in a target terminal is shared with the other targets, including passwords. Password prompts cannot always be detected."
+workspace.compose.placeholder:
+  zh-CN: "输入命令…"
+  en: "Type a command…"
+workspace.compose.snippets:
+  zh-CN: "片段"
+  en: "Snippets"
+workspace.compose.snippets_tooltip:
+  zh-CN: "按当前范围发送命令片段"
+  en: "Send a snippet to the current scope"
+workspace.compose.no_snippets:
+  zh-CN: "还没有命令片段"
+  en: "No snippets yet"
 workspace.compose.send:
-  zh-CN: 发送
-  en: Send
-workspace.compose.send_all:
-  zh-CN: 发送到全部
-  en: Send to all
+  zh-CN: "发送"
+  en: "Send"
 workspace.compose.send_tooltip:
-  zh-CN: 执行撰写的命令（回车）
-  en: Run the commands (Enter)
+  zh-CN: "Enter 发送，Shift+Enter 换行"
+  en: "Enter sends; Shift+Enter starts a new line"
 workspace.compose.interrupt:
-  zh-CN: 发送 Ctrl+C
-  en: Send Ctrl+C
+  zh-CN: "Ctrl+C"
+  en: "Ctrl+C"
+workspace.compose.interrupt_tooltip:
+  zh-CN: "向 %{count} 个终端发送 Ctrl+C 控制字符，不保证命令停止"
+  en: "Send the Ctrl+C control character to %{count} terminals; commands may continue running"
 workspace.compose.close:
-  zh-CN: 关闭撰写窗格
-  en: Close compose pane
+  zh-CN: "隐藏撰写窗格"
+  en: "Hide compose pane"
 workspace.compose.refused:
-  zh-CN: "没有发送到 %{names}：%{error}"
-  en: "Not sent to %{names}: %{error}"
+  zh-CN: "%{names}：未发送，%{error}"
+  en: "%{names}: not sent, %{error}"
+workspace.compose.submitted_target:
+  zh-CN: "%{name}：已提交"
+  en: "%{name}: submitted"
+workspace.compose.result:
+  zh-CN: "已提交 %{submitted}，未发送 %{refused}"
+  en: "Submitted %{submitted} · Unsent %{refused}"
+workspace.compose.details:
+  zh-CN: "明细"
+  en: "Details"
+workspace.compose.result_command:
+  zh-CN: "本次提交内容：%{command}"
+  en: "Content submitted: %{command}"
+workspace.compose.retry:
+  zh-CN: "重试未发送"
+  en: "Retry unsent"
+workspace.compose.edit_new:
+  zh-CN: "编辑为新命令"
+  en: "Edit as new"
+workspace.compose.connection_changed:
+  zh-CN: "终端已关闭或连接已变化，请编辑为新命令"
+  en: "Terminal closed or connection changed. Edit as a new command"
+workspace.compose.target:
+  zh-CN: "选择“%{name}”接收命令"
+  en: "Select “%{name}” to receive commands"
+workspace.compose.unavailable:
+  zh-CN: "终端连接后可选择"
+  en: "Connect this terminal to select it"
 
 # The title bar.
 workspace.title_bar.hosts:

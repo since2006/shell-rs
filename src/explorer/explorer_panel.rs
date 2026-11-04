@@ -1037,6 +1037,7 @@ impl Panel for ExplorerPanel {
             .small();
         ClosableTabTitle::new(("explorer-tab", id.0), mark, self.tab_title(cx))
             .connection_state(state)
+            .dispatch_on(Some(self.dispatch.clone()))
             .closable(("close-explorer", id.0), Box::new(CloseExplorer(id)))
             .context_menu(move |popup, _, cx| menu.build(popup, cx))
     }
@@ -1059,13 +1060,18 @@ impl Panel for ExplorerPanel {
     /// A terminal tab's buttons that apply here too.
     fn toolbar_buttons(&mut self, _: &mut Window, _: &mut Context<Self>) -> Option<Vec<Button>> {
         let (id, host_id) = (self.id, self.host_id);
+        let dispatch = self.dispatch.clone();
         Some(vec![
             Button::new(("open-sftp", id.0))
                 .icon(Icon::new(CatalogIcon::FolderTree))
-                .label("SFTP")
+                .accessibility_label(t!("explorer.tab.open_sftp_tip"))
                 .tooltip(t!("explorer.tab.open_sftp_tip"))
                 .on_click(move |_, window, cx| {
-                    window.dispatch_action(Box::new(OpenExplorer(host_id)), cx)
+                    dispatch.dispatch_action(
+                        &OpenExplorer::new(host_id).with_origin(CenterTab::Explorer(id)),
+                        window,
+                        cx,
+                    )
                 }),
             Button::new(("reconnect-sftp", id.0))
                 .icon(Icon::new(CatalogIcon::RefreshCw))
@@ -1206,7 +1212,7 @@ impl TabMenu {
                 menu.menu_with_icon(
                     t!("explorer.tab.open_sftp"),
                     Icon::new(CatalogIcon::FolderTree),
-                    Box::new(OpenExplorer(host_id)),
+                    Box::new(OpenExplorer::new(host_id).with_origin(CenterTab::Explorer(id))),
                 )
                 .menu_with_icon(
                     copy_host,
