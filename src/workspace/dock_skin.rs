@@ -5,8 +5,8 @@ use std::{
 };
 
 use gpui_kit::component::dock::{
-    BasePanelView, DockArea, DockAreaRenderer, DockContext, DockSkin, DropIndicator, NodeId,
-    PanelState, PanelStyle, TabGroupContext, TabGroupRenderer, TilesRenderer,
+    BasePanelView, DockArea, DockAreaRenderer, DockContext, DockSkin, DragPanel, DropIndicator,
+    NodeId, PanelState, PanelStyle, TabGroupContext, TabGroupRenderer, TilesRenderer,
 };
 use gpui_kit::component::v_flex;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -32,6 +32,7 @@ pub(super) struct WorkspaceDockSkin {
     area: WeakEntity<DockArea>,
     placeholder: AnyView,
     center_empty: Cell<bool>,
+    layout_repair: Rc<super::dock_layout::DockLayoutRepair>,
 }
 
 impl WorkspaceDockSkin {
@@ -54,6 +55,7 @@ impl WorkspaceDockSkin {
                 area: cx.weak_entity(),
                 placeholder,
                 center_empty: Cell::new(false),
+                layout_repair: Rc::default(),
             });
             skin = Some(this.clone());
             DockArea::new(id, version, window, cx).with_renderer(this)
@@ -67,6 +69,18 @@ impl WorkspaceDockSkin {
 
     pub(super) fn is_center_empty(&self) -> bool {
         self.center_empty.get()
+    }
+
+    pub(super) fn repair_layout(&self, window: &mut Window, cx: &mut App) {
+        self.layout_repair.repair(&self.area, window, cx);
+    }
+
+    pub(super) fn cancel_layout_recovery(&self) {
+        self.layout_repair.cancel();
+    }
+
+    pub(super) fn interaction_generation(&self) -> u64 {
+        self.layout_repair.interaction_generation()
     }
 
     pub(super) fn set_center_groups(&self, groups: Vec<NodeId>, cx: &mut App) {
@@ -87,7 +101,23 @@ impl WorkspaceDockSkin {
 
 impl DockAreaRenderer for WorkspaceDockSkin {
     fn frame(&self, window: &mut Window, cx: &mut App) -> Stateful<Div> {
-        self.skin.frame(window, cx)
+        let released = self.layout_repair.clone();
+        let outside = self.layout_repair.clone();
+        self.skin
+            .frame(window, cx)
+            .on_mouse_up_out(MouseButton::Left, move |_, _, _| outside.cancel())
+            .capture_any_mouse_up(move |_, window, cx| {
+                // Native drop subscriptions and LayoutChanged settle before
+                // this task. Canceled/outside drops leave nothing pending.
+                let repair = released.clone();
+                window
+                    .spawn(cx, async move |cx| {
+                        let _ = cx.update(|_, _| {
+                            repair.pending_cancel();
+                        });
+                    })
+                    .detach();
+            })
     }
 
     fn split_frame(
@@ -97,13 +127,33 @@ impl DockAreaRenderer for WorkspaceDockSkin {
         window: &mut Window,
         cx: &mut App,
     ) -> Stateful<Div> {
-        self.skin.split_frame(node, axis, window, cx)
+        let repair = self.layout_repair.clone();
+        self.skin
+            .split_frame(node, axis, window, cx)
+            .relative()
+            .child(
+                canvas(
+                    move |bounds, window, _| repair.record(node, bounds, window),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
     }
 
     fn center_frame(&self, window: &mut Window, cx: &mut App) -> Stateful<Div> {
+        let repair = self.layout_repair.clone();
         self.skin
             .center_frame(window, cx)
             .relative()
+            .child(
+                canvas(
+                    move |_, window, _| repair.begin_frame(window),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
             .when(self.center_empty.get(), |frame| {
                 // Deferred, so it paints after the empty layout's own
                 // background, which the dock draws later in the same frame.
@@ -137,6 +187,8 @@ impl DockAreaRenderer for WorkspaceDockSkin {
             skin: self.skin.tab_group_renderer(),
             center_skin: self.center_skin.tab_group_renderer(),
             center_groups: self.center_groups.clone(),
+            area: self.area.clone(),
+            layout_repair: self.layout_repair.clone(),
         })
     }
 
@@ -180,11 +232,22 @@ struct WorkspaceTabBar {
     skin: Rc<dyn TabGroupRenderer>,
     center_skin: Rc<dyn TabGroupRenderer>,
     center_groups: Rc<RefCell<Vec<NodeId>>>,
+    area: WeakEntity<DockArea>,
+    layout_repair: Rc<super::dock_layout::DockLayoutRepair>,
 }
 
 impl TabGroupRenderer for WorkspaceTabBar {
     fn frame(&self, group: &TabGroupContext, window: &mut Window, cx: &mut App) -> Stateful<Div> {
-        self.skin.frame(group, window, cx)
+        let repair = self.layout_repair.clone();
+        let node = group.node();
+        self.skin.frame(group, window, cx).relative().child(
+            canvas(
+                move |bounds, window, _| repair.record(node, bounds, window),
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0(),
+        )
     }
     fn content_frame(
         &self,
@@ -192,7 +255,18 @@ impl TabGroupRenderer for WorkspaceTabBar {
         window: &mut Window,
         cx: &mut App,
     ) -> Stateful<Div> {
-        self.skin.content_frame(group, window, cx)
+        let repair = self.layout_repair.clone();
+        let area = self.area.clone();
+        let target = group.node();
+        self.skin.content_frame(group, window, cx).on_drag_move(
+            move |event: &DragMoveEvent<DragPanel>, window, cx| {
+                if event.bounds.contains(&event.event.position)
+                    && let Some(area) = area.upgrade()
+                {
+                    repair.capture(event.drag(cx), target, area.read(cx), window);
+                }
+            },
+        )
     }
     fn render_tab_bar(
         &self,

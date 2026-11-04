@@ -54,6 +54,7 @@ pub struct LocalTerminalPanel {
     name: Option<SavedName>,
     terminal: Entity<TerminalView>,
     tab_group: Option<WeakEntity<TabGroup>>,
+    action_target: Option<FocusHandle>,
     compose_selection: Option<super::ComposeSelection>,
     _subscriptions: Vec<Subscription>,
 }
@@ -109,6 +110,7 @@ impl LocalTerminalPanel {
             name,
             terminal,
             tab_group: None,
+            action_target: None,
             compose_selection: None,
             _subscriptions: subscriptions,
         }
@@ -120,6 +122,11 @@ impl LocalTerminalPanel {
         self.name
             .as_ref()
             .map_or_else(|| default_title(self.id), |name| name.name.clone())
+    }
+
+    /// The window owner handles tab commands independently of keyboard focus.
+    pub(crate) fn set_action_target(&mut self, target: FocusHandle) {
+        self.action_target = Some(target);
     }
 
     pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
@@ -250,6 +257,7 @@ impl Panel for LocalTerminalPanel {
             mark,
             self.display_title(cx),
         )
+        .dispatch_on(self.action_target.clone())
         .closable(
             ("close-local-terminal", self.id.0),
             Box::new(CloseLocalTerminal(self.id)),

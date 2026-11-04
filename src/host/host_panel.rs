@@ -827,7 +827,7 @@ pub fn host_menu(menu: PopupMenu, host: &Host) -> PopupMenu {
         menu.menu_with_icon(
             t!("host.menu.open_sftp"),
             Icon::new(CatalogIcon::FolderTree),
-            Box::new(OpenExplorer(id)),
+            Box::new(OpenExplorer::new(id)),
         )
     })
     .separator()

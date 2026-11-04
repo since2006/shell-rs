@@ -813,7 +813,7 @@ fn batch_close_commands_take_the_tabs_around_the_clicked_one(cx: &mut TestAppCon
     };
 
     // [web-01, staging-api, web-01 · SFTP, local]
-    dispatch(cx, Box::new(OpenExplorer(HostId(WEB_01))));
+    dispatch(cx, Box::new(OpenExplorer::new(HostId(WEB_01))));
     dispatch(cx, Box::new(NewLocalTerminal));
     cx.update(|cx| {
         let workspace = workspace.read(cx);

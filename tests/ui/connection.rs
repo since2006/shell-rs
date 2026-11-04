@@ -316,7 +316,7 @@ async fn opening_sftp_updates_connection_state_without_terminal(cx: &mut TestApp
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(OpenExplorer(id)), cx);
+        window.dispatch_action(Box::new(OpenExplorer::new(id)), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
@@ -788,7 +788,7 @@ async fn a_link_opens_a_terminal_to_a_host_that_goes_with_its_last_tab(cx: &mut 
 
     // Its SFTP tab works, bookmarks and all, without writing to disk.
     cx.update_window(handle.into(), |_, window, cx| {
-        window.dispatch_action(Box::new(OpenExplorer(LINK_HOST)), cx);
+        window.dispatch_action(Box::new(OpenExplorer::new(LINK_HOST)), cx);
     })
     .unwrap();
     cx.run_until_parked();

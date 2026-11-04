@@ -216,6 +216,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.active_tab = tab;
+        if let Some(tab) = tab {
+            self.active_tab_history.retain(|entry| *entry != tab);
+            self.active_tab_history.push(tab);
+        }
         if let Some(target) = tab.and_then(ToolTarget::of) {
             self.tool_target_choice = Some(target);
         }

@@ -1108,7 +1108,7 @@ async fn the_status_bar_shows_the_size_of_the_terminal_in_front(cx: &mut TestApp
 
     // An SFTP tab has no terminal, so no size either.
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(OpenExplorer(HostId(WEB_01))), cx);
+        window.dispatch_action(Box::new(OpenExplorer::new(HostId(WEB_01))), cx);
     });
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
         window

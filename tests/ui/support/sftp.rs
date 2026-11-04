@@ -548,7 +548,7 @@ pub fn open_workspace_with_services(
 pub async fn open_test_explorer(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx);
+        window.dispatch_action(Box::new(OpenExplorer::new(HostId(DB_01))), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {

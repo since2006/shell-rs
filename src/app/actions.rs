@@ -257,11 +257,37 @@ macro_rules! id_actions {
     };
 }
 
+/// Open an independent SFTP tab beside the originating center tab. Global
+/// entries omit the origin and follow the workspace's active group.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct OpenExplorer {
+    host: HostId,
+    origin: Option<CenterTab>,
+}
+
+impl OpenExplorer {
+    pub fn new(host: HostId) -> Self {
+        Self { host, origin: None }
+    }
+
+    pub fn with_origin(mut self, origin: CenterTab) -> Self {
+        self.origin = Some(origin);
+        self
+    }
+
+    pub fn host(&self) -> HostId {
+        self.host
+    }
+
+    pub fn origin(&self) -> Option<CenterTab> {
+        self.origin
+    }
+}
+
 id_actions! {
     /// Open a new terminal connection for a host.
     ConnectHost(HostId);
-    /// Open a new SFTP tab for a host, like a new terminal connection.
-    OpenExplorer(HostId);
     /// Open the edit-host dialog for a host.
     EditHost(HostId);
     /// Duplicate a host in the same group.

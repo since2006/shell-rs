@@ -64,6 +64,7 @@ pub struct TerminalPanel {
     /// Opened from a link (外部连接): nothing beside the terminal.
     external: bool,
     tab_group: Option<WeakEntity<TabGroup>>,
+    action_target: Option<FocusHandle>,
     compose_selection: Option<super::ComposeSelection>,
     /// A title the user gave this tab, to tell apart several connections to
     /// the same host. Lives as long as the tab, like the rest of the layout.
@@ -244,6 +245,7 @@ impl TerminalPanel {
             connection,
             external,
             tab_group: None,
+            action_target: None,
             compose_selection: None,
             custom_title: title,
             initial_directory: directory,
@@ -272,6 +274,11 @@ impl TerminalPanel {
     /// Telnet host's or a serial host's.
     pub fn shell_only(&self) -> bool {
         self.external || !self.host.is_ssh()
+    }
+
+    /// The window owner handles tab commands independently of keyboard focus.
+    pub(crate) fn set_action_target(&mut self, target: FocusHandle) {
+        self.action_target = Some(target);
     }
 
     pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
@@ -446,6 +453,7 @@ impl Panel for TerminalPanel {
         );
         ClosableTabTitle::new(("terminal-tab", id.0), mark, self.tab_title(cx))
             .connection_state(state)
+            .dispatch_on(self.action_target.clone())
             .closable(("close-terminal", id.0), Box::new(CloseTerminal(id)))
             .context_menu(move |menu, _, cx| tab_menu.build(menu, cx))
     }
@@ -465,6 +473,7 @@ impl Panel for TerminalPanel {
         let host_id = self.host_id;
         let terminal_id = self.id;
         let reconnect_dispatch = self.focus_handle(cx);
+        let sftp_dispatch = reconnect_dispatch.clone();
         // SFTP is a new connection to the host as it is now: none once it
         // is gone or no longer an SSH host.
         let offers_sftp = self
@@ -478,7 +487,11 @@ impl Panel for TerminalPanel {
                 .accessibility_label(t!("terminal.remote.open_sftp"))
                 .tooltip(t!("terminal.remote.sftp_tooltip"))
                 .on_click(move |_, window, cx| {
-                    window.dispatch_action(Box::new(OpenExplorer(host_id)), cx)
+                    sftp_dispatch.dispatch_action(
+                        &OpenExplorer::new(host_id).with_origin(CenterTab::Terminal(terminal_id)),
+                        window,
+                        cx,
+                    )
                 })
         });
         let reconnect = Button::new(("reconnect", terminal_id.0))
@@ -546,7 +559,7 @@ fn remote_menu_items(
             menu.menu_with_icon(
                 t!("terminal.remote.open_sftp"),
                 Icon::new(CatalogIcon::FolderTree),
-                Box::new(OpenExplorer(host_id)),
+                Box::new(OpenExplorer::new(host_id).with_origin(CenterTab::Terminal(id))),
             )
         })
         .menu_with_icon(
@@ -644,7 +657,7 @@ impl TabMenu {
                 menu.menu_with_icon(
                     t!("terminal.remote.open_sftp"),
                     Icon::new(CatalogIcon::FolderTree),
-                    Box::new(OpenExplorer(host_id)),
+                    Box::new(OpenExplorer::new(host_id).with_origin(CenterTab::Terminal(id))),
                 )
             })
             .when(protocol.has_address() && exists, |menu| {
