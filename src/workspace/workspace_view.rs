@@ -226,6 +226,9 @@ pub struct Workspace {
     pub(super) active_tab: Option<CenterTab>,
     /// Recent center tabs, newest last; pruned when a panel leaves the dock.
     pub(super) active_tab_history: Vec<CenterTab>,
+    /// Visible terminal views, retained until a dock change cancels those
+    /// that disappeared. Hidden tabs must not retain a pointer gesture.
+    visible_pointer_terminals: Vec<Entity<TerminalView>>,
     /// A later removal supersedes an earlier pending focus handoff.
     pub(super) close_focus_generation: u64,
     /// Focus removed earlier in the same batch, awaiting one final handoff.
@@ -533,9 +536,19 @@ impl Workspace {
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
                     this.sync.update(cx, |sync, cx| sync.window_activated(cx));
+                    this.refresh_terminal_pointers(window, cx);
                 } else {
                     this.skin.cancel_layout_recovery();
+                    this.cancel_terminal_pointers(window, cx);
                 }
+            }),
+            // Modifier events have no Workspace dispatch path while focus is
+            // absent. Clear stale hover without assigning keyboard focus.
+            cx.on_focus_lost(window, |this, window, cx| {
+                this.cancel_terminal_pointers(window, cx);
+            }),
+            cx.on_focus_in(&focus_handle, window, |this, window, cx| {
+                this.refresh_terminal_pointers(window, cx);
             }),
             cx.subscribe_in(
                 &settings,
@@ -559,6 +572,11 @@ impl Workspace {
                     }
                 },
             ),
+            // Zoom changes notify the dock without emitting LayoutChanged.
+            // Compare visible views so resizing never cancels a live drag.
+            cx.observe_in(&dock_area, window, |this, _, window, cx| {
+                this.sync_terminal_pointer_visibility(window, cx);
+            }),
             cx.observe_global_in::<crate::i18n::UiLocale>(window, |this, window, cx| {
                 this.sync_compose(window, cx);
             }),
@@ -697,10 +715,13 @@ impl Workspace {
             subscriptions.push(cx.observe_in(&lock, window, |this, _, window, cx| {
                 this.sync_cli_server(cx);
                 this.sync_compose(window, cx);
-                if !crate::app_lock::is_locked(cx) {
+                if crate::app_lock::is_locked(cx) {
+                    this.cancel_terminal_pointers(window, cx);
+                } else {
                     for link in std::mem::take(&mut this.locked_links) {
                         this.open_link(link, window, cx);
                     }
+                    this.refresh_terminal_pointers(window, cx);
                 }
             }));
         }
@@ -708,7 +729,7 @@ impl Workspace {
         // arrives as events, once the workspace is there to show it.
         forwards.update(cx, |forwards, cx| forwards.start_automatic(cx));
 
-        let this = Self {
+        let mut this = Self {
             store,
             dock_area,
             skin,
@@ -742,6 +763,7 @@ impl Workspace {
             next_explorer_id: 1,
             active_tab: None,
             active_tab_history: Vec::new(),
+            visible_pointer_terminals: Vec::new(),
             close_focus_generation: 0,
             pending_close_focus: None,
             compose_routing: Default::default(),
@@ -760,6 +782,7 @@ impl Workspace {
             ssh_dir: None,
             _subscriptions: subscriptions,
         };
+        this.visible_pointer_terminals = this.pointer_terminals(cx);
         if launch_settings.sidebar_collapsed {
             // The hidden host panel cannot provide a keyboard dispatch path.
             let focus = this
@@ -980,6 +1003,57 @@ impl Workspace {
                 .editors
                 .get(&id)
                 .map(|panel| panel.read(cx).focus_handle(cx)),
+        }
+    }
+
+    fn pointer_terminals(&self, cx: &App) -> Vec<Entity<TerminalView>> {
+        if crate::app_lock::is_locked(cx) {
+            return Vec::new();
+        }
+        self.visible_center_tabs(cx)
+            .into_iter()
+            .filter_map(|tab| match tab {
+                CenterTab::Terminal(id) => self
+                    .terminals
+                    .get(&id)
+                    .map(|panel| panel.read(cx).terminal().clone()),
+                CenterTab::LocalTerminal(id) => self
+                    .local_terminals
+                    .get(&id)
+                    .map(|panel| panel.read(cx).terminal().clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn sync_terminal_pointer_visibility(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let visible = self.pointer_terminals(cx);
+        for terminal in &self.visible_pointer_terminals {
+            if !visible.contains(terminal) {
+                terminal.update(cx, |terminal, cx| terminal.cancel_pointer(window, cx));
+            }
+        }
+        for terminal in &visible {
+            if !self.visible_pointer_terminals.contains(terminal) && window.is_window_active() {
+                terminal.update(cx, |terminal, cx| terminal.refresh_pointer(window, cx));
+            }
+        }
+        self.visible_pointer_terminals = visible;
+    }
+
+    /// Modifiers follow keyboard focus; the pointer can be over a different
+    /// split or stay over the terminal while a search field has focus.
+    fn refresh_terminal_pointers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_terminal_pointer_visibility(window, cx);
+        for terminal in &self.visible_pointer_terminals {
+            terminal.update(cx, |terminal, cx| terminal.refresh_pointer(window, cx));
+        }
+    }
+
+    fn cancel_terminal_pointers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_terminal_pointer_visibility(window, cx);
+        for terminal in &self.visible_pointer_terminals {
+            terminal.update(cx, |terminal, cx| terminal.cancel_pointer(window, cx));
         }
     }
 
@@ -3035,6 +3109,9 @@ impl Render for Workspace {
             .capture_key_down(move |_, _, _| keyboard_recovery.cancel_layout_recovery())
             .key_context("Workspace")
             .track_focus(&self.focus_handle)
+            .on_modifiers_changed(cx.listener(|this, _, window, cx| {
+                this.refresh_terminal_pointers(window, cx);
+            }))
             .on_action(cx.listener(Self::on_new_host))
             .on_action(cx.listener(Self::on_new_temporary_connection))
             .on_action(cx.listener(Self::on_quick_connect))
