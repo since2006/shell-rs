@@ -229,6 +229,50 @@ async fn ctrl_with_a_letter_is_the_shells_in_a_terminal(cx: &mut TestAppContext)
     }));
 }
 
+/// 关闭标签 works with its default key while the terminal has focus: the
+/// terminal leaves Ctrl+W (⌘W on macOS) to the app instead of the shell.
+#[gpui_kit::test]
+async fn the_close_tab_shortcut_closes_the_terminal_and_not_the_shell(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_workspace_with_factory(cx, factory.clone());
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("new-local-terminal", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window
+            .try_find("status-connection")
+            .is_some_and(|element| element.label() == Some("运行中 本地终端"))
+    })
+    .await;
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("local-terminal", 1_u64)).focused(), Some(true));
+        let keys = Shortcut::find("close-tab")
+            .expect("the close-tab shortcut")
+            .default_keys();
+        window.press(keys, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("local-terminal", 1_u64)).is_none());
+    })
+    .unwrap();
+    assert!(cx.update(|cx| {
+        workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(1))
+            .is_none()
+    }));
+    assert!(!factory.written_text().contains('\u{17}'));
+}
+
 #[gpui_kit::test]
 async fn local_terminals_run_the_shell_the_settings_name(cx: &mut TestAppContext) {
     let local = fake_local_terminals();

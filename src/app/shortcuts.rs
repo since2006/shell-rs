@@ -797,12 +797,19 @@ fn key_bindings(overrides: &ShortcutOverrides) -> Vec<KeyBinding> {
 }
 
 /// Ctrl with a letter is the shell's in a terminal (tmux's Ctrl+B,
-/// readline's Ctrl+W and Ctrl+K), so a shortcut that works anywhere leaves
-/// it there. The terminal's own shortcuts, bound after, still win in it.
+/// readline's Ctrl+K), so a shortcut that works anywhere leaves it there.
+/// The terminal's own shortcuts, bound after, still win in it.
+///
+/// 关闭标签 is the exception: Ctrl+W closes the tab from inside a terminal
+/// too, as people press it there without thinking of the shell that would
+/// otherwise delete a word.
 fn shell_keys_in_terminal(anywhere: &[KeyBinding]) -> Vec<KeyBinding> {
     anywhere
         .iter()
         .filter_map(|binding| {
+            if binding.action().as_any().is::<CloseActiveTab>() {
+                return None;
+            }
             let [keystroke] = binding.keystrokes() else {
                 return None;
             };

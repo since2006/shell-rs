@@ -8,12 +8,9 @@ use gpui_kit::component::{
 };
 use shellrs::app::Shortcut;
 
-/// Bind the close-tab shortcut to a key the terminal does not claim.
-///
-/// Ctrl with a letter is the shell's in a terminal (see
-/// `shell_keys_in_terminal`), and the default key for closing a tab is
-/// Ctrl+W on every platform but macOS, so the shortcut would go to the
-/// shell there. Ctrl and Shift with a letter is the app's everywhere.
+/// Bind the close-tab shortcut to a key of its own, to show that a change
+/// takes effect in a terminal too. The default is Ctrl+W on every platform
+/// but macOS, which the terminal leaves to the app (`shell_keys_in_terminal`).
 fn bind_close_tab(workspace: &Entity<Workspace>, cx: &mut TestAppContext) {
     let shortcut = Shortcut::find("close-tab").expect("the close-tab shortcut");
     cx.update(|cx| {

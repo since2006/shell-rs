@@ -87,6 +87,7 @@ jobs:
       - run: "cargo test --locked --lib ssh::"
       - run: "cargo test --locked -p shellrs-ssh -- --skip sftp::"
       - run: "cargo test --locked --test ui connection::"
+      - run: "cargo test --locked --test ui terminal::the_close_tab_shortcut"
       - run: "cargo test --locked --test ui settings::closing_to_the_tray"
       - run: "cargo test --locked --test ui editor::quitting_with_unsaved_changes"
       - run: "cargo test --locked --lib settings::"
