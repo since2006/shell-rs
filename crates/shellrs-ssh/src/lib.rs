@@ -9,6 +9,7 @@
 //! only when a server asks for one, so each app keeps them in its own
 //! keychain.
 
+mod agent_forwarding;
 mod connection;
 mod error;
 mod exec;
@@ -25,14 +26,15 @@ pub mod sftp;
 #[cfg(feature = "testing")]
 pub mod testing;
 
+pub use agent_forwarding::AgentForwarding;
 pub use connection::{
-    AgentLocation, ForwardedTcpip, SshConnectionConfig, SshConnector, SshHandle, SshPrompts,
-    Tunnel, is_network_error, timeout_excluding_prompts,
+    AgentLocation, ForwardedTcpip, SshConnectionConfig, SshConnector, SshHandle, SshPrompts, Tunnel,
+    is_network_error, timeout_excluding_prompts,
 };
 pub use error::{
-    AgentProblem, AgentUnreachable, AuthError, ChannelError, ConnectError, ForwardProblem,
-    KnownHostsError, MissingCredential, PasswordWanted, ProxyError, RouteFailure, WrapErr, Wrapped,
-    find_cause, link_as, wrap, wrap_shared,
+    AgentForwardError, AgentProblem, AgentUnreachable, AuthError, ChannelError, ConnectError,
+    ForwardProblem, KnownHostsError, MissingCredential, PasswordWanted, ProxyError, RouteFailure,
+    WrapErr, Wrapped, find_cause, link_as, wrap, wrap_shared,
 };
 pub use exec::{ExecError, ExecErrorKind, ExecExit, ExecFailure, ExecStream, run_command};
 pub use latency::{LATENCY_INTERVAL, Latency, LatencyLevel, round_trip};
@@ -47,6 +49,9 @@ pub use prompt::{
 };
 pub use secret::{SecretRef, SecretSource, SharedSecretSource, read_secret};
 pub use session::{
-    ChannelStream, PtySize, SftpChannel, open_probe, open_sftp_channel, open_shell, resize_pty,
-    run_exec, write_shell,
+    ChannelStream, PtySize, SftpChannel, open_probe, open_sftp_channel, open_shell,
+    open_shell_with_agent, resize_pty, run_exec, write_shell,
 };
+
+#[cfg(all(test, unix))]
+mod agent_forwarding_tests;

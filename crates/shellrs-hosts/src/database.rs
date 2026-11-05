@@ -40,8 +40,8 @@ fn from_sql(id: i64) -> u64 {
 /// to 12 were development builds, and their files are refused. 14 adds the
 /// command snippets, 15 the serial hosts, 16 the Telnet hosts, 17 each
 /// host's right sidebar, 18 the saved local terminals, 19 their titles, 20
-/// what sync needs.
-const SCHEMA_VERSION: i64 = 20;
+/// what sync needs, 21 opt-in SSH agent forwarding.
+const SCHEMA_VERSION: i64 = 21;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -170,6 +170,8 @@ CREATE TABLE hosts (
         CHECK (protocol = 'telnet' OR telnet_pass_prompt IS NULL),
     sidebar_tool      TEXT,
     edited_ms         INTEGER NOT NULL DEFAULT 0,
+    agent_forwarding  INTEGER NOT NULL DEFAULT 0 CHECK (agent_forwarding IN (0, 1))
+        CHECK (protocol = 'ssh' OR agent_forwarding = 0),
     CHECK ((auth = 'credential') = (credential_id IS NOT NULL)),
     CHECK ((auth = 'credential') = (username IS NULL)),
     CHECK ((route = 'proxy') = (proxy_kind IS NOT NULL)),
@@ -290,7 +292,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 7] = [
+const STEPS: [(i64, Step); 8] = [
     (
     13,
     // The command snippets.
@@ -391,6 +393,16 @@ COMMIT;",
     ),
     // What sync needs.
     (19, Step::Code(add_sync)),
+    (
+        20,
+        Step::Sql(
+            "BEGIN;
+ALTER TABLE hosts ADD COLUMN agent_forwarding INTEGER NOT NULL DEFAULT 0
+    CHECK (agent_forwarding IN (0, 1)) CHECK (protocol = 'ssh' OR agent_forwarding = 0);
+PRAGMA user_version = 21;
+COMMIT;",
+        ),
+    ),
 ];
 
 /// Version 16, the Telnet hosts: `protocol` takes `telnet`, and the two
@@ -766,7 +778,7 @@ impl HostDatabase {
                  credential_id, route, proxy_kind, proxy_host, proxy_port, proxy_username, \
                  notes, os, protocol, serial_baud, serial_data_bits, serial_parity, \
                  serial_stop_bits, serial_flow, telnet_user_prompt, telnet_pass_prompt, \
-                 sidebar_tool, edited_ms \
+                 sidebar_tool, edited_ms, agent_forwarding \
                  FROM hosts ORDER BY id",
             )?
             .query_map([], |row| {
@@ -832,6 +844,7 @@ impl HostDatabase {
                 host.os = os.as_deref().and_then(HostOs::from_stored);
                 host.sidebar_tool = sidebar_tool.map(SharedString::from);
                 host.edited_ms = from_sql(row.get(26)?);
+                host.agent_forwarding = row.get(27)?;
                 match protocol.as_str() {
                     "serial" => host.protocol = Protocol::Serial(serial.settings()),
                     "telnet" => host.protocol = Protocol::Telnet(telnet),
@@ -1237,9 +1250,9 @@ impl HostDatabase {
              username, credential_id, route, proxy_kind, proxy_host, proxy_port, \
              proxy_username, notes, os, protocol, serial_baud, serial_data_bits, \
              serial_parity, serial_stop_bits, serial_flow, telnet_user_prompt, \
-             telnet_pass_prompt, sidebar_tool, edited_ms) \
+             telnet_pass_prompt, sidebar_tool, edited_ms, agent_forwarding) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
             params![
                 to_sql(host.id.0),
                 host.public_id.as_str(),
@@ -1268,6 +1281,7 @@ impl HostDatabase {
                 row.telnet_password_prompt,
                 host.sidebar_tool.as_deref(),
                 to_sql(host.edited_ms),
+                host.agent_forwarding,
             ],
         )?;
             write_jumps(connection, host)
@@ -1288,7 +1302,7 @@ impl HostDatabase {
              proxy_kind = ?11, proxy_host = ?12, proxy_port = ?13, proxy_username = ?14, \
              notes = ?15, serial_baud = ?16, serial_data_bits = ?17, serial_parity = ?18, \
              serial_stop_bits = ?19, serial_flow = ?20, telnet_user_prompt = ?21, \
-             telnet_pass_prompt = ?22, protocol = ?23, edited_ms = ?24 WHERE id = ?1",
+             telnet_pass_prompt = ?22, protocol = ?23, edited_ms = ?24, agent_forwarding = ?25 WHERE id = ?1",
                 params![
                     to_sql(host.id.0),
                     host.group.map(|group| to_sql(group.0)),
@@ -1314,6 +1328,7 @@ impl HostDatabase {
                     row.telnet_password_prompt,
                     host.protocol.as_str(),
                     to_sql(host.edited_ms),
+                    host.agent_forwarding,
                 ],
             )?;
             write_jumps(connection, host)
@@ -2046,6 +2061,37 @@ mod tests {
                 group.map(GroupId),
             ),
         )
+    }
+
+    #[test]
+    fn agent_forwarding_defaults_off_after_migration_and_round_trips() {
+        let db = HostDatabase::in_memory().unwrap();
+        db.insert_host(&host(1, "web", None)).unwrap();
+        // Recreate the last released schema, including an existing host.
+        db.connection
+            .execute_batch(
+                "ALTER TABLE hosts DROP COLUMN agent_forwarding; PRAGMA user_version = 20;",
+            )
+            .unwrap();
+        migrate(&db.connection).unwrap();
+        let mut saved = db.load().unwrap().hosts.remove(0);
+        assert!(!saved.agent_forwarding);
+        saved.agent_forwarding = true;
+        db.update_host(&saved).unwrap();
+        assert!(db.load().unwrap().hosts[0].agent_forwarding);
+        saved.agent_forwarding = false;
+        db.update_host(&saved).unwrap();
+        assert!(!db.load().unwrap().hosts[0].agent_forwarding);
+
+        let mut enabled = host(2, "trusted", None);
+        enabled.agent_forwarding = true;
+        db.insert_host(&enabled).unwrap();
+        assert!(db.load().unwrap().hosts[1].agent_forwarding);
+        assert!(
+            db.connection
+                .execute("UPDATE hosts SET protocol = 'telnet' WHERE id = 2", [])
+                .is_err()
+        );
     }
 
     #[test]

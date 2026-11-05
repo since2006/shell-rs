@@ -2,7 +2,7 @@ use super::describe::{describe_channel_error, describe_error, describe_login_err
 use super::{
     ChannelError, ConnectError, HostOsProbe, LATENCY_INTERVAL, ProbeOutcome, PtySize,
     SshConnectionConfig, SshConnector, SshHandle, SshPrompts, open_probe, open_sftp_channel,
-    open_shell, resize_pty, round_trip, run_exec, run_terminal_worker, write_shell,
+    open_shell_with_agent, resize_pty, round_trip, run_exec, run_terminal_worker, write_shell,
 };
 use crate::{
     connection::Latency,
@@ -88,14 +88,19 @@ impl SshTerminalTransport {
         events: Sender<TerminalTransportEvent>,
     ) -> Result<()> {
         // Said in the terminal: down to the cause, which says what to fix.
-        let (handle, fingerprint) = self
+        let (handle, fingerprint, mut forwarding) = self
             .connector
-            .connect(&self.config, broker.clone())
+            .connect_terminal(&self.config, broker.clone())
             .await
             .map_err(|error| anyhow!(describe_login_error(&error)))?;
         let mut shutdown = broker.shutdown_receiver();
         let mut channel = tokio::select! {
-            result = open_shell(&handle, "xterm-256color", pty_size(initial_size)) => {
+            result = open_shell_with_agent(
+                &handle,
+                "xterm-256color",
+                pty_size(initial_size),
+                forwarding.as_mut(),
+            ) => {
                 result.map_err(|error| anyhow!(describe_error(&error)))?
             }
             _ = shutdown.changed() => bail!(describe_error(&ConnectError::Cancelled.into())),

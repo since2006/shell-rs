@@ -71,6 +71,8 @@ pub struct HostData {
     pub sort_order: i64,
     pub protocol: Protocol,
     pub auth: Auth,
+    /// Explicit opt-in for this SSH host; absent in older snapshots.
+    pub agent_forwarding: bool,
     pub username: Option<String>,
     pub credential: Option<String>,
     pub route: Route,
@@ -324,6 +326,13 @@ fn parse_host(key: &RecordKey, r: &Reader) -> Result<HostData, String> {
         }
         other => return Err(format!("unknown protocol {other}")),
     };
+    let agent_forwarding = match r.0.get("agent_forwarding") {
+        None => false,
+        Some(_) => r.flag("agent_forwarding")?,
+    };
+    if agent_forwarding && !matches!(protocol, Protocol::Ssh) {
+        return Err("agent forwarding requires SSH".into());
+    }
     let auth = r.spelled("auth", Auth::parse)?;
     let username = r.optional_string("username")?;
     let credential = r.id("credential")?;
@@ -371,6 +380,7 @@ fn parse_host(key: &RecordKey, r: &Reader) -> Result<HostData, String> {
         sort_order: r.order()?,
         protocol,
         auth,
+        agent_forwarding,
         username,
         credential,
         route,
@@ -441,6 +451,7 @@ fn known_fields(kind: &Kind) -> &'static [&'static str] {
             "protocol",
             "telnet",
             "auth",
+            "agent_forwarding",
             "username",
             "credential",
             "route",
@@ -504,6 +515,9 @@ fn fields(data: &RecordData) -> Vec<(&'static str, Value)> {
                         json!({"user_prompt": telnet.user_prompt, "pass_prompt": telnet.pass_prompt}),
                     ));
                 }
+            }
+            if host.agent_forwarding && matches!(host.protocol, Protocol::Ssh) {
+                out.push(("agent_forwarding", json!(true)));
             }
             out.push(("auth", json!(host.auth.as_str())));
             out.push(("username", json!(host.username)));
@@ -686,6 +700,7 @@ pub(crate) mod tests {
             sort_order: 0,
             protocol: Protocol::Ssh,
             auth: Auth::Password,
+            agent_forwarding: false,
             username: Some("root".into()),
             credential: None,
             route: Route::Direct,
@@ -877,6 +892,32 @@ pub(crate) mod tests {
         for (_, data) in samples() {
             assert!(!format!("{data:?}").contains("test "), "{data:?}");
         }
+    }
+
+    #[test]
+    fn agent_forwarding_is_opt_in_and_legacy_records_default_off() {
+        let key = RecordKey::new(Kind::Host, "h1");
+        let mut host = ssh_host("trusted");
+        let legacy = write_into(&RecordData::Host(host.clone()), None);
+        assert!(!legacy.contains_key("agent_forwarding"));
+        assert_eq!(parse(&key, &legacy), Ok(RecordData::Host(host.clone())));
+        host.agent_forwarding = true;
+        let mut enabled = write_into(&RecordData::Host(host.clone()), Some(&legacy));
+        assert_eq!(enabled["agent_forwarding"], json!(true));
+        assert_eq!(parse(&key, &enabled), Ok(RecordData::Host(host.clone())));
+        host.agent_forwarding = false;
+        let disabled = write_into(&RecordData::Host(host.clone()), Some(&enabled));
+        assert!(!disabled.contains_key("agent_forwarding"));
+        assert_eq!(parse(&key, &disabled), Ok(RecordData::Host(host)));
+        enabled.insert("agent_forwarding".into(), json!("true"));
+        assert!(parse(&key, &enabled).is_err());
+        enabled.insert("agent_forwarding".into(), json!(true));
+        enabled.insert("protocol".into(), json!("telnet"));
+        enabled.insert(
+            "telnet".into(),
+            json!({"user_prompt": null, "pass_prompt": null}),
+        );
+        assert!(parse(&key, &enabled).is_err());
     }
 
     #[test]

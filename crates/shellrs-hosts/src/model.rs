@@ -351,6 +351,8 @@ pub struct Host {
     /// with its own user and password, and [`AuthKind::NoPassword`] no
     /// 自动登录 at all.
     pub auth: AuthKind,
+    /// Allow this SSH host to use the local agent. Off unless explicitly enabled.
+    pub agent_forwarding: bool,
     /// The credential it logs in with instead of `auth`, if any.
     pub credential: Option<CredentialId>,
     /// How a connection reaches it.
@@ -384,6 +386,7 @@ impl Host {
             id,
             public_id: PublicId::generate(),
             name: draft.name,
+            agent_forwarding: draft.protocol.is_ssh() && draft.agent_forwarding,
             protocol: draft.protocol,
             address: draft.address,
             port: draft.port,
@@ -445,6 +448,7 @@ impl Host {
             port: self.port,
             user: self.user.clone(),
             auth: self.auth,
+            agent_forwarding: self.agent_forwarding,
             credential: self.credential,
             route: self.route.clone(),
             group: self.group,
@@ -515,6 +519,8 @@ pub struct HostDraft {
     pub port: u16,
     pub user: SharedString,
     pub auth: AuthKind,
+    /// Allow this SSH host to use the local agent. Off unless explicitly enabled.
+    pub agent_forwarding: bool,
     pub credential: Option<CredentialId>,
     pub route: Route,
     pub group: Option<GroupId>,
@@ -537,6 +543,7 @@ impl HostDraft {
             port,
             user: user.into(),
             auth,
+            agent_forwarding: false,
             credential: None,
             route: Route::Direct,
             group,
@@ -578,6 +585,12 @@ impl HostDraft {
         self
     }
 
+    /// Explicitly allow SSH agent forwarding for this host.
+    pub fn with_agent_forwarding(mut self, enabled: bool) -> Self {
+        self.agent_forwarding = self.protocol.is_ssh() && enabled;
+        self
+    }
+
     /// Reach the host some other way than directly.
     pub fn with_route(mut self, route: Route) -> Self {
         self.route = route;
@@ -602,6 +615,7 @@ impl HostDraft {
     /// of a draft (a credential to pick, a proxy password without a user)
     /// is the caller's to check.
     pub fn validated(mut self) -> Result<Self, HostDraftError> {
+        self.agent_forwarding &= self.protocol.is_ssh();
         self.name = self.name.trim().to_string().into();
         self.address = self.address.trim().to_string().into();
         if let Protocol::Serial(settings) = self.protocol {

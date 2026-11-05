@@ -897,3 +897,11 @@ host.import.new_credentials.one:
 host.import.new_credentials.other:
   zh-CN: 新建了 %{count} 个密钥凭据。
   en: Added %{count} key credentials.
+
+
+host.dialog.agent_forwarding:
+  zh-CN: 转发 SSH Agent
+  en: Forward SSH agent
+host.dialog.agent_forwarding_warning:
+  zh-CN: 仅对可信主机启用。远端用户或管理员可通过本机 Agent 使用你的密钥进行认证，直到连接关闭。私钥不会传到远端。
+  en: Enable only for trusted hosts. Remote users or administrators may authenticate with your keys through your local agent until the connection closes. Private keys stay on this computer.

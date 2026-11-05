@@ -232,6 +232,7 @@ pub struct HostForm {
     address: Entity<InputState>,
     port: Entity<InputState>,
     source: AuthSource,
+    agent_forwarding: bool,
     user: Entity<InputState>,
     /// The password of a login typed here.
     fields: Entity<SecretFields>,
@@ -657,6 +658,7 @@ impl HostForm {
                 (None, AuthKind::Password) => AuthSource::Password,
                 (None, AuthKind::NoPassword) => AuthSource::NoPassword,
             },
+            agent_forwarding: ssh_login.is_some_and(|draft| draft.agent_forwarding),
             user,
             fields,
             credential,
@@ -958,7 +960,9 @@ impl HostForm {
                     .selected_credential(cx)
                     .ok_or_else(|| t!("host.dialog.choose_credential"))?;
                 LoginTest::saved(
-                    HostLogin::with_credential(host, port, credential).with_route(route_login),
+                    HostLogin::with_credential(host, port, credential)
+                        .with_route(route_login)
+                        .with_agent_forwarding(self.agent_forwarding),
                 )
             }
             Some(auth) => {
@@ -967,7 +971,9 @@ impl HostForm {
                     return Err(t!("host.dialog.enter_user"));
                 }
                 let mut request = LoginTest::typed(
-                    HostLogin::manual(host, port, user, auth).with_route(route_login),
+                    HostLogin::manual(host, port, user, auth)
+                        .with_route(route_login)
+                        .with_agent_forwarding(self.agent_forwarding),
                 );
                 // Only what the chosen way uses, which is also what the form
                 // shows.
@@ -1311,7 +1317,10 @@ impl HostForm {
         // The proxy's password goes the same way, under the proxy's entry.
         let proxy_change = self.proxy_change(&route, cx);
         let notes = self.notes.read(cx).value().trim().to_string();
-        let draft = draft.with_route(route).with_notes(notes);
+        let draft = draft
+            .with_route(route)
+            .with_notes(notes)
+            .with_agent_forwarding(self.agent_forwarding);
 
         let editing = self.editing;
         self.store.update(cx, |store, cx| {
@@ -1451,6 +1460,7 @@ impl HostForm {
                 HostDraft::new(name, host, port, user, auth, None)
             }
         };
+        let draft = draft.with_agent_forwarding(self.agent_forwarding);
         let id = self
             .store
             .update(cx, |store, cx| store.insert_temporary(draft, password, cx));
@@ -2193,10 +2203,25 @@ impl HostForm {
                     })
                 }),
         );
-        match source.auth() {
+        let form = match source.auth() {
             Some(auth) => self.own_fields(form, auth, cx),
             None => form.child(self.credential_field(cx)),
-        }
+        };
+        form.child(
+            Field::new()
+                .col_span(4)
+                .child(
+                    Checkbox::new("host-agent-forwarding")
+                        .label(t!("host.dialog.agent_forwarding"))
+                        .checked(self.agent_forwarding)
+                        .small()
+                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                            this.agent_forwarding = *checked;
+                            cx.notify();
+                        })),
+                )
+                .description(t!("host.dialog.agent_forwarding_warning")),
+        )
     }
 }
 

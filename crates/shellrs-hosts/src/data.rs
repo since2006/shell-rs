@@ -2312,6 +2312,7 @@ impl HostData {
 /// credential that is not there logs in on its own. A Telnet host is kept
 /// as an SSH one: its credential is its 自动登录's.
 fn normalized(credentials: &[Credential], mut draft: HostDraft) -> HostDraft {
+    draft.agent_forwarding &= draft.protocol.is_ssh();
     if draft.protocol.is_serial() {
         // Nothing of a login: no credential to count it as a user of, no
         // jump hosts to keep alive.
@@ -2336,6 +2337,30 @@ fn normalized(credentials: &[Credential], mut draft: HostDraft) -> HostDraft {
 mod tests {
     use super::super::{ForwardEndpoint, ForwardKind, LoginMethod, ProxyKind, ProxySettings};
     use super::*;
+
+    #[test]
+    fn agent_forwarding_is_per_host_copied_and_part_of_the_login_snapshot() {
+        let mut store = HostData::empty();
+        let trusted = store.insert_unnotified(draft("trusted", None));
+        let other = store.insert_unnotified(draft("other", None));
+        let before = store.login(trusted).unwrap();
+        assert!(!before.agent_forwarding);
+        let enabled = store
+            .host(trusted)
+            .unwrap()
+            .draft()
+            .with_agent_forwarding(true);
+        assert!(store.update_unnotified(trusted, enabled));
+        assert_ne!(store.login(trusted).unwrap(), before);
+        assert!(store.login(trusted).unwrap().agent_forwarding);
+        assert!(!store.login(other).unwrap().agent_forwarding);
+        let copy = store.duplicate_unnotified(trusted, "copy".into()).unwrap();
+        assert!(store.login(copy).unwrap().agent_forwarding);
+        let mut telnet = HostDraft::telnet("trusted", "10.0.0.1", 23, None);
+        telnet.agent_forwarding = true;
+        assert!(store.update_unnotified(trusted, telnet));
+        assert!(!store.host(trusted).unwrap().agent_forwarding);
+    }
 
     fn draft(name: &str, group: Option<GroupId>) -> HostDraft {
         HostDraft::new(name, "10.0.0.1", 22, "root", AuthKind::Password, group)

@@ -520,3 +520,23 @@ impl fmt::Display for ChannelError {
 }
 
 impl Error for ChannelError {}
+
+/// Why an explicitly requested terminal agent forward could not start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentForwardError {
+    RequestFailed,
+    Refused,
+    Timeout,
+}
+
+impl fmt::Display for AgentForwardError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::RequestFailed => "couldn't request SSH agent forwarding",
+            Self::Refused => "the server refused SSH agent forwarding",
+            Self::Timeout => "requesting SSH agent forwarding timed out",
+        })
+    }
+}
+
+impl Error for AgentForwardError {}
