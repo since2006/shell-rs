@@ -751,8 +751,8 @@ fn checked_host(
     // has no local agent. Preserve the desktop's opt-in when editing an
     // SSH host, rather than clearing it on the next sync. New hosts and
     // hosts changed to another protocol remain opted out.
-    draft.agent_forwarding = draft.protocol.is_ssh()
-        && old.is_some_and(|host| host.is_ssh() && host.agent_forwarding);
+    draft.agent_forwarding =
+        draft.protocol.is_ssh() && old.is_some_and(|host| host.is_ssh() && host.agent_forwarding);
     let draft = draft.validated().map_err(|error| StoreError::Host {
         problem: error.into(),
     })?;
@@ -1056,11 +1056,7 @@ mod tests {
                 .unwrap()
                 .agent_forwarding
         );
-        assert!(
-            !checked_host(&data, None, draft())
-                .unwrap()
-                .agent_forwarding
-        );
+        assert!(!checked_host(&data, None, draft()).unwrap().agent_forwarding);
 
         let mut telnet = draft();
         telnet.protocol = hosts::Protocol::Telnet(hosts::TelnetSettings::default());

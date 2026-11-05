@@ -173,7 +173,9 @@ impl SshConnector {
     ) -> Result<(SshHandle, String, Option<AgentForwarding>)> {
         let (forwarding, channels) = if config.login.agent_forwarding {
             let (agent, location) = step(&broker, async {
-                resolve_agent(&self.agent).await.map_err(anyhow::Error::from)
+                resolve_agent(&self.agent)
+                    .await
+                    .map_err(anyhow::Error::from)
             })
             .await?;
             let (forwarding, opens) =
@@ -1219,7 +1221,9 @@ async fn resolve_agent(location: &AgentLocation) -> Result<(Agent, AgentLocation
         }
         other => other.clone(),
     };
-    connect_agent(&location).await.map(|agent| (agent, location))
+    connect_agent(&location)
+        .await
+        .map(|agent| (agent, location))
 }
 
 #[cfg(unix)]

@@ -1172,7 +1172,6 @@ async fn a_dialogs_choices_are_equal_segments_of_one_track(cx: &mut TestAppConte
     });
 }
 
-
 #[gpui_kit::test]
 async fn agent_forwarding_is_saved_and_preserved_when_editing(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());

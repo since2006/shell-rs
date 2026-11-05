@@ -333,7 +333,9 @@ mod tests {
     #[tokio::test]
     async fn queued_request_overflow_fails_closed() {
         let (mut remote, mut agent, task) = proxy();
-        write_frame(&mut remote, &[IDENTITIES_REQUEST]).await.unwrap();
+        write_frame(&mut remote, &[IDENTITIES_REQUEST])
+            .await
+            .unwrap();
         assert_eq!(read_frame(&mut agent).await.unwrap(), [IDENTITIES_REQUEST]);
         // Hold the first response while the bounded reader queue fills up.
         let pipeline = [0, 0, 0, 1, IDENTITIES_REQUEST].repeat(MAX_QUEUED_REQUESTS + 1);
@@ -467,7 +469,9 @@ mod tests {
         ];
         for bytes in cases {
             let (mut remote, mut agent, task) = proxy();
-            write_frame(&mut remote, &[IDENTITIES_REQUEST]).await.unwrap();
+            write_frame(&mut remote, &[IDENTITIES_REQUEST])
+                .await
+                .unwrap();
             assert_eq!(read_frame(&mut agent).await.unwrap(), [IDENTITIES_REQUEST]);
             agent.write_all(&bytes).await.unwrap();
             agent.shutdown().await.unwrap();

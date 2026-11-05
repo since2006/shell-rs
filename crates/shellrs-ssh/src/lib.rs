@@ -28,8 +28,8 @@ pub mod testing;
 
 pub use agent_forwarding::AgentForwarding;
 pub use connection::{
-    AgentLocation, ForwardedTcpip, SshConnectionConfig, SshConnector, SshHandle, SshPrompts, Tunnel,
-    is_network_error, timeout_excluding_prompts,
+    AgentLocation, ForwardedTcpip, SshConnectionConfig, SshConnector, SshHandle, SshPrompts,
+    Tunnel, is_network_error, timeout_excluding_prompts,
 };
 pub use error::{
     AgentForwardError, AgentProblem, AgentUnreachable, AuthError, ChannelError, ConnectError,
