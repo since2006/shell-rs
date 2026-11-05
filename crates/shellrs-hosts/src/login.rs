@@ -198,7 +198,8 @@ impl HostLoginExt for HostLogin {
     }
 
     fn of(host: &Host, credential: Option<&Credential>) -> HostLogin {
-        match credential.filter(|credential| host.credential == Some(credential.id)) {
+        let mut login = match credential.filter(|credential| host.credential == Some(credential.id))
+        {
             Some(credential) => Self::with_credential(host.address.as_ref(), host.port, credential),
             None => Self::manual(
                 host.address.as_ref(),
@@ -206,7 +207,9 @@ impl HostLoginExt for HostLogin {
                 host.user.as_ref(),
                 host.auth,
             ),
-        }
+        };
+        login.agent_forwarding = host.is_ssh() && host.agent_forwarding;
+        login
     }
 }
 

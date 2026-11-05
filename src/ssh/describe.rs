@@ -8,10 +8,10 @@
 use std::error::Error;
 
 use super::{
-    AgentProblem, AgentUnreachable, AuthError, AuthenticationPrompt, AuthenticationRequest,
-    ChannelError, ConnectError, ConnectionPromptField, ExecError, ExecErrorKind, ExecFailure,
-    ForwardProblem, KnownHostsError, Latency, MissingCredential, PasswordWanted, ProxyError,
-    RouteFailure, UnknownHostPrompt, link_as,
+    AgentForwardError, AgentProblem, AgentUnreachable, AuthError, AuthenticationPrompt,
+    AuthenticationRequest, ChannelError, ConnectError, ConnectionPromptField, ExecError,
+    ExecErrorKind, ExecFailure, ForwardProblem, KnownHostsError, Latency, MissingCredential,
+    PasswordWanted, ProxyError, RouteFailure, UnknownHostPrompt, link_as,
 };
 use crate::i18n::t;
 
@@ -256,6 +256,14 @@ fn link(cause: Cause<'_>, rest: &[Cause<'_>]) -> String {
     }
     if let Some(error) = link_as::<AgentProblem>(cause) {
         return agent(error);
+    }
+    if let Some(error) = link_as::<AgentForwardError>(cause) {
+        return match error {
+            AgentForwardError::RequestFailed => t!("ssh.agent.forward_failed"),
+            AgentForwardError::Refused => t!("ssh.agent.forward_refused"),
+            AgentForwardError::Timeout => t!("ssh.agent.forward_timeout"),
+        }
+        .into();
     }
     if let Some(error) = link_as::<ProxyError>(cause) {
         return proxy(error);
@@ -786,5 +794,19 @@ mod tests {
             describe_chain(&deep),
             "outer: 连接已取消: 服务器拒绝创建终端"
         );
+    }
+
+    #[test]
+    fn agent_forwarding_failures_are_translated() {
+        for (error, expected) in [
+            (AgentForwardError::RequestFailed, "无法请求 SSH Agent 转发"),
+            (
+                AgentForwardError::Refused,
+                "服务器未接受 SSH Agent 转发。请检查服务器设置，或关闭此主机的代理转发后重试。",
+            ),
+            (AgentForwardError::Timeout, "请求 SSH Agent 转发超时"),
+        ] {
+            assert_eq!(describe_error(&error.into()), expected);
+        }
     }
 }

@@ -33,6 +33,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
 use zeroize::Zeroizing;
 
+use super::agent_forwarding::{AgentForwarding, AgentOpens};
 use super::proxy::{ProxyAuth, handshake};
 use super::secret::{SecretRef, SharedSecretSource, read_secret};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -150,9 +151,50 @@ impl SshConnector {
     ) -> Result<(SshHandle, String, mpsc::UnboundedReceiver<ForwardedTcpip>)> {
         let (sender, receiver) = mpsc::unbounded_channel();
         let (handle, fingerprint) = self
-            .connect_inner(config, broker, &self.secrets, Some(sender))
+            .connect_inner(
+                config,
+                broker,
+                &self.secrets,
+                ServerChannels {
+                    tcp: Some(sender),
+                    ..Default::default()
+                },
+            )
             .await?;
         Ok((handle, fingerprint, receiver))
+    }
+
+    /// Connect a terminal with its explicitly opted-in agent capability.
+    /// Keep the returned guard alive only for the terminal's lifetime.
+    pub async fn connect_terminal(
+        &self,
+        config: &SshConnectionConfig,
+        broker: Arc<SshPrompts>,
+    ) -> Result<(SshHandle, String, Option<AgentForwarding>)> {
+        let (forwarding, channels) = if config.login.agent_forwarding {
+            let (agent, location) = step(&broker, async {
+                resolve_agent(&self.agent)
+                    .await
+                    .map_err(anyhow::Error::from)
+            })
+            .await?;
+            let (forwarding, opens) =
+                AgentForwarding::new(agent, location.clone(), broker.shutdown_receiver());
+            (
+                Some(forwarding),
+                ServerChannels {
+                    tcp: None,
+                    agent: Some(opens),
+                    agent_location: Some(location),
+                },
+            )
+        } else {
+            (None, ServerChannels::default())
+        };
+        let (handle, fingerprint) = self
+            .connect_inner(config, broker, &self.secrets, channels)
+            .await?;
+        Ok((handle, fingerprint, forwarding))
     }
 
     /// The keychain this connector reads saved secrets from.
@@ -167,7 +209,8 @@ impl SshConnector {
         broker: Arc<SshPrompts>,
         secrets: &SharedSecretSource,
     ) -> Result<(client::Handle<SshClientHandler>, String)> {
-        self.connect_inner(config, broker, secrets, None).await
+        self.connect_inner(config, broker, secrets, ServerChannels::default())
+            .await
     }
 
     async fn connect_inner(
@@ -175,13 +218,13 @@ impl SshConnector {
         config: &SshConnectionConfig,
         broker: Arc<SshPrompts>,
         secrets: &SharedSecretSource,
-        forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+        channels: ServerChannels,
     ) -> Result<(client::Handle<SshClientHandler>, String)> {
         let login = &config.login;
         let tunnel = self
             .open_route(&login.route, &login.host, login.port, &broker, secrets)
             .await?;
-        self.log_in(tunnel, login, None, &broker, secrets, forwarded)
+        self.log_in(tunnel, login, None, &broker, secrets, channels)
             .await
     }
 
@@ -221,8 +264,12 @@ impl SshConnector {
         jump_host: Option<&str>,
         broker: &Arc<SshPrompts>,
         secrets: &SharedSecretSource,
-        forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+        channels: ServerChannels,
     ) -> Result<(SshHandle, String)> {
+        let mut authentication = self.clone();
+        if let Some(location) = &channels.agent_location {
+            authentication.agent = location.clone();
+        }
         let fingerprint = Arc::new(Mutex::new(String::new()));
         let handler = SshClientHandler {
             host: login.host.clone(),
@@ -232,7 +279,7 @@ impl SshConnector {
             known_hosts_lock: self.known_hosts_lock.clone(),
             broker: broker.clone(),
             fingerprint: fingerprint.clone(),
-            forwarded,
+            channels,
         };
         let connect = async {
             client::connect_stream(ssh_config(), tunnel, handler)
@@ -246,7 +293,7 @@ impl SshConnector {
         };
         let mut shutdown = broker.shutdown_receiver();
         tokio::select! {
-            result = authenticate(&mut handle, login, secrets, self, prompts) => result?,
+            result = authenticate(&mut handle, login, secrets, &authentication, prompts) => result?,
             _ = shutdown.changed() => bail!(ConnectError::Cancelled),
         }
         let fingerprint = lock(&fingerprint).clone();
@@ -322,7 +369,14 @@ impl SshConnector {
             None => Box::new(step(broker, tcp(&hop.host, hop.port, self.nat64)).await?),
         };
         let (handle, _) = self
-            .log_in(tunnel, hop, Some(name), broker, secrets, None)
+            .log_in(
+                tunnel,
+                hop,
+                Some(name),
+                broker,
+                secrets,
+                ServerChannels::default(),
+            )
             .await?;
         let (next_host, next_port) = next;
         let open = async {
@@ -688,6 +742,13 @@ pub struct ForwardedTcpip {
     pub originator_port: u32,
 }
 
+#[derive(Default)]
+struct ServerChannels {
+    agent_location: Option<AgentLocation>,
+    tcp: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+    agent: Option<AgentOpens>,
+}
+
 pub struct SshClientHandler {
     host: String,
     port: u16,
@@ -697,9 +758,8 @@ pub struct SshClientHandler {
     known_hosts_lock: Arc<Mutex<()>>,
     broker: Arc<SshPrompts>,
     fingerprint: Arc<Mutex<String>>,
-    /// Where channels for a remote forward go. Only a forwarding connection
-    /// has one; every other connection refuses such channels.
-    forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+    /// Capabilities granted explicitly by the connection owner.
+    channels: ServerChannels,
 }
 
 impl client::Handler for SshClientHandler {
@@ -773,6 +833,22 @@ impl client::Handler for SshClientHandler {
         Ok(true)
     }
 
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<client::Msg>,
+        reply: client::ChannelOpenHandle,
+        _: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        if let Some(opens) = &self.channels.agent {
+            opens.open(channel, reply);
+        } else {
+            reply
+                .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                .await;
+        }
+        Ok(())
+    }
+
     /// The server only opens these after a `tcpip-forward` request, which
     /// nothing but a forwarding connection sends. One that arrives anyway is
     /// refused rather than accepted and left dangling.
@@ -787,7 +863,7 @@ impl client::Handler for SshClientHandler {
         reply: client::ChannelOpenHandle,
         _: &mut client::Session,
     ) -> Result<(), Self::Error> {
-        match &self.forwarded {
+        match &self.channels.tcp {
             // The forward decides: it accepts once it has reached its target.
             // Should it be gone already, the undelivered `reply` is dropped
             // with the message, which refuses the channel.
@@ -1075,7 +1151,7 @@ struct KeyboardPassword {
     rejected: bool,
 }
 
-type Agent = russh::keys::agent::client::AgentClient<
+pub(super) type Agent = russh::keys::agent::client::AgentClient<
     Box<dyn russh::keys::agent::client::AgentStream + Send + Unpin>,
 >;
 
@@ -1120,8 +1196,38 @@ async fn try_agent(
     Ok(last.ok_or(AgentProblem::Unsigned))
 }
 
+/// Freeze discovery before connecting, including for authentication on the
+/// terminal connection. `None` must never fall back to a system agent.
+async fn resolve_agent(location: &AgentLocation) -> Result<(Agent, AgentLocation), AgentProblem> {
+    let location = match location {
+        AgentLocation::System => {
+            #[cfg(unix)]
+            {
+                AgentLocation::At(
+                    std::env::var_os("SSH_AUTH_SOCK")
+                        .filter(|path| !path.is_empty())
+                        .map(PathBuf::from)
+                        .ok_or(AgentProblem::Unreachable(AgentUnreachable::NoSocket))?,
+                )
+            }
+            #[cfg(windows)]
+            {
+                AgentLocation::At(PathBuf::from(r"\\.\pipe\openssh-ssh-agent"))
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                AgentLocation::None
+            }
+        }
+        other => other.clone(),
+    };
+    connect_agent(&location)
+        .await
+        .map(|agent| (agent, location))
+}
+
 #[cfg(unix)]
-async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
+pub(super) async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
     use russh::keys::agent::client::AgentClient;
 
     let path = match location {
@@ -1149,7 +1255,7 @@ async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> 
 }
 
 #[cfg(windows)]
-async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
+pub(super) async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
     use russh::keys::agent::client::AgentClient;
 
     /// Where the OpenSSH Authentication Agent service listens.
@@ -1176,7 +1282,7 @@ async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> 
 }
 
 #[cfg(not(any(unix, windows)))]
-async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
+pub(super) async fn connect_agent(location: &AgentLocation) -> Result<Agent, AgentProblem> {
     let _ = location;
     Err(AgentProblem::Unreachable(AgentUnreachable::Unsupported))
 }

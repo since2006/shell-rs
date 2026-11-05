@@ -37,6 +37,7 @@ async fn a_host_without_a_password_says_what_it_tries_and_is_saved_as_such(
         let store = workspace.read(cx).store().read(cx);
         let host = &store.hosts()[0];
         assert_eq!(host.auth, AuthKind::NoPassword);
+        assert!(!host.agent_forwarding);
         assert_eq!(host.credential, None);
         assert_eq!(
             store.login(host.id).unwrap().method,
@@ -1169,4 +1170,65 @@ async fn a_dialogs_choices_are_equal_segments_of_one_track(cx: &mut TestAppConte
         assert_eq!(group.find(0usize).selected(), Some(false));
         assert!(window.find("host-credential").visible());
     });
+}
+
+#[gpui_kit::test]
+async fn agent_forwarding_is_saved_and_preserved_when_editing(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("host-agent-forwarding").visible());
+        assert_eq!(window.find("host-agent-forwarding").checked(), Some(false));
+        window.click("host-name", cx);
+        window.input("trusted", cx);
+        window.click("host-address", cx);
+        window.input("10.0.0.9", cx);
+        window.click("host-agent-forwarding", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    let id = cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        let host = &store.hosts()[0];
+        assert!(host.agent_forwarding);
+        assert!(store.login(host.id).unwrap().agent_forwarding);
+        host.id
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("host-row", id.0), cx);
+        window.dispatch_action(Box::new(EditHost(id)), cx)
+    });
+    in_frame(cx, handle, |window, cx| window.click("commit", cx));
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert!(store.host(id).unwrap().agent_forwarding);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click(("host-row", id.0), cx);
+        window.dispatch_action(Box::new(EditHost(id)), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-agent-forwarding", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert!(!store.host(id).unwrap().agent_forwarding);
+    });
+}
+
+#[gpui_kit::test]
+async fn agent_forwarding_is_not_offered_for_other_protocols(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
+    for protocol in [1usize, 2usize] {
+        in_frame(cx, handle, |window, cx| {
+            window.within("host-protocol").click(protocol, cx);
+        });
+        in_frame(cx, handle, |window, _| {
+            assert!(window.try_find("host-agent-forwarding").is_none());
+        });
+    }
 }

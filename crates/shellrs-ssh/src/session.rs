@@ -39,10 +39,25 @@ pub async fn open_shell(
     term: &str,
     size: PtySize,
 ) -> Result<Channel<client::Msg>> {
-    let channel = handle
+    open_shell_with_agent(handle, term, size, None).await
+}
+
+/// Start a shell with optional terminal-owned agent permission, requested
+/// before PTY/shell so their replies cannot be confused with its reply.
+/// The caller must retain the guard until the terminal closes.
+pub async fn open_shell_with_agent(
+    handle: &SshHandle,
+    term: &str,
+    size: PtySize,
+    forwarding: Option<&mut crate::AgentForwarding>,
+) -> Result<Channel<client::Msg>> {
+    let mut channel = handle
         .channel_open_session()
         .await
         .map_err(|_| anyhow!(ChannelError::SessionFailed))?;
+    if let Some(forwarding) = forwarding {
+        forwarding.request(&mut channel).await?;
+    }
     channel
         .request_pty(
             true,

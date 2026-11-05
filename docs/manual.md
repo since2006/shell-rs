@@ -36,6 +36,12 @@ Each open tab keeps the host as it was when the tab opened: editing the host (it
 
 **Not implemented yet: combining jump hosts with a proxy, reordering jump hosts by dragging, HTTPS proxies, and showing the connection type in the host list.**
 
+“Forward SSH agent” in the host dialog is off by default and saved per host. Enable it only for a trusted host: commands such as `ssh-add -L`, `ssh` and SSH-based `git` on its remote terminal can then use this computer’s agent. Private keys stay on this computer, but the remote host can ask the agent to sign requests.
+
+Forwarding works regardless of how the host logs in. It uses `SSH_AUTH_SOCK` on Unix and the OpenSSH Authentication Agent service on Windows, fixing the endpoint for that terminal’s lifetime. Only the final terminal connection receives permission; jump hosts, SFTP-only connections, the external CLI and port-forwarding connections do not. If the local agent is unavailable, or the server refuses or times out, the terminal fails with a reason rather than silently omitting forwarding. Closing or disconnecting the terminal closes its agent channels. Key filtering and per-signature approval, if needed, are provided by the local agent. The mobile client does not forward an agent; editing a synced SSH host there preserves its desktop forwarding setting.
+
+For safety, the forwarded protocol only allows listing public keys and requesting signatures. Remote `ssh-add` operations that add, remove, lock or load keys/providers, and agent extensions, are refused. This implementation does not support OpenSSH destination-constrained keys (`ssh-add -h`) or `session-bind@openssh.com`; the local agent may refuse those keys. ShellRS does not remove their constraints or fall back to unrestricted forwarding.
+
 The last field in the dialog is “Notes”, which can span several lines (Enter starts a new line): what the machine is for, who looks after it, when it expires and so on. Notes are kept only in the local database and don’t affect connecting.
 
 The icon before a host is the badge of the system found when connecting, or the first letter of its name until one is found. An icon without a brand color (the letter, and the macOS and AlmaLinux badges) gets a color from the address, or a serial host’s port; the same address always gets the same color. Telnet and serial hosts have no system to find, so their icon is always the first letter of the name.

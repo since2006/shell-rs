@@ -204,6 +204,15 @@ ssh.auth.keyboard_failed:
   en: Keyboard-interactive authentication failed
 
 # SSH agent
+ssh.agent.forward_failed:
+  zh-CN: 无法请求 SSH Agent 转发
+  en: Couldn’t request SSH agent forwarding
+ssh.agent.forward_refused:
+  zh-CN: 服务器未接受 SSH Agent 转发。请检查服务器设置，或关闭此主机的代理转发后重试。
+  en: The server did not accept SSH agent forwarding. Check its settings or disable forwarding for this host and try again.
+ssh.agent.forward_timeout:
+  zh-CN: 请求 SSH Agent 转发超时
+  en: The SSH agent forwarding request timed out
 ssh.agent.unreachable:
   zh-CN: 无法连接 SSH Agent：%{reason}
   en: "Couldn’t connect to the SSH agent: %{reason}"

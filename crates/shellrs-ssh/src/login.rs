@@ -50,6 +50,8 @@ pub struct HostLogin {
     /// session per connection and ends it when another channel comes and
     /// goes, as Xshell and OpenSSH never make it do.
     pub shell_only: bool,
+    /// Explicit consent to let this host use the local SSH agent.
+    pub agent_forwarding: bool,
 }
 
 impl HostLogin {
@@ -72,7 +74,14 @@ impl HostLogin {
             key_path: None,
             route: LoginRoute::Direct,
             shell_only: false,
+            agent_forwarding: false,
         }
+    }
+
+    /// Explicitly permit this host to use the local SSH agent.
+    pub fn with_agent_forwarding(mut self, enabled: bool) -> Self {
+        self.agent_forwarding = enabled;
+        self
     }
 
     /// The same login, reaching the host by `route`.
@@ -197,6 +206,8 @@ mod tests {
         assert_eq!(login.endpoint(), "root@10.0.0.1:22");
         assert_eq!(login.route, LoginRoute::Direct);
         assert!(!login.shell_only);
+        assert!(!login.agent_forwarding);
+        assert_ne!(login.clone().with_agent_forwarding(true), login);
     }
 
     #[test]

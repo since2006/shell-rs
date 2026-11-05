@@ -452,6 +452,7 @@ impl HostData {
                     sort_order: host.sort_order,
                     protocol,
                     auth,
+                    agent_forwarding: host.is_ssh() && host.agent_forwarding,
                     username,
                     credential,
                     route,
@@ -1071,6 +1072,7 @@ impl HostData {
                         .with_user(proxy.username.clone().unwrap_or_default()),
                     ),
                 });
+                draft.agent_forwarding = data.agent_forwarding;
                 draft.credential = credential.map(|credential| credential.id);
                 if let sync::Protocol::Telnet(telnet) = &data.protocol {
                     draft.protocol = Protocol::Telnet(TelnetSettings {
@@ -1666,7 +1668,8 @@ mod tests {
                 HostDraft::new("web", "10.0.0.1", 22, "", AuthKind::Password, Some(db))
                     .with_credential(key)
                     .with_route(Route::Jump(vec![Some(bastion)]))
-                    .with_notes("behind the bastion"),
+                    .with_notes("behind the bastion")
+                    .with_agent_forwarding(true),
             );
             let mut switch = HostDraft::telnet("switch", "10.0.0.9", 23, None);
             switch.credential = Some(deploy);
@@ -1752,6 +1755,14 @@ mod tests {
             assert!(store.bookmarks(web.id, BookmarkSide::Local).is_empty());
             assert_eq!(store.bookmarks(web.id, BookmarkSide::Remote), ["/var/log"]);
             assert_eq!(web.edited_ms, 0);
+            assert!(web.agent_forwarding);
+            assert!(
+                store
+                    .hosts()
+                    .iter()
+                    .filter(|h| h.id != web.id)
+                    .all(|h| !h.agent_forwarding)
+            );
             // The key came as a file of its own, its passphrase under it.
             let key = store
                 .credentials()
@@ -1778,6 +1789,27 @@ mod tests {
         assert_eq!(b.held(), a.held());
         assert!(a.store.hosts().iter().any(|h| h.name == "web-01"));
         assert!(a.store.forwards().is_empty());
+
+        // Turning forwarding off replaces the earlier consent on the
+        // other device too; it must not survive as an unknown field.
+        let web = b
+            .store
+            .hosts()
+            .iter()
+            .find(|h| h.name == "web-01")
+            .unwrap()
+            .id;
+        let disabled = b
+            .store
+            .host(web)
+            .unwrap()
+            .draft()
+            .with_agent_forwarding(false);
+        b.store.update(web, disabled);
+        b.sync(&vault, &keys);
+        a.sync(&vault, &keys);
+        assert!(a.store.hosts().iter().all(|host| !host.agent_forwarding));
+        assert_eq!(b.held(), a.held());
 
         // Then a round changes nothing on either: what was applied is what
         // goes out again, exactly.
@@ -1826,6 +1858,7 @@ mod tests {
                 sort_order: 0,
                 protocol: sync::Protocol::Ssh,
                 auth: sync::Auth::Password,
+                agent_forwarding: false,
                 username: Some("root".into()),
                 credential: None,
                 route: sync::Route::Direct,

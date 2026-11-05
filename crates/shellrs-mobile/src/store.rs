@@ -741,12 +741,18 @@ async fn save_host(
 fn checked_host(
     data: &HostData,
     id: Option<HostId>,
-    draft: hosts::HostDraft,
+    mut draft: hosts::HostDraft,
 ) -> Result<hosts::HostDraft, StoreError> {
     let old = match id {
         Some(id) => Some(saved_host(data, id.0).ok_or(StoreError::NotFound)?),
         None => None,
     };
+    // The mobile form has no agent-forwarding control and its connector
+    // has no local agent. Preserve the desktop's opt-in when editing an
+    // SSH host, rather than clearing it on the next sync. New hosts and
+    // hosts changed to another protocol remain opted out.
+    draft.agent_forwarding =
+        draft.protocol.is_ssh() && old.is_some_and(|host| host.is_ssh() && host.agent_forwarding);
     let draft = draft.validated().map_err(|error| StoreError::Host {
         problem: error.into(),
     })?;
@@ -1021,5 +1027,44 @@ impl From<Change> for ChangeKind {
             | Change::SavedTerminalTabs
             | Change::Batch => Self::Other,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn draft() -> hosts::HostDraft {
+        hosts::HostDraft::new(
+            "trusted",
+            "example.test",
+            22,
+            "alice",
+            hosts::AuthKind::NoPassword,
+            None,
+        )
+    }
+
+    #[test]
+    fn mobile_edits_preserve_desktop_agent_forwarding_only_for_ssh() {
+        let mut data = HostData::empty();
+        let mut enabled = draft();
+        enabled.agent_forwarding = true;
+        let id = data.insert_unnotified(enabled);
+        assert!(
+            checked_host(&data, Some(id), draft())
+                .unwrap()
+                .agent_forwarding
+        );
+        assert!(!checked_host(&data, None, draft()).unwrap().agent_forwarding);
+
+        let mut telnet = draft();
+        telnet.protocol = hosts::Protocol::Telnet(hosts::TelnetSettings::default());
+        telnet.port = 23;
+        assert!(
+            !checked_host(&data, Some(id), telnet)
+                .unwrap()
+                .agent_forwarding
+        );
     }
 }
