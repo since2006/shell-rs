@@ -35,9 +35,9 @@ use crate::app::{
     NewLocalTerminal, NewTemporaryConnection, OpenExplorer, OpenSettings, PasteTerminal,
     QuickConnect, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand,
     RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal, RestoreWindow,
-    SelectAllTerminal, SendBreak, SetFileSizeFormat, ShowOrHideApp, ToggleHiddenFiles,
-    ToggleHostPanel, ToggleTheme, ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn,
-    ZoomTerminalOut, ZoomTerminalReset,
+    SelectAllTerminal, SendBreak, SendCommands, SendCommandsLocal, SetFileSizeFormat,
+    ShowOrHideApp, ToggleHiddenFiles, ToggleHostPanel, ToggleTheme, ToolKind, ZoomIn, ZoomOut,
+    ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
 };
 use crate::cli::{CliIntegration, CliServer, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -2146,6 +2146,30 @@ impl Workspace {
         }
     }
 
+    fn on_send_commands(
+        &mut self,
+        action: &SendCommands,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.terminals.get(&action.0) {
+            let terminal = panel.read(cx).terminal().clone();
+            crate::terminal::open_send_commands_dialog(terminal, window, cx);
+        }
+    }
+
+    fn on_send_commands_local(
+        &mut self,
+        action: &SendCommandsLocal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel) = self.local_terminals.get(&action.0) {
+            let terminal = panel.read(cx).terminal().clone();
+            crate::terminal::open_send_commands_dialog(terminal, window, cx);
+        }
+    }
+
     fn on_select_all_terminal(
         &mut self,
         _: &SelectAllTerminal,
@@ -3082,6 +3106,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_restart_local_terminal))
             .on_action(cx.listener(Self::on_copy_terminal))
             .on_action(cx.listener(Self::on_paste_terminal))
+            .on_action(cx.listener(Self::on_send_commands))
+            .on_action(cx.listener(Self::on_send_commands_local))
             .on_action(cx.listener(Self::on_select_all_terminal))
             .on_action(cx.listener(Self::on_find_in_terminal))
             .on_action(cx.listener(Self::on_find_next_in_terminal))

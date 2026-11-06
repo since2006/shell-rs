@@ -5,6 +5,7 @@ mod apply;
 mod highlight_rules;
 mod local_shell_editor;
 mod model;
+mod session_log_editor;
 mod settings_panel;
 mod shortcuts_editor;
 mod sidebar_tools;
