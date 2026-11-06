@@ -107,10 +107,16 @@ fn open_projects(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
 /// Put the keyboard back in the terminals, blog 1's last, as a click on a
 /// tab does: a dialog closing takes it with it, and a menu's command is
 /// dispatched from it.
+///
+/// Each click lands a quarter of the way into its tab, not in the middle:
+/// with 项目 open the tabs overflow, and the end of the last one lies
+/// under the tab bar's 重新启动, which a click there would press.
 fn focus_a_tab(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     for tab in [1_u64, 2] {
         in_frame(cx, handle, |window, cx| {
-            window.click(("local-terminal-tab", tab), cx)
+            let bounds = window.find(("local-terminal-tab", tab)).bounds();
+            let position = point(bounds.left() + bounds.size.width / 4., bounds.center().y);
+            click_at(window, position, gpui_kit::Modifiers::default(), cx)
         });
     }
 }
