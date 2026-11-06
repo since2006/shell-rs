@@ -26,8 +26,9 @@ use crate::i18n::{UiLocale, t, tn};
 use crate::shared::{RowTooltip, RowTooltips, one_line};
 
 /// 命令片段: the commands kept for every host, in categories that nest as
-/// host groups do. A click on one puts it on the input line of the SSH
-/// terminal in front to edit, or runs it there when the snippet says so.
+/// host groups do. A click on one puts it on the input line of the terminal
+/// in front, an SSH terminal or a local one, to edit, or runs it there when
+/// the snippet says so.
 ///
 /// One line a row, the name alone: the command shows beside the row while
 /// the pointer is on it. Rows are dragged into order and into categories as

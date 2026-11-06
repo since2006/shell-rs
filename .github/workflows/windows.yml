@@ -52,6 +52,8 @@ on:
       - "src/terminal/local_shell.rs"
       - "src/terminal/local_pty.rs"
       - "src/project/project_panel.rs"
+      - "src/workspace/tools.rs"
+      - "tests/ui/projects.rs"
       - "src/terminal/zmodem.rs"
       - "src/serial/**"
       - "crates/shellrs-sync/**"
@@ -89,6 +91,8 @@ jobs:
       - run: "cargo test --locked --test ui connection::"
       - run: "cargo test --locked --test ui settings::closing_to_the_tray"
       - run: "cargo test --locked --test ui editor::quitting_with_unsaved_changes"
+      # A snippet goes after what is typed in a local terminal there.
+      - run: "cargo test --locked --test ui projects::a_snippet_beside_a_local_terminal"
       - run: "cargo test --locked --lib settings::"
       - run: "cargo test --locked --lib app::tray::"
       - run: "cargo test --lib cli::"

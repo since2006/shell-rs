@@ -1188,20 +1188,32 @@ async fn the_tool_sidebar_goes_with_terminals_only(cx: &mut TestAppContext) {
         window.dispatch_action(Box::new(OpenSettings), cx)
     });
     assert_eq!(shown(cx), (false, false));
-    // A local terminal has the switch with 项目 alone, closed until opened;
-    // the shortcut opens it.
+    // A local terminal has the switch with 项目, then 命令片段, and no
+    // other tool; closed until opened.
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(NewLocalTerminal), cx)
     });
     assert_eq!(shown(cx), (true, false));
     in_frame(cx, handle, |window, _| {
-        assert!(window.try_find("tool-projects").is_some());
-        assert!(window.try_find("tool-snippets").is_none());
+        let projects = window.find("tool-projects").bounds();
+        let snippets = window.find("tool-snippets").bounds();
+        assert!(projects.top() < snippets.top());
+        assert!(window.try_find("tool-history").is_none());
         assert!(window.try_find(("tool-sidebar-local", 1_u64)).is_none());
     });
+    // The shortcut opens the tool shown last, 命令片段 as beside web-01;
+    // the switch, 项目.
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(ToggleToolSidebar), cx)
     });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find(("tool-sidebar-local", 1_u64)).label(),
+            Some("命令片段")
+        );
+        assert_eq!(window.find("tool-snippets").checked(), Some(true));
+    });
+    in_frame(cx, handle, |window, cx| window.click("tool-projects", cx));
     in_frame(cx, handle, |window, _| {
         assert_eq!(
             window.find(("tool-sidebar-local", 1_u64)).label(),

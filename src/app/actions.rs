@@ -512,8 +512,9 @@ pub struct RemoveDockerObject {
     pub name: String,
 }
 
-/// Put a command on the input line of the SSH terminal in front, in place
-/// of what is typed there, and with `run` run it.
+/// Put a command on the input line of the terminal the right sidebar goes
+/// with, an SSH terminal or a local one, in place of what is typed there,
+/// and with `run` run it.
 #[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = shellrs, no_json)]
 pub struct EnterCommand {

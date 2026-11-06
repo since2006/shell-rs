@@ -35,8 +35,13 @@ impl ToolKind {
         !matches!(self, ToolKind::Snippets | ToolKind::Projects)
     }
 
-    /// Whether the tool goes with local terminals rather than remote ones.
-    pub fn is_local(self) -> bool {
+    /// The tools beside a local terminal, in the switch's order: 项目, its
+    /// own, first; then 命令片段, which types into any terminal.
+    pub const LOCAL: [ToolKind; 2] = [ToolKind::Projects, ToolKind::Snippets];
+
+    /// Whether the tool goes with local terminals alone, none beside a
+    /// remote one.
+    pub fn local_only(self) -> bool {
         matches!(self, ToolKind::Projects)
     }
 
@@ -95,7 +100,7 @@ pub struct ToolTerminal {
 }
 
 /// The terminal the right sidebar goes with: an SSH terminal, whose tools
-/// work on its host, or a local terminal, which has 项目 alone.
+/// work on its host, or a local terminal, which has 项目 and 命令片段.
 #[derive(Clone, PartialEq)]
 pub enum SidebarTarget {
     Remote(ToolTerminal),
