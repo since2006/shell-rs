@@ -9,8 +9,10 @@ use gpui_kit::component::{
 };
 use gpui_kit::*;
 
+use super::model::category_options;
 use crate::host::{
-    ErrorMessage as _, HostStore, SnippetCategoryId, SnippetDraft, SnippetId, SnippetScope, by_name,
+    ErrorMessage as _, HostStore, SnippetCategoryDraft, SnippetCategoryId, SnippetDraft, SnippetId,
+    SnippetScope,
 };
 use crate::i18n::t;
 use crate::shared::{commit_footer, dismiss_form_error, form_error_notification};
@@ -36,7 +38,7 @@ pub struct SnippetForm {
     scope: SnippetScope,
     name: Entity<InputState>,
     category: Entity<SelectState<Vec<SharedString>>>,
-    /// Parallel to the category select's rows; `None` is 未分类.
+    /// Parallel to the category select's rows; `None` is none, at the top.
     category_ids: Vec<Option<SnippetCategoryId>>,
     command: Entity<TextareaState>,
     run_on_click: bool,
@@ -49,7 +51,7 @@ impl SnippetForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (editing, draft, mut categories) = {
+        let (editing, draft, categories) = {
             let read = store.read(cx);
             let (editing, draft) = match dialog {
                 SnippetDialog::Edit(id) => match read.snippet(id) {
@@ -62,17 +64,12 @@ impl SnippetForm {
                     SnippetDraft::new("", "", category).with_run_on_click(true),
                 ),
             };
-            let categories: Vec<(SnippetCategoryId, SharedString)> = read
-                .snippet_categories()
-                .iter()
-                .map(|category| (category.id, category.name.clone()))
-                .collect();
+            let categories = category_options(read.snippet_categories(), None);
             (editing, draft, categories)
         };
-        categories.sort_by(|a, b| by_name((&a.1, a.0.0), (&b.1, b.0.0)));
         let mut category_ids: Vec<Option<SnippetCategoryId>> = vec![None];
         // The category list's row for a snippet of none.
-        let mut labels: Vec<SharedString> = vec![t!("snippets.uncategorized")];
+        let mut labels: Vec<SharedString> = vec![t!("snippets.dialog.no_category")];
         for (id, name) in categories {
             category_ids.push(Some(id));
             labels.push(name);
@@ -239,7 +236,10 @@ pub fn open_snippet_dialog(
 /// Which category dialog to open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CategoryDialog {
-    New,
+    /// A new category, in this one or at the top.
+    New(Option<SnippetCategoryId>),
+    /// Rename a category, or move it into another, as a group's dialog
+    /// does.
     Rename(SnippetCategoryId),
 }
 
@@ -248,6 +248,9 @@ pub struct CategoryForm {
     store: Entity<HostStore>,
     editing: Option<SnippetCategoryId>,
     name: Entity<InputState>,
+    parent: Entity<SelectState<Vec<SharedString>>>,
+    /// Parallel to the parent select's rows; `None` is the top level.
+    parent_ids: Vec<Option<SnippetCategoryId>>,
 }
 
 impl CategoryForm {
@@ -257,34 +260,65 @@ impl CategoryForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (editing, current) = match dialog {
-            CategoryDialog::New => (None, SharedString::default()),
-            CategoryDialog::Rename(id) => match store.read(cx).snippet_category(id) {
-                Some(category) => (Some(id), category.name.clone()),
-                None => (None, SharedString::default()),
-            },
+        let (editing, draft, options) = {
+            let read = store.read(cx);
+            let (editing, draft) = match dialog {
+                CategoryDialog::New(parent) => (None, SnippetCategoryDraft::new("", parent)),
+                CategoryDialog::Rename(id) => match read.snippet_category(id) {
+                    Some(category) => (Some(id), category.draft()),
+                    None => (None, SnippetCategoryDraft::new("", None)),
+                },
+            };
+            // Not into itself, nor into what is inside it.
+            let options = category_options(read.snippet_categories(), editing);
+            (editing, draft, options)
         };
+        let mut parent_ids: Vec<Option<SnippetCategoryId>> = vec![None];
+        let mut labels: Vec<SharedString> = vec![t!("snippets.category.top_level")];
+        for (id, path) in options {
+            parent_ids.push(Some(id));
+            labels.push(path);
+        }
+        let selected = parent_ids
+            .iter()
+            .position(|id| *id == draft.parent)
+            .unwrap_or(0);
         let name = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder(t!("snippets.category.name_placeholder"))
-                .default_value(current)
+                .default_value(draft.name.clone())
         });
+        let parent =
+            cx.new(|cx| SelectState::new(labels, Some(IndexPath::new(selected)), window, cx));
         Self {
             store,
             editing,
             name,
+            parent,
+            parent_ids,
         }
     }
 
     fn commit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let name = self.name.read(cx).value().trim().to_string();
+        let parent = self
+            .parent
+            .read(cx)
+            .selected_index(cx)
+            .and_then(|index| self.parent_ids.get(index.row).copied())
+            .unwrap_or(None);
         let editing = self.editing;
+        // Two of a name side by side could not be told apart.
         let taken = self
             .store
             .read(cx)
             .snippet_categories()
             .iter()
-            .any(|category| category.name == name.as_str() && Some(category.id) != editing);
+            .any(|category| {
+                category.parent == parent
+                    && category.name == name.as_str()
+                    && Some(category.id) != editing
+            });
         let error = if name.is_empty() {
             Some(t!("snippets.category.name_missing"))
         } else if taken {
@@ -296,26 +330,42 @@ impl CategoryForm {
             window.push_notification(form_error_notification(error), cx);
             return false;
         }
-        self.store.update(cx, |store, cx| match editing {
-            Some(id) => {
-                store.rename_snippet_category(id, name, cx);
-            }
+        let draft = SnippetCategoryDraft::new(name, parent);
+        let committed = self.store.update(cx, |store, cx| match editing {
+            Some(id) => store.update_snippet_category(id, draft, cx),
             None => {
-                store.insert_snippet_category(name, cx);
+                store.insert_snippet_category(draft, cx);
+                true
             }
         });
-        true
+        if !committed {
+            window.push_notification(
+                form_error_notification(t!("snippets.category.into_itself")),
+                cx,
+            );
+        }
+        committed
     }
 }
 
 impl Render for CategoryForm {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        Form::new().child(
-            Field::new()
-                .label(t!("snippets.category.name"))
-                .required(true)
-                .child(Input::new(&self.name).id("snippet-category-name").small()),
-        )
+        Form::new()
+            .child(
+                Field::new()
+                    .label(t!("snippets.category.name"))
+                    .required(true)
+                    .child(Input::new(&self.name).id("snippet-category-name").small()),
+            )
+            .child(
+                Field::new().label(t!("snippets.category.parent")).child(
+                    div()
+                        .id("snippet-category-parent")
+                        .test_support()
+                        .w_full()
+                        .child(Select::new(&self.parent).small()),
+                ),
+            )
     }
 }
 

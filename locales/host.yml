@@ -677,12 +677,15 @@ host.store.not_saved.delete_snippet:
 host.store.not_saved.new_snippet_category:
   zh-CN: 新建片段分类未能保存到本地数据库：%{error}
   en: "Couldn’t save the new snippet category to the local database: %{error}"
-host.store.not_saved.rename_snippet_category:
-  zh-CN: 重命名片段分类未能保存到本地数据库：%{error}
-  en: "Couldn’t save the renamed snippet category to the local database: %{error}"
+host.store.not_saved.save_snippet_category:
+  zh-CN: 保存片段分类未能保存到本地数据库：%{error}
+  en: "Couldn’t save the snippet category’s changes to the local database: %{error}"
 host.store.not_saved.delete_snippet_category:
   zh-CN: 删除片段分类未能保存到本地数据库：%{error}
   en: "Couldn’t delete the snippet category from the local database: %{error}"
+host.store.not_saved.move_snippet_node:
+  zh-CN: 调整片段顺序未能保存到本地数据库：%{error}
+  en: "Couldn’t save the rearranged snippet list to the local database: %{error}"
 host.store.not_saved.batch:
   zh-CN: 这批改动未能保存到本地数据库：%{error}
   en: "Couldn’t save these changes to the local database: %{error}"

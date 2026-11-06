@@ -26,8 +26,9 @@ use crate::app::{
 };
 use crate::host::{HostStore, SnippetId};
 use crate::i18n::{UiLocale, t};
+use crate::snippets::category_options;
 
-/// A category's name (none for the uncategorized) and its snippets.
+/// A category's path (none at the top) and the snippets directly in it.
 type SnippetGroup = (Option<SharedString>, Vec<(SnippetId, SharedString)>);
 
 /// Where the pane sends.
@@ -118,24 +119,23 @@ impl ComposePane {
         matches!(self.target, ComposeTarget::Broadcast(_))
     }
 
-    /// The snippets by category, the uncategorized first, as 命令片段
-    /// lists them.
+    /// The snippets by category, in 命令片段's order: those of no
+    /// category first, then each category by its whole path
+    /// (`Docker / compose`) with the snippets directly in it.
     fn snippet_groups(&self, cx: &App) -> Vec<SnippetGroup> {
         let store = self.store.read(cx);
         let of = |category| {
             store
-                .snippets()
+                .snippets_of(category)
                 .iter()
-                .filter(|snippet| snippet.category == category)
                 .map(|snippet| (snippet.id, snippet.name.clone()))
                 .collect::<Vec<_>>()
         };
         std::iter::once((None, of(None)))
             .chain(
-                store
-                    .snippet_categories()
-                    .iter()
-                    .map(|category| (Some(category.name.clone()), of(Some(category.id)))),
+                category_options(store.snippet_categories(), None)
+                    .into_iter()
+                    .map(|(id, path)| (Some(path), of(Some(id)))),
             )
             .filter(|(_, snippets)| !snippets.is_empty())
             .collect()

@@ -3135,6 +3135,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_rename_snippet_category))
             .on_action(cx.listener(Self::on_delete_snippet_category))
             .on_action(cx.listener(Self::on_toggle_snippet_category))
+            .on_action(cx.listener(Self::on_new_snippet_subcategory))
+            .on_action(cx.listener(Self::on_move_snippet_node))
             .on_action(cx.listener(Self::on_refresh_docker))
             .on_action(cx.listener(Self::on_kubernetes_action))
             .on_action(cx.listener(Self::on_toggle_docker_project))

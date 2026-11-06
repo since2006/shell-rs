@@ -1009,8 +1009,9 @@ impl From<Change> for ChangeKind {
             | Change::SaveSnippet
             | Change::DeleteSnippet
             | Change::NewSnippetCategory
-            | Change::RenameSnippetCategory
+            | Change::SaveSnippetCategory
             | Change::DeleteSnippetCategory
+            | Change::MoveSnippetNode
             | Change::NewTerminalGroup
             | Change::SaveTerminalGroup
             | Change::DeleteTerminalGroup

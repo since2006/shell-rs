@@ -15,7 +15,7 @@ use crate::docker::{Container, DockerObject, DockerPanel, ObjectSummary};
 use crate::explorer::ExplorerPanel;
 use crate::gpu::GpuPanel;
 use crate::history::HistoryPanel;
-use crate::host::{HostId, HostOs, HostStore, SavedTerminalId, SnippetCategoryId};
+use crate::host::{HostId, HostOs, HostStore, SavedTerminalId, SnippetCategoryId, SnippetNode};
 use crate::i18n::t;
 use crate::kubernetes::{KubernetesCommand, KubernetesPanel};
 use crate::monitor::{MonitorDetail, MonitorPanel};
@@ -251,13 +251,15 @@ impl ToolSidebar {
     }
 
     /// Fold a category of 命令片段 away, or unfold it.
-    pub fn toggle_snippet_category(
-        &mut self,
-        id: Option<SnippetCategoryId>,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn toggle_snippet_category(&mut self, id: SnippetCategoryId, cx: &mut Context<Self>) {
         self.snippets
             .update(cx, |snippets, cx| snippets.toggle_category(id, cx));
+    }
+
+    /// Show a row of 命令片段 where it now is, its categories unfolded.
+    pub fn reveal_snippet_node(&mut self, node: SnippetNode, cx: &mut Context<Self>) {
+        self.snippets
+            .update(cx, |snippets, cx| snippets.reveal(node, cx));
     }
 
     /// 历史命令's 刷新.

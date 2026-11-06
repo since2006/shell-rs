@@ -442,6 +442,66 @@ fn the_app_reshaping_a_record_is_not_an_edit() {
     assert_eq!(b.data(), a.data());
 }
 
+fn category(name: &str, parent: Option<&str>, sort_order: i64) -> RecordData {
+    RecordData::SnippetCategory(crate::SnippetCategoryData {
+        name: name.into(),
+        parent: parent.map(Into::into),
+        sort_order,
+    })
+}
+
+#[test]
+fn a_category_comes_after_the_one_it_is_in() {
+    let (store, _, mut a, mut b) = setup();
+    a.put("s1", category("logs", Some("s3"), 0));
+    a.put("s2", category("nginx", Some("s1"), 1));
+    a.put("s3", category("ops", None, 0));
+    a.sync(&store);
+    let pulled = b.pull(&store).unwrap();
+    let order: Vec<_> = pulled
+        .changes
+        .iter()
+        .map(|change| change.key().id)
+        .collect();
+    assert_eq!(order, ["s3", "s1", "s2"]);
+    b.apply(&pulled);
+    assert_eq!(b.data(), a.data());
+}
+
+/// A category or snippet an older version wrote has no `parent` and no
+/// `sort_order`: it reads as at the top, first, and is not taken for an
+/// edit; an edit then writes both.
+#[test]
+fn a_copy_from_before_snippets_were_ordered_is_used_as_it_is() {
+    let (store, keys, mut a, mut b) = setup();
+    let c = "cccccccccccccccc";
+    let planted = json!({"format": 1, "min_reader": 1, "device": {"id": c},
+    "clock": [START, 0], "records": [
+        {"kind": "snippet_category", "id": "s1", "v": [START, 0, c], "data": {"name": "logs"}},
+    ]});
+    plant(&store, &keys, 'c', planted);
+    b.sync(&store);
+    assert_eq!(
+        b.get(Kind::SnippetCategory, "s1"),
+        Some(&category("logs", None, 0))
+    );
+    let (report, pushed) = b.sync(&store);
+    assert_eq!(report.local_edits, 0);
+    assert!(matches!(pushed, Pushed::Unchanged));
+
+    b.wait(1000);
+    b.put("s1", category("logs", None, 2));
+    b.sync(&store);
+    let file = read_file(&store, &keys, b.state.device());
+    let s1 = file.records[&key(Kind::SnippetCategory, "s1")]
+        .live()
+        .unwrap();
+    assert_eq!(s1["parent"], Value::Null);
+    assert_eq!(s1["sort_order"], json!(2));
+    a.sync(&store);
+    assert_eq!(a.data(), b.data());
+}
+
 /// Records this version cannot use — an unknown kind, a field it does not
 /// know, a value it cannot store — are kept and written back as they came.
 #[test]

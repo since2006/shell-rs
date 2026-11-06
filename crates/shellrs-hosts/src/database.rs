@@ -40,8 +40,9 @@ fn from_sql(id: i64) -> u64 {
 /// to 12 were development builds, and their files are refused. 14 adds the
 /// command snippets, 15 the serial hosts, 16 the Telnet hosts, 17 each
 /// host's right sidebar, 18 the saved local terminals, 19 their titles, 20
-/// what sync needs.
-const SCHEMA_VERSION: i64 = 20;
+/// what sync needs, 21 the snippet categories' nesting and the snippets'
+/// order.
+const SCHEMA_VERSION: i64 = 21;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -82,8 +83,11 @@ const SCHEMA_VERSION: i64 = 20;
 ///   host, the way WinSCP drops a site's bookmarks with the site.
 /// - **forwards** go with the host they go through. A dynamic forward has
 ///   no target; the other two kinds must have one.
-/// - **snippet_categories** are one level of folders for **snippets**, and
-///   take their snippets with them. A snippet with neither scope column is
+/// - **snippet_categories** are folders for **snippets**, nesting through
+///   `parent_id` as groups do; deleting one cascades to the categories
+///   inside it and to all their snippets. A category's `sort_order` is its
+///   place beside the others, a snippet's its place in its category: 0 for
+///   those never dragged, which list by name. A snippet with neither scope column is
 ///   for every host, which every snippet is for now; one kept to a group or
 ///   a host will go with it. `run_on_click` runs it on a click rather than
 ///   only typing it.
@@ -215,12 +219,15 @@ CREATE TABLE forwards (
 CREATE INDEX forwards_host_id ON forwards(host_id);
 CREATE UNIQUE INDEX forwards_sync_id ON forwards(sync_id);
 CREATE TABLE snippet_categories (
-    id        INTEGER PRIMARY KEY,
-    name      TEXT NOT NULL CHECK (name <> ''),
-    sync_id   TEXT NOT NULL DEFAULT '',
-    edited_ms INTEGER NOT NULL DEFAULT 0
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL CHECK (name <> ''),
+    sync_id    TEXT NOT NULL DEFAULT '',
+    edited_ms  INTEGER NOT NULL DEFAULT 0,
+    parent_id  INTEGER REFERENCES snippet_categories(id) ON DELETE CASCADE,
+    sort_order INTEGER NOT NULL DEFAULT 0
 ) STRICT;
 CREATE UNIQUE INDEX snippet_categories_sync_id ON snippet_categories(sync_id);
+CREATE INDEX snippet_categories_parent_id ON snippet_categories(parent_id);
 CREATE TABLE snippets (
     id             INTEGER PRIMARY KEY,
     category_id    INTEGER REFERENCES snippet_categories(id) ON DELETE CASCADE,
@@ -231,6 +238,7 @@ CREATE TABLE snippets (
     run_on_click   INTEGER NOT NULL DEFAULT 0 CHECK (run_on_click IN (0, 1)),
     sync_id        TEXT NOT NULL DEFAULT '',
     edited_ms      INTEGER NOT NULL DEFAULT 0,
+    sort_order     INTEGER NOT NULL DEFAULT 0,
     CHECK (scope_group_id IS NULL OR scope_host_id IS NULL)
 ) STRICT;
 CREATE INDEX snippets_category_id ON snippets(category_id);
@@ -290,7 +298,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 7] = [
+const STEPS: [(i64, Step); 8] = [
     (
     13,
     // The command snippets.
@@ -391,6 +399,20 @@ COMMIT;",
     ),
     // What sync needs.
     (19, Step::Code(add_sync)),
+    (
+        20,
+        // The snippet categories' nesting and the snippets' order: every row
+        // where it was, at the top, listed by name.
+        Step::Sql(
+            "BEGIN;
+ALTER TABLE snippet_categories ADD COLUMN parent_id  INTEGER REFERENCES snippet_categories(id) ON DELETE CASCADE;
+ALTER TABLE snippet_categories ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX snippet_categories_parent_id ON snippet_categories(parent_id);
+ALTER TABLE snippets ADD COLUMN sort_order     INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version = 21;
+COMMIT;",
+        ),
+    ),
 ];
 
 /// Version 16, the Telnet hosts: `protocol` takes `telnet`, and the two
@@ -953,11 +975,17 @@ impl HostDatabase {
 
         let snippet_categories = self
             .connection
-            .prepare("SELECT id, name, sync_id, edited_ms FROM snippet_categories ORDER BY id")?
+            .prepare(
+                "SELECT id, name, sync_id, edited_ms, parent_id, sort_order \
+                 FROM snippet_categories ORDER BY id",
+            )?
             .query_map([], |row| {
+                let parent: Option<i64> = row.get(4)?;
                 Ok(SnippetCategory {
                     id: SnippetCategoryId(from_sql(row.get(0)?)),
                     name: row.get::<_, String>(1)?.into(),
+                    parent: parent.map(|id| SnippetCategoryId(from_sql(id))),
+                    sort_order: row.get(5)?,
                     sync_id: PublicId::from_stored(row.get(2)?),
                     edited_ms: from_sql(row.get(3)?),
                 })
@@ -968,7 +996,7 @@ impl HostDatabase {
             .connection
             .prepare(
                 "SELECT id, category_id, name, command, scope_group_id, scope_host_id, \
-                 run_on_click, sync_id, edited_ms FROM snippets ORDER BY id",
+                 run_on_click, sync_id, edited_ms, sort_order FROM snippets ORDER BY id",
             )?
             .query_map([], |row| {
                 let id: i64 = row.get(0)?;
@@ -993,6 +1021,7 @@ impl HostDatabase {
                 let mut snippet = Snippet::new(SnippetId(from_sql(id)), draft);
                 snippet.sync_id = PublicId::from_stored(row.get(7)?);
                 snippet.edited_ms = from_sql(row.get(8)?);
+                snippet.sort_order = row.get(9)?;
                 Ok(snippet)
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1537,12 +1566,15 @@ impl HostDatabase {
 
     pub fn insert_snippet_category(&self, category: &SnippetCategory) -> rusqlite::Result<()> {
         self.connection.execute(
-            "INSERT INTO snippet_categories (id, name, sync_id, edited_ms) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO snippet_categories (id, name, sync_id, edited_ms, parent_id, sort_order) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 to_sql(category.id.0),
                 category.name.as_ref(),
                 category.sync_id.as_str(),
                 to_sql(category.edited_ms),
+                category.parent.map(|id| to_sql(id.0)),
+                category.sort_order,
             ],
         )?;
         Ok(())
@@ -1550,17 +1582,57 @@ impl HostDatabase {
 
     pub fn update_snippet_category(&self, category: &SnippetCategory) -> rusqlite::Result<()> {
         self.connection.execute(
-            "UPDATE snippet_categories SET name = ?2, edited_ms = ?3 WHERE id = ?1",
+            "UPDATE snippet_categories SET name = ?2, edited_ms = ?3, parent_id = ?4, \
+             sort_order = ?5 WHERE id = ?1",
             params![
                 to_sql(category.id.0),
                 category.name.as_ref(),
                 to_sql(category.edited_ms),
+                category.parent.map(|id| to_sql(id.0)),
+                category.sort_order,
             ],
         )?;
         Ok(())
     }
 
-    /// Delete a category with the snippets in it: the foreign key cascades.
+    /// Save one drag of 命令片段 as a unit: every category's parent and
+    /// place, every snippet's category and place.
+    pub fn save_snippet_order(
+        &self,
+        categories: &[SnippetCategory],
+        snippets: &[Snippet],
+    ) -> rusqlite::Result<()> {
+        self.atomically(|connection| {
+            let mut update_category = connection.prepare(
+                "UPDATE snippet_categories SET parent_id = ?2, sort_order = ?3, edited_ms = ?4 \
+                 WHERE id = ?1",
+            )?;
+            for category in categories {
+                update_category.execute(params![
+                    to_sql(category.id.0),
+                    category.parent.map(|id| to_sql(id.0)),
+                    category.sort_order,
+                    to_sql(category.edited_ms),
+                ])?;
+            }
+            let mut update_snippet = connection.prepare(
+                "UPDATE snippets SET category_id = ?2, sort_order = ?3, edited_ms = ?4 \
+                 WHERE id = ?1",
+            )?;
+            for snippet in snippets {
+                update_snippet.execute(params![
+                    to_sql(snippet.id.0),
+                    snippet.category.map(|id| to_sql(id.0)),
+                    snippet.sort_order,
+                    to_sql(snippet.edited_ms),
+                ])?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Delete a category with the categories inside it and the snippets in
+    /// them all: the foreign keys cascade.
     pub fn remove_snippet_category(&self, id: SnippetCategoryId) -> rusqlite::Result<()> {
         self.connection.execute(
             "DELETE FROM snippet_categories WHERE id = ?1",
@@ -1573,7 +1645,8 @@ impl HostDatabase {
         let (group, host) = scope_columns(snippet.scope);
         self.connection.execute(
             "INSERT INTO snippets (id, category_id, name, command, scope_group_id, scope_host_id, \
-             run_on_click, sync_id, edited_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             run_on_click, sync_id, edited_ms, sort_order) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 to_sql(snippet.id.0),
                 snippet.category.map(|id| to_sql(id.0)),
@@ -1584,6 +1657,7 @@ impl HostDatabase {
                 snippet.run_on_click,
                 snippet.sync_id.as_str(),
                 to_sql(snippet.edited_ms),
+                snippet.sort_order,
             ],
         )?;
         Ok(())
@@ -1593,8 +1667,8 @@ impl HostDatabase {
         let (group, host) = scope_columns(snippet.scope);
         self.connection.execute(
             "UPDATE snippets SET category_id = ?2, name = ?3, command = ?4, \
-             scope_group_id = ?5, scope_host_id = ?6, run_on_click = ?7, edited_ms = ?8 \
-             WHERE id = ?1",
+             scope_group_id = ?5, scope_host_id = ?6, run_on_click = ?7, edited_ms = ?8, \
+             sort_order = ?9 WHERE id = ?1",
             params![
                 to_sql(snippet.id.0),
                 snippet.category.map(|id| to_sql(id.0)),
@@ -1604,6 +1678,7 @@ impl HostDatabase {
                 host,
                 snippet.run_on_click,
                 to_sql(snippet.edited_ms),
+                snippet.sort_order,
             ],
         )?;
         Ok(())
@@ -2029,6 +2104,7 @@ pub fn now_millis() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SnippetCategoryDraft;
 
     fn group(id: u64, name: &str, parent: Option<u64>) -> HostGroup {
         HostGroup::new(GroupId(id), GroupDraft::new(name, parent.map(GroupId)))
@@ -2793,6 +2869,59 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
     }
 
     #[test]
+    fn a_version_20_file_gets_the_snippet_order_and_keeps_its_snippets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            // Version 20 as files of it have it: 15's schema, taken on by
+            // its steps.
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(&format!(
+                "BEGIN;\n{SCHEMA_15}\nPRAGMA user_version = 15;\nCOMMIT;"
+            ))
+            .unwrap();
+            add_telnet(&old).unwrap();
+            for (_, step) in &STEPS[3..6] {
+                let Step::Sql(sql) = step else {
+                    panic!("versions 17 to 19 are SQL steps");
+                };
+                old.execute_batch(sql).unwrap();
+            }
+            add_sync(&old).unwrap();
+            old.execute_batch(
+                "INSERT INTO snippet_categories (id, name, sync_id, edited_ms) \
+ VALUES (1, 'Docker', 's1aaaaaaaaaaaaaa', 5);
+INSERT INTO snippets (id, category_id, name, command, sync_id, edited_ms) \
+ VALUES (1, 1, 'ps', 'docker ps', 's2aaaaaaaaaaaaaa', 6);",
+            )
+            .unwrap();
+        }
+
+        let db = HostDatabase::open(&path).unwrap();
+        let version: i64 = db
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(dir.path().join("shellrs.db.v20.bak").exists());
+        let fresh = HostDatabase::in_memory().unwrap();
+        assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
+
+        // At the top, in the first place, and not taken as edited.
+        let data = db.load().unwrap();
+        let docker = &data.snippet_categories[0];
+        assert_eq!(
+            (docker.parent, docker.sort_order, docker.edited_ms),
+            (None, 0, 5)
+        );
+        let ps = &data.snippets[0];
+        assert_eq!(
+            (ps.category, ps.sort_order, ps.edited_ms),
+            (Some(SnippetCategoryId(1)), 0, 6)
+        );
+    }
+
+    #[test]
     fn a_row_added_by_hand_gets_a_sync_id_at_the_next_open() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shellrs.db");
@@ -3093,7 +3222,10 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
     #[test]
     fn snippets_round_trip_and_go_with_their_category() {
         let db = HostDatabase::in_memory().unwrap();
-        let docker = SnippetCategory::new(SnippetCategoryId(1), "Docker");
+        let docker = SnippetCategory::new(
+            SnippetCategoryId(1),
+            SnippetCategoryDraft::new("Docker", None),
+        );
         db.insert_snippet_category(&docker).unwrap();
         let mut ps = snippet(1, "列出容器", Some(1), SnippetScope::All);
         ps.command = "docker ps -a\ndocker images".into();
@@ -3120,16 +3252,57 @@ INSERT INTO snippets (id, category_id, name, command) VALUES (1, 1, 'ps', 'docke
 
         db.insert_snippet(&snippet(3, "日志", Some(1), SnippetScope::All))
             .unwrap();
+        // A category inside it, with a snippet, goes with it.
+        let mut inner = SnippetCategory::new(
+            SnippetCategoryId(2),
+            SnippetCategoryDraft::new("compose", Some(SnippetCategoryId(1))),
+        );
+        inner.sort_order = 3;
+        db.insert_snippet_category(&inner).unwrap();
+        db.insert_snippet(&snippet(4, "up", Some(2), SnippetScope::All))
+            .unwrap();
+        assert_eq!(db.load().unwrap().snippet_categories[1], inner);
         db.remove_snippet_category(SnippetCategoryId(1)).unwrap();
         db.remove_snippet(SnippetId(2)).unwrap();
-        let names: Vec<_> = db
-            .load()
-            .unwrap()
+        let data = db.load().unwrap();
+        assert!(data.snippet_categories.is_empty());
+        let names: Vec<_> = data
             .snippets
             .into_iter()
             .map(|snippet| snippet.name)
             .collect();
         assert_eq!(names, ["所有容器"]);
+    }
+
+    #[test]
+    fn a_drag_of_snippets_saves_every_place() {
+        let db = HostDatabase::in_memory().unwrap();
+        let mut categories = vec![
+            SnippetCategory::new(SnippetCategoryId(1), SnippetCategoryDraft::new("ops", None)),
+            SnippetCategory::new(
+                SnippetCategoryId(2),
+                SnippetCategoryDraft::new("logs", None),
+            ),
+        ];
+        let mut snippets = vec![
+            snippet(1, "df", None, SnippetScope::All),
+            snippet(2, "tail", Some(2), SnippetScope::All),
+        ];
+        for category in &categories {
+            db.insert_snippet_category(category).unwrap();
+        }
+        for snippet in &snippets {
+            db.insert_snippet(snippet).unwrap();
+        }
+        categories[1].parent = Some(SnippetCategoryId(1));
+        categories[1].edited_ms = 9;
+        categories[0].sort_order = 1;
+        snippets[0].category = Some(SnippetCategoryId(2));
+        snippets[0].sort_order = 4;
+        db.save_snippet_order(&categories, &snippets).unwrap();
+        let data = db.load().unwrap();
+        assert_eq!(data.snippet_categories, categories);
+        assert_eq!(data.snippets, snippets);
     }
 
     #[test]
