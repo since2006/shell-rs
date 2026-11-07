@@ -42,7 +42,7 @@ fn from_sql(id: i64) -> u64 {
 /// host's right sidebar, 18 the saved local terminals, 19 their titles, 20
 /// what sync needs, 21 the snippet categories' nesting and the snippets'
 /// order.
-const SCHEMA_VERSION: i64 = 21;
+const SCHEMA_VERSION: i64 = 22;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -67,8 +67,9 @@ const SCHEMA_VERSION: i64 = 21;
 ///     next open (see `fill_missing_public_ids`); the ones there are unique.
 ///   - `os` and `last_connected_at` are written by connections, and
 ///     `sidebar_tool` (the right sidebar's tool as the host's terminals
-///     last had it, the app's `ToolKind::key`; `NULL` while hidden) by the sidebar;
-///     none of them by the host form.
+///     last had it, the app's `ToolKind::key`; `NULL` while hidden) and
+///     `directory_follow` (目录跟随 in its 文件 as last switched; `NULL`
+///     until then) by the sidebar; none of them by the host form.
 ///   - `protocol` is `ssh`, `telnet` or `serial`. A serial host's device is
 ///     its `address` and its line is in the five `serial_*` columns, set
 ///     exactly for a serial host; the login and route columns keep what a
@@ -174,6 +175,7 @@ CREATE TABLE hosts (
         CHECK (protocol = 'telnet' OR telnet_pass_prompt IS NULL),
     sidebar_tool      TEXT,
     edited_ms         INTEGER NOT NULL DEFAULT 0,
+    directory_follow  INTEGER CHECK (directory_follow IN (0, 1)),
     CHECK ((auth = 'credential') = (credential_id IS NOT NULL)),
     CHECK ((auth = 'credential') = (username IS NULL)),
     CHECK ((route = 'proxy') = (proxy_kind IS NOT NULL)),
@@ -298,7 +300,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 8] = [
+const STEPS: [(i64, Step); 9] = [
     (
     13,
     // The command snippets.
@@ -410,6 +412,16 @@ ALTER TABLE snippet_categories ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX snippet_categories_parent_id ON snippet_categories(parent_id);
 ALTER TABLE snippets ADD COLUMN sort_order     INTEGER NOT NULL DEFAULT 0;
 PRAGMA user_version = 21;
+COMMIT;",
+        ),
+    ),
+    (
+        21,
+        // 目录跟随 as each host's 文件 last had it: not switched yet.
+        Step::Sql(
+            "BEGIN;
+ALTER TABLE hosts ADD COLUMN directory_follow  INTEGER CHECK (directory_follow IN (0, 1));
+PRAGMA user_version = 22;
 COMMIT;",
         ),
     ),
@@ -788,7 +800,7 @@ impl HostDatabase {
                  credential_id, route, proxy_kind, proxy_host, proxy_port, proxy_username, \
                  notes, os, protocol, serial_baud, serial_data_bits, serial_parity, \
                  serial_stop_bits, serial_flow, telnet_user_prompt, telnet_pass_prompt, \
-                 sidebar_tool, edited_ms \
+                 sidebar_tool, edited_ms, directory_follow \
                  FROM hosts ORDER BY id",
             )?
             .query_map([], |row| {
@@ -854,6 +866,7 @@ impl HostDatabase {
                 host.os = os.as_deref().and_then(HostOs::from_stored);
                 host.sidebar_tool = sidebar_tool.map(SharedString::from);
                 host.edited_ms = from_sql(row.get(26)?);
+                host.directory_follow = row.get::<_, Option<i64>>(27)?.map(|follow| follow != 0);
                 match protocol.as_str() {
                     "serial" => host.protocol = Protocol::Serial(serial.settings()),
                     "telnet" => host.protocol = Protocol::Telnet(telnet),
@@ -1266,9 +1279,9 @@ impl HostDatabase {
              username, credential_id, route, proxy_kind, proxy_host, proxy_port, \
              proxy_username, notes, os, protocol, serial_baud, serial_data_bits, \
              serial_parity, serial_stop_bits, serial_flow, telnet_user_prompt, \
-             telnet_pass_prompt, sidebar_tool, edited_ms) \
+             telnet_pass_prompt, sidebar_tool, edited_ms, directory_follow) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
             params![
                 to_sql(host.id.0),
                 host.public_id.as_str(),
@@ -1297,6 +1310,7 @@ impl HostDatabase {
                 row.telnet_password_prompt,
                 host.sidebar_tool.as_deref(),
                 to_sql(host.edited_ms),
+                host.directory_follow,
             ],
         )?;
             write_jumps(connection, host)
@@ -1304,9 +1318,10 @@ impl HostDatabase {
     }
 
     /// Rewrite the fields the host form edits, jump hosts included.
-    /// `last_connected_at`, `os` and `sidebar_tool` are left alone: they are
-    /// written by `touch_connected`, `set_host_os` and
-    /// `set_host_sidebar_tool`, and none is part of the host form.
+    /// `last_connected_at`, `os`, `sidebar_tool` and `directory_follow` are
+    /// left alone: they are written by `touch_connected`, `set_host_os`,
+    /// `set_host_sidebar_tool` and `set_host_directory_follow`, and none is
+    /// part of the host form.
     /// `public_id` never changes.
     pub fn update_host(&self, host: &Host) -> rusqlite::Result<()> {
         self.atomically(|connection| {
@@ -1829,6 +1844,20 @@ impl HostDatabase {
         self.connection.execute(
             "UPDATE hosts SET sidebar_tool = ?2 WHERE id = ?1",
             params![to_sql(id.0), tool],
+        )?;
+        Ok(())
+    }
+
+    /// Record 目录跟随 as the host's 文件 has it now, `None` for not
+    /// switched yet.
+    pub fn set_host_directory_follow(
+        &self,
+        id: HostId,
+        follow: Option<bool>,
+    ) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE hosts SET directory_follow = ?2 WHERE id = ?1",
+            params![to_sql(id.0), follow],
         )?;
         Ok(())
     }
@@ -2922,6 +2951,61 @@ INSERT INTO snippets (id, category_id, name, command, sync_id, edited_ms) \
     }
 
     #[test]
+    fn a_version_21_file_gets_the_directory_follow_column_and_keeps_its_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            // Version 21 as files of it have it: 15's schema, taken on by
+            // its steps.
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(&format!(
+                "BEGIN;\n{SCHEMA_15}\nPRAGMA user_version = 15;\nCOMMIT;"
+            ))
+            .unwrap();
+            add_telnet(&old).unwrap();
+            for (_, step) in &STEPS[3..6] {
+                let Step::Sql(sql) = step else {
+                    panic!("versions 17 to 19 are SQL steps");
+                };
+                old.execute_batch(sql).unwrap();
+            }
+            add_sync(&old).unwrap();
+            let Step::Sql(snippets) = STEPS[7].1 else {
+                panic!("the snippet order is a SQL step");
+            };
+            old.execute_batch(snippets).unwrap();
+            old.execute(
+                "INSERT INTO hosts (id, name, address, port, auth, username, sidebar_tool, \
+                 edited_ms) VALUES (1, 'web', '10.0.0.1', 22, 'password', 'root', 'files', 5)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let db = HostDatabase::open(&path).unwrap();
+        let version: i64 = db
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(dir.path().join("shellrs.db.v21.bak").exists());
+        let fresh = HostDatabase::in_memory().unwrap();
+        assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
+
+        // Not switched yet, so as the setting says; nothing else touched.
+        let data = db.load().unwrap();
+        let web = &data.hosts[0];
+        assert_eq!(
+            (
+                web.directory_follow,
+                web.sidebar_tool.as_deref(),
+                web.edited_ms
+            ),
+            (None, Some("files"), 5)
+        );
+    }
+
+    #[test]
     fn a_row_added_by_hand_gets_a_sync_id_at_the_next_open() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shellrs.db");
@@ -3084,6 +3168,35 @@ INSERT INTO snippets (id, category_id, name, command, sync_id, edited_ms) \
             .execute("UPDATE hosts SET sidebar_tool = 'radar' WHERE id = 1", [])
             .unwrap();
         assert_eq!(tool().as_deref(), Some("radar"));
+    }
+
+    #[test]
+    fn a_host_keeps_its_directory_follow_apart_from_the_form() {
+        let db = HostDatabase::in_memory().unwrap();
+        let mut host = Host::new(
+            HostId(1),
+            HostDraft::new("web", "10.0.0.1", 22, "root", AuthKind::Password, None),
+        );
+        db.insert_host(&host).unwrap();
+        let follow = || db.load().unwrap().hosts[0].directory_follow;
+        assert_eq!(follow(), None);
+        db.set_host_directory_follow(HostId(1), Some(false))
+            .unwrap();
+        assert_eq!(follow(), Some(false));
+
+        // Saving the form leaves it alone.
+        host.name = "web-01".into();
+        db.update_host(&host).unwrap();
+        assert_eq!(follow(), Some(false));
+        db.set_host_directory_follow(HostId(1), Some(true)).unwrap();
+        assert_eq!(follow(), Some(true));
+
+        // A copy made with it saved has it from the start.
+        host.id = HostId(2);
+        host.public_id = PublicId::generate();
+        host.directory_follow = Some(false);
+        db.insert_host(&host).unwrap();
+        assert_eq!(db.load().unwrap().hosts[1].directory_follow, Some(false));
     }
 
     #[test]

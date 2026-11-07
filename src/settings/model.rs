@@ -123,7 +123,9 @@ impl Default for TransferSettings {
 pub struct FileSidebarSettings {
     /// 自动检测目录配置: on showing 文件, see whether the host's shell reports
     /// its folder and offer to set it up if not; also whether 文件 follows
-    /// the terminal's folder to begin with. On unless turned off.
+    /// the terminal's folder to begin with, on a host whose 目录跟随 the
+    /// user has not switched (`Host::directory_follow`). On unless turned
+    /// off.
     pub detect_directory_follow: bool,
 }
 

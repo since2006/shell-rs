@@ -868,7 +868,7 @@ impl Workspace {
         self._subscriptions.push(subscription);
         self.explorers.insert(id, panel.clone());
         self.file_sidebars.insert(terminal, id);
-        let follow = self.directory_follow_setting(cx);
+        let follow = self.initial_follow(terminal, cx);
         panel.update(cx, |panel, cx| panel.set_follow(follow, cx));
         // Where the terminal is, rather than home, if its shell said.
         self.follow_current_directory(terminal, window, cx);

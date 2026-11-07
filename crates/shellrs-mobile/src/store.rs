@@ -1005,6 +1005,7 @@ impl From<Change> for ChangeKind {
             | Change::DeleteForward
             | Change::HostOs
             | Change::SidebarTool
+            | Change::DirectoryFollow
             | Change::NewSnippet
             | Change::SaveSnippet
             | Change::DeleteSnippet

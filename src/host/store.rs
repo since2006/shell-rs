@@ -164,6 +164,7 @@ impl HostStore {
         fn record_connection(id: HostId);
         fn set_host_os(id: HostId, os: Option<HostOs>);
         fn set_host_sidebar_tool(id: HostId, tool: Option<SharedString>);
+        fn set_host_directory_follow(id: HostId, follow: bool);
         fn save_secret(secret: SecretRef, value: Option<String>);
         fn insert_terminal_group(name: SharedString) -> TerminalGroupId;
         fn rename_terminal_group(id: TerminalGroupId, name: SharedString) -> bool;

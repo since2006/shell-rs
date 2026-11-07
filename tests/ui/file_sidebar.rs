@@ -6,7 +6,8 @@
 use crate::support::*;
 use shellrs::analytics::{Analytics, Counter, Signal};
 use shellrs::app::{
-    CloseTerminal, DisconnectTerminal, ExplorerAction, ExplorerCommand, ReconnectTerminal,
+    CloseTerminal, ConnectHost, DisconnectTerminal, ExplorerAction, ExplorerCommand,
+    ReconnectTerminal,
 };
 use shellrs::explorer::ExplorerPanel;
 
@@ -614,6 +615,68 @@ async fn files_follows_its_hosts_folder_only_when_it_changes(cx: &mut TestAppCon
     in_frame(cx, fixture.handle, |window, _| {
         assert_eq!(window.find("follow-terminal").checked(), Some(false));
     });
+}
+
+/// 目录跟随 as switched in one terminal's 文件 is where the host's next 文件
+/// starts, kept on the host for the next launch; a host never switched
+/// starts as the setting says.
+#[gpui_kit::test]
+async fn the_follow_switch_is_kept_for_the_host(cx: &mut TestAppContext) {
+    let fixture = open_with(
+        cx,
+        FakeSftpProvider::default(),
+        FakeTerminalFactory::answering(&[SET_UP, SET_UP, SET_UP]),
+    );
+    let store = cx.update(|cx| fixture.workspace.read(cx).store().clone());
+    let remembered = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            store
+                .read(cx)
+                .host(HostId(WEB_01))
+                .unwrap()
+                .directory_follow
+        })
+    };
+    let follows = |cx: &mut TestAppContext, terminal| {
+        cx.update(|cx| sidebar(&fixture, terminal, cx).map(|panel| panel.read(cx).follows()))
+    };
+    show_files(cx, &fixture, INITIAL_WEB_TERMINAL, FILES).await;
+    settle(cx);
+    assert_eq!(remembered(cx), None);
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click("follow-terminal", cx)
+    });
+    assert_eq!(remembered(cx), Some(false));
+
+    // Another terminal on web-01 has 文件 beside it at once, switched off.
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.dispatch_action(Box::new(ConnectHost(HostId(WEB_01))), cx)
+    });
+    settle(cx);
+    assert_eq!(follows(cx, FIRST_NEW_TERMINAL), Some(false));
+    in_frame(cx, fixture.handle, |window, _| {
+        assert_eq!(window.find("follow-terminal").checked(), Some(false));
+    });
+
+    // staging-api was never switched: on, as the setting says.
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_STAGING_TERMINAL), cx);
+    });
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click("tool-files", cx)
+    });
+    settle(cx);
+    assert_eq!(follows(cx, INITIAL_STAGING_TERMINAL), Some(true));
+
+    // Switched on again in the newer one: the first keeps its own.
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click(("terminal-tab", FIRST_NEW_TERMINAL), cx);
+    });
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click("follow-terminal", cx)
+    });
+    assert_eq!(remembered(cx), Some(true));
+    assert_eq!(follows(cx, INITIAL_WEB_TERMINAL), Some(false));
 }
 
 #[gpui_kit::test]
