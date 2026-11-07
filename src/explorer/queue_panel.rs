@@ -160,9 +160,11 @@ impl ExplorerPanel {
             .child(
                 v_flex()
                     .id("transfer-queue-rows")
+                    .test_support()
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(&self.queue_scroll)
                     .children(queue.entries().iter().map(|entry| {
                         let id = entry.id();
                         let is_head = queue.head().is_some_and(|head| head.id() == id);

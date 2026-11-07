@@ -389,6 +389,42 @@ async fn files_dropped_on_files_are_offered_for_upload(cx: &mut TestAppContext) 
     });
 }
 
+/// Its queue, as an SFTP tab's, scrolls down to a batch as it is added.
+#[gpui_kit::test]
+async fn files_queue_scrolls_to_a_batch_as_it_is_added(cx: &mut TestAppContext) {
+    let fixture = open(cx, FakeSftpProvider::default());
+    show_files(cx, &fixture, INITIAL_WEB_TERMINAL, FILES).await;
+    const BATCHES: u64 = 12;
+    for n in 1..=BATCHES {
+        let paths = vec![std::path::PathBuf::from(format!("/local/tester/{n}.txt"))];
+        in_frame(cx, fixture.handle, |window, cx| {
+            window.dispatch_action(
+                Box::new(ExplorerAction::new(
+                    ExplorerId(FILES),
+                    ExplorerCommand::UploadPaths {
+                        paths,
+                        target: "/home/tester".into(),
+                    },
+                )),
+                cx,
+            )
+        });
+        in_frame(cx, fixture.handle, |window, cx| {
+            window.click("upload-confirm", cx)
+        });
+    }
+    in_frame(cx, fixture.handle, |window, _| {
+        let rows = window.find("transfer-queue-rows").bounds();
+        let first = window.find(("queue-entry", 1u64)).bounds();
+        let last = window.find(("queue-entry", BATCHES)).bounds();
+        assert!(first.top() < rows.top(), "{first:?} in {rows:?}");
+        assert!(
+            last.top() >= rows.top() && last.bottom() <= rows.bottom() + px(0.5),
+            "{last:?} in {rows:?}"
+        );
+    });
+}
+
 #[gpui_kit::test]
 async fn files_count_as_a_tool_not_as_an_sftp_connection(cx: &mut TestAppContext) {
     let fixture = open(cx, FakeSftpProvider::default());

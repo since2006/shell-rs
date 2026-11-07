@@ -156,6 +156,54 @@ async fn sftp_multi_selection_keyboard_upload_freezes_paths_and_cancel_resumes(
     );
 }
 
+/// A batch goes in at the end of the queue, which runs top to bottom, and
+/// the list scrolls down to it: no scrolling to see one just added.
+#[gpui_kit::test]
+async fn the_queue_scrolls_to_a_batch_as_it_is_added(cx: &mut TestAppContext) {
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, _) = open_workspace_with_sftp(cx, provider.clone());
+    open_test_explorer(cx, handle).await;
+    const BATCHES: u64 = 12;
+    for n in 1..=BATCHES {
+        let paths = vec![std::path::PathBuf::from(format!("/local/tester/{n}.txt"))];
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.dispatch_action(
+                Box::new(ExplorerAction::new(
+                    ExplorerId(SFTP_TAB),
+                    ExplorerCommand::UploadPaths {
+                        paths,
+                        target: "/home/tester".into(),
+                    },
+                )),
+                cx,
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("upload-confirm", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let rows = window.find("transfer-queue-rows").bounds();
+        let first = window.find(("queue-entry", 1u64)).bounds();
+        let last = window.find(("queue-entry", BATCHES)).bounds();
+        // More than fit, the first, running, scrolled out above.
+        assert!(first.top() < rows.top(), "{first:?} in {rows:?}");
+        assert!(
+            last.top() >= rows.top() && last.bottom() <= rows.bottom() + px(0.5),
+            "{last:?} in {rows:?}"
+        );
+    })
+    .unwrap();
+}
+
 /// A transfer confirmed while another runs waits its turn in the queue,
 /// WinSCP-style, and starts when the engine is free again.
 #[gpui_kit::test]
