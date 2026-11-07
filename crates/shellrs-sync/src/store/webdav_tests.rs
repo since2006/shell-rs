@@ -213,6 +213,168 @@ fn a_server_that_lists_no_etags_gets_tags_of_time_and_size_throughout() {
     assert!(store.tag_as_listed(read(), Some(at)).starts_with("e:"));
 }
 
+/// A server as ZSpace's WebDAV (webdav_rs) answers: a write with
+/// `If-None-Match: *` into a folder that is not there is refused with 412,
+/// not 409. In memory, on a port of its own; a connection per request.
+mod zspace {
+    use std::collections::BTreeSet;
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    pub struct State {
+        pub folders: BTreeSet<String>,
+        pub files: BTreeSet<String>,
+        /// Every request: method, path, whether it had `If-None-Match`.
+        pub log: Vec<(String, String, bool)>,
+    }
+
+    fn parent(path: &str) -> String {
+        let trimmed = path.trim_end_matches('/');
+        match trimmed.rfind('/') {
+            Some(at) => trimmed[..=at].to_owned(),
+            None => "/".to_owned(),
+        }
+    }
+
+    fn answer(state: &mut State, method: &str, path: &str, if_none_match: bool) -> u16 {
+        state.log.push((method.into(), path.into(), if_none_match));
+        let folder_there = state.folders.contains(&parent(path));
+        match method {
+            "PUT" if if_none_match && (!folder_there || state.files.contains(path)) => 412,
+            "PUT" if !folder_there => 409,
+            "PUT" => {
+                state.files.insert(path.into());
+                201
+            }
+            "MKCOL" if state.folders.contains(path) => 405,
+            "MKCOL" if !folder_there => 409,
+            "MKCOL" => {
+                state.folders.insert(path.into());
+                201
+            }
+            "PROPFIND" if state.folders.contains(path) || state.files.contains(path) => 207,
+            "PROPFIND" => 404,
+            _ => 405,
+        }
+    }
+
+    fn listing(state: &State, path: &str) -> String {
+        let prop = if state.files.contains(path) {
+            r#"<d:resourcetype/><d:getetag>"1-1"</d:getetag><d:getcontentlength>1</d:getcontentlength>"#
+        } else {
+            "<d:resourcetype><d:collection/></d:resourcetype>"
+        };
+        format!(
+            r#"<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"><d:response><d:href>{path}</d:href><d:propstat><d:prop>{prop}</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"#
+        )
+    }
+
+    /// The server's address and what it holds; `/dav/` is there to begin with.
+    pub fn start() -> (String, Arc<Mutex<State>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/dav", listener.local_addr().unwrap());
+        let state = Arc::new(Mutex::new(State::default()));
+        state.lock().unwrap().folders.insert("/dav/".into());
+        let shared = state.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut parts = line.split_whitespace();
+                let method = parts.next().unwrap_or_default().to_owned();
+                let path = parts.next().unwrap_or_default().to_owned();
+                let (mut length, mut if_none_match) = (0, false);
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                        break;
+                    }
+                    let lower = header.to_ascii_lowercase();
+                    if let Some(value) = lower.strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap_or(0);
+                    }
+                    if_none_match |= lower.starts_with("if-none-match:");
+                }
+                let mut body = vec![0; length];
+                let _ = reader.read_exact(&mut body);
+                let mut state = shared.lock().unwrap();
+                let status = answer(&mut state, &method, &path, if_none_match);
+                let body = if status == 207 {
+                    listing(&state, &path)
+                } else {
+                    String::new()
+                };
+                drop(state);
+                let etag = if status == 201 && method == "PUT" {
+                    "ETag: \"1-1\"\r\n"
+                } else {
+                    ""
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\n{etag}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (url, state)
+    }
+}
+
+#[test]
+fn a_write_refused_with_412_for_a_missing_folder_makes_the_folder_and_keeps_its_condition() {
+    let (url, state) = zspace::start();
+    let store = WebDavStore::new(&url, "me", "pw", "test").unwrap();
+
+    // The vault, as `create_vault` writes it: into folders not there yet.
+    store
+        .put(
+            "shellrs-sync/v1/vault.json".into(),
+            b"1".to_vec(),
+            PutCondition::Absent,
+        )
+        .unwrap();
+    {
+        let state = state.lock().unwrap();
+        assert!(state.files.contains("/dav/shellrs-sync/v1/vault.json"));
+        // Never written without its condition.
+        let puts: Vec<_> = state.log.iter().filter(|(m, ..)| m == "PUT").collect();
+        assert!(puts.iter().all(|(.., inm)| *inm), "{:?}", state.log);
+    }
+
+    // There now: the same write is refused, as another device's would be.
+    assert_eq!(
+        store.put(
+            "shellrs-sync/v1/vault.json".into(),
+            b"2".to_vec(),
+            PutCondition::Absent,
+        ),
+        Err(StoreError::PreconditionFailed)
+    );
+    // And one into a folder that is there writes, then is refused.
+    store
+        .put(
+            "shellrs-sync/v1/other".into(),
+            b"3".to_vec(),
+            PutCondition::Absent,
+        )
+        .unwrap();
+    assert_eq!(
+        store.put(
+            "shellrs-sync/v1/other".into(),
+            b"4".to_vec(),
+            PutCondition::Absent
+        ),
+        Err(StoreError::PreconditionFailed)
+    );
+}
+
 /// The store against a real server, on Unix: an Apache started for the
 /// test, or the server `SHELLRS_TEST_WEBDAV_URL` names, signed in to as
 /// `SHELLRS_TEST_WEBDAV_USER` with `SHELLRS_TEST_WEBDAV_PASSWORD`. There,
