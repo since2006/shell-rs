@@ -193,6 +193,10 @@ async fn pump(
             },
         }
     };
+    // The commands close before the events go out: what reads the end
+    // finds the terminal already refusing what it types, rather than a
+    // channel still open for a write nothing will carry.
+    commands.close();
     output.finish(end);
 }
 

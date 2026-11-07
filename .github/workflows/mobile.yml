@@ -18,6 +18,19 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - ".github/workflows/mobile.yml"
+  # The same paths as a push: a pull request is tested the same way.
+  pull_request:
+    paths:
+      - "crates/shellrs-mobile/**"
+      - "crates/shellrs-ssh/**"
+      - "crates/shellrs-hosts/**"
+      - "crates/shellrs-sync/**"
+      - "scripts/build-ios.sh"
+      - "scripts/build-android.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/mobile.yml"
   workflow_dispatch:
 
 jobs:
