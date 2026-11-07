@@ -94,6 +94,9 @@ jobs:
       # A snippet goes after what is typed in a local terminal there.
       - run: "cargo test --locked --test ui projects::a_snippet_beside_a_local_terminal"
       - run: "cargo test --locked --lib settings::"
+      # Ctrl+Shift+W, the default there, closes a tab from a terminal.
+      - run: "cargo test --locked --lib app::shortcuts::"
+      - run: "cargo test --locked --test ui workspace::close_shortcut"
       - run: "cargo test --locked --lib app::tray::"
       - run: "cargo test --lib cli::"
       - run: "cargo test --lib update::"

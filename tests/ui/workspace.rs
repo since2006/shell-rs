@@ -8,27 +8,6 @@ use gpui_kit::component::{
 };
 use shellrs::app::Shortcut;
 
-/// Bind the close-tab shortcut to a key the terminal does not claim.
-///
-/// Ctrl with a letter is the shell's in a terminal (see
-/// `shell_keys_in_terminal`), and the default key for closing a tab is
-/// Ctrl+W on every platform but macOS, so the shortcut would go to the
-/// shell there. Ctrl and Shift with a letter is the app's everywhere.
-fn bind_close_tab(workspace: &Entity<Workspace>, cx: &mut TestAppContext) {
-    let shortcut = Shortcut::find("close-tab").expect("the close-tab shortcut");
-    cx.update(|cx| {
-        workspace.update(cx, |workspace, cx| {
-            workspace.settings().update(cx, |settings, cx| {
-                settings.update(
-                    |settings| settings.shortcuts.set(shortcut, "ctrl-shift-w".into()),
-                    cx,
-                )
-            })
-        })
-    });
-    cx.run_until_parked();
-}
-
 #[gpui_kit::test]
 fn tab_close_button_closes_the_terminal_and_disconnects(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
@@ -371,10 +350,14 @@ async fn recent_host_menu_commands_work_from_the_start_page(cx: &mut TestAppCont
     .unwrap();
 }
 
+/// The default keys, ⌘W or Ctrl+Shift+W, close a tab from inside a terminal
+/// too: Ctrl with a letter alone would be the shell's there.
 #[gpui_kit::test]
 fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext) {
-    let (handle, workspace) = open_workspace(cx);
-    bind_close_tab(&workspace, cx);
+    let (handle, _) = open_workspace(cx);
+    let close = Shortcut::find("close-tab")
+        .expect("the close-tab shortcut")
+        .default_keys();
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -389,7 +372,7 @@ fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext)
         window.render_frame(cx);
         // The new tab is displayed, with its input focused.
         assert!(window.find(("terminal", FIRST_NEW_TERMINAL)).visible());
-        window.press("ctrl-shift-w", cx);
+        window.press(close, cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -399,14 +382,14 @@ fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext)
         assert!(window.try_find(("terminal", FIRST_NEW_TERMINAL)).is_none());
         assert!(window.try_find("recent-hosts").is_none());
         // Keep closing whichever tab the dock displays next.
-        window.press("ctrl-shift-w", cx);
+        window.press(close, cx);
     })
     .unwrap();
     cx.run_until_parked();
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.press("ctrl-shift-w", cx);
+        window.press(close, cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -425,7 +408,7 @@ fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext)
         );
         assert!(window.find("recent-hosts").visible());
         // With nothing open the shortcut does nothing.
-        window.press("ctrl-shift-w", cx);
+        window.press(close, cx);
     })
     .unwrap();
     cx.run_until_parked();
