@@ -342,15 +342,23 @@ impl SyncStore for WebDavStore {
         {
             response = self.put_once(&url, &bytes, &PutCondition::Overwrite)?;
         }
-        // 409: a folder it goes in is missing (some servers say 404).
-        if matches!(
-            response.status(),
-            StatusCode::CONFLICT | StatusCode::NOT_FOUND
-        ) && !matches!(cond, PutCondition::Matches(_))
-        {
-            let folder = url
-                .join(".")
-                .map_err(|error| StoreError::Io(error.to_string()))?;
+        // 409: a folder it goes in is missing (some servers say 404, and
+        // some, as ZSpace's, 412 to `If-None-Match: *`: then the folder is
+        // asked for, and the write keeps its condition).
+        let folder = url
+            .join(".")
+            .map_err(|error| StoreError::Io(error.to_string()))?;
+        let folder_missing = match response.status() {
+            StatusCode::CONFLICT | StatusCode::NOT_FOUND => {
+                !matches!(cond, PutCondition::Matches(_))
+            }
+            StatusCode::PRECONDITION_FAILED => {
+                matches!(cond, PutCondition::Absent)
+                    && self.propfind(folder.clone(), "0")?.is_none()
+            }
+            _ => false,
+        };
+        if folder_missing {
             self.make_folder(&folder, MAX_FOLDER_LEVELS)?;
             response = self.put_once(&url, &bytes, &cond)?;
         }
