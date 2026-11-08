@@ -924,6 +924,11 @@ fn restore_hidden(
                 }
             }
         }
+        (RecordData::SnippetCategory(now), RecordData::SnippetCategory(before))
+            if hidden(&now.parent, &before.parent, Kind::SnippetCategory) =>
+        {
+            now.parent.clone_from(&before.parent);
+        }
         (RecordData::Snippet(now), RecordData::Snippet(before))
             if hidden(&now.category, &before.category, Kind::SnippetCategory) =>
         {
@@ -935,28 +940,34 @@ fn restore_hidden(
 }
 
 /// Inserts and updates first, by kind (what is pointed at first) and a
-/// parent group before its children; then deletions the other way round.
+/// parent group or category before its children; then deletions the other
+/// way round.
 fn sort_changes(changes: &mut [Change], local: &BTreeMap<RecordKey, &LocalRecord>) {
-    let mut parents: BTreeMap<String, Option<String>> = BTreeMap::new();
+    // A parent is of its child's kind.
+    let parent_of = |key: &RecordKey, data: &RecordData| {
+        let up = match data {
+            RecordData::Group(group) => &group.parent,
+            RecordData::SnippetCategory(category) => &category.parent,
+            _ => return None,
+        };
+        Some(up.clone().map(|up| RecordKey::new(key.kind.clone(), up)))
+    };
+    let mut parents: BTreeMap<RecordKey, Option<RecordKey>> = BTreeMap::new();
     for change in changes.iter() {
-        if let Change::Upsert {
-            id,
-            data: RecordData::Group(group),
-        } = change
+        if let Change::Upsert { data, .. } = change
+            && let Some(up) = parent_of(&change.key(), data)
         {
-            parents.insert(id.clone(), group.parent.clone());
+            parents.insert(change.key(), up);
         }
     }
     for (key, record) in local {
-        if let RecordData::Group(group) = &record.data {
-            parents
-                .entry(key.id.clone())
-                .or_insert_with(|| group.parent.clone());
+        if let Some(up) = parent_of(key, &record.data) {
+            parents.entry(key.clone()).or_insert(up);
         }
     }
-    let depth = |id: &str| {
+    let depth = |key: &RecordKey| {
         let mut depth = 0;
-        let mut at = id;
+        let mut at = key;
         while let Some(Some(up)) = parents.get(at) {
             depth += 1;
             at = up;
@@ -968,11 +979,7 @@ fn sort_changes(changes: &mut [Change], local: &BTreeMap<RecordKey, &LocalRecord
     };
     changes.sort_by_cached_key(|change| {
         let key = change.key();
-        let depth = if key.kind == Kind::Group {
-            depth(&key.id)
-        } else {
-            0
-        };
+        let depth = depth(&key);
         match change {
             Change::Upsert { .. } => (0, key.kind.rank(), depth, key.id),
             Change::Delete { .. } => (1, usize::MAX - key.kind.rank(), usize::MAX - depth, key.id),

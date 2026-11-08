@@ -181,12 +181,14 @@ pub enum Change {
     Recent,
     HostOs,
     SidebarTool,
+    DirectoryFollow,
     NewSnippet,
     SaveSnippet,
     DeleteSnippet,
     NewSnippetCategory,
-    RenameSnippetCategory,
+    SaveSnippetCategory,
     DeleteSnippetCategory,
+    MoveSnippetNode,
     NewTerminalGroup,
     SaveTerminalGroup,
     DeleteTerminalGroup,
@@ -940,6 +942,7 @@ impl HostData {
         // The form owns none of these, so rebuilding from the draft must not
         // drop them.
         let (os, sidebar_tool) = (host.os, host.sidebar_tool.clone());
+        let directory_follow = host.directory_follow;
         let sort_order = host.sort_order;
         let old_group = host.group;
         let public_id = host.public_id.clone();
@@ -948,6 +951,7 @@ impl HostData {
         host.public_id = public_id;
         host.os = os;
         host.sidebar_tool = sidebar_tool;
+        host.directory_follow = directory_follow;
         host.sort_order = if host.group == old_group {
             sort_order
         } else {
@@ -1026,6 +1030,7 @@ impl HostData {
         // Same host, so the copy already knows what it will find there,
         // and opens the sidebar as the original does.
         let (os, sidebar_tool) = (self.hosts[ix].os, self.hosts[ix].sidebar_tool.clone());
+        let directory_follow = self.hosts[ix].directory_follow;
         let copy_id = HostId(self.next_host_id);
         self.next_host_id += 1;
         let mut copy = Host::new(copy_id, draft);
@@ -1033,6 +1038,7 @@ impl HostData {
         copy.public_id = self.unused_public_id();
         copy.os = os;
         copy.sidebar_tool = sidebar_tool;
+        copy.directory_follow = directory_follow;
         copy.sort_order = self.hosts[ix].sort_order + 1;
         copy.edited_ms = edited_after(0);
         for host in &mut self.hosts {
@@ -1951,6 +1957,33 @@ impl HostData {
             return false;
         }
         host.sidebar_tool = tool;
+        true
+    }
+
+    /// Remember 目录跟随 as the user switched it in one of the host's 文件,
+    /// for the host's next ones. Only a saved host keeps it for the next
+    /// launch.
+    pub fn set_host_directory_follow(&mut self, id: HostId, follow: bool) {
+        if !self.set_host_directory_follow_unnotified(id, follow) {
+            return;
+        }
+        if !self.is_temporary(id) {
+            self.persist(Change::DirectoryFollow, |db| {
+                db.set_host_directory_follow(id, Some(follow))
+            });
+        }
+        self.changed();
+    }
+
+    /// Returns whether the remembered switch changed.
+    pub fn set_host_directory_follow_unnotified(&mut self, id: HostId, follow: bool) -> bool {
+        let Some(host) = self.host_mut(id) else {
+            return false;
+        };
+        if host.directory_follow == Some(follow) {
+            return false;
+        }
+        host.directory_follow = Some(follow);
         true
     }
 
@@ -3055,6 +3088,35 @@ mod tests {
         store.set_host_sidebar_tool(saved, None);
         let reopened = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
         assert_eq!(tool_of(&reopened, saved), None);
+    }
+
+    #[test]
+    fn the_directory_follow_switch_is_kept_for_the_next_launch_edits_and_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        let mut store = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        let saved = store.insert(draft("web", None));
+        let temporary = store.insert_temporary(draft("quick", None), None);
+        let follow_of =
+            |store: &HostData, id| store.host(id).and_then(|host| host.directory_follow);
+        assert_eq!(follow_of(&store, saved), None);
+        store.set_host_directory_follow(saved, false);
+        store.set_host_directory_follow(temporary, false);
+        assert_eq!(follow_of(&store, temporary), Some(false));
+        assert!(!store.set_host_directory_follow_unnotified(saved, false));
+        assert!(!store.set_host_directory_follow_unnotified(HostId(99), false));
+        let reopened = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        assert_eq!(follow_of(&reopened, saved), Some(false));
+        assert!(reopened.host(temporary).is_none());
+
+        // The form does not own it, and a copy goes to the same machine.
+        store.update(saved, draft("web-renamed", None));
+        assert_eq!(follow_of(&store, saved), Some(false));
+        let copy = store.duplicate_unnotified(saved, "copy".into()).unwrap();
+        assert_eq!(follow_of(&store, copy), Some(false));
+        store.set_host_directory_follow(saved, true);
+        let reopened = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        assert_eq!(follow_of(&reopened, saved), Some(true));
     }
 
     #[test]

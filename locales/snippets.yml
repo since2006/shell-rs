@@ -1,10 +1,6 @@
 _version: 2
 
-# 命令片段: the commands kept for every host, in categories.
-
-snippets.uncategorized:
-  zh-CN: 未分类
-  en: Uncategorized
+# 命令片段: the commands kept for every host, in categories that nest.
 
 snippets.panel.search:
   zh-CN: 搜索名称或命令
@@ -44,6 +40,9 @@ snippets.menu.new_snippet:
 snippets.menu.new_category:
   zh-CN: 新建分类…
   en: New category…
+snippets.menu.new_subcategory:
+  zh-CN: 新建子分类…
+  en: New subcategory…
 snippets.menu.rename_category:
   zh-CN: 重命名分类…
   en: Rename category…
@@ -78,6 +77,9 @@ snippets.dialog.name_placeholder:
 snippets.dialog.category:
   zh-CN: 分类
   en: Category
+snippets.dialog.no_category:
+  zh-CN: （无分类）
+  en: (No category)
 snippets.dialog.command:
   zh-CN: 命令
   en: Command
@@ -106,9 +108,18 @@ snippets.category.name:
 snippets.category.name_placeholder:
   zh-CN: 例如 Docker
   en: e.g. Docker
+snippets.category.parent:
+  zh-CN: 上级分类
+  en: Parent category
+snippets.category.top_level:
+  zh-CN: （顶层）
+  en: (Top level)
 snippets.category.name_missing:
   zh-CN: 请输入分类名称
   en: Enter a category name
 snippets.category.name_taken:
-  zh-CN: 已有同名分类
-  en: A category with this name already exists
+  zh-CN: 同一层级下已有同名分类
+  en: A category with this name is already at this level
+snippets.category.into_itself:
+  zh-CN: 无法把分类移动到它自己的下级
+  en: A category can’t move into one of its own subcategories

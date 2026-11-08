@@ -17,8 +17,8 @@ use super::{
     ApplyError, BookmarkSide, CredentialDraft, CredentialId, ErrorMessage as _, ForwardDraft,
     ForwardId, GroupDraft, GroupId, GroupPlan, HostData, HostDatabase, HostDraft, HostEvent,
     HostId, HostNode, HostOs, NodeDrop, SavedTerminalId, SavedTerminalTab, SecretJob, SecretWork,
-    SecretsWritten, SnippetCategoryId, SnippetDraft, SnippetId, SshLink, SyncExport, TerminalDrop,
-    TerminalGroupId, TerminalNode,
+    SecretsWritten, SnippetCategoryDraft, SnippetCategoryId, SnippetDraft, SnippetDrop, SnippetId,
+    SnippetNode, SshLink, SyncExport, TerminalDrop, TerminalGroupId, TerminalNode,
 };
 
 /// The single source of truth for hosts and everything kept with them (see
@@ -164,6 +164,7 @@ impl HostStore {
         fn record_connection(id: HostId);
         fn set_host_os(id: HostId, os: Option<HostOs>);
         fn set_host_sidebar_tool(id: HostId, tool: Option<SharedString>);
+        fn set_host_directory_follow(id: HostId, follow: bool);
         fn save_secret(secret: SecretRef, value: Option<String>);
         fn insert_terminal_group(name: SharedString) -> TerminalGroupId;
         fn rename_terminal_group(id: TerminalGroupId, name: SharedString) -> bool;
@@ -177,9 +178,10 @@ impl HostStore {
         fn insert_snippet(draft: SnippetDraft) -> SnippetId;
         fn update_snippet(id: SnippetId, draft: SnippetDraft) -> bool;
         fn remove_snippet(id: SnippetId) -> bool;
-        fn insert_snippet_category(name: impl Into<SharedString>) -> SnippetCategoryId;
-        fn rename_snippet_category(id: SnippetCategoryId, name: impl Into<SharedString>) -> bool;
+        fn insert_snippet_category(draft: SnippetCategoryDraft) -> SnippetCategoryId;
+        fn update_snippet_category(id: SnippetCategoryId, draft: SnippetCategoryDraft) -> bool;
         fn remove_snippet_category(id: SnippetCategoryId) -> bool;
+        fn move_snippet_node(source: SnippetNode, drop: SnippetDrop) -> bool;
         fn apply_sync(
             changes: &[shellrs_sync::Change],
             state: &[u8],

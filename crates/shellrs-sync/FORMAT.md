@@ -120,8 +120,8 @@ References are other records' ids. `null` means none.
 | `host` | `name`, `address` (not empty), `port` (1–65535), `group` (or null), `sort_order`, `protocol` (`ssh`, `telnet`), optional `agent_forwarding` (boolean, missing means false; true only for SSH), `telnet` {`user_prompt`, `pass_prompt`} when Telnet, `auth` (`password`, `no-password`, `credential`), `username` (null exactly when `auth` is `credential`), `credential` (set exactly then), `route` (`direct`, `jump`, `proxy`), `jumps` [host or null] when `jump`, `proxy` {`kind` (`http`, `socks5`), `host`, `port`, `username`} when `proxy`, `notes` |
 | `bookmark` | `host`, `path`, `sort_order`; its id is the first 16 bytes, hex, of SHA-256(`host` ‖ 0x00 ‖ `path`) |
 | `forward` | `host`, `name`, `kind` (`local`, `remote`, `dynamic`), `bind_host`, `bind_port`, `target_host` and `target_port` (null exactly when dynamic), `sort_order` |
-| `snippet_category` | `name` (not empty) |
-| `snippet` | `category` (or null), `name`, `command` (not empty), `scope` (`all`, `group`, `host`), `scope_id` (null exactly when `all`), `run_on_click` |
+| `snippet_category` | `name` (not empty), `parent` (snippet category or null)¹, `sort_order`¹ |
+| `snippet` | `category` (or null), `name`, `command` (not empty), `scope` (`all`, `group`, `host`), `scope_id` (null exactly when `all`), `run_on_click`, `sort_order`¹ |
 | `secret.password` | `user` (may be empty), `host` (not empty), `port`, `value`: the password saved for signing in as `user` at `host:port`, shared by every host that does; its id is the first 16 bytes, hex, of SHA-256(`user` ‖ 0x00 ‖ `host` ‖ 0x00 ‖ `port` in decimal) |
 | `secret.proxy` | as `secret.password`, for a proxy |
 | `secret.credential` | `value`: the password of the password credential with this id |
@@ -133,12 +133,19 @@ used only while the credential is of the kind that has it. Secrets always
 sync; there is no setting to keep them out.
 
 Every field listed is written, `null` where it has none: a record missing one
-is damaged, kept and passed on but not used.
+is damaged, kept and passed on but not used. The fields marked ¹ were added
+after ShellRS 0.1.17, and a copy an older version wrote has none of them:
+missing, `parent` reads as null and `sort_order` as 0. An older version keeps
+them as fields it does not know, so they survive its edits; it lists snippet
+categories flat.
 
 Agent forwarding is an explicit per-host opt-in. Writers omit `agent_forwarding`
 when false, preserving the original format of legacy records. A missing field
 never inherits the setting of another host or credential. Older clients preserve
 it as an unknown field; it is applied only by clients that support forwarding.
+An older writer may retain `true` when changing an SSH host to Telnet. Readers
+normalize that stale boolean to false rather than parking the host; the next
+edit by a current writer drops the field. Non-boolean values remain invalid.
 
 Not synced, each device's own: serial hosts (their port is this computer's);
 a host's detected system, last connection and sidebar tool; a group's expanded
@@ -151,8 +158,8 @@ A copy pointing at a deleted record is repaired, as the device's own edit:
 
 | deleted | repair |
 | --- | --- |
-| a host's group, a group's parent | to the top level |
-| a cycle of parents | the group with the least version goes to the top |
+| a host's group, a group's parent, a snippet category's parent | to the top level |
+| a cycle of parents | the group (or snippet category) with the least version goes to the top |
 | a host's credential | `auth` `password`, `username` "" |
 | a jump host | its hop becomes null, in place |
 | a forward's or bookmark's host | the forward or bookmark is deleted |

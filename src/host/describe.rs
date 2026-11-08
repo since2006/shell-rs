@@ -208,20 +208,21 @@ fn not_saved(change: Change, error: &str) -> SharedString {
         Change::Recent => t!("host.store.not_saved.recent", error = error),
         Change::HostOs => t!("host.store.not_saved.host_os", error = error),
         Change::SidebarTool => t!("host.store.not_saved.sidebar_tool", error = error),
+        Change::DirectoryFollow => t!("host.store.not_saved.directory_follow", error = error),
         Change::NewSnippet => t!("host.store.not_saved.new_snippet", error = error),
         Change::SaveSnippet => t!("host.store.not_saved.save_snippet", error = error),
         Change::DeleteSnippet => t!("host.store.not_saved.delete_snippet", error = error),
         Change::NewSnippetCategory => {
             t!("host.store.not_saved.new_snippet_category", error = error)
         }
-        Change::RenameSnippetCategory => t!(
-            "host.store.not_saved.rename_snippet_category",
-            error = error
-        ),
+        Change::SaveSnippetCategory => {
+            t!("host.store.not_saved.save_snippet_category", error = error)
+        }
         Change::DeleteSnippetCategory => t!(
             "host.store.not_saved.delete_snippet_category",
             error = error
         ),
+        Change::MoveSnippetNode => t!("host.store.not_saved.move_snippet_node", error = error),
         Change::NewTerminalGroup => {
             t!("host.store.not_saved.new_terminal_group", error = error)
         }

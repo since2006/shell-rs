@@ -3,7 +3,8 @@
 //!
 //! The sidebar goes with terminals: with an SFTP tab, the settings or the
 //! start page in front it is not there at all, switch included. Beside an
-//! SSH terminal it has the host's tools; beside a local terminal 项目 alone.
+//! SSH terminal it has the host's tools; beside a local terminal 项目 and
+//! 命令片段.
 //! With the center split it goes with the terminal in front last, as long
 //! as that one is on screen, and names an SSH terminal's host; it hides once
 //! no terminal shows. Whether it is open and which tool it shows are the
@@ -138,8 +139,8 @@ impl Workspace {
     }
 
     /// The tools the switch offers for the terminal in front; none without
-    /// one. Those 侧栏功能 leaves on: beside a local terminal 项目; beside an
-    /// SSH terminal those that work on the host, where an external
+    /// one. Those 侧栏功能 leaves on: beside a local terminal 项目 and
+    /// 命令片段; beside an SSH terminal those that work on the host, where an external
     /// connection (a bastion host's link) and a serial host, which have no
     /// channel beside the terminal, get only those that run nothing beside
     /// it.
@@ -147,16 +148,16 @@ impl Workspace {
         let shown = self.settings().read(cx).settings().sidebar_tools;
         match self.sidebar_target(cx) {
             None => Vec::new(),
-            Some(SidebarTarget::Local(_)) => ToolKind::ALL
+            Some(SidebarTarget::Local(_)) => ToolKind::LOCAL
                 .into_iter()
-                .filter(|tool| tool.is_local() && shown.shows(*tool))
+                .filter(|tool| shown.shows(*tool))
                 .collect(),
             Some(SidebarTarget::Remote(terminal)) => {
                 let (os, shell_only) = (terminal.os, terminal.shell_only);
                 ToolKind::ALL
                     .into_iter()
                     .filter(|tool| {
-                        !tool.is_local()
+                        !tool.local_only()
                             && shown.shows(*tool)
                             && tool.works_on(os)
                             && !(shell_only && tool.runs_commands())
@@ -373,25 +374,38 @@ impl Workspace {
         self.tools.update(cx, |tools, cx| tools.refresh_history(cx));
     }
 
-    /// A command of 历史命令 or 命令片段 onto the input line of the SSH
-    /// terminal in front, run with `run`; the terminal takes the keyboard,
-    /// to edit it or carry on. Why not, when it cannot, is a notification.
+    /// A command of 历史命令 or 命令片段 onto the input line of the
+    /// terminal the sidebar goes with, an SSH terminal or a local one, run
+    /// with `run`; the terminal takes the keyboard, to edit it or carry on.
+    /// Why not, when it cannot, is a notification.
     ///
-    /// It takes the place of what is typed there, but on Windows, whose
-    /// shells do not read Ctrl-E and Ctrl-U as line editing.
+    /// It takes the place of what is typed there, but on Windows, a host's
+    /// or this computer's, whose shells do not read Ctrl-E and Ctrl-U as
+    /// line editing.
     pub(super) fn on_enter_command(
         &mut self,
         action: &EnterCommand,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(terminal) = self.tool_terminal(cx) else {
-            return;
+        let (view, replace) = match self.tool_target(cx) {
+            Some(ToolTarget::Remote(_)) => {
+                let Some(terminal) = self.tool_terminal(cx) else {
+                    return;
+                };
+                let Some(view) = terminal.view.upgrade() else {
+                    return;
+                };
+                (view, terminal.os != Some(HostOs::Windows))
+            }
+            Some(ToolTarget::Local(id)) => {
+                let Some(panel) = self.local_terminals.get(&id) else {
+                    return;
+                };
+                (panel.read(cx).terminal().clone(), !cfg!(windows))
+            }
+            None => return,
         };
-        let Some(view) = terminal.view.upgrade() else {
-            return;
-        };
-        let replace = terminal.os != Some(HostOs::Windows);
         let EnterCommand { command, run } = action;
         match view.update(cx, |view, cx| {
             view.enter_command(command, *run, replace, cx)

@@ -8,27 +8,6 @@ use gpui_kit::component::{
 };
 use shellrs::app::Shortcut;
 
-/// Bind the close-tab shortcut to a key the terminal does not claim.
-///
-/// Ctrl with a letter is the shell's in a terminal (see
-/// `shell_keys_in_terminal`), and the default key for closing a tab is
-/// Ctrl+W on every platform but macOS, so the shortcut would go to the
-/// shell there. Ctrl and Shift with a letter is the app's everywhere.
-fn bind_close_tab(workspace: &Entity<Workspace>, cx: &mut TestAppContext) {
-    let shortcut = Shortcut::find("close-tab").expect("the close-tab shortcut");
-    cx.update(|cx| {
-        workspace.update(cx, |workspace, cx| {
-            workspace.settings().update(cx, |settings, cx| {
-                settings.update(
-                    |settings| settings.shortcuts.set(shortcut, "ctrl-shift-w".into()),
-                    cx,
-                )
-            })
-        })
-    });
-    cx.run_until_parked();
-}
-
 #[gpui_kit::test]
 fn tab_close_button_closes_the_terminal_and_disconnects(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
@@ -371,10 +350,14 @@ async fn recent_host_menu_commands_work_from_the_start_page(cx: &mut TestAppCont
     .unwrap();
 }
 
+/// The default keys, ⌘W or Ctrl+Shift+W, close a tab from inside a terminal
+/// too: Ctrl with a letter alone would be the shell's there.
 #[gpui_kit::test]
 fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext) {
-    let (handle, workspace) = open_workspace(cx);
-    bind_close_tab(&workspace, cx);
+    let (handle, _) = open_workspace(cx);
+    let close = Shortcut::find("close-tab")
+        .expect("the close-tab shortcut")
+        .default_keys();
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -389,7 +372,7 @@ fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext)
         window.render_frame(cx);
         // The new tab is displayed, with its input focused.
         assert!(window.find(("terminal", FIRST_NEW_TERMINAL)).visible());
-        window.press("ctrl-shift-w", cx);
+        window.press(close, cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -399,14 +382,14 @@ fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext)
         assert!(window.try_find(("terminal", FIRST_NEW_TERMINAL)).is_none());
         assert!(window.try_find("recent-hosts").is_none());
         // Keep closing whichever tab the dock displays next.
-        window.press("ctrl-shift-w", cx);
+        window.press(close, cx);
     })
     .unwrap();
     cx.run_until_parked();
 
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.press("ctrl-shift-w", cx);
+        window.press(close, cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -425,7 +408,7 @@ fn close_shortcut_closes_the_displayed_tab_down_to_none(cx: &mut TestAppContext)
         );
         assert!(window.find("recent-hosts").visible());
         // With nothing open the shortcut does nothing.
-        window.press("ctrl-shift-w", cx);
+        window.press(close, cx);
     })
     .unwrap();
     cx.run_until_parked();
@@ -1188,20 +1171,32 @@ async fn the_tool_sidebar_goes_with_terminals_only(cx: &mut TestAppContext) {
         window.dispatch_action(Box::new(OpenSettings), cx)
     });
     assert_eq!(shown(cx), (false, false));
-    // A local terminal has the switch with 项目 alone, closed until opened;
-    // the shortcut opens it.
+    // A local terminal has the switch with 项目, then 命令片段, and no
+    // other tool; closed until opened.
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(NewLocalTerminal), cx)
     });
     assert_eq!(shown(cx), (true, false));
     in_frame(cx, handle, |window, _| {
-        assert!(window.try_find("tool-projects").is_some());
-        assert!(window.try_find("tool-snippets").is_none());
+        let projects = window.find("tool-projects").bounds();
+        let snippets = window.find("tool-snippets").bounds();
+        assert!(projects.top() < snippets.top());
+        assert!(window.try_find("tool-history").is_none());
         assert!(window.try_find(("tool-sidebar-local", 1_u64)).is_none());
     });
+    // The shortcut opens the tool shown last, 命令片段 as beside web-01;
+    // the switch, 项目.
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(ToggleToolSidebar), cx)
     });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find(("tool-sidebar-local", 1_u64)).label(),
+            Some("命令片段")
+        );
+        assert_eq!(window.find("tool-snippets").checked(), Some(true));
+    });
+    in_frame(cx, handle, |window, cx| window.click("tool-projects", cx));
     in_frame(cx, handle, |window, _| {
         assert_eq!(
             window.find(("tool-sidebar-local", 1_u64)).label(),

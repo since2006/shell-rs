@@ -115,6 +115,83 @@ fn edits_and_deletions_travel() {
     assert_eq!(a.data(), b.data());
 }
 
+#[test]
+fn an_older_writers_telnet_conversion_is_delivered_and_remains_editable() {
+    let (store, keys, mut a, mut b) = setup();
+    let k = key(Kind::Host, "h1");
+    let mut ssh = crate::wire::tests::ssh_host("trusted");
+    ssh.agent_forwarding = true;
+    a.put("h1", RecordData::Host(ssh.clone()));
+    a.sync(&store);
+    b.sync(&store);
+    assert_eq!(b.get(Kind::Host, "h1"), Some(&RecordData::Host(ssh)));
+
+    // A pre-forwarding client knows protocol, port and telnet, but
+    // write_into preserves agent_forwarding as an unknown field.
+    let file = read_file(&store, &keys, a.state.device());
+    let mut converted = file.records[&k].to_json();
+    converted["v"] = json!([START + 1000, 0, "cccccccccccccccc"]);
+    converted["data"]["protocol"] = json!("telnet");
+    converted["data"]["port"] = json!(23);
+    converted["data"]["telnet"] = json!({"user_prompt": null, "pass_prompt": null});
+    converted["data"]["future_option"] = json!("kept");
+    assert_eq!(converted["data"]["agent_forwarding"], json!(true));
+    plant(
+        &store,
+        &keys,
+        'c',
+        json!({
+            "format": 1, "min_reader": 1,
+            "device": {"id": "cccccccccccccccc"},
+            "clock": [START + 1000, 0], "records": [converted]
+        }),
+    );
+
+    let mut telnet = HostData {
+        protocol: Protocol::Telnet(TelnetData::default()),
+        port: 23,
+        ..crate::wire::tests::ssh_host("trusted")
+    };
+    for device in [&mut a, &mut b] {
+        let (report, _) = device.sync(&store);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert_eq!(
+            device.get(Kind::Host, "h1"),
+            Some(&RecordData::Host(telnet.clone()))
+        );
+    }
+
+    // The stale raw field remains a readable base, so a subsequent
+    // local edit is published rather than silently skipped.
+    a.wait(2000);
+    telnet.name = "switch".into();
+    a.put("h1", RecordData::Host(telnet.clone()));
+    let (report, pushed) = a.sync(&store);
+    assert_eq!(report.local_edits, 1);
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert!(matches!(pushed, Pushed::Uploaded { .. }));
+    let file = read_file(&store, &keys, a.state.device());
+    let written = file.records[&k].live().unwrap();
+    assert!(!written.contains_key("agent_forwarding"));
+    assert_eq!(written["future_option"], json!("kept"));
+    b.sync(&store);
+    assert_eq!(b.data(), a.data());
+
+    // Switching back to SSH does not restore the old opt-in.
+    b.wait(3000);
+    telnet.protocol = Protocol::Ssh;
+    telnet.port = 22;
+    b.put("h1", RecordData::Host(telnet.clone()));
+    b.sync(&store);
+    a.sync(&store);
+    assert_eq!(a.get(Kind::Host, "h1"), Some(&RecordData::Host(telnet)));
+    assert_eq!(a.data(), b.data());
+    let (report, pushed) = b.sync(&store);
+    assert_eq!(report.local_edits, 0);
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert!(matches!(pushed, Pushed::Unchanged));
+}
+
 /// Concurrent edits: the one made later wins, whichever device syncs
 /// first, since an edit is dated when it was made.
 #[test]
@@ -440,6 +517,66 @@ fn the_app_reshaping_a_record_is_not_an_edit() {
     assert_eq!(report.local_edits, 0);
     assert!(matches!(pushed, Pushed::Unchanged));
     assert_eq!(b.data(), a.data());
+}
+
+fn category(name: &str, parent: Option<&str>, sort_order: i64) -> RecordData {
+    RecordData::SnippetCategory(crate::SnippetCategoryData {
+        name: name.into(),
+        parent: parent.map(Into::into),
+        sort_order,
+    })
+}
+
+#[test]
+fn a_category_comes_after_the_one_it_is_in() {
+    let (store, _, mut a, mut b) = setup();
+    a.put("s1", category("logs", Some("s3"), 0));
+    a.put("s2", category("nginx", Some("s1"), 1));
+    a.put("s3", category("ops", None, 0));
+    a.sync(&store);
+    let pulled = b.pull(&store).unwrap();
+    let order: Vec<_> = pulled
+        .changes
+        .iter()
+        .map(|change| change.key().id)
+        .collect();
+    assert_eq!(order, ["s3", "s1", "s2"]);
+    b.apply(&pulled);
+    assert_eq!(b.data(), a.data());
+}
+
+/// A category or snippet an older version wrote has no `parent` and no
+/// `sort_order`: it reads as at the top, first, and is not taken for an
+/// edit; an edit then writes both.
+#[test]
+fn a_copy_from_before_snippets_were_ordered_is_used_as_it_is() {
+    let (store, keys, mut a, mut b) = setup();
+    let c = "cccccccccccccccc";
+    let planted = json!({"format": 1, "min_reader": 1, "device": {"id": c},
+    "clock": [START, 0], "records": [
+        {"kind": "snippet_category", "id": "s1", "v": [START, 0, c], "data": {"name": "logs"}},
+    ]});
+    plant(&store, &keys, 'c', planted);
+    b.sync(&store);
+    assert_eq!(
+        b.get(Kind::SnippetCategory, "s1"),
+        Some(&category("logs", None, 0))
+    );
+    let (report, pushed) = b.sync(&store);
+    assert_eq!(report.local_edits, 0);
+    assert!(matches!(pushed, Pushed::Unchanged));
+
+    b.wait(1000);
+    b.put("s1", category("logs", None, 2));
+    b.sync(&store);
+    let file = read_file(&store, &keys, b.state.device());
+    let s1 = file.records[&key(Kind::SnippetCategory, "s1")]
+        .live()
+        .unwrap();
+    assert_eq!(s1["parent"], Value::Null);
+    assert_eq!(s1["sort_order"], json!(2));
+    a.sync(&store);
+    assert_eq!(a.data(), b.data());
 }
 
 /// Records this version cannot use — an unknown kind, a field it does not

@@ -1,5 +1,5 @@
-//! The tooltips of the rows in the sidebar's lists: hosts, port forwards
-//! and credentials.
+//! The tooltips of the rows in the sidebars' lists: hosts, port forwards,
+//! credentials and command snippets.
 
 use std::{cell::Cell, rc::Rc, time::Duration};
 
@@ -13,6 +13,9 @@ use gpui_kit::*;
 /// an ellipsis.
 const NOTE_LINES: usize = 6;
 
+/// The longest command a row tooltip shows, in lines.
+const COMMAND_LINES: usize = 12;
+
 /// What a row's tooltip says: a line, and under it, smaller and fainter, a
 /// note that wraps (a host's notes, a key's whole path). Without a note the
 /// line stands alone.
@@ -20,6 +23,7 @@ const NOTE_LINES: usize = 6;
 pub struct RowTooltip {
     text: SharedString,
     note: SharedString,
+    command: bool,
 }
 
 impl RowTooltip {
@@ -27,6 +31,16 @@ impl RowTooltip {
         Self {
             text: text.into(),
             note: SharedString::default(),
+            command: false,
+        }
+    }
+
+    /// A shell command for the line: in the terminal's font, its lines as
+    /// written, a long one wrapping.
+    pub fn command(command: impl Into<SharedString>) -> Self {
+        Self {
+            command: true,
+            ..Self::new(command)
         }
     }
 
@@ -39,9 +53,10 @@ impl RowTooltip {
 
 /// One list's row tooltips, keyed by what each row shows.
 ///
-/// A tooltip opens beside its row, on the right, rather than under the
-/// pointer as GPUI's own `.tooltip()` does: the pointer goes on down the
-/// list, and the rows below stay in sight. Moving from row to row it follows
+/// A tooltip opens beside its row, on the right (or the left, for a list in
+/// the right sidebar), rather than under the pointer as GPUI's own
+/// `.tooltip()` does: the pointer goes on down the list, and the rows below
+/// stay in sight. Moving from row to row it follows
 /// the pointer without waiting again. It is drawn in the theme's inverse,
 /// dark on the light theme and light on the dark one, so it stands out
 /// against the sidebar and the terminal in both; gpui-kit's tooltips share
@@ -52,6 +67,8 @@ impl RowTooltip {
 pub struct RowTooltips<K> {
     id: &'static str,
     overlay: Entity<TooltipOverlay>,
+    /// Which side of the row it opens on.
+    placement: Placement,
     /// The row the tooltip was last opened for. Only it may put the tooltip
     /// away: going down the list, the next row hears of the pointer before
     /// this one lets go of it, and this row's hide would cancel the tooltip
@@ -64,6 +81,7 @@ impl<K> Clone for RowTooltips<K> {
         Self {
             id: self.id,
             overlay: self.overlay.clone(),
+            placement: self.placement,
             owner: self.owner.clone(),
         }
     }
@@ -75,8 +93,15 @@ impl<K: Copy + PartialEq + 'static> RowTooltips<K> {
         Self {
             id,
             overlay: cx.new(|_| TooltipOverlay::new().render_with(animate)),
+            placement: Placement::Right,
             owner: Rc::new(Cell::new(None)),
         }
+    }
+
+    /// Open on the row's left, for a list along the window's right edge.
+    pub fn on_the_left(mut self) -> Self {
+        self.placement = Placement::Left;
+        self
     }
 
     pub fn overlay(&self) -> Entity<TooltipOverlay> {
@@ -173,7 +198,7 @@ impl<K: Copy + PartialEq + 'static> RowTooltipTrigger<K> {
         self.tooltips.owner.set(Some(self.key));
         let content = self.content.clone();
         let request = TooltipRequest::new(self.row_bounds(), move |window, cx| content(window, cx))
-            .placement(Placement::Right);
+            .placement(self.tooltips.placement);
         self.tooltips
             .overlay
             .update(cx, |overlay, cx| overlay.request_show(request, window, cx));
@@ -224,9 +249,14 @@ fn content(
 ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     let note_id = ElementId::Name(format!("{id}-note").into());
     move |window, cx| {
-        let RowTooltip { text, note } = tooltip.clone();
+        let RowTooltip {
+            text,
+            note,
+            command,
+        } = tooltip.clone();
         let note_id = note_id.clone();
         let (background, foreground) = (cx.theme().foreground, cx.theme().background);
+        let mono = cx.theme().mono_font_family.clone();
         Tooltip::element(move |_, _| {
             v_flex()
                 .gap_1()
@@ -235,6 +265,13 @@ fn content(
                         .id(id)
                         .test_support()
                         .aria_label(text.clone())
+                        .when(command, |line| {
+                            line.max_w(rems(24.))
+                                .whitespace_normal()
+                                .line_clamp(COMMAND_LINES)
+                                .font_family(mono.clone())
+                                .text_xs()
+                        })
                         .child(text.clone()),
                 )
                 .when(!note.is_empty(), |content| {

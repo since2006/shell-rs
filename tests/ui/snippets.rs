@@ -1,19 +1,21 @@
 //! 命令片段: the right sidebar's tool that keeps commands for every host,
-//! in categories, and puts them on the SSH terminal's line.
+//! in categories that nest, and puts them on the SSH terminal's line.
 
 use crate::support::*;
 use shellrs::app::{
     DeleteSnippet, DeleteSnippetCategory, EditSnippet, NewSnippetCategory, NewSnippetIn,
-    RenameSnippetCategory,
+    NewSnippetSubcategory, RenameSnippetCategory,
 };
-use shellrs::host::{SnippetCategoryId, SnippetDraft, SnippetId};
+use shellrs::host::{SnippetCategoryDraft, SnippetCategoryId, SnippetDraft, SnippetId};
 
-/// Two categories and a snippet of none, made in an order the list does
-/// not keep: Docker's 「容器」 and 「镜像」, 日志's 「系统日志」, and 「磁盘」.
+/// Two categories and a snippet of none, each listed where it was made:
+/// 日志 with 「系统日志」, Docker with 「镜像」 and 「容器」, then 「磁盘」
+/// at the top.
 fn store_with_snippets() -> HostStore {
     let mut store = HostStore::seed();
-    let logs = store.insert_snippet_category_unnotified("日志");
-    let docker = store.insert_snippet_category_unnotified("Docker");
+    let logs = store.insert_snippet_category_unnotified(SnippetCategoryDraft::new("日志", None));
+    let docker =
+        store.insert_snippet_category_unnotified(SnippetCategoryDraft::new("Docker", None));
     store.insert_snippet_unnotified(SnippetDraft::new("镜像", "docker images", Some(docker)));
     store.insert_snippet_unnotified(
         SnippetDraft::new("系统日志", "journalctl -f", Some(logs)).with_run_on_click(true),
@@ -69,7 +71,7 @@ fn dispatch_from_panel(
     });
 }
 
-/// The pointer onto a snippet's card, which shows what a click on it does.
+/// The pointer onto a snippet's row, which shows what a click on it does.
 fn point_at(cx: &mut TestAppContext, handle: WindowHandle<Root>, snippet: u64) {
     in_frame(cx, handle, |window, cx| {
         let position = window.find(("snippet", snippet)).bounds().center();
@@ -87,6 +89,30 @@ fn point_at(cx: &mut TestAppContext, handle: WindowHandle<Root>, snippet: u64) {
 
 fn top(window: &mut gpui_kit::Window, id: impl Into<ElementId>) -> gpui_kit::Pixels {
     window.find(id).bounds().top()
+}
+
+/// The names of what is directly in `category`, in the list's order:
+/// its categories, then its snippets.
+fn listed(
+    workspace: &Entity<Workspace>,
+    category: Option<u64>,
+    cx: &mut TestAppContext,
+) -> Vec<String> {
+    workspace.read_with(cx, |workspace, cx| {
+        let store = workspace.store().read(cx);
+        let category = category.map(SnippetCategoryId);
+        store
+            .snippet_categories_in(category)
+            .iter()
+            .map(|category| category.name.to_string())
+            .chain(
+                store
+                    .snippets_of(category)
+                    .iter()
+                    .map(|snippet| snippet.name.to_string()),
+            )
+            .collect()
+    })
 }
 
 fn names(workspace: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<String> {
@@ -109,14 +135,14 @@ async fn snippets_are_listed_by_category_and_a_click_puts_one_on_the_line(cx: &m
             window.find("snippets-summary").label(),
             Some("共 4 个片段 · 2 个分类")
         );
-        // Docker, then 日志, each by name; the rest last, under 未分类.
+        // The categories in their order, each with its snippets; the
+        // snippet of none after them, at the top.
         let order = [
-            top(window, "snippet-category:2"),
-            top(window, ("snippet", CONTAINERS)),
-            top(window, ("snippet", IMAGES)),
             top(window, "snippet-category:1"),
             top(window, ("snippet", JOURNAL)),
-            top(window, "snippet-category:none"),
+            top(window, "snippet-category:2"),
+            top(window, ("snippet", IMAGES)),
+            top(window, ("snippet", CONTAINERS)),
             top(window, ("snippet", DISK)),
         ];
         assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{order:?}");
@@ -125,6 +151,26 @@ async fn snippets_are_listed_by_category_and_a_click_puts_one_on_the_line(cx: &m
             window.find(("snippet", CONTAINERS)).label(),
             Some("容器 · docker ps -a")
         );
+        // A snippet's row is one line, its name alone, as a category's is.
+        assert_eq!(
+            window.find(("snippet", CONTAINERS)).bounds().size.height,
+            window.find("snippet-category:2").bounds().size.height
+        );
+    });
+
+    // The pointer on it shows its command, beside the row on its left:
+    // the sidebar is at the window's right edge.
+    in_frame(cx, handle, |window, cx| {
+        window.hover(("snippet", CONTAINERS), cx)
+    });
+    // Tooltips wait half a second before they open.
+    cx.executor().advance_clock(Duration::from_millis(600));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        let tooltip = window.find("snippet-tooltip");
+        assert_eq!(tooltip.label(), Some("docker ps -a"));
+        let row = window.find(("snippet", CONTAINERS)).bounds();
+        assert!(tooltip.bounds().right() <= row.left());
     });
 
     // A click puts it on the line in place of what is typed there, and the
@@ -266,23 +312,19 @@ async fn a_snippet_is_made_edited_and_deleted(cx: &mut TestAppContext) {
 async fn a_category_is_made_renamed_and_deleted_with_its_snippets(cx: &mut TestAppContext) {
     let (handle, workspace, _) = open_snippets(cx, store_with_snippets()).await;
 
-    // A name the list already has is refused.
+    // Without a name it is refused.
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(NewSnippetCategory), cx)
     });
-    in_frame(cx, handle, |window, cx| {
-        window.input("Docker", cx);
-        window.click("commit", cx);
-    });
+    in_frame(cx, handle, |window, cx| window.click("commit", cx));
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
         window
             .try_find("form-error")
-            .is_some_and(|error| error.label() == Some("已有同名分类"))
+            .is_some_and(|error| error.label() == Some("请输入分类名称"))
     })
     .await;
     in_frame(cx, handle, |window, cx| {
         window.click("snippet-category-name", cx);
-        window.press("secondary-a", cx);
         window.input("部署", cx);
         window.click("commit", cx);
     });
@@ -309,6 +351,48 @@ async fn a_category_is_made_renamed_and_deleted_with_its_snippets(cx: &mut TestA
     })
     .await;
 
+    // One inside Docker, from Docker's menu: a name may repeat at another
+    // level.
+    dispatch_from_panel(cx, handle, NewSnippetSubcategory(SnippetCategoryId(DOCKER)));
+    in_frame(cx, handle, |window, cx| {
+        window.input("Docker", cx);
+        window.click("commit", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window
+            .try_find("snippet-category:4")
+            .is_some_and(|heading| heading.label() == Some("Docker 0"))
+    })
+    .await;
+    assert_eq!(
+        listed(&workspace, Some(DOCKER), cx),
+        ["Docker", "镜像", "容器"]
+    );
+    in_frame(cx, handle, |window, _| {
+        let inner = top(window, "snippet-category:4");
+        assert!(top(window, "snippet-category:2") < inner);
+        assert!(inner < top(window, ("snippet", IMAGES)));
+    });
+
+    // At the same level it is refused, said in words, not as a key.
+    dispatch_from_panel(cx, handle, NewSnippetCategory);
+    in_frame(cx, handle, |window, cx| {
+        window.input("部署", cx);
+        window.click("commit", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window
+            .try_find("form-error")
+            .is_some_and(|error| error.label() == Some("同一层级下已有同名分类"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.press("escape", cx));
+    cx.run_until_parked();
+    assert_eq!(
+        listed(&workspace, None, cx),
+        ["日志", "Docker", "部署", "磁盘"]
+    );
+
     dispatch_from_panel(cx, handle, RenameSnippetCategory(SnippetCategoryId(LOGS)));
     in_frame(cx, handle, |window, cx| {
         window.press("secondary-a", cx);
@@ -322,13 +406,96 @@ async fn a_category_is_made_renamed_and_deleted_with_its_snippets(cx: &mut TestA
     })
     .await;
 
-    // Deleting Docker takes its two snippets.
+    // Deleting Docker takes its two snippets, and the category inside it.
     dispatch_from_panel(cx, handle, DeleteSnippetCategory(SnippetCategoryId(DOCKER)));
     in_frame(cx, handle, |window, cx| window.click("ok", cx));
     assert_eq!(names(&workspace, cx), ["系统日志", "磁盘", "发布"]);
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find("snippet-category:2").is_none());
+        assert!(window.try_find("snippet-category:4").is_none());
     });
+}
+
+#[gpui_kit::test]
+async fn rows_are_dragged_into_order_and_into_categories(cx: &mut TestAppContext) {
+    let (handle, workspace, factory) = open_snippets(cx, store_with_snippets()).await;
+    // A drag is not a click: nothing is typed.
+    let typed = factory.written_text().len();
+
+    // A snippet dropped on a category goes last in it, and shows there
+    // though the category was folded.
+    in_frame(cx, handle, |window, cx| {
+        window.click("snippet-category:1", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find(("snippet", JOURNAL)).is_none());
+        window
+            .within("snippets-list")
+            .drag_to(("snippet", DISK), "snippet-category:1", cx)
+    });
+    assert_eq!(listed(&workspace, Some(LOGS), cx), ["系统日志", "磁盘"]);
+    assert!(
+        listed(&workspace, None, cx)
+            .iter()
+            .all(|name| name != "磁盘")
+    );
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find(("snippet", DISK)).is_some());
+    });
+
+    // Dropped on another snippet's lower half, it goes after it, in its
+    // category.
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within("snippets-list")
+            .drag_to(("snippet", CONTAINERS), ("snippet", JOURNAL), cx)
+    });
+    assert_eq!(
+        listed(&workspace, Some(LOGS), cx),
+        ["系统日志", "容器", "磁盘"]
+    );
+    assert_eq!(listed(&workspace, Some(DOCKER), cx), ["镜像"]);
+
+    // A category dropped on another's middle goes inside it, and the list
+    // shows it there, a step in.
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within("snippets-list")
+            .drag_to("snippet-category:1", "snippet-category:2", cx)
+    });
+    assert_eq!(listed(&workspace, None, cx), ["Docker"]);
+    assert_eq!(listed(&workspace, Some(DOCKER), cx), ["日志", "镜像"]);
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("snippet-category:2").label(), Some("Docker 4"));
+        let order = [
+            top(window, "snippet-category:2"),
+            top(window, "snippet-category:1"),
+            top(window, ("snippet", JOURNAL)),
+            top(window, ("snippet", IMAGES)),
+        ];
+        assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{order:?}");
+    });
+
+    // Off every row, it goes last at the top.
+    in_frame(cx, handle, |window, cx| {
+        let from = window.find("snippet-category:1").bounds().center();
+        let list = window.find("snippets-list").bounds();
+        window.drag(from, point(list.center().x, list.bottom() - px(12.)), cx)
+    });
+    assert_eq!(listed(&workspace, None, cx), ["Docker", "日志"]);
+
+    // While searching, the rows shown are not all there are: none moves.
+    in_frame(cx, handle, |window, cx| {
+        window.click("snippets-search", cx);
+        window.input("docker", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within("snippets-list")
+            .drag_to(("snippet", IMAGES), ("snippet", CONTAINERS), cx)
+    });
+    assert_eq!(listed(&workspace, Some(DOCKER), cx), ["镜像"]);
+    assert_eq!(factory.written_text().len(), typed);
 }
 
 #[gpui_kit::test]
@@ -368,8 +535,8 @@ async fn the_sidebar_follows_a_switch_to_english(cx: &mut TestAppContext) {
             Some("4 snippets · 2 categories")
         );
         assert_eq!(
-            window.find("snippet-category:none").label(),
-            Some("Uncategorized 1")
+            window.find(("snippet", JOURNAL)).label(),
+            Some("系统日志 · journalctl -f · Runs on click")
         );
     });
 }

@@ -228,13 +228,16 @@ pub static SHORTCUTS: [Shortcut; 30] = [
         "ctrl-t",
         NewLocalTerminal
     ),
+    // Ctrl+Shift+W elsewhere, as Windows Terminal, GNOME Terminal and
+    // Konsole close a tab: Ctrl+W is the shell's in a terminal (readline,
+    // vim's windows, nano's search), so it would close nothing there.
     shortcut!(
         "close-tab",
         "app.shortcut.close_tab",
         Tabs,
         &[],
         "cmd-w",
-        "ctrl-w",
+        "ctrl-shift-w",
         CloseActiveTab
     ),
     // macOS reports ⌘⇧] as ⌘}, as Safari and Terminal take it.
@@ -1111,7 +1114,11 @@ fn file_list_key_bindings() -> Vec<KeyBinding> {
 mod tests {
     use gpui_kit::{Action as _, KeyBinding, Keystroke, NoAction};
 
-    use super::{Refusal, SHORTCUTS, Shortcut, ShortcutOverrides, check, key_bindings, key_caps};
+    use super::{
+        Refusal, SHORTCUTS, Shortcut, ShortcutOverrides, check, key_bindings, key_caps,
+        shell_keys_in_terminal,
+    };
+    use crate::app::CloseActiveTab;
 
     fn shortcut(id: &str) -> &'static Shortcut {
         Shortcut::find(id).unwrap()
@@ -1261,6 +1268,15 @@ mod tests {
         // The terminal's own shortcut is bound after, and wins there.
         assert!(in_terminal("ctrl-c").is_none());
         assert!(position(&bindings, "shellrs::CopyTerminal") > in_terminal("ctrl-t").unwrap());
+    }
+
+    #[test]
+    fn a_tab_closes_from_a_terminal_with_the_default_keys_everywhere() {
+        let close = shortcut("close-tab");
+        for keys in [close.mac, close.other] {
+            let binding = KeyBinding::new(keys, CloseActiveTab, None);
+            assert!(shell_keys_in_terminal(&[binding]).is_empty(), "{keys}");
+        }
     }
 
     #[test]

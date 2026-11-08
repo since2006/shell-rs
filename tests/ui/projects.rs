@@ -9,7 +9,7 @@ use shellrs::app::{
     CloseLocalTerminal, CloseSavedTerminal, DeleteSavedTerminal, DeleteTerminalGroup,
     NewSavedTerminal, OpenSavedTerminal, RestartLocalTerminal, ToolKind,
 };
-use shellrs::host::{SavedTerminalId, SavedTerminalTab, TerminalGroupId};
+use shellrs::host::{SavedTerminalId, SavedTerminalTab, SnippetDraft, TerminalGroupId};
 use shellrs::terminal::LocalLaunch;
 
 /// The groups and terminals of `projects_store`, in the order made.
@@ -107,10 +107,16 @@ fn open_projects(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
 /// Put the keyboard back in the terminals, blog 1's last, as a click on a
 /// tab does: a dialog closing takes it with it, and a menu's command is
 /// dispatched from it.
+///
+/// Each click lands a quarter of the way into its tab, not in the middle:
+/// with 项目 open the tabs overflow, and the end of the last one lies
+/// under the tab bar's 重新启动, which a click there would press.
 fn focus_a_tab(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     for tab in [1_u64, 2] {
         in_frame(cx, handle, |window, cx| {
-            window.click(("local-terminal-tab", tab), cx)
+            let bounds = window.find(("local-terminal-tab", tab)).bounds();
+            let position = point(bounds.left() + bounds.size.width / 4., bounds.center().y);
+            click_at(window, position, gpui_kit::Modifiers::default(), cx)
         });
     }
 }
@@ -842,18 +848,60 @@ async fn with_the_center_split_the_sidebar_follows_the_terminal_clicked_last(
 }
 
 #[gpui_kit::test]
-async fn projects_hidden_in_the_settings_leave_local_terminals_without_a_sidebar(
+async fn a_snippet_beside_a_local_terminal_types_into_it(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let local = Arc::new(FixedLocalTerminalTransportProvider::new(factory.clone()));
+    let mut store = projects_store();
+    store.insert_snippet_unnotified(SnippetDraft::new("状态", "git status", None));
+    let (handle, _workspace) = open_with_local(cx, store, local);
+    open_projects(cx, handle);
+    // Its shell runs once it has titled the tab.
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window
+            .try_find(("local-terminal-tab", 1_u64))
+            .is_some_and(|tab| tab.label() == Some("测试终端 1"))
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.click("tool-snippets", cx));
+
+    // A click puts it on the line, in place of what is typed there but on
+    // Windows, whose shells do not take Ctrl-E and Ctrl-U so; the terminal
+    // takes the keyboard.
+    let before = factory.written_text().len();
+    in_frame(cx, handle, |window, cx| {
+        window.click(("snippet", 1_u64), cx)
+    });
+    let typed = if cfg!(windows) {
+        "git status"
+    } else {
+        "\x05\x15git status"
+    };
+    assert_eq!(&factory.written_text()[before..], typed);
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find(("local-terminal", 1_u64)).focused(), Some(true));
+    });
+}
+
+#[gpui_kit::test]
+async fn projects_and_snippets_hidden_in_the_settings_leave_local_terminals_without_a_sidebar(
     cx: &mut TestAppContext,
 ) {
     let (handle, workspace) = open_with_local(cx, projects_store(), fake_local_terminals());
     open_projects(cx, handle);
     let settings = cx.update(|cx| workspace.read(cx).settings().clone());
-    settings.update(cx, |settings, cx| {
-        settings.update(
-            |settings| settings.sidebar_tools.set(ToolKind::Projects, false),
-            cx,
-        )
+    let hide = |tool: ToolKind, cx: &mut TestAppContext| {
+        settings.update(cx, |settings, cx| {
+            settings.update(|settings| settings.sidebar_tools.set(tool, false), cx)
+        })
+    };
+    // 项目 hidden, 命令片段 is left; the sidebar showed 项目, so it closes.
+    hide(ToolKind::Projects, cx);
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("tool-projects").is_none());
+        assert!(window.try_find("tool-snippets").is_some());
+        assert!(window.try_find(("tool-sidebar-local", 1_u64)).is_none());
     });
+    hide(ToolKind::Snippets, cx);
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find("tool-switch").is_none());
         assert!(window.try_find(("tool-sidebar-local", 1_u64)).is_none());

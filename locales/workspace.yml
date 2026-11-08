@@ -309,11 +309,19 @@ workspace.forward.prompt_origin:
   zh-CN: 端口转发“%{title}”正在通过 %{host} 连接。
   en: Port forward “%{title}” is connecting through %{host}.
 
-workspace.snippets.delete_category.one:
-  en: The 1 snippet in the category is deleted with it.
-workspace.snippets.delete_category.other:
-  zh-CN: 分类里的 %{count} 个片段会一起删除。
-  en: The %{count} snippets in the category are deleted with it.
+workspace.snippets.delete_category:
+  zh-CN: 将同时删除其中的 %{items}。
+  en: This also deletes the category’s %{items}.
+workspace.snippets.snippets.one:
+  en: "%{count} snippet"
+workspace.snippets.snippets.other:
+  zh-CN: "%{count} 个片段"
+  en: "%{count} snippets"
+workspace.snippets.subcategories.one:
+  en: "%{count} subcategory"
+workspace.snippets.subcategories.other:
+  zh-CN: "%{count} 个子分类"
+  en: "%{count} subcategories"
 
 workspace.update.done_title:
   zh-CN: 更新完成

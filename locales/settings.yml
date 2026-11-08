@@ -159,8 +159,8 @@ settings.sidebar_tools.title:
   zh-CN: 侧栏功能
   en: Sidebar tools
 settings.sidebar_tools.description:
-  zh-CN: 点击图标，或把它拖到另一排，即可显示或隐藏。主机系统用不了的工具不显示，例如 Windows 主机上的系统监控；外部调用打开的连接只显示命令片段；本地终端旁只有项目。
-  en: Click an icon, or drag it to the other row, to show or hide it. A tool the host’s system can’t run doesn’t appear, such as Monitor on a Windows host; an external connection shows only Snippets, and local terminals have only Projects.
+  zh-CN: 点击图标，或把它拖到另一排，即可显示或隐藏。主机系统用不了的工具不显示，例如 Windows 主机上的系统监控；外部调用打开的连接只显示命令片段；本地终端旁只有项目和命令片段。
+  en: Click an icon, or drag it to the other row, to show or hide it. A tool the host’s system can’t run doesn’t appear, such as Monitor on a Windows host; an external connection shows only Snippets, and local terminals have only Projects and Snippets.
 settings.sidebar_tools.reset:
   zh-CN: 恢复默认
   en: Restore defaults

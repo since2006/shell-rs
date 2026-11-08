@@ -56,7 +56,8 @@ pub(crate) fn repairs(set: &RecordSet) -> Vec<(RecordKey, Body)> {
         set.get(&RecordKey::new(kind, id))
             .is_some_and(RawRecord::is_deleted)
     };
-    let detached = groups_closing_cycles(set);
+    let detached_groups = closing_cycles(set, Kind::Group);
+    let detached_categories = closing_cycles(set, Kind::SnippetCategory);
     let mut out = Vec::new();
     for record in set.values().filter(|record| editable(record)) {
         let Some(fields) = record.live() else {
@@ -70,7 +71,7 @@ pub(crate) fn repairs(set: &RecordSet) -> Vec<(RecordKey, Body)> {
         match &mut data {
             RecordData::Group(group) => {
                 let gone = group.parent.as_deref().is_some_and(|parent| {
-                    deleted(Kind::Group, parent) || detached.contains(&record.key.id)
+                    deleted(Kind::Group, parent) || detached_groups.contains(&record.key.id)
                 });
                 if gone {
                     group.parent = None;
@@ -129,10 +130,17 @@ pub(crate) fn repairs(set: &RecordSet) -> Vec<(RecordKey, Body)> {
             RecordData::CredentialPassword(_)
             | RecordData::Passphrase(_)
             | RecordData::PrivateKey(_) => delete = deleted(Kind::Credential, &record.key.id),
-            RecordData::Credential(_)
-            | RecordData::SnippetCategory(_)
-            | RecordData::Password(_)
-            | RecordData::ProxyPassword(_) => {}
+            RecordData::SnippetCategory(category) => {
+                let gone = category.parent.as_deref().is_some_and(|parent| {
+                    deleted(Kind::SnippetCategory, parent)
+                        || detached_categories.contains(&record.key.id)
+                });
+                if gone {
+                    category.parent = None;
+                    changed = true;
+                }
+            }
+            RecordData::Credential(_) | RecordData::Password(_) | RecordData::ProxyPassword(_) => {}
         }
         if delete {
             out.push((record.key.clone(), Body::Deleted));
@@ -152,20 +160,24 @@ fn editable(record: &RawRecord) -> bool {
         .is_none_or(|min_reader| min_reader <= FORMAT)
 }
 
-/// Groups that close a cycle of parents, one per cycle: the one whose
-/// version is least, so every device picks the same.
-fn groups_closing_cycles(set: &RecordSet) -> BTreeSet<String> {
+/// Records of `kind` (groups, snippet categories) that close a cycle of
+/// parents, one per cycle: the one whose version is least, so every device
+/// picks the same.
+fn closing_cycles(set: &RecordSet, kind: Kind) -> BTreeSet<String> {
     let mut parent = BTreeMap::new();
     let mut versions = BTreeMap::new();
     for record in set.values().filter(|record| editable(record)) {
-        let (Some(fields), Kind::Group) = (record.live(), &record.key.kind) else {
+        let Some(fields) = record.live().filter(|_| record.key.kind == kind) else {
             continue;
         };
-        if let Ok(RecordData::Group(group)) = wire::parse(&record.key, fields) {
-            versions.insert(record.key.id.clone(), &record.version);
-            if let Some(up) = group.parent {
-                parent.insert(record.key.id.clone(), up);
-            }
+        let up = match wire::parse(&record.key, fields) {
+            Ok(RecordData::Group(group)) => group.parent,
+            Ok(RecordData::SnippetCategory(category)) => category.parent,
+            _ => continue,
+        };
+        versions.insert(record.key.id.clone(), &record.version);
+        if let Some(up) = up {
+            parent.insert(record.key.id.clone(), up);
         }
     }
     let mut done: BTreeSet<String> = BTreeSet::new();
@@ -205,7 +217,7 @@ mod tests {
     use crate::record::tests::{deleted, device, live, version};
     use crate::secret::{EndpointSecret, Secret, endpoint_secret_id};
     use crate::wire::tests::ssh_host;
-    use crate::wire::{ForwardData, ForwardKind, GroupData, SnippetData};
+    use crate::wire::{ForwardData, ForwardKind, GroupData, SnippetCategoryData, SnippetData};
     use crate::{FixedEnv, Stamp};
 
     fn record(kind: Kind, id: &str, at: u64, data: RecordData) -> RawRecord {
@@ -220,6 +232,15 @@ mod tests {
             sort_order: 0,
         });
         record(Kind::Group, id, at, data)
+    }
+
+    fn category(id: &str, parent: Option<&str>, at: u64) -> RawRecord {
+        let data = RecordData::SnippetCategory(SnippetCategoryData {
+            name: id.into(),
+            parent: parent.map(Into::into),
+            sort_order: 0,
+        });
+        record(Kind::SnippetCategory, id, at, data)
     }
 
     fn set(records: impl IntoIterator<Item = RawRecord>) -> RecordSet {
@@ -346,6 +367,7 @@ mod tests {
             command: "df".into(),
             scope: SnippetScope::Host("h".into()),
             run_on_click: false,
+            sort_order: 0,
         });
         let bookmark = RecordData::Bookmark(wire::BookmarkData {
             host: "h".into(),
@@ -371,6 +393,7 @@ mod tests {
             command: "df".into(),
             scope: SnippetScope::All,
             run_on_click: false,
+            sort_order: 0,
         });
         let records = set([
             deleted(Kind::SnippetCategory, "c", version(5, 'b')),
@@ -381,6 +404,48 @@ mod tests {
             panic!()
         };
         assert_eq!(snippet.category, None);
+    }
+
+    #[test]
+    fn a_category_in_a_deleted_one_moves_to_the_top() {
+        let records = set([
+            deleted(Kind::SnippetCategory, "c", version(5, 'b')),
+            category("logs", Some("c"), 1),
+        ]);
+        let (records, count) = repaired(records);
+        assert_eq!(count, 1);
+        let Some(RecordData::SnippetCategory(logs)) =
+            parsed(&records, Kind::SnippetCategory, "logs")
+        else {
+            panic!()
+        };
+        assert_eq!(logs.parent, None);
+        // Only missing, it stays where it was.
+        assert_eq!(repaired(set([category("logs", Some("c"), 1)])).1, 0);
+    }
+
+    #[test]
+    fn a_cycle_of_categories_is_broken_at_its_oldest() {
+        // Each kind has its cycles of its own: a group named like a category
+        // is not its parent.
+        let records = set([
+            category("a", Some("b"), 2),
+            category("b", Some("a"), 1),
+            group("a", Some("b"), 1),
+            group("b", None, 1),
+        ]);
+        let (records, count) = repaired(records);
+        assert_eq!(count, 1);
+        assert!(closing_cycles(&records, Kind::SnippetCategory).is_empty());
+        let Some(RecordData::SnippetCategory(b)) = parsed(&records, Kind::SnippetCategory, "b")
+        else {
+            panic!()
+        };
+        assert_eq!(b.parent, None);
+        let Some(RecordData::Group(a)) = parsed(&records, Kind::Group, "a") else {
+            panic!()
+        };
+        assert_eq!(a.parent.as_deref(), Some("b"));
     }
 
     #[test]
@@ -441,7 +506,7 @@ mod tests {
     }
 
     fn assert_cycle_free(records: &RecordSet) {
-        assert!(groups_closing_cycles(records).is_empty());
+        assert!(closing_cycles(records, Kind::Group).is_empty());
     }
 
     /// Random groups, hosts and deletions: after repair, nothing live

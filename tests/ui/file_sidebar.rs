@@ -6,7 +6,8 @@
 use crate::support::*;
 use shellrs::analytics::{Analytics, Counter, Signal};
 use shellrs::app::{
-    CloseTerminal, DisconnectTerminal, ExplorerAction, ExplorerCommand, ReconnectTerminal,
+    CloseTerminal, ConnectHost, DisconnectTerminal, ExplorerAction, ExplorerCommand,
+    ReconnectTerminal,
 };
 use shellrs::explorer::ExplorerPanel;
 
@@ -388,6 +389,42 @@ async fn files_dropped_on_files_are_offered_for_upload(cx: &mut TestAppContext) 
     });
 }
 
+/// Its queue, as an SFTP tab's, scrolls down to a batch as it is added.
+#[gpui_kit::test]
+async fn files_queue_scrolls_to_a_batch_as_it_is_added(cx: &mut TestAppContext) {
+    let fixture = open(cx, FakeSftpProvider::default());
+    show_files(cx, &fixture, INITIAL_WEB_TERMINAL, FILES).await;
+    const BATCHES: u64 = 12;
+    for n in 1..=BATCHES {
+        let paths = vec![std::path::PathBuf::from(format!("/local/tester/{n}.txt"))];
+        in_frame(cx, fixture.handle, |window, cx| {
+            window.dispatch_action(
+                Box::new(ExplorerAction::new(
+                    ExplorerId(FILES),
+                    ExplorerCommand::UploadPaths {
+                        paths,
+                        target: "/home/tester".into(),
+                    },
+                )),
+                cx,
+            )
+        });
+        in_frame(cx, fixture.handle, |window, cx| {
+            window.click("upload-confirm", cx)
+        });
+    }
+    in_frame(cx, fixture.handle, |window, _| {
+        let rows = window.find("transfer-queue-rows").bounds();
+        let first = window.find(("queue-entry", 1u64)).bounds();
+        let last = window.find(("queue-entry", BATCHES)).bounds();
+        assert!(first.top() < rows.top(), "{first:?} in {rows:?}");
+        assert!(
+            last.top() >= rows.top() && last.bottom() <= rows.bottom() + px(0.5),
+            "{last:?} in {rows:?}"
+        );
+    });
+}
+
 #[gpui_kit::test]
 async fn files_count_as_a_tool_not_as_an_sftp_connection(cx: &mut TestAppContext) {
     let fixture = open(cx, FakeSftpProvider::default());
@@ -614,6 +651,68 @@ async fn files_follows_its_hosts_folder_only_when_it_changes(cx: &mut TestAppCon
     in_frame(cx, fixture.handle, |window, _| {
         assert_eq!(window.find("follow-terminal").checked(), Some(false));
     });
+}
+
+/// 目录跟随 as switched in one terminal's 文件 is where the host's next 文件
+/// starts, kept on the host for the next launch; a host never switched
+/// starts as the setting says.
+#[gpui_kit::test]
+async fn the_follow_switch_is_kept_for_the_host(cx: &mut TestAppContext) {
+    let fixture = open_with(
+        cx,
+        FakeSftpProvider::default(),
+        FakeTerminalFactory::answering(&[SET_UP, SET_UP, SET_UP]),
+    );
+    let store = cx.update(|cx| fixture.workspace.read(cx).store().clone());
+    let remembered = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            store
+                .read(cx)
+                .host(HostId(WEB_01))
+                .unwrap()
+                .directory_follow
+        })
+    };
+    let follows = |cx: &mut TestAppContext, terminal| {
+        cx.update(|cx| sidebar(&fixture, terminal, cx).map(|panel| panel.read(cx).follows()))
+    };
+    show_files(cx, &fixture, INITIAL_WEB_TERMINAL, FILES).await;
+    settle(cx);
+    assert_eq!(remembered(cx), None);
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click("follow-terminal", cx)
+    });
+    assert_eq!(remembered(cx), Some(false));
+
+    // Another terminal on web-01 has 文件 beside it at once, switched off.
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.dispatch_action(Box::new(ConnectHost(HostId(WEB_01))), cx)
+    });
+    settle(cx);
+    assert_eq!(follows(cx, FIRST_NEW_TERMINAL), Some(false));
+    in_frame(cx, fixture.handle, |window, _| {
+        assert_eq!(window.find("follow-terminal").checked(), Some(false));
+    });
+
+    // staging-api was never switched: on, as the setting says.
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_STAGING_TERMINAL), cx);
+    });
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click("tool-files", cx)
+    });
+    settle(cx);
+    assert_eq!(follows(cx, INITIAL_STAGING_TERMINAL), Some(true));
+
+    // Switched on again in the newer one: the first keeps its own.
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click(("terminal-tab", FIRST_NEW_TERMINAL), cx);
+    });
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.click("follow-terminal", cx)
+    });
+    assert_eq!(remembered(cx), Some(true));
+    assert_eq!(follows(cx, INITIAL_WEB_TERMINAL), Some(false));
 }
 
 #[gpui_kit::test]

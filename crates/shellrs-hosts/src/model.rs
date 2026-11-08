@@ -372,6 +372,10 @@ pub struct Host {
     /// (`ToolKind::key` in the app), kept as it is even when this version
     /// has no such tool.
     pub sidebar_tool: Option<SharedString>,
+    /// 目录跟随 in the host's 文件 as the user last switched it, `None`
+    /// until then: the app's setting decides. Written by the sidebar, never
+    /// by the host form.
+    pub directory_follow: Option<bool>,
     /// When the user last changed what syncs of it, in milliseconds since
     /// the epoch; 0 for a host sync brought. `os` and the like are not
     /// edits.
@@ -399,6 +403,7 @@ impl Host {
             sort_order: 0,
             os: None,
             sidebar_tool: None,
+            directory_follow: None,
             edited_ms: 0,
         }
     }

@@ -665,6 +665,9 @@ host.store.not_saved.host_os:
 host.store.not_saved.sidebar_tool:
   zh-CN: 记录主机的右侧栏未能保存到本地数据库：%{error}
   en: "Couldn’t save the host’s right sidebar to the local database: %{error}"
+host.store.not_saved.directory_follow:
+  zh-CN: 主机的「目录跟随」开关未能保存到本地数据库：%{error}
+  en: "Couldn’t save the host’s Follow switch to the local database: %{error}"
 host.store.not_saved.new_snippet:
   zh-CN: 新建命令片段未能保存到本地数据库：%{error}
   en: "Couldn’t save the new snippet to the local database: %{error}"
@@ -677,12 +680,15 @@ host.store.not_saved.delete_snippet:
 host.store.not_saved.new_snippet_category:
   zh-CN: 新建片段分类未能保存到本地数据库：%{error}
   en: "Couldn’t save the new snippet category to the local database: %{error}"
-host.store.not_saved.rename_snippet_category:
-  zh-CN: 重命名片段分类未能保存到本地数据库：%{error}
-  en: "Couldn’t save the renamed snippet category to the local database: %{error}"
+host.store.not_saved.save_snippet_category:
+  zh-CN: 保存片段分类未能保存到本地数据库：%{error}
+  en: "Couldn’t save the snippet category’s changes to the local database: %{error}"
 host.store.not_saved.delete_snippet_category:
   zh-CN: 删除片段分类未能保存到本地数据库：%{error}
   en: "Couldn’t delete the snippet category from the local database: %{error}"
+host.store.not_saved.move_snippet_node:
+  zh-CN: 调整片段顺序未能保存到本地数据库：%{error}
+  en: "Couldn’t save the rearranged snippet list to the local database: %{error}"
 host.store.not_saved.batch:
   zh-CN: 这批改动未能保存到本地数据库：%{error}
   en: "Couldn’t save these changes to the local database: %{error}"

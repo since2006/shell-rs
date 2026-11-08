@@ -36,7 +36,8 @@ use crate::{
     AuthKind, BookmarkSide, Credential, CredentialDraft, CredentialId, CredentialKind,
     ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft, GroupId, Host,
     HostDraft, HostGroup, HostId, Protocol, ProxyKind, ProxySettings, PublicId, Route, Snippet,
-    SnippetCategory, SnippetCategoryId, SnippetDraft, SnippetId, SnippetScope, TelnetSettings,
+    SnippetCategory, SnippetCategoryDraft, SnippetCategoryId, SnippetDraft, SnippetId,
+    SnippetScope, TelnetSettings,
 };
 
 /// What one round of sync takes from the store, on the UI thread.
@@ -508,6 +509,11 @@ impl HostData {
                 id: category.sync_id.to_string(),
                 data: RecordData::SnippetCategory(sync::SnippetCategoryData {
                     name: category.name.to_string(),
+                    parent: category.parent.and_then(|parent| {
+                        self.snippet_category(parent)
+                            .map(|parent| parent.sync_id.to_string())
+                    }),
+                    sort_order: category.sort_order,
                 }),
                 edited_ms: category.edited_ms,
             });
@@ -536,6 +542,7 @@ impl HostData {
                     command: snippet.command.clone(),
                     scope,
                     run_on_click: snippet.run_on_click,
+                    sort_order: snippet.sort_order,
                 }),
                 edited_ms: snippet.edited_ms,
             });
@@ -1087,6 +1094,7 @@ impl HostData {
                     Some(old) => {
                         fresh.os = old.os;
                         fresh.sidebar_tool = old.sidebar_tool.take();
+                        fresh.directory_follow = old.directory_follow;
                         fresh.edited_ms = old.edited_ms;
                         *old = fresh;
                         false
@@ -1155,7 +1163,17 @@ impl HostData {
                 let Some(&category_id) = ids.categories.get(id) else {
                     return;
                 };
-                let mut fresh = SnippetCategory::new(category_id, data.name.as_str());
+                let parent = data
+                    .parent
+                    .as_ref()
+                    .and_then(|id| ids.categories.get(id))
+                    .copied()
+                    .filter(|parent| *parent != category_id);
+                let mut fresh = SnippetCategory::new(
+                    category_id,
+                    SnippetCategoryDraft::new(data.name.as_str(), parent),
+                );
+                fresh.sort_order = data.sort_order;
                 fresh.sync_id = PublicId::from_stored(id.to_owned());
                 let is_new = match self
                     .snippet_categories
@@ -1198,6 +1216,7 @@ impl HostData {
                     },
                 };
                 let mut fresh = Snippet::new(snippet_id, draft);
+                fresh.sort_order = data.sort_order;
                 fresh.sync_id = PublicId::from_stored(id.to_owned());
                 let is_new = match self.snippets.iter_mut().find(|s| s.id == snippet_id) {
                     Some(old) => {
@@ -1319,9 +1338,14 @@ impl HostData {
             }
             Kind::SnippetCategory => {
                 if let Some(&category_id) = ids.categories.get(id) {
-                    self.snippet_categories.retain(|c| c.id != category_id);
+                    // As the database's `ON DELETE CASCADE` does. Those
+                    // inside it are not left in it: the round deletes them
+                    // first, or has moved them out.
+                    let mut doomed = self.descendant_snippet_categories(category_id);
+                    doomed.push(category_id);
+                    self.snippet_categories.retain(|c| !doomed.contains(&c.id));
                     self.snippets
-                        .retain(|snippet| snippet.category != Some(category_id));
+                        .retain(|snippet| !snippet.category.is_some_and(|c| doomed.contains(&c)));
                     writes.push(Write::DeleteCategory(category_id));
                 }
             }
@@ -1511,7 +1535,7 @@ mod tests {
 
     use super::*;
     use crate::secrets::{InMemorySecretStore, SharedSecretStore};
-    use crate::{HostDatabase, SerialSettings};
+    use crate::{HostDatabase, SerialSettings, SnippetDrop, SnippetNode};
 
     /// One device: its store, keychain, key folder and sync state.
     struct Device {
@@ -1701,10 +1725,23 @@ mod tests {
                 .with_name("db")
                 .with_auto_start(true),
             );
-            let docker = store.insert_snippet_category("Docker");
+            let docker = store.insert_snippet_category(SnippetCategoryDraft::new("Docker", None));
+            let compose =
+                store.insert_snippet_category(SnippetCategoryDraft::new("compose", Some(docker)));
             let mut ps = SnippetDraft::new("ps", "docker ps", Some(docker));
             ps.scope = SnippetScope::Group(ops);
             store.insert_snippet(ps);
+            let up =
+                store.insert_snippet(SnippetDraft::new("up", "docker compose up", Some(compose)));
+            let down = store.insert_snippet(SnippetDraft::new(
+                "down",
+                "docker compose down",
+                Some(compose),
+            ));
+            store.move_snippet_node(
+                SnippetNode::Snippet(down),
+                SnippetDrop::Before(SnippetNode::Snippet(up)),
+            );
             for (secret, value) in [
                 (
                     SecretRef::password("root", "bastion.example", 22),
@@ -1783,12 +1820,34 @@ mod tests {
             store.update(web, renamed);
             let rule = store.forwards()[0].id;
             store.remove_forward(rule);
+            let compose = store
+                .snippet_categories()
+                .iter()
+                .find(|c| c.name == "compose")
+                .unwrap()
+                .id;
+            assert!(store.move_snippet_node(SnippetNode::Category(compose), SnippetDrop::Top));
         }
         b.sync(&vault, &keys);
         a.sync(&vault, &keys);
         assert_eq!(b.held(), a.held());
         assert!(a.store.hosts().iter().any(|h| h.name == "web-01"));
         assert!(a.store.forwards().is_empty());
+        let top: Vec<_> = a
+            .store
+            .snippet_categories_in(None)
+            .iter()
+            .map(|c| c.name.to_string())
+            .collect();
+        assert_eq!(top, ["Docker", "compose"]);
+        let compose = a.store.snippet_categories_in(None)[1].id;
+        let order: Vec<_> = a
+            .store
+            .snippets_of(Some(compose))
+            .iter()
+            .map(|s| s.name.to_string())
+            .collect();
+        assert_eq!(order, ["down", "up"]);
 
         // Turning forwarding off replaces the earlier consent on the
         // other device too; it must not survive as an unknown field.

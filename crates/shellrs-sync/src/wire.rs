@@ -157,11 +157,19 @@ pub struct Endpoint {
     pub port: u16,
 }
 
+/// A folder of snippets; `parent` is another category's id, `None` at the
+/// top. `parent` and `sort_order` came after the format was first released:
+/// a copy an older version wrote has neither, which reads as the top level
+/// and 0.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnippetCategoryData {
     pub name: String,
+    pub parent: Option<String>,
+    pub sort_order: i64,
 }
 
+/// `sort_order` came after the format was first released: a copy an older
+/// version wrote has none, which reads as 0.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnippetData {
     pub category: Option<String>,
@@ -169,6 +177,7 @@ pub struct SnippetData {
     pub command: String,
     pub scope: SnippetScope,
     pub run_on_click: bool,
+    pub sort_order: i64,
 }
 
 /// Which hosts a snippet is for.
@@ -272,6 +281,8 @@ pub(crate) fn parse(key: &RecordKey, data: &Map) -> Result<RecordData, String> {
         Kind::Forward => RecordData::Forward(parse_forward(&r)?),
         Kind::SnippetCategory => RecordData::SnippetCategory(SnippetCategoryData {
             name: r.name("name")?,
+            parent: r.later(|r| r.id("parent"), "parent", None)?,
+            sort_order: r.later(Reader::order, "sort_order", 0)?,
         }),
         Kind::Snippet => RecordData::Snippet(SnippetData {
             category: r.id("category")?,
@@ -289,6 +300,7 @@ pub(crate) fn parse(key: &RecordKey, data: &Map) -> Result<RecordData, String> {
                 other => return Err(format!("unknown snippet scope {other}")),
             },
             run_on_click: r.flag("run_on_click")?,
+            sort_order: r.later(Reader::order, "sort_order", 0)?,
         }),
         Kind::SecretPassword => RecordData::Password(parse_endpoint(key, &r)?),
         Kind::SecretProxy => RecordData::ProxyPassword(parse_endpoint(key, &r)?),
@@ -330,9 +342,9 @@ fn parse_host(key: &RecordKey, r: &Reader) -> Result<HostData, String> {
         None => false,
         Some(_) => r.flag("agent_forwarding")?,
     };
-    if agent_forwarding && !matches!(protocol, Protocol::Ssh) {
-        return Err("agent forwarding requires SSH".into());
-    }
+    // Older writers preserve this as an unknown field when changing an
+    // SSH host to Telnet. Keep the host usable, with forwarding disabled.
+    let agent_forwarding = agent_forwarding && matches!(protocol, Protocol::Ssh);
     let auth = r.spelled("auth", Auth::parse)?;
     let username = r.optional_string("username")?;
     let credential = r.id("credential")?;
@@ -470,7 +482,7 @@ fn known_fields(kind: &Kind) -> &'static [&'static str] {
             "target_port",
             "sort_order",
         ],
-        Kind::SnippetCategory => &["name"],
+        Kind::SnippetCategory => &["name", "parent", "sort_order"],
         Kind::Snippet => &[
             "category",
             "name",
@@ -478,6 +490,7 @@ fn known_fields(kind: &Kind) -> &'static [&'static str] {
             "scope",
             "scope_id",
             "run_on_click",
+            "sort_order",
         ],
         Kind::SecretPassword | Kind::SecretProxy => &["user", "host", "port", "value"],
         Kind::SecretCredential | Kind::SecretPassphrase | Kind::SecretPrivateKey => &["value"],
@@ -565,7 +578,11 @@ fn fields(data: &RecordData) -> Vec<(&'static str, Value)> {
             ),
             ("sort_order", json!(forward.sort_order)),
         ],
-        RecordData::SnippetCategory(category) => vec![("name", json!(category.name))],
+        RecordData::SnippetCategory(category) => vec![
+            ("name", json!(category.name)),
+            ("parent", json!(category.parent)),
+            ("sort_order", json!(category.sort_order)),
+        ],
         RecordData::Snippet(snippet) => {
             let (scope, scope_id) = match &snippet.scope {
                 SnippetScope::All => ("all", None),
@@ -579,6 +596,7 @@ fn fields(data: &RecordData) -> Vec<(&'static str, Value)> {
                 ("scope", json!(scope)),
                 ("scope_id", json!(scope_id)),
                 ("run_on_click", json!(snippet.run_on_click)),
+                ("sort_order", json!(snippet.sort_order)),
             ]
         }
         RecordData::Password(endpoint) | RecordData::ProxyPassword(endpoint) => vec![
@@ -656,6 +674,22 @@ impl Reader<'_> {
             .get("sort_order")
             .and_then(Value::as_i64)
             .ok_or_else(|| "sort_order is not a number".into())
+    }
+
+    /// A field added after the format was first released, read with
+    /// `read`: a copy an older version wrote has none, which is `missing`.
+    /// One that is there must be right, as every other field must.
+    fn later<T>(
+        &self,
+        read: impl Fn(&Self) -> Result<T, String>,
+        key: &str,
+        missing: T,
+    ) -> Result<T, String> {
+        if self.0.contains_key(key) {
+            read(self)
+        } else {
+            Ok(missing)
+        }
     }
 
     fn flag(&self, key: &str) -> Result<bool, String> {
@@ -794,7 +828,13 @@ pub(crate) mod tests {
             ),
             (
                 key(Kind::SnippetCategory, "s0"),
-                RecordData::SnippetCategory(SnippetCategoryData { name: "Ops".into() }),
+                // As the files of format 1 that `golden` keeps have them:
+                // from before the fields added since.
+                RecordData::SnippetCategory(SnippetCategoryData {
+                    name: "Ops".into(),
+                    parent: None,
+                    sort_order: 0,
+                }),
             ),
             (
                 key(Kind::Snippet, "s1"),
@@ -804,6 +844,7 @@ pub(crate) mod tests {
                     command: "df -h".into(),
                     scope: SnippetScope::Host("h1".into()),
                     run_on_click: true,
+                    sort_order: 0,
                 }),
             ),
             (
@@ -814,6 +855,7 @@ pub(crate) mod tests {
                     command: "uptime".into(),
                     scope: SnippetScope::All,
                     run_on_click: false,
+                    sort_order: 0,
                 }),
             ),
             (
@@ -911,13 +953,35 @@ pub(crate) mod tests {
         assert_eq!(parse(&key, &disabled), Ok(RecordData::Host(host)));
         enabled.insert("agent_forwarding".into(), json!("true"));
         assert!(parse(&key, &enabled).is_err());
-        enabled.insert("agent_forwarding".into(), json!(true));
-        enabled.insert("protocol".into(), json!("telnet"));
-        enabled.insert(
-            "telnet".into(),
-            json!({"user_prompt": null, "pass_prompt": null}),
-        );
-        assert!(parse(&key, &enabled).is_err());
+    }
+
+    #[test]
+    fn stale_agent_forwarding_on_telnet_is_normalized_and_removed_on_write() {
+        let key = RecordKey::new(Kind::Host, "h1");
+        let host = RecordData::Host(HostData {
+            protocol: Protocol::Telnet(TelnetData::default()),
+            port: 23,
+            ..ssh_host("switch")
+        });
+        let mut fields = write_into(&host, None);
+        fields.insert("future_option".into(), json!("kept"));
+        for flag in [None, Some(false), Some(true)] {
+            fields.remove("agent_forwarding");
+            if let Some(flag) = flag {
+                fields.insert("agent_forwarding".into(), json!(flag));
+            }
+            let parsed = parse(&key, &fields).unwrap();
+            assert_eq!(parsed, host);
+            let written = write_into(&parsed, Some(&fields));
+            assert!(!written.contains_key("agent_forwarding"));
+            assert_eq!(written["future_option"], json!("kept"));
+            assert_eq!(parse(&key, &written), Ok(host.clone()));
+        }
+        // Normalization does not make malformed values valid.
+        for malformed in [json!("true"), json!(1), Value::Null] {
+            fields.insert("agent_forwarding".into(), malformed);
+            assert!(parse(&key, &fields).is_err());
+        }
     }
 
     #[test]
@@ -988,6 +1052,49 @@ pub(crate) mod tests {
         };
         assert!(parse(&RecordKey::new(Kind::Forward, "f"), &forward).is_err());
         assert!(parse(&RecordKey::new(Kind::Other("tag".into()), "t"), &Map::new()).is_err());
+    }
+
+    #[test]
+    fn fields_added_since_the_first_release_read_as_before_when_missing() {
+        let category = RecordKey::new(Kind::SnippetCategory, "s9");
+        let nested = RecordData::SnippetCategory(SnippetCategoryData {
+            name: "logs".into(),
+            parent: Some("s0".into()),
+            sort_order: 3,
+        });
+        let written = write_into(&nested, None);
+        assert_eq!(parse(&category, &written), Ok(nested));
+
+        // A copy an older version wrote: at the top, in the first place.
+        let Value::Object(old) = json!({"name": "logs"}) else {
+            unreachable!()
+        };
+        assert_eq!(
+            parse(&category, &old),
+            Ok(RecordData::SnippetCategory(SnippetCategoryData {
+                name: "logs".into(),
+                parent: None,
+                sort_order: 0,
+            }))
+        );
+        let snippet = RecordKey::new(Kind::Snippet, "s1");
+        let Value::Object(old) = json!({"category": null, "name": "df", "command": "df",
+            "scope": "all", "scope_id": null, "run_on_click": false})
+        else {
+            unreachable!()
+        };
+        let Ok(RecordData::Snippet(read)) = parse(&snippet, &old) else {
+            panic!("an older copy is damaged");
+        };
+        assert_eq!(read.sort_order, 0);
+
+        // There, they must be right like any other field.
+        let mut wrong = written.clone();
+        wrong.insert("parent".into(), json!(7));
+        assert!(parse(&category, &wrong).is_err());
+        let mut wrong = written;
+        wrong.insert("sort_order".into(), json!("first"));
+        assert!(parse(&category, &wrong).is_err());
     }
 
     #[test]

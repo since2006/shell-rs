@@ -115,6 +115,9 @@ pub struct ExplorerPanel {
     /// frame another tab is shown instead: coming back would reset them.
     panes_split: Entity<ResizableState>,
     queue_split: Entity<ResizableState>,
+    /// The queue's rows, scrolled to a batch as it is added, which goes in
+    /// last. Kept here for the same reason as the splits.
+    pub(super) queue_scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
     _events: Task<()>,
 }
@@ -274,6 +277,7 @@ impl ExplorerPanel {
             follow_target: None,
             panes_split: cx.new(|_| ResizableState::default()),
             queue_split: cx.new(|_| ResizableState::default()),
+            queue_scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
             _events: events_task,
         }
@@ -465,7 +469,8 @@ impl ExplorerPanel {
             }
         }
     }
-    /// Put a confirmed batch on the queue, and start it if nothing runs.
+    /// Put a confirmed batch on the queue, at the end, where the list
+    /// shows it; and start it if nothing runs.
     fn enqueue(&mut self, job: TransferJob, window: &mut Window, cx: &mut Context<Self>) {
         if self.state != ConnectionState::Connected {
             return;
@@ -476,6 +481,7 @@ impl ExplorerPanel {
             return;
         }
         self.queue.push(job);
+        self.queue_scroll.scroll_to_bottom();
         self.start_next_if_idle(window, cx);
     }
     pub fn send(&self, command: SftpCommand) {

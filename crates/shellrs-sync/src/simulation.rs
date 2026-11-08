@@ -231,7 +231,11 @@ impl Sim {
             }
             6 => {
                 let id = self.fresh_id();
-                let data = RecordData::SnippetCategory(SnippetCategoryData { name: id.clone() });
+                let data = RecordData::SnippetCategory(SnippetCategoryData {
+                    name: id.clone(),
+                    parent: self.maybe(&categories),
+                    sort_order: 0,
+                });
                 self.create(d, id, data, None);
             }
             7 => {
@@ -259,6 +263,7 @@ impl Sim {
                     command: "uptime".into(),
                     scope,
                     run_on_click: false,
+                    sort_order: 0,
                 });
                 self.create(d, id, data, needs);
             }
@@ -365,6 +370,10 @@ impl Sim {
                         g.parent.as_deref().is_some_and(|p| gone(Kind::Group, p))
                     }
                     RecordData::Host(h) => h.group.as_deref().is_some_and(|g| gone(Kind::Group, g)),
+                    RecordData::SnippetCategory(c) => c
+                        .parent
+                        .as_deref()
+                        .is_some_and(|p| gone(Kind::SnippetCategory, p)),
                     RecordData::Forward(f) => gone(Kind::Host, &f.host),
                     RecordData::Bookmark(b) => gone(Kind::Host, &b.host),
                     // The app forgets a credential's secrets with it.

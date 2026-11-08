@@ -868,7 +868,7 @@ impl Workspace {
         self._subscriptions.push(subscription);
         self.explorers.insert(id, panel.clone());
         self.file_sidebars.insert(terminal, id);
-        let follow = self.directory_follow_setting(cx);
+        let follow = self.initial_follow(terminal, cx);
         panel.update(cx, |panel, cx| panel.set_follow(follow, cx));
         // Where the terminal is, rather than home, if its shell said.
         self.follow_current_directory(terminal, window, cx);
@@ -3135,6 +3135,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_rename_snippet_category))
             .on_action(cx.listener(Self::on_delete_snippet_category))
             .on_action(cx.listener(Self::on_toggle_snippet_category))
+            .on_action(cx.listener(Self::on_new_snippet_subcategory))
+            .on_action(cx.listener(Self::on_move_snippet_node))
             .on_action(cx.listener(Self::on_refresh_docker))
             .on_action(cx.listener(Self::on_kubernetes_action))
             .on_action(cx.listener(Self::on_toggle_docker_project))

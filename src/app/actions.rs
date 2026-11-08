@@ -16,7 +16,8 @@ use crate::{
     explorer::{ExplorerId, FileSizeFormat, PaneSide},
     host::{
         CredentialId, ForwardId, GroupId, HostId, HostNode, NodeDrop, SavedTerminalId,
-        SnippetCategoryId, SnippetId, TerminalDrop, TerminalGroupId, TerminalNode,
+        SnippetCategoryId, SnippetDrop, SnippetId, SnippetNode, TerminalDrop, TerminalGroupId,
+        TerminalNode,
     },
     kubernetes::KubernetesCommand,
     monitor::MonitorDetail,
@@ -114,9 +115,11 @@ gpui_kit::actions!(
         /// Detach the SSH terminal in front from its tmux session, leaving
         /// the session running.
         DetachTmux,
-        /// Open the new-snippet dialog, for a snippet of no category.
+        /// Open the new-snippet dialog, for a snippet at the top, in no
+        /// category.
         NewSnippet,
-        /// Open the new-category dialog of 命令片段.
+        /// Open the new-category dialog of 命令片段, for a category at the
+        /// top.
         NewSnippetCategory,
         /// Open the new-group dialog of 项目.
         NewTerminalGroup,
@@ -378,13 +381,17 @@ id_actions! {
     /// Send a snippet where 撰写窗格 sends: the terminal in front, or every
     /// terminal of 命令广播.
     SendComposeSnippet(SnippetId);
-    /// Open the rename dialog of a snippet category.
+    /// Open the new-category dialog of 命令片段, for a category in this
+    /// one.
+    NewSnippetSubcategory(SnippetCategoryId);
+    /// Open the rename dialog of a snippet category, which can also move
+    /// it into another.
     RenameSnippetCategory(SnippetCategoryId);
     /// Ask for confirmation, then delete a snippet category with the
-    /// snippets in it.
+    /// categories inside it and every snippet in them.
     DeleteSnippetCategory(SnippetCategoryId);
-    /// Fold a category of 命令片段 away, or unfold it; `None` is 未分类.
-    ToggleSnippetCategory(Option<SnippetCategoryId>);
+    /// Fold a category of 命令片段 away, or unfold it.
+    ToggleSnippetCategory(SnippetCategoryId);
 
     /// Keep a new local terminal in 项目, in a group or at the top, and
     /// open it.
@@ -432,6 +439,15 @@ id_actions! {
 pub struct MoveHostNode {
     pub source: HostNode,
     pub destination: NodeDrop,
+}
+
+/// A row of 命令片段 dropped where it goes: a category beside another or
+/// into one, a snippet beside another or into a category.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct MoveSnippetNode {
+    pub source: SnippetNode,
+    pub destination: SnippetDrop,
 }
 
 /// A row of 项目 dropped where it goes: a group among the groups, a
@@ -496,8 +512,9 @@ pub struct RemoveDockerObject {
     pub name: String,
 }
 
-/// Put a command on the input line of the SSH terminal in front, in place
-/// of what is typed there, and with `run` run it.
+/// Put a command on the input line of the terminal the right sidebar goes
+/// with, an SSH terminal or a local one, in place of what is typed there,
+/// and with `run` run it.
 #[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = shellrs, no_json)]
 pub struct EnterCommand {

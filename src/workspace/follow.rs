@@ -58,13 +58,23 @@ impl Workspace {
         }
     }
 
-    /// Whether the terminal's 文件 follows: its switch, or the setting for
-    /// one not made yet.
+    /// Whether the terminal's 文件 follows: its switch, or what the switch
+    /// starts at for one not made yet.
     fn follows(&self, terminal: RemoteTerminalId, cx: &App) -> bool {
         match self.file_sidebar(terminal) {
             Some(panel) => panel.read(cx).follows(),
-            None => self.directory_follow_setting(cx),
+            None => self.initial_follow(terminal, cx),
         }
+    }
+
+    /// What the 目录跟随 switch of a terminal's new 文件 starts at: as the
+    /// user last switched it on the terminal's host, else the setting.
+    pub(super) fn initial_follow(&self, terminal: RemoteTerminalId, cx: &App) -> bool {
+        self.terminals
+            .get(&terminal)
+            .and_then(|panel| self.store.read(cx).host(panel.read(cx).host().id))
+            .and_then(|host| host.directory_follow)
+            .unwrap_or_else(|| self.directory_follow_setting(cx))
     }
 
     pub(super) fn directory_follow_setting(&self, cx: &App) -> bool {
@@ -306,7 +316,9 @@ impl Workspace {
         .detach();
     }
 
-    /// 目录跟随 in a terminal's 文件, switched by the user for now.
+    /// 目录跟随 in a terminal's 文件, switched by the user: kept on the host,
+    /// for the host's next 文件, this launch and the next. Those open now
+    /// keep their own.
     pub(super) fn on_toggle_directory_follow(
         &mut self,
         action: &ToggleDirectoryFollow,
@@ -321,6 +333,10 @@ impl Workspace {
         };
         let follow = !panel.read(cx).follows();
         panel.update(cx, |panel, cx| panel.set_follow(follow, cx));
+        let host = panel.read(cx).host_id();
+        self.store.update(cx, |store, cx| {
+            store.set_host_directory_follow(host, follow, cx)
+        });
         if follow {
             // Learns the host's name if it is not known yet. A question
             // already asked on this connection is not asked again.
