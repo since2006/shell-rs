@@ -4,6 +4,21 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.18]
+
+### Added
+
+- A menu bar on macOS, as in other Mac apps: ⌘H hides ShellRS, ⌥⌘H hides other apps and ⌘M minimizes the window. About ShellRS shows the version and a link to the website. ([#88](https://github.com/since2006/shell-rs/issues/88))
+- The compose pane remembers the commands you send. Press ↑ and ↓ to go back through them as in a terminal, up to the last 500.
+- Snippets are in the right sidebar next to local terminals too. Click one to type it into the local terminal.
+
+### Improved
+
+- Snippet categories nest like host groups, and you can drag snippets and categories to reorder them. The list shows only names; hover over a snippet to see its command. Order and nesting sync with cloud sync; ShellRS 0.1.17 and earlier show every category at the top level, but don’t change the order or nesting elsewhere.
+- On Windows and Linux, Close tab now defaults to Ctrl+Shift+W instead of Ctrl+W, as in Windows Terminal, so it works in a terminal too. Ctrl+W still goes to the shell. If you changed this shortcut, yours stays.
+- The Follow switch in the right sidebar’s Files is remembered per host: Files opened for that host later, also after restarting ShellRS, start the way you last set it.
+- The transfer queue scrolls to a new batch when it’s added.
+
 ## [0.1.17]
 
 ### Shared core for mobile
