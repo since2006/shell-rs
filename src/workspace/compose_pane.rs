@@ -2,8 +2,10 @@
 //! the terminal in front, or in every checked terminal while 命令广播 is
 //! on, which makes it the broadcast's command bar. A panel of the dock's
 //! bottom dock, there while it shows. Every control dispatches to the
-//! workspace, which owns where it sends.
+//! workspace, which owns where it sends; ↑ and ↓ go through what it sent,
+//! which the pane keeps.
 
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui_kit::component::{
@@ -11,7 +13,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelControl, PanelEvent},
     h_flex,
-    input::{InputEvent, Textarea, TextareaState},
+    input::{InputEvent, MoveDown, MoveUp, Position, Textarea, TextareaState},
     menu::DropdownMenu as _,
     switch::Switch,
     tooltip::Tooltip,
@@ -20,6 +22,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use super::compose_history::ComposeHistory;
 use crate::app::{
     CatalogIcon, SendCompose, SendComposeInterrupt, SendComposeSnippet, ToggleBroadcastKeys,
     ToggleComposePane, ToggleTerminalBroadcast,
@@ -48,7 +51,15 @@ pub(super) struct ComposePane {
     target: ComposeTarget,
     /// 命令广播's 同步按键.
     keys: bool,
+    history: ComposeHistory,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Which way ↑ and ↓ go through the history.
+#[derive(Clone, Copy)]
+enum Step {
+    Back,
+    Forward,
 }
 
 impl ComposePane {
@@ -88,6 +99,7 @@ impl ComposePane {
             dispatch,
             target: ComposeTarget::Broadcast(0),
             keys: false,
+            history: ComposeHistory::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -97,10 +109,68 @@ impl ComposePane {
         self.input.read(cx).value().to_string()
     }
 
-    /// Empty the pane, once what it held went out.
-    pub(super) fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Keep the history at `path`, with what it already holds, for the
+    /// next launch. Until then it is kept only until quitting.
+    pub(super) fn keep_history(&mut self, path: PathBuf) {
+        self.history = ComposeHistory::load(path);
+    }
+
+    /// `command`, what the pane held, went out: into the history with it,
+    /// and empty the pane.
+    pub(super) fn sent(&mut self, command: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.history.record(command);
         self.input
             .update(cx, |input, cx| input.set_value("", window, cx));
+    }
+
+    /// ↑ on the first line and ↓ on the last go through the history, as
+    /// IPython's do: taken on their way to the text, which otherwise moves
+    /// its caret, and still does where the history has nothing further.
+    /// The lines are as written: on any row of a first line that wraps, ↑
+    /// goes back, as in IPython. With text selected the keys are the
+    /// text's.
+    fn on_vertical_move(&mut self, step: Step, window: &mut Window, cx: &mut Context<Self>) {
+        let input = self.input.read(cx);
+        if !input.selected_range().is_empty() {
+            return;
+        }
+        let line = input.cursor_position().line as usize;
+        let at_edge = match step {
+            Step::Back => line == 0,
+            Step::Forward => line == input.value().matches('\n').count(),
+        };
+        if at_edge && self.go_through_history(step, window, cx) {
+            cx.stop_propagation();
+        }
+    }
+
+    /// Show the command `step` goes to, if there is one. Its caret is where
+    /// the same key goes on from: at the end of the first line going back,
+    /// of the last going forward.
+    fn go_through_history(
+        &mut self,
+        step: Step,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let shown = self.text(cx);
+        let command = match step {
+            Step::Back => self.history.back(&shown),
+            Step::Forward => self.history.forward(&shown),
+        };
+        let Some(command) = command else {
+            return false;
+        };
+        let line = match step {
+            Step::Back => 0,
+            Step::Forward => command.matches('\n').count() as u32,
+        };
+        self.input.update(cx, |input, cx| {
+            input.set_value(command, window, cx);
+            // Clamped to the end of the line.
+            input.set_cursor_position(Position::new(line, u32::MAX), window, cx);
+        });
+        true
     }
 
     pub(super) fn set_target(&mut self, target: ComposeTarget, keys: bool, cx: &mut Context<Self>) {
@@ -350,13 +420,24 @@ impl Render for ComposePane {
                     .child(self.render_close()),
             )
             .child(
-                div().flex_1().min_h_0().px_2().pb_2().child(
-                    Textarea::new(&self.input)
-                        .h(relative(1.))
-                        .text_sm()
-                        .aria_label(t!("workspace.compose.title"))
-                        .font_family(cx.theme().mono_font_family.clone()),
-                ),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .px_2()
+                    .pb_2()
+                    .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
+                        this.on_vertical_move(Step::Back, window, cx)
+                    }))
+                    .capture_action(cx.listener(|this, _: &MoveDown, window, cx| {
+                        this.on_vertical_move(Step::Forward, window, cx)
+                    }))
+                    .child(
+                        Textarea::new(&self.input)
+                            .h(relative(1.))
+                            .text_sm()
+                            .aria_label(t!("workspace.compose.title"))
+                            .font_family(cx.theme().mono_font_family.clone()),
+                    ),
             )
     }
 }

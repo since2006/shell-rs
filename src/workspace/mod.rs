@@ -7,6 +7,7 @@ mod app_lock;
 mod app_shell;
 mod cli_changes;
 mod compose;
+mod compose_history;
 mod compose_pane;
 mod credentials;
 mod dock_skin;

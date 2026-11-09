@@ -230,3 +230,71 @@ async fn the_pane_goes_with_the_last_terminal_and_comes_back_with_the_next(
         assert!(window.find("compose-pane").visible());
     });
 }
+
+#[gpui_kit::test]
+async fn up_and_down_go_through_what_was_sent(cx: &mut TestAppContext) {
+    let fixture = open(cx, true).await;
+    let handle = fixture.handle;
+    // One key a frame, as typed. Sent by the action Enter dispatches: the
+    // test's Enter also types a newline where the caret is, which no
+    // system's does.
+    let press = |cx: &mut TestAppContext, key: &str| {
+        in_frame(cx, handle, |window, cx| window.press(key, cx));
+    };
+    let send = |cx: &mut TestAppContext| {
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_action(Box::new(SendCompose), cx)
+        });
+    };
+    let sent = async |cx: &mut TestAppContext, text: &str| {
+        cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+            fixture.web.written_text().ends_with(text)
+        })
+        .await;
+    };
+    in_frame(cx, handle, |window, cx| {
+        window.click("compose-pane", cx);
+        window.input("echo one", cx);
+        window.press("shift-enter", cx);
+        window.input("echo two", cx);
+    });
+    send(cx);
+    in_frame(cx, handle, |window, cx| window.input("uptime", cx));
+    send(cx);
+    sent(cx, "uptime\r").await;
+    assert_eq!(fixture.web.written_text(), "echo one\necho two\ruptime\r");
+    // Back from what is being written: the newest, then the two lines,
+    // whose caret is on the first, so ↑ goes on at once. Nothing is older.
+    in_frame(cx, handle, |window, cx| window.input("df", cx));
+    for key in ["up", "up", "up"] {
+        press(cx, key);
+    }
+    send(cx);
+    sent(cx, "uptime\recho one\necho two\r").await;
+    // Forward again: ↓ goes down the two lines first, then to the newest,
+    // then to what was being written, kept.
+    in_frame(cx, handle, |window, cx| window.input("df", cx));
+    for key in ["up", "up", "down", "down", "down"] {
+        press(cx, key);
+    }
+    send(cx);
+    sent(cx, "echo two\rdf\r").await;
+    // What was sent last is where ↑ starts again.
+    press(cx, "up");
+    send(cx);
+    sent(cx, "df\rdf\r").await;
+    // ↑ below the first line moves up the text, as in any.
+    in_frame(cx, handle, |window, cx| {
+        window.input("a", cx);
+        window.press("shift-enter", cx);
+        window.input("b", cx);
+    });
+    press(cx, "up");
+    in_frame(cx, handle, |window, cx| window.input("x", cx));
+    send(cx);
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        let text = fixture.web.written_text();
+        text.ends_with("df\rxa\nb\r") || text.ends_with("df\rax\nb\r")
+    })
+    .await;
+}

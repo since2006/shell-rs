@@ -26,8 +26,8 @@ workspace.compose.broadcast_target:
   zh-CN: "勾选的 %{count} 个终端"
   en: "%{count} checked terminals"
 workspace.compose.placeholder:
-  zh-CN: 输入命令，回车执行，Shift+Enter 换行
-  en: Type commands. Enter runs them, Shift+Enter starts a new line
+  zh-CN: 输入命令，回车执行，Shift+Enter 换行，↑ ↓ 翻看历史
+  en: Type commands. Enter runs them, Shift+Enter starts a new line, ↑ and ↓ go through history
 workspace.compose.snippets:
   zh-CN: 片段
   en: Snippets

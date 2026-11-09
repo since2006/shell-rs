@@ -330,6 +330,9 @@ impl Workspace {
         }
         this.sync_cli_server(cx);
         this.remember_window(crate::app::window_state_path(), window, cx);
+        this.compose.update(cx, |pane, _| {
+            pane.keep_history(crate::app::compose_history_path())
+        });
         let bundle = cx.app_path().ok();
         this.updater.update(cx, |updater, cx| {
             updater.set_services(UpdateServices::system(bundle), cx);

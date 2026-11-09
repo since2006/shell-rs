@@ -199,7 +199,8 @@ impl Workspace {
         let command = text.trim_end_matches(['\r', '\n']);
         // What could not be sent anywhere stays, to send again.
         if self.send_composed(command, true, window, cx) {
-            self.compose.update(cx, |pane, cx| pane.clear(window, cx));
+            self.compose
+                .update(cx, |pane, cx| pane.sent(command, window, cx));
         }
     }
 
