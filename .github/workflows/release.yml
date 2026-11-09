@@ -89,7 +89,8 @@ jobs:
 
   macos:
     needs: verify
-    runs-on: macos-14
+    # GitHub's macos-14 runners are gone ("not supported", 2026-11).
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
