@@ -14,6 +14,36 @@ app.tray.failed:
   zh-CN: 无法使用系统托盘，窗口将保持打开：%{error}
   en: "The system tray is unavailable. The window will stay open: %{error}"
 
+# The macOS menu bar, worded as macOS words these items in every app: in
+# English in title case, as native menu commands are.
+app.menu.about:
+  zh-CN: 关于 ShellRS
+  en: About ShellRS
+app.menu.settings:
+  zh-CN: 设置…
+  en: Settings…
+app.menu.hide:
+  zh-CN: 隐藏 ShellRS
+  en: Hide ShellRS
+app.menu.hide_others:
+  zh-CN: 隐藏其他
+  en: Hide Others
+app.menu.show_all:
+  zh-CN: 全部显示
+  en: Show All
+app.menu.quit:
+  zh-CN: 退出 ShellRS
+  en: Quit ShellRS
+app.menu.window:
+  zh-CN: 窗口
+  en: Window
+app.menu.minimize:
+  zh-CN: 最小化
+  en: Minimize
+app.menu.zoom:
+  zh-CN: 缩放
+  en: Zoom
+
 # 设置 › 键盘快捷键: each shortcut by its id, in the order the page lists them.
 app.shortcut.new_host:
   zh-CN: 新建主机

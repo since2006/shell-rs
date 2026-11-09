@@ -4,6 +4,8 @@ mod actions;
 mod app_icon;
 mod assets;
 mod computer;
+#[cfg(target_os = "macos")]
+mod menu_bar;
 mod paths;
 mod quit;
 mod rendering;
@@ -17,6 +19,8 @@ pub use actions::*;
 pub use app_icon::show_logo_when_unbundled;
 pub use assets::{AppAssets, CatalogIcon, DOCKER_ICON};
 pub use computer::computer_name;
+#[cfg(target_os = "macos")]
+pub use menu_bar::show_menu_bar;
 pub use paths::{
     PORTABLE_BIN, PORTABLE_DATA, SETUP_UNINSTALLER, analytics_path, cli_endpoint, cli_socket_path,
     compose_history_path, data_dir, database_path, keys_dir, portable_root, settings_path,
@@ -97,6 +101,8 @@ pub fn init(cx: &mut App) {
     // The defaults; the settings bring the user's changes once read.
     apply_shortcuts(&ShortcutOverrides::default(), cx);
     cx.on_action(|_: &Quit, cx: &mut App| quit::quit(cx));
+    #[cfg(target_os = "macos")]
+    menu_bar::handle_actions(cx);
     cx.on_action(|_: &ShowApp, cx: &mut App| {
         if let Some(MainWindow(window)) = cx.try_global().copied() {
             cx.defer(move |cx| {

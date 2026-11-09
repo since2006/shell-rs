@@ -128,17 +128,32 @@ global-hotkey = "0.9"
 # `access(2)`: whether the folder ShellRS runs from can take its update.
 libc = "0.2"
 
-# The Dock icon when running outside an app bundle (`cargo run`). GPUI
-# already builds these crates.
+# The Dock icon when running outside an app bundle (`cargo run`), and the
+# menu bar's window menu and about panel. GPUI already builds these crates.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std",
     "NSApplication",
+    "NSAttributedString",
+    "NSFont",
     "NSImage",
+    "NSMenu",
+    "NSMenuItem",
+    "NSParagraphStyle",
     "NSResponder",
+    "NSText",
+    "objc2-core-foundation",
 ] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSAttributedString",
+    "NSData",
+    "NSDictionary",
+    "NSObject",
+    "NSString",
+    "NSURL",
+] }
 
 [target.'cfg(windows)'.dependencies]
 windows-registry = "0.6"

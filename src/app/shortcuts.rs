@@ -719,7 +719,7 @@ impl Global for KitBindings {}
 
 /// The changes the keymap was last built with.
 #[derive(PartialEq)]
-struct AppliedShortcuts(ShortcutOverrides);
+pub(super) struct AppliedShortcuts(ShortcutOverrides);
 
 impl Global for AppliedShortcuts {}
 
@@ -830,7 +830,16 @@ fn shell_keys_in_terminal(anywhere: &[KeyBinding]) -> Vec<KeyBinding> {
 }
 
 fn fixed_global_bindings() -> Vec<KeyBinding> {
-    vec![KeyBinding::new("shift-escape", ToggleZoom, None)]
+    let mut bindings = vec![KeyBinding::new("shift-escape", ToggleZoom, None)];
+    // The keys of the menu bar's items (`menu_bar`) that every Mac app has.
+    if cfg!(target_os = "macos") {
+        bindings.extend([
+            KeyBinding::new("cmd-h", HideApp, None),
+            KeyBinding::new("cmd-alt-h", HideOtherApps, None),
+            KeyBinding::new("cmd-m", MinimizeWindow, None),
+        ]);
+    }
+    bindings
 }
 
 fn fixed_context_bindings() -> Vec<KeyBinding> {
@@ -1377,6 +1386,22 @@ mod tests {
             check(new_host, &tabs.default_keys().replace('1', "4")),
             Err(Refusal::UsedBy("switch-to-tab"))
         );
+    }
+
+    /// ⌘H, ⌥⌘H and ⌘M are the menu bar's, as in every Mac app: no
+    /// shortcut has them, and none can take them.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_menu_bars_keys_stay_its_own() {
+        let fixed = super::fixed_global_bindings();
+        let overrides = ShortcutOverrides::default();
+        for pressed in ["cmd-h", "cmd-alt-h", "cmd-m"] {
+            assert_eq!(
+                check(shortcut("new-host"), &keys(pressed), &overrides, &fixed),
+                Err(Refusal::Reserved),
+                "{pressed}"
+            );
+        }
     }
 
     #[test]

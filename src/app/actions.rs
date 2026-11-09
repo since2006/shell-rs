@@ -92,6 +92,20 @@ gpui_kit::actions!(
         ShowOrHideApp,
         /// Restore the main window, including from the notification area.
         ShowApp,
+        /// 关于 ShellRS in the macOS menu bar: the system's about panel.
+        AboutApp,
+        /// 隐藏 ShellRS, ⌘H on macOS: away until the Dock icon or ⌘Tab
+        /// brings it back.
+        HideApp,
+        /// 隐藏其他, ⌥⌘H on macOS: hide every other app.
+        HideOtherApps,
+        /// 全部显示 in the macOS menu bar: show the apps that were hidden.
+        ShowAllApps,
+        /// Minimize the window in front, ⌘M on macOS.
+        MinimizeWindow,
+        /// 缩放 in the macOS menu bar: fill the screen with the window in
+        /// front, or put it back to its size before.
+        ZoomWindow,
         /// Read the network connections of the SSH terminal's host again.
         RefreshConnections,
         /// Read the processes of the SSH terminal's host again.
