@@ -38,9 +38,10 @@ use super::mouse::{self, MouseReport, ReportButton, ReportKind};
 use super::scrollbar::ScrollbackHandle;
 use super::search::SearchMark;
 use super::{
-    RightClick, SearchDirection, SharedTerminalTransportFactory, TerminalColors, TerminalEngine,
-    TerminalEvent, TerminalFont, TerminalInput, TerminalInputEvent, TerminalInteraction,
-    TerminalLifecycle, TerminalSize, TerminalSnapshot, TerminalStatus, TerminalTheme, ZmodemReply,
+    RightClick, SearchDirection, SharedTerminalTransportFactory, TerminalBackground,
+    TerminalColors, TerminalEngine, TerminalEvent, TerminalFont, TerminalInput, TerminalInputEvent,
+    TerminalInteraction, TerminalLifecycle, TerminalSize, TerminalSnapshot, TerminalStatus,
+    TerminalTheme, ZmodemReply,
 };
 
 pub const TERMINAL_KEY_CONTEXT: &str = "Terminal";
@@ -1298,13 +1299,19 @@ impl Render for TerminalView {
         // The find bar is the terminal's sibling, not its child: keys typed
         // into it must not bubble to the terminal's key handler, which would
         // send them to the shell (and Tab would hit `SendTab`).
+        let background = TerminalColors::current(cx).background();
         div()
             .relative()
             .size_full()
             .p_2()
             // The margin and the part of a cell the grid does not fill are
             // the terminal's too.
-            .bg(TerminalColors::current(cx).background())
+            .bg(background)
+            // Under the grid, which leaves its cells of the theme's color
+            // out while there is a picture.
+            .when_some(TerminalBackground::current(cx), |container, picture| {
+                container.children(TerminalBackground::layers(picture, background))
+            })
             // An I-beam over the text, as in other terminals; the scrollbar
             // and a link under the open key set their own pointer over it.
             .cursor_text()
@@ -1524,6 +1531,10 @@ impl Element for TerminalElement {
         }
 
         let palette = TerminalPalette::new(cx);
+        // With a picture behind the terminal, a run of the theme's own
+        // background is left out to let it show; the veil over it has that
+        // color already.
+        let left_out = TerminalBackground::current(cx).map(|_| palette.background);
         let geometry = TerminalGeometry {
             bounds,
             cell_width,
@@ -1583,6 +1594,7 @@ impl Element for TerminalElement {
                         background_start..column,
                         row_index,
                         background_color.unwrap_or(palette.background),
+                        left_out,
                     );
                     background_start = column;
                     background_color = Some(cell_background);
@@ -1668,6 +1680,7 @@ impl Element for TerminalElement {
                 background_start..row.len(),
                 row_index,
                 background_color.unwrap_or(palette.background),
+                left_out,
             );
             let line = window.text_system().shape_line(
                 text.into(),
@@ -2148,14 +2161,17 @@ fn build_preedit(
     )
 }
 
+/// A run of cells in `color`; none for one in `left_out`, the color that
+/// is under the grid already.
 fn push_background(
     quads: &mut Vec<PaintQuad>,
     geometry: TerminalGeometry,
     columns: Range<usize>,
     row: usize,
     color: Hsla,
+    left_out: Option<Hsla>,
 ) {
-    if columns.is_empty() {
+    if columns.is_empty() || left_out == Some(color) {
         return;
     }
     quads.push(fill(

@@ -1,5 +1,6 @@
 //! 终端: shared terminal emulation, transports and Dock panels.
 
+mod background;
 mod box_drawing;
 mod broadcast;
 mod directory;
@@ -28,6 +29,7 @@ mod theme;
 mod transport;
 mod zmodem;
 
+pub use background::{BackgroundImage, TerminalBackground};
 pub(crate) use broadcast::BroadcastSelection;
 pub use directory::ReportedDirectory;
 pub use directory_setup::{

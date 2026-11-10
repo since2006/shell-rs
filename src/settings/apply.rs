@@ -4,14 +4,16 @@ use gpui_kit::*;
 use crate::explorer::{FileIconStyle, FileSizeFormat, ShowHiddenFiles};
 use crate::i18n::UiLocale;
 use crate::terminal::{
-    TerminalColors, TerminalFont, TerminalHighlights, TerminalInteraction, is_font_installed,
+    BackgroundImage, TerminalBackground, TerminalColors, TerminalFont, TerminalHighlights,
+    TerminalInteraction, is_font_installed,
 };
 
 use super::AppSettings;
 use super::app_theme::{ui_theme, ui_theme_name};
 
 /// Bring the window in line with the settings: the theme chosen for the
-/// appearance, in the app and its terminals, the interface's font size, the
+/// appearance, in the app and its terminals, and the terminals' background
+/// picture for it, the interface's font size, the
 /// locale, the terminal font,
 /// mouse and highlight rules, the keyboard shortcuts, the SFTP size format and
 /// icons, how many files SFTP moves at once, and whether it shows hidden
@@ -48,6 +50,18 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     let colors = TerminalColors::new(chosen);
     if cx.try_global::<TerminalColors>() != Some(&colors) {
         cx.set_global(colors);
+        window.refresh();
+    }
+
+    // The appearance's own picture, so it changes with the theme.
+    let picture = settings.terminal_background.for_mode(mode);
+    let background = TerminalBackground::new(
+        picture
+            .shown()
+            .map(|image| BackgroundImage::new(image, picture.opacity)),
+    );
+    if cx.try_global::<TerminalBackground>() != Some(&background) {
+        cx.set_global(background);
         window.refresh();
     }
 

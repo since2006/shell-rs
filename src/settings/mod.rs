@@ -2,6 +2,7 @@
 
 mod app_theme;
 mod apply;
+mod background_images;
 mod highlight_rules;
 mod local_shell_editor;
 mod model;
@@ -14,11 +15,12 @@ mod terminal_themes;
 
 pub use apply::apply;
 pub use model::{
-    AnalyticsSettings, AppSettings, Appearance, Choice, DEFAULT_INTERFACE_FONT_SIZE,
-    ExternalCliSettings, INTERFACE_FONT_SIZE_RANGE, InterfaceLanguage, InterfaceSettings,
-    LocalTerminalSettings, NotificationSettings, SidebarTools, SidebarWidths, SyncLocation,
-    SyncSettings, TerminalFontSettings, TerminalHighlightSettings, TerminalThemeSettings,
-    UpdateSettings, WindowSettings,
+    AnalyticsSettings, AppSettings, Appearance, BackgroundImageSettings, Choice,
+    DEFAULT_BACKGROUND_OPACITY, DEFAULT_INTERFACE_FONT_SIZE, ExternalCliSettings,
+    INTERFACE_FONT_SIZE_RANGE, InterfaceLanguage, InterfaceSettings, LocalTerminalSettings,
+    NotificationSettings, SidebarTools, SidebarWidths, SyncLocation, SyncSettings,
+    TerminalBackgroundSettings, TerminalFontSettings, TerminalHighlightSettings,
+    TerminalThemeSettings, UpdateSettings, WindowSettings,
 };
 pub use settings_panel::{SettingsPanel, SettingsPanelEvent};
 pub use store::{SettingsProblem, SettingsStore, SettingsStoreEvent};

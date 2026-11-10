@@ -447,6 +447,115 @@ fn terminal_themes_follow_the_appearance_and_a_card_chooses_one(cx: &mut TestApp
     cx.update(|cx| assert_eq!(cx.theme().theme_name().as_ref(), "Default Light"));
 }
 
+/// 外观 › 深色背景图: a picture chosen with the system's picker is the dark
+/// appearance's alone, the terminals show it while it is on, and 清除 takes
+/// it away.
+#[gpui_kit::test]
+fn a_background_image_is_chosen_for_one_appearance(cx: &mut TestAppContext) {
+    use shellrs::terminal::TerminalBackground;
+
+    let dir = tempfile::tempdir().unwrap();
+    let picture = dir.path().join("night.png");
+    std::fs::write(&picture, b"picture").unwrap();
+    let (handle, workspace) = open_workspace(cx);
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    let set = |change: fn(&mut shellrs::settings::AppSettings), cx: &mut TestAppContext| {
+        cx.update(|cx| settings.update(cx, |settings, cx| settings.update(change, cx)));
+        cx.run_until_parked();
+    };
+    let shown = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            TerminalBackground::current(cx)
+                .map(|background| (background.image().to_path_buf(), background.opacity()))
+        })
+    };
+    let dark = |cx: &mut TestAppContext| {
+        cx.update(|cx| settings.read(cx).settings().terminal_background.dark)
+    };
+    set(|settings| settings.appearance = Appearance::Dark, cx);
+    assert_eq!(shown(cx), None);
+
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-0", cx)
+    });
+    // Below the themes, past the window's fold. Scrolled near the top, over
+    // the 界面 group rather than a list of themes, which would scroll on its
+    // own; the page lays out a group once it comes into view, so a step at
+    // a time.
+    for _ in 0..4 {
+        in_frame(cx, handle, |window, cx| {
+            let page = window.find("settings").bounds();
+            let position = point(page.center().x, page.top() + px(60.));
+            window.dispatch_event(
+                gpui_kit::ScrollWheelEvent {
+                    position,
+                    delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-500.))),
+                    modifiers: gpui_kit::Modifiers::default(),
+                    touch_phase: gpui_kit::TouchPhase::Moved,
+                }
+                .to_platform_input(),
+                cx,
+            );
+        });
+    }
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("background-image-dark").label(), Some("未选择"));
+        window.click("background-choose-dark", cx)
+    });
+    assert!(cx.did_prompt_for_paths());
+    let chosen = picture.clone();
+    cx.simulate_path_prompt_response(move |_| Some(vec![chosen.clone()]));
+    cx.run_until_parked();
+
+    // Settings kept in memory use the picture where it is; it is on now,
+    // and the light appearance has none.
+    let background = dark(cx);
+    assert_eq!(background.image.as_deref(), Some(picture.as_path()));
+    assert!(background.enabled);
+    cx.update(|cx| {
+        let light = settings.read(cx).settings().terminal_background.light;
+        assert_eq!(light.image, None);
+    });
+    assert_eq!(shown(cx), Some((picture.clone(), 0.3)));
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("background-image-dark").label(),
+            Some("night.png")
+        );
+    });
+
+    // Light, the terminals show nothing; dark again, the picture.
+    set(|settings| settings.appearance = Appearance::Light, cx);
+    assert_eq!(shown(cx), None);
+    set(|settings| settings.appearance = Appearance::Dark, cx);
+    set(
+        |settings| settings.terminal_background.dark.opacity = 0.8,
+        cx,
+    );
+    assert_eq!(shown(cx), Some((picture.clone(), 0.8)));
+
+    // 启用 off keeps the picture for later.
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within("settings")
+            .within("group-3")
+            .within("item-0")
+            .click("check", cx)
+    });
+    assert!(!dark(cx).enabled);
+    assert_eq!(dark(cx).image.as_deref(), Some(picture.as_path()));
+    assert_eq!(shown(cx), None);
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("background-clear-dark", cx)
+    });
+    assert_eq!(dark(cx).image, None);
+    assert_eq!(shown(cx), None);
+    // The user's own picture stays where it was.
+    assert!(picture.exists());
+}
+
 #[gpui_kit::test]
 fn the_window_settings_are_on_until_turned_off(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);

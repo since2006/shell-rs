@@ -5,6 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub use crate::sync::SyncLocation;
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use crate::app::{ShortcutOverrides, ToolKind};
 use crate::explorer::{FileIconStyle, FileSizeFormat, ShowHiddenFiles};
@@ -29,6 +30,8 @@ pub struct AppSettings {
     pub interface: InterfaceSettings,
     /// 外观 → 终端主题.
     pub terminal_theme: TerminalThemeSettings,
+    /// 外观 → 浅色背景图, 深色背景图.
+    pub terminal_background: TerminalBackgroundSettings,
     pub terminal_font: TerminalFontSettings,
     /// 终端 → 终端交互.
     pub terminal_interaction: TerminalInteraction,
@@ -337,6 +340,87 @@ impl TerminalThemeSettings {
     }
 }
 
+/// 外观 → 浅色背景图, 深色背景图: the picture behind the terminals' text
+/// while the app is light, and the one while it is dark.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalBackgroundSettings {
+    pub light: BackgroundImageSettings,
+    pub dark: BackgroundImageSettings,
+}
+
+impl TerminalBackgroundSettings {
+    pub fn for_mode(&self, mode: ThemeMode) -> &BackgroundImageSettings {
+        match mode {
+            ThemeMode::Light => &self.light,
+            ThemeMode::Dark => &self.dark,
+        }
+    }
+
+    pub fn for_mode_mut(&mut self, mode: ThemeMode) -> &mut BackgroundImageSettings {
+        match mode {
+            ThemeMode::Light => &mut self.light,
+            ThemeMode::Dark => &mut self.dark,
+        }
+    }
+
+    fn normalized(self) -> Self {
+        Self {
+            light: self.light.normalized(),
+            dark: self.dark.normalized(),
+        }
+    }
+}
+
+/// How much of the picture shows through the terminal's color by default.
+pub const DEFAULT_BACKGROUND_OPACITY: f32 = 0.3;
+
+/// One appearance's background picture.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BackgroundImageSettings {
+    /// 启用: the terminals show the picture. Off until the user turns it on
+    /// or chooses one.
+    pub enabled: bool,
+    /// 图片: ShellRS's copy of the picture the user chose, kept in the data
+    /// directory's `backgrounds`. The file names it by its name there, so a
+    /// portable copy can move; `SettingsStore::settings` gives it in full.
+    pub image: Option<PathBuf>,
+    /// 透明度: how much of the picture shows through the terminal's
+    /// background color laid over it like a veil, from 0 (none) to 1 (all
+    /// of it, no veil).
+    pub opacity: f32,
+}
+
+impl Default for BackgroundImageSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            image: None,
+            opacity: DEFAULT_BACKGROUND_OPACITY,
+        }
+    }
+}
+
+impl BackgroundImageSettings {
+    /// The picture the terminals show, when they show one.
+    pub fn shown(&self) -> Option<&Path> {
+        self.image.as_deref().filter(|_| self.enabled)
+    }
+
+    fn normalized(self) -> Self {
+        Self {
+            enabled: self.enabled,
+            image: self.image.filter(|image| !image.as_os_str().is_empty()),
+            opacity: if self.opacity.is_finite() {
+                self.opacity.clamp(0., 1.)
+            } else {
+                DEFAULT_BACKGROUND_OPACITY
+            },
+        }
+    }
+}
+
 /// 关键字高亮: whether terminals color their text by the rules, and the
 /// rules, in the order they win where they overlap. Off until the user turns
 /// it on. A file without the rules gets the examples a new installation
@@ -562,6 +646,7 @@ impl AppSettings {
             DEFAULT_INTERFACE_FONT_SIZE
         };
         self.sidebar_widths = self.sidebar_widths.normalized();
+        self.terminal_background = self.terminal_background.normalized();
         // The examples of old as they came are today's presets.
         if are_former_examples(&self.terminal_highlight.rules) {
             self.terminal_highlight.rules = default_rules();
@@ -746,6 +831,43 @@ impl Appearance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_pictures_are_off_until_chosen_and_a_stray_value_is_put_right() {
+        // A file from before has none.
+        let settings: AppSettings = serde_json::from_str("{}").unwrap();
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let background = settings.terminal_background.for_mode(mode);
+            assert_eq!(*background, BackgroundImageSettings::default());
+            assert!(!background.enabled && background.image.is_none());
+            assert_eq!(background.opacity, DEFAULT_BACKGROUND_OPACITY);
+            assert_eq!(background.shown(), None);
+        }
+
+        let settings: AppSettings = serde_json::from_str(
+            r#"{"terminal_background":{
+                "light":{"enabled":true,"image":"","opacity":7},
+                "dark":{"enabled":true,"image":"night.png","opacity":-1}}}"#,
+        )
+        .unwrap();
+        let settings = settings.normalized();
+        let light = &settings.terminal_background.light;
+        assert_eq!((light.image.as_deref(), light.opacity), (None, 1.));
+        // On, but with nothing to show.
+        assert_eq!(light.shown(), None);
+        let dark = &settings.terminal_background.dark;
+        assert_eq!(dark.shown(), Some(Path::new("night.png")));
+        assert_eq!(dark.opacity, 0.);
+
+        let mut background = BackgroundImageSettings {
+            opacity: f32::NAN,
+            ..BackgroundImageSettings::default()
+        };
+        background = background.normalized();
+        assert_eq!(background.opacity, DEFAULT_BACKGROUND_OPACITY);
+        background.image = Some("night.png".into());
+        assert_eq!(background.shown(), None, "off, it shows nothing");
+    }
 
     #[test]
     fn app_lock_cli_access_requires_the_global_switch_and_explicit_permission() {

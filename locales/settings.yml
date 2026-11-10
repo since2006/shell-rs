@@ -86,6 +86,51 @@ settings.appearance.theme:
 settings.appearance.theme_description:
   zh-CN: 浅色外观时用左栏选中的主题，深色外观时用右栏的。
   en: The light appearance uses the theme chosen on the left, the dark appearance the one on the right.
+settings.background.light:
+  zh-CN: 浅色背景图
+  en: Light background image
+settings.background.light_description:
+  zh-CN: 应用外观为浅色时，终端文字后面显示这张图片。
+  en: Shown behind the terminals' text while the appearance is light.
+settings.background.dark:
+  zh-CN: 深色背景图
+  en: Dark background image
+settings.background.dark_description:
+  zh-CN: 应用外观为深色时，终端文字后面显示这张图片。
+  en: Shown behind the terminals' text while the appearance is dark.
+settings.background.enabled:
+  zh-CN: 启用
+  en: Enabled
+settings.background.image:
+  zh-CN: 图片
+  en: Image
+settings.background.none:
+  zh-CN: 未选择
+  en: None
+settings.background.choose:
+  zh-CN: 选择图片…
+  en: Choose image…
+settings.background.clear:
+  zh-CN: 清除图片
+  en: Clear image
+settings.background.prompt:
+  zh-CN: 选择背景图
+  en: Choose a background image
+settings.background.import_failed:
+  zh-CN: "无法使用这张图片：%{error}"
+  en: "Couldn’t use this image: %{error}"
+settings.background.opacity:
+  zh-CN: 透明度
+  en: Transparency
+settings.background.opacity_description:
+  zh-CN: 终端底色像遮罩一样盖在图片上：越高图片越清楚，越低文字越好读。
+  en: The terminal's background color lies over the image like a veil. Higher shows more of the image; lower keeps text easier to read.
+settings.background.unreadable:
+  zh-CN: 无法读取这张图片
+  en: Couldn’t read this image
+settings.background.keywords:
+  zh-CN: 背景, 背景图, 背景图片, 壁纸, 图片, 透明, 透明度, 遮罩, background, wallpaper, image, transparency, opacity
+  en: background, background image, wallpaper, picture, image, transparency, opacity, veil
 
 settings.terminal.font:
   zh-CN: 字体配置

@@ -3,10 +3,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use gpui_kit::component::ThemeMode;
 use gpui_kit::*;
 
 use super::AppSettings;
 use crate::i18n::t;
+
+/// The folder beside the settings file holding ShellRS's copies of the
+/// background pictures the user chose.
+const BACKGROUNDS_DIR: &str = "backgrounds";
 
 #[derive(Clone, Debug)]
 pub enum SettingsStoreEvent {
@@ -65,8 +70,9 @@ impl SettingsStore {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(AppSettings::default()),
             Err(error) => Err(error.to_string()),
         };
+        let backgrounds = backgrounds_dir(&path);
         let (settings, problem) = match loaded {
-            Ok(settings) => (AppSettings::normalized(settings), None),
+            Ok(settings) => (shortened(settings.normalized(), Some(&backgrounds)), None),
             Err(error) => (
                 AppSettings::default(),
                 Some(SettingsProblem::Unreadable(error)),
@@ -81,8 +87,23 @@ impl SettingsStore {
         )
     }
 
+    /// The settings in effect, the background pictures by their full paths.
     pub fn settings(&self) -> AppSettings {
-        self.settings.clone()
+        let mut settings = self.settings.clone();
+        if let Some(dir) = self.backgrounds_dir() {
+            for mode in [ThemeMode::Light, ThemeMode::Dark] {
+                let background = settings.terminal_background.for_mode_mut(mode);
+                background.image = background.image.take().map(|image| dir.join(image));
+            }
+        }
+        settings
+    }
+
+    /// Where the copies of the background pictures go: beside the settings
+    /// file, in the data directory. `None` for settings kept in memory,
+    /// which use a picture where it is.
+    pub fn backgrounds_dir(&self) -> Option<PathBuf> {
+        self.path.as_deref().map(backgrounds_dir)
     }
 
     /// Change the settings, write them and tell observers.
@@ -108,7 +129,8 @@ impl SettingsStore {
     ) -> Option<io::Result<()>> {
         let before = self.settings.clone();
         change(&mut self.settings);
-        self.settings = self.settings.clone().normalized();
+        let backgrounds = self.backgrounds_dir();
+        self.settings = shortened(self.settings.clone().normalized(), backgrounds.as_deref());
         if self.settings == before {
             return None;
         }
@@ -117,6 +139,34 @@ impl SettingsStore {
             None => Ok(()),
         })
     }
+}
+
+fn backgrounds_dir(settings_path: &Path) -> PathBuf {
+    settings_path
+        .parent()
+        .unwrap_or(Path::new(""))
+        .join(BACKGROUNDS_DIR)
+}
+
+/// `settings` with a background picture in `dir` named by its name there,
+/// which `SettingsStore::settings` joins to `dir` again; one elsewhere
+/// keeps its path.
+fn shortened(mut settings: AppSettings, dir: Option<&Path>) -> AppSettings {
+    let Some(dir) = dir else {
+        return settings;
+    };
+    for mode in [ThemeMode::Light, ThemeMode::Dark] {
+        let background = settings.terminal_background.for_mode_mut(mode);
+        if let Some(name) = background
+            .image
+            .as_deref()
+            .and_then(|image| image.strip_prefix(dir).ok())
+            .filter(|name| !name.as_os_str().is_empty())
+        {
+            background.image = Some(name.to_path_buf());
+        }
+    }
+    settings
 }
 
 /// Replace the file in one step, so a crash mid-write cannot leave half a
@@ -236,6 +286,48 @@ mod tests {
         let written = store.update_unnotified(|settings| settings.appearance = Appearance::Light);
         assert!(matches!(written, Some(Err(_))));
         assert_eq!(store.settings().appearance, Appearance::Light);
+    }
+
+    #[test]
+    fn a_background_picture_is_kept_by_its_name_in_the_backgrounds_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let (mut store, _) = SettingsStore::load(path.clone());
+        let backgrounds = store.backgrounds_dir().unwrap();
+        assert_eq!(backgrounds, dir.path().join("backgrounds"));
+        let elsewhere = dir.path().join("elsewhere").join("light.png");
+        store.update_unnotified(|settings| {
+            settings.terminal_background.dark.image = Some(backgrounds.join("dark.png"));
+            settings.terminal_background.light.image = Some(elsewhere.clone());
+        });
+
+        // The file names the copy by its name, so the folder can move.
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["terminal_background"]["dark"]["image"], "dark.png");
+        assert_eq!(
+            saved["terminal_background"]["light"]["image"],
+            elsewhere.to_str().unwrap()
+        );
+
+        // Read in full, wherever the folder now is.
+        let moved = tempfile::tempdir().unwrap();
+        let moved_path = moved.path().join("settings.json");
+        fs::copy(&path, &moved_path).unwrap();
+        let (reloaded, _) = SettingsStore::load(moved_path);
+        let settings = reloaded.settings();
+        assert_eq!(
+            settings.terminal_background.dark.image,
+            Some(moved.path().join("backgrounds").join("dark.png"))
+        );
+        assert_eq!(settings.terminal_background.light.image, Some(elsewhere));
+
+        // Giving back what was read is no change.
+        let mut reloaded = reloaded;
+        assert!(
+            reloaded
+                .update_unnotified(|current| *current = settings.clone())
+                .is_none()
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, ThemeMode,
     button::{Button, ButtonVariants as _},
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     group_box::GroupBoxVariant,
@@ -37,6 +37,7 @@ use crate::terminal::{
 };
 use crate::update::{Phase, Tone, UpdateSnapshot, UpdateStep, Updater, build_info, platform};
 
+use super::background_images::{BackgroundImagesEditor, background_group};
 use super::highlight_rules::HighlightRulesEditor;
 use super::local_shell_editor::{LocalShellEditor, local_shell_field};
 use super::shortcuts_editor::{ShortcutsEditor, shortcut_groups};
@@ -71,6 +72,8 @@ pub struct SettingsPanel {
     /// The rule table of 关键字高亮, whose fields keep their state across
     /// the page's renders.
     highlight_rules: Entity<HighlightRulesEditor>,
+    /// 外观's background pictures, whose sliders keep their thumbs.
+    background_images: Entity<BackgroundImagesEditor>,
     /// 键盘快捷键, which knows which shortcut is taking new keys.
     shortcuts: Entity<ShortcutsEditor>,
     /// 终端 › 本地终端's field, with the shells installed here.
@@ -84,7 +87,7 @@ pub struct SettingsPanel {
     shown_category: Rc<Cell<usize>>,
     focus_handle: FocusHandle,
     tab_group: Option<WeakEntity<TabGroup>>,
-    _subscriptions: [Subscription; 6],
+    _subscriptions: [Subscription; 7],
     _font_scan: Task<()>,
     _lock_subscription: Option<Subscription>,
 }
@@ -99,10 +102,12 @@ impl SettingsPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let highlight_rules = cx.new(|cx| HighlightRulesEditor::new(store.clone(), window, cx));
+        let background_images = cx.new(|cx| BackgroundImagesEditor::new(store.clone(), window, cx));
         let shortcuts = cx.new(|cx| ShortcutsEditor::new(store.clone(), window, cx));
         let local_shell = cx.new(|cx| LocalShellEditor::new(store.clone(), window, cx));
         let subscriptions = [
             cx.observe(&store, |_, _, cx| cx.notify()),
+            cx.observe(&background_images, |_, _, cx| cx.notify()),
             cx.observe(&shortcuts, |_, _, cx| cx.notify()),
             cx.observe(&local_shell, |_, _, cx| cx.notify()),
             cx.observe(&integration, |_, _, cx| cx.notify()),
@@ -130,6 +135,7 @@ impl SettingsPanel {
             updater,
             sync,
             highlight_rules,
+            background_images,
             shortcuts,
             local_shell,
             font_families: &[],
@@ -363,6 +369,8 @@ fn appearance_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
             .title(t!("settings.appearance.theme"))
             .description(t!("settings.appearance.theme_description"))
             .items([app_follows_item(store), terminal_theme_item(store)]),
+        background_group(&panel.background_images, store, ThemeMode::Light),
+        background_group(&panel.background_images, store, ThemeMode::Dark),
     ]
 }
 
