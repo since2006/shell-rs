@@ -80,10 +80,15 @@ impl Default for HighlightRule {
 pub struct HighlightColor(u32);
 
 impl HighlightColor {
-    /// A new rule's color, and the examples'.
-    pub const RED: Self = Self(0xe5484d);
-    pub const AMBER: Self = Self(0xf5b51c);
-    pub const BLUE: Self = Self(0x2d8ce6);
+    /// A new rule's color, and the presets'. Each reads as well on the
+    /// default light terminal as on the default dark one, about 4:1 on
+    /// both.
+    pub const RED: Self = Self(0xe14646);
+    pub const GREEN: Self = Self(0x22913e);
+    pub const OLIVE: Self = Self(0x7b8312);
+    pub const CYAN: Self = Self(0x1888a3);
+    pub const AMBER: Self = Self(0xaf7007);
+    pub const BLUE: Self = Self(0x5f74e8);
 
     /// `0xrrggbb`.
     pub const fn from_rgb(rgb: u32) -> Self {
@@ -129,29 +134,105 @@ impl From<HighlightColor> for String {
     }
 }
 
-/// The rules a new installation starts with, none of them notifying. Their
-/// notes are in the interface language of the day they are made: from then
-/// on they are the user's.
+/// The rules a new installation starts with, none of them notifying: a
+/// user's (issue #113), for logs and network devices' output, with colors
+/// that read on light terminals too. Their notes are in the interface
+/// language of the day they are made: from then on they are the user's.
 pub fn default_rules() -> Vec<HighlightRule> {
+    let rule = |pattern: &str, note: SharedString, color| HighlightRule {
+        pattern: pattern.into(),
+        note: note.into(),
+        color,
+        ..HighlightRule::default()
+    };
     vec![
-        HighlightRule {
-            pattern: "ERROR".into(),
-            note: t!("terminal.highlight.example.error").into(),
-            ..HighlightRule::default()
-        },
-        HighlightRule {
-            pattern: "WARN".into(),
-            note: t!("terminal.highlight.example.warning").into(),
-            color: HighlightColor::AMBER,
-            ..HighlightRule::default()
-        },
-        HighlightRule {
-            pattern: r"\b\d{1,3}(\.\d{1,3}){3}\b".into(),
-            note: t!("terminal.highlight.example.ipv4").into(),
-            color: HighlightColor::BLUE,
-            ..HighlightRule::default()
-        },
+        rule(
+            r"\b(?:ERROR|FAILED|FAIL|FATAL|PANIC|DENIED|DENY|DOWN|CONFLICT|UNRECOGNIZED|INVALID|DROP|ALARM|errors)\b",
+            t!("terminal.highlight.preset.error"),
+            HighlightColor::RED,
+        ),
+        rule(
+            r"\b(?:SUCCESS|SUCCEEDED|OK|PASSED|DONE|READY|HEALTHY|UP|ESTABLISHED|NORMAL|ONLINE|PERMIT|ACTIVE|RUNNING|UNSPEC)\b",
+            t!("terminal.highlight.preset.success"),
+            HighlightColor::GREEN,
+        ),
+        rule(
+            r"\b(?:WARNING|WARN|CHANGED|TRAP|STANDBY|INACTIVE|TIMEOUT)\b",
+            t!("terminal.highlight.preset.warning"),
+            HighlightColor::OLIVE,
+        ),
+        rule(
+            r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b",
+            t!("terminal.highlight.preset.ipv4"),
+            HighlightColor::CYAN,
+        ),
+        rule(
+            r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b|\b(?:[0-9a-fA-F]{1,4}:){1,7}:[0-9a-fA-F]{0,4}(?::[0-9a-fA-F]{1,4}){0,7}\b",
+            t!("terminal.highlight.preset.ipv6"),
+            HighlightColor::CYAN,
+        ),
+        rule(
+            r"\b(?:[0-9a-fA-F]{2}[:-]){5,15}[0-9a-fA-F]{2}\b",
+            t!("terminal.highlight.preset.mac"),
+            HighlightColor::CYAN,
+        ),
+        rule(
+            r"\bunspec\b",
+            t!("terminal.highlight.preset.unspec"),
+            HighlightColor::CYAN,
+        ),
+        rule(
+            r"\(\d+(?:\.\d+)?\s*[KMGT]i?B\)",
+            t!("terminal.highlight.preset.size"),
+            HighlightColor::CYAN,
+        ),
+        rule(
+            r"\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b",
+            t!("terminal.highlight.preset.date"),
+            HighlightColor::AMBER,
+        ),
+        rule(
+            r"\b\d{2}:\d{2}:\d{2}\b",
+            t!("terminal.highlight.preset.time"),
+            HighlightColor::AMBER,
+        ),
+        // The user's had look-around, which the `regex` crate has not; a
+        // number inside a word, as T113's 13, stays alone all the same.
+        rule(
+            r"\b\d+\b",
+            t!("terminal.highlight.preset.number"),
+            HighlightColor::BLUE,
+        ),
     ]
+}
+
+/// Whether `rules` are the three examples ShellRS 0.1.18 and before
+/// started with, as they came, in either language: a settings file
+/// holding them gets today's presets instead. One the user changed, added
+/// or deleted keeps them all.
+pub fn are_former_examples(rules: &[HighlightRule]) -> bool {
+    let former = [
+        ("ERROR", "terminal.highlight.example.error", 0xe5484d),
+        ("WARN", "terminal.highlight.example.warning", 0xf5b51c),
+        (
+            r"\b\d{1,3}(\.\d{1,3}){3}\b",
+            "terminal.highlight.example.ipv4",
+            0x2d8ce6,
+        ),
+    ];
+    rules.len() == former.len()
+        && rules
+            .iter()
+            .zip(former)
+            .all(|(rule, (pattern, note, color))| {
+                rule.enabled
+                    && !rule.notify
+                    && rule.pattern == pattern
+                    && rule.color == HighlightColor::from_rgb(color)
+                    && crate::i18n::LOCALES
+                        .iter()
+                        .any(|locale| rule.note == crate::_rust_i18n_t!(note, locale = *locale))
+            })
 }
 
 /// Why a rule's pattern cannot match, as the rule's row says it.
@@ -703,13 +784,101 @@ mod tests {
     }
 
     #[test]
+    fn the_presets_color_logs_and_network_devices_output() {
+        let presets = default_rules();
+        assert_eq!(presets.len(), 11);
+        assert!(
+            presets.iter().all(|rule| {
+                rule.enabled && !rule.notify && matches!(rule.compile(), Ok(Some(_)))
+            })
+        );
+        let set = set(presets);
+        let color_of = |line: &str, part: &str| {
+            let start = line.find(part).unwrap();
+            let end = start + part.len();
+            set.spans(line)
+                .into_iter()
+                .find(|(range, _)| range.start <= start && end <= range.end)
+                .map(|(_, color)| color)
+        };
+        let line = "Interface Gi0/0/1 is DOWN, line protocol is UP";
+        assert_eq!(color_of(line, "DOWN"), Some(HighlightColor::RED));
+        assert_eq!(color_of(line, "UP"), Some(HighlightColor::GREEN));
+        let line = "2026-11-10 09:34:12 [WARN] retry 7 TIMEOUT";
+        assert_eq!(
+            color_of(line, "2026-11-10 09:34:12"),
+            Some(HighlightColor::AMBER)
+        );
+        assert_eq!(color_of(line, "WARN"), Some(HighlightColor::OLIVE));
+        assert_eq!(color_of(line, "TIMEOUT"), Some(HighlightColor::OLIVE));
+        assert_eq!(color_of(line, "7"), Some(HighlightColor::BLUE));
+        // An earlier rule wins: a MAC address is not a time.
+        let line = "inet 192.168.1.20 ether 52:54:00:12:34:56";
+        assert_eq!(color_of(line, "192.168.1.20"), Some(HighlightColor::CYAN));
+        assert_eq!(
+            color_of(line, "52:54:00:12:34:56"),
+            Some(HighlightColor::CYAN)
+        );
+        let line = "inet6 fe80::5054:ff:fe12:3456 prefixlen 64";
+        assert_eq!(
+            color_of(line, "fe80::5054:ff:fe12:3456"),
+            Some(HighlightColor::CYAN)
+        );
+        let line = "RX bytes 40345 (39.4 KB) on T113";
+        assert_eq!(color_of(line, "(39.4 KB)"), Some(HighlightColor::CYAN));
+        assert_eq!(color_of(line, "40345"), Some(HighlightColor::BLUE));
+        assert_eq!(color_of(line, "113"), None);
+        assert_eq!(color_of("ERRORS", "ERROR"), None);
+    }
+
+    #[test]
+    fn the_examples_of_old_are_told_from_the_users_rules() {
+        let former = |notes: [&str; 3]| {
+            [
+                ("ERROR", 0xe5484d),
+                ("WARN", 0xf5b51c),
+                (r"\b\d{1,3}(\.\d{1,3}){3}\b", 0x2d8ce6),
+            ]
+            .into_iter()
+            .zip(notes)
+            .map(|((pattern, color), note)| HighlightRule {
+                pattern: pattern.into(),
+                note: note.into(),
+                color: HighlightColor(color),
+                ..HighlightRule::default()
+            })
+            .collect::<Vec<_>>()
+        };
+        let chinese = former(["错误", "警告", "IPv4 地址"]);
+        assert!(are_former_examples(&chinese));
+        assert!(are_former_examples(&former([
+            "Error",
+            "Warning",
+            "IPv4 address"
+        ])));
+        assert!(!are_former_examples(&former(["错误", "Warning", "IPv4"])));
+        let mut off = chinese.clone();
+        off[1].enabled = false;
+        assert!(!are_former_examples(&off));
+        let mut recolored = chinese.clone();
+        recolored[0].color = RED;
+        assert!(!are_former_examples(&recolored));
+        let mut added = chinese.clone();
+        added.push(rule("FATAL", RED));
+        assert!(!are_former_examples(&added));
+        assert!(!are_former_examples(&chinese[..2]));
+        assert!(!are_former_examples(&[]));
+        assert!(!are_former_examples(&default_rules()));
+    }
+
+    #[test]
     fn a_pattern_is_a_regular_expression_as_written() {
         let compile = |pattern: &str| rule(pattern, RED).compile();
         let regex = compile("a.b").unwrap().unwrap();
         assert!(regex.is_match("axb"));
         assert!(!compile("error").unwrap().unwrap().is_match("ERROR"));
         assert!(compile("(?i)error").unwrap().unwrap().is_match("ERROR"));
-        let address = default_rules().remove(2).compile().unwrap().unwrap();
+        let address = default_rules().remove(3).compile().unwrap().unwrap();
         assert!(address.is_match("from 10.0.0.12 port 22"));
         assert!(!address.is_match("1234.5.6.7"));
         // A row just added matches nothing, and says nothing of it.

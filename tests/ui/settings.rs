@@ -818,16 +818,37 @@ fn scroll_to_highlight_rules(cx: &mut TestAppContext, handle: WindowHandle<Root>
 
 #[gpui_kit::test]
 async fn highlight_rules_are_edited_in_place_on_their_page(cx: &mut TestAppContext) {
-    use shellrs::terminal::{HighlightColor, TerminalHighlights};
+    use shellrs::terminal::{HighlightColor, HighlightRule, TerminalHighlights};
 
-    let (handle, workspace) = open_workspace(cx);
+    // Three rules of the user's, rows 0 to 2; the presets have tests of
+    // their own.
+    let ip = r"\b\d{1,3}(\.\d{1,3}){3}\b";
+    let mut settings = settings_store();
+    settings.update_unnotified(|settings| {
+        settings.terminal_highlight.rules = [
+            ("ERROR", HighlightColor::RED),
+            ("WARN", HighlightColor::AMBER),
+            (ip, HighlightColor::BLUE),
+        ]
+        .into_iter()
+        .map(|(pattern, color)| HighlightRule {
+            pattern: pattern.into(),
+            color,
+            ..HighlightRule::default()
+        })
+        .collect();
+    });
+    let (handle, workspace) = open_workspace_with_settings_and_tester(
+        cx,
+        HostStore::seed(),
+        settings,
+        Arc::new(FakeConnectionTester::default()),
+    );
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
-    // 关键字高亮 comes after 终端 and SFTP, with the examples a new
-    // installation starts with: rows 0 to 2.
+    // 关键字高亮 comes after 终端 and SFTP.
     in_frame(cx, handle, |window, cx| {
         window.within("settings").click("0-3", cx)
     });
-    let ip = r"\b\d{1,3}(\.\d{1,3}){3}\b";
     assert_eq!(
         patterns(&highlight_rules(&workspace, cx)),
         ["ERROR", "WARN", ip]
@@ -837,7 +858,7 @@ async fn highlight_rules_are_edited_in_place_on_their_page(cx: &mut TestAppConte
         assert!(window.find("highlight-preview").visible());
     });
 
-    // Off until turned on: the examples color nothing before.
+    // Off until turned on: the rules color nothing before.
     let colored = |cx: &mut TestAppContext| {
         cx.update(|cx| !TerminalHighlights::current(cx).spans("ERROR").is_empty())
     };

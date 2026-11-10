@@ -12,7 +12,8 @@ use crate::i18n::t;
 use crate::sftp::{DEFAULT_PARALLEL_TRANSFERS, PARALLEL_TRANSFERS_RANGE};
 use crate::terminal::{
     DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, FONT_SIZE_RANGE, HighlightRule, LINE_HEIGHT_RANGE,
-    RightClick, TerminalCursorStyle, TerminalInteraction, TerminalTheme, default_rules,
+    RightClick, TerminalCursorStyle, TerminalInteraction, TerminalTheme, are_former_examples,
+    default_rules,
 };
 use crate::update::Channel;
 
@@ -561,6 +562,10 @@ impl AppSettings {
             DEFAULT_INTERFACE_FONT_SIZE
         };
         self.sidebar_widths = self.sidebar_widths.normalized();
+        // The examples of old as they came are today's presets.
+        if are_former_examples(&self.terminal_highlight.rules) {
+            self.terminal_highlight.rules = default_rules();
+        }
         self.transfers.parallel = self.transfers.parallel.clamp(
             *PARALLEL_TRANSFERS_RANGE.start(),
             *PARALLEL_TRANSFERS_RANGE.end(),
@@ -981,15 +986,34 @@ mod tests {
         assert!(settings.terminal_highlight.rules.is_empty());
         let json = serde_json::to_value(AppSettings::default()).unwrap();
         assert_eq!(
-            json["terminal_highlight"]["rules"][0],
+            json["terminal_highlight"]["rules"][1],
             serde_json::json!({
                 "enabled": true,
-                "pattern": "ERROR",
-                "note": "错误",
-                "color": "#e5484d",
+                "pattern": r"\b(?:SUCCESS|SUCCEEDED|OK|PASSED|DONE|READY|HEALTHY|UP|ESTABLISHED|NORMAL|ONLINE|PERMIT|ACTIVE|RUNNING|UNSPEC)\b",
+                "note": "成功、正常、连通",
+                "color": "#22913e",
                 "notify": false
             })
         );
+    }
+
+    #[test]
+    fn the_examples_of_old_become_the_presets_and_the_users_rules_stay() {
+        let examples = r##"{"terminal_highlight":{"enabled":true,"rules":[
+            {"enabled":true,"pattern":"ERROR","note":"Error","color":"#e5484d","notify":false},
+            {"enabled":true,"pattern":"WARN","note":"Warning","color":"#f5b51c","notify":false},
+            {"enabled":true,"pattern":"\\b\\d{1,3}(\\.\\d{1,3}){3}\\b","note":"IPv4 address",
+             "color":"#2d8ce6","notify":false}]}}"##;
+        let settings: AppSettings = serde_json::from_str(examples).unwrap();
+        let settings = settings.normalized();
+        assert!(settings.terminal_highlight.enabled);
+        assert_eq!(settings.terminal_highlight.rules, default_rules());
+
+        let edited = examples.replace(r#""WARN""#, r#""WARNING""#);
+        let settings: AppSettings = serde_json::from_str(&edited).unwrap();
+        let rules = settings.normalized().terminal_highlight.rules;
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[1].pattern, "WARNING");
     }
 
     #[test]

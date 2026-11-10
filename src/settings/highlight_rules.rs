@@ -21,7 +21,7 @@ use crate::terminal::{HighlightColor, HighlightRule, PatternError};
 
 use super::SettingsStore;
 
-/// The colors the picker offers first, the examples' among them.
+/// The colors the picker offers first, the presets' among them.
 ///
 /// None may be a color of the picker's own palette (shadcn's stone, red,
 /// orange, yellow, green, cyan, blue, purple and pink): gpui-kit keys each
@@ -33,10 +33,10 @@ const FEATURED_COLORS: [HighlightColor; 10] = [
     HighlightColor::RED,
     HighlightColor::from_rgb(0xf76b15),
     HighlightColor::AMBER,
-    HighlightColor::from_rgb(0x2fa86b),
-    HighlightColor::from_rgb(0x0fa3a3),
+    HighlightColor::OLIVE,
+    HighlightColor::GREEN,
+    HighlightColor::CYAN,
     HighlightColor::BLUE,
-    HighlightColor::from_rgb(0x5b5bd6),
     HighlightColor::from_rgb(0xa855d6),
     HighlightColor::from_rgb(0xe0489c),
     HighlightColor::from_rgb(0x8a8f98),

@@ -779,11 +779,11 @@ fn sftp_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
 }
 
 /// What the 关键字高亮 preview shows: a service's log followed on a server,
-/// with what the example rules color (levels and addresses) and lines they
-/// leave alone.
+/// with what the preset rules color (times, levels, states, addresses and
+/// numbers) and what they leave alone.
 const HIGHLIGHT_PREVIEW_LINES: &[&str] = &[
     "root@web-01:~# tail -f /var/log/orders/app.log",
-    "09:12:03 INFO  orders listening on 0.0.0.0:8080",
+    "09:12:03 INFO  orders READY on 0.0.0.0:8080",
     "09:12:41 WARN  slow query: 2.31s on table order_items",
     "09:13:07 ERROR upstream 10.20.3.15:5432 refused connection",
     "09:13:08 INFO  retrying in 5s (attempt 2/5)",

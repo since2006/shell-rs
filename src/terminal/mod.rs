@@ -43,7 +43,8 @@ pub use font::{
     TerminalFontPreview, is_font_installed, monospace_font_families,
 };
 pub use highlight::{
-    HighlightColor, HighlightRule, HighlightSet, PatternError, TerminalHighlights, default_rules,
+    HighlightColor, HighlightRule, HighlightSet, PatternError, TerminalHighlights,
+    are_former_examples, default_rules,
 };
 pub use input::{TerminalInput, TerminalInputEvent};
 pub use kept_output::KEPT_LINES;

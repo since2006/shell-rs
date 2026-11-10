@@ -156,6 +156,7 @@ terminal.font.preview:
   en: "%{family} %{size} px, line height %{line_height}"
 
 # Keyword highlighting
+# The examples up to 0.1.18, as a settings file may still hold them
 terminal.highlight.example.error:
   zh-CN: 错误
   en: Error
@@ -165,6 +166,40 @@ terminal.highlight.example.warning:
 terminal.highlight.example.ipv4:
   zh-CN: IPv4 地址
   en: IPv4 address
+# The presets (issue #113)
+terminal.highlight.preset.error:
+  zh-CN: 错误、故障、断线
+  en: Errors, failures, links down
+terminal.highlight.preset.success:
+  zh-CN: 成功、正常、连通
+  en: Success, normal, links up
+terminal.highlight.preset.warning:
+  zh-CN: 警告、状态变化、备用
+  en: Warnings, changes, standby
+terminal.highlight.preset.ipv4:
+  zh-CN: IPv4 地址
+  en: IPv4 address
+terminal.highlight.preset.ipv6:
+  zh-CN: IPv6 地址
+  en: IPv6 address
+terminal.highlight.preset.mac:
+  zh-CN: MAC 地址
+  en: MAC address
+terminal.highlight.preset.unspec:
+  zh-CN: unspec 字段
+  en: The unspec field
+terminal.highlight.preset.size:
+  zh-CN: 带单位的大小
+  en: Sizes with units
+terminal.highlight.preset.date:
+  zh-CN: 日期和时间
+  en: Dates and times
+terminal.highlight.preset.time:
+  zh-CN: 时间
+  en: Times
+terminal.highlight.preset.number:
+  zh-CN: 数字
+  en: Numbers
 terminal.highlight.too_long:
   zh-CN: 不能超过 %{limit} 个字符
   en: Can’t be longer than %{limit} characters
