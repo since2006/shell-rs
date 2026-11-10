@@ -24,8 +24,9 @@ pub struct Host {
     /// The host name or IP address it is reached at.
     pub address: String,
     pub port: u16,
-    /// The user it logs in as: a credential's, for a host using one. A
-    /// Telnet host's may be empty.
+    /// The user it logs in as: a credential's, for a host using one,
+    /// unless the desktop has it log in as another with it. A Telnet
+    /// host's may be empty.
     pub user: String,
     pub auth: HostAuth,
     pub route: HostRoute,
@@ -116,7 +117,8 @@ pub struct HostDraft {
     pub address: String,
     pub port: u16,
     /// Empty is `root`, except for a Telnet host. A host using a
-    /// credential takes the credential's.
+    /// credential takes the credential's, or keeps the other user the
+    /// desktop has it log in as when this is that one.
     pub user: String,
     pub auth: HostAuth,
     pub route: HostRoute,

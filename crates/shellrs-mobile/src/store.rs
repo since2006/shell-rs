@@ -747,9 +747,20 @@ fn checked_host(
         Some(id) => Some(saved_host(data, id.0).ok_or(StoreError::NotFound)?),
         None => None,
     };
-    let draft = draft.validated().map_err(|error| StoreError::Host {
+    let mut draft = draft.validated().map_err(|error| StoreError::Host {
         problem: error.into(),
     })?;
+    // The apps' forms have no user for a credential, and keep sending the
+    // one typed before it: a host using a credential logs in as the
+    // credential's user, unless the desktop has it log in as another,
+    // which an edit keeps.
+    if draft.credential.is_some()
+        && !old.is_some_and(|old| {
+            old.credential.is_some() && !old.user_from_credential && old.user == draft.user
+        })
+    {
+        draft.user = Default::default();
+    }
     if draft.group.is_some_and(|group| data.group(group).is_none()) {
         return Err(StoreError::GroupNotFound);
     }
@@ -1023,5 +1034,33 @@ impl From<Change> for ChangeKind {
             | Change::SavedTerminalTabs
             | Change::Batch => Self::Other,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use shellrs_hosts::{AuthKind, CredentialDraft, CredentialKind, HostData, HostDraft};
+
+    use super::checked_host;
+
+    #[test]
+    fn a_host_using_a_credential_keeps_only_the_user_the_desktop_gave_it() {
+        let mut data = HostData::empty();
+        let key = data.insert_credential_unnotified(CredentialDraft::new(
+            "部署",
+            CredentialKind::Agent,
+            "deploy",
+        ));
+        let draft = |user: &str| {
+            HostDraft::new("web", "10.0.0.1", 22, user, AuthKind::Password, None)
+                .with_credential(key)
+        };
+        // What the app's form held before the credential is not kept.
+        let checked = |id, user| checked_host(&data, id, draft(user)).unwrap().user;
+        assert_eq!(checked(None, "root").as_ref(), "");
+        let web = data.insert_unnotified(draft("admin"));
+        let checked = |id, user| checked_host(&data, id, draft(user)).unwrap().user;
+        assert_eq!(checked(Some(web), "admin").as_ref(), "admin");
+        assert_eq!(checked(Some(web), "root").as_ref(), "");
     }
 }

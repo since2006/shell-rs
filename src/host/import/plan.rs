@@ -325,11 +325,16 @@ pub fn apply_import(
                     Ok(plan) => store.place_group(plan, cx),
                     Err(_) => None,
                 };
-                draft = match entry.login {
-                    Login::Own => draft,
-                    Login::Saved(id) => draft.with_credential(id),
-                    Login::New(index) => draft.with_credential(made[index]),
+                let credential = match entry.login {
+                    Login::Own => None,
+                    Login::Saved(id) => Some(id),
+                    Login::New(index) => Some(made[index]),
                 };
+                if let Some(credential) = credential {
+                    // As the preview shows it: as the credential's user.
+                    draft.user = SharedString::default();
+                    draft = draft.with_credential(credential);
+                }
                 store.insert(draft, cx);
             }
             made.len()

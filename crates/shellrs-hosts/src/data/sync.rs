@@ -417,17 +417,24 @@ impl HostData {
                 }),
                 _ => sync::Protocol::Ssh,
             };
-            let (auth, username, credential) = match host.credential.and_then(credential_id) {
-                Some(credential) => (sync::Auth::Credential, None, Some(credential)),
-                None => (
-                    match host.auth {
-                        AuthKind::Password => sync::Auth::Password,
-                        AuthKind::NoPassword => sync::Auth::NoPassword,
-                    },
-                    Some(host.user.to_string()),
-                    None,
-                ),
-            };
+            let (auth, username, credential, credential_username) =
+                match host.credential.and_then(credential_id) {
+                    Some(credential) => (
+                        sync::Auth::Credential,
+                        None,
+                        Some(credential),
+                        (!host.user_from_credential).then(|| host.user.to_string()),
+                    ),
+                    None => (
+                        match host.auth {
+                            AuthKind::Password => sync::Auth::Password,
+                            AuthKind::NoPassword => sync::Auth::NoPassword,
+                        },
+                        Some(host.user.to_string()),
+                        None,
+                        None,
+                    ),
+                };
             let route = match &host.route {
                 Route::Direct => sync::Route::Direct,
                 Route::Jump(hops) => {
@@ -455,6 +462,7 @@ impl HostData {
                     auth,
                     username,
                     credential,
+                    credential_username,
                     route,
                     notes: host.notes.to_string(),
                 }),
@@ -1025,9 +1033,9 @@ impl HostData {
                     Some(slot) => *slot = fresh,
                     None => self.credentials.push(fresh),
                 }
-                // The hosts using it keep a copy of its user name.
+                // The hosts using it as its user keep a copy of its user name.
                 for host in self.hosts.iter_mut().chain(&mut self.temporary) {
-                    if host.credential == Some(credential_id) {
+                    if host.credential == Some(credential_id) && host.user_from_credential {
                         host.user = user.clone();
                     }
                 }
@@ -1042,9 +1050,25 @@ impl HostData {
                     .as_ref()
                     .and_then(|id| ids.credentials.get(id))
                     .and_then(|id| self.credential(*id));
-                let user = match credential {
-                    Some(credential) => credential.user.clone(),
-                    None => data.username.clone().unwrap_or_default().into(),
+                // As the host form's, a user the same as the credential's is
+                // the credential's.
+                let (user, follows) = match credential {
+                    Some(credential) => match data
+                        .credential_username
+                        .as_deref()
+                        .filter(|user| *user != credential.user.as_ref())
+                    {
+                        Some(user) => (user.into(), false),
+                        None => (credential.user.clone(), true),
+                    },
+                    None => (
+                        data.username
+                            .clone()
+                            .or_else(|| data.credential_username.clone())
+                            .unwrap_or_default()
+                            .into(),
+                        false,
+                    ),
                 };
                 let auth = match data.auth {
                     sync::Auth::NoPassword => AuthKind::NoPassword,
@@ -1086,6 +1110,7 @@ impl HostData {
                     });
                 }
                 let mut fresh = Host::new(host_id, draft);
+                fresh.user_from_credential = follows;
                 fresh.public_id = PublicId::from_stored(id.to_owned());
                 fresh.sort_order = data.sort_order;
                 let is_new = match self.hosts.iter_mut().find(|h| h.id == host_id) {
@@ -1845,6 +1870,47 @@ mod tests {
     }
 
     #[test]
+    fn a_host_logging_in_as_another_user_with_its_credential_syncs_so() {
+        let (vault, keys) = vault();
+        let mut a = Device::new('a');
+        let mut b = Device::new('b');
+        let key = a.store.insert_credential(CredentialDraft::new(
+            "deploy",
+            CredentialKind::Agent,
+            "deploy",
+        ));
+        let using = |name: &str, user: &str| {
+            HostDraft::new(name, "10.0.0.1", 22, user, AuthKind::Password, None)
+                .with_credential(key)
+        };
+        a.store.insert(using("web", "admin"));
+        a.store.insert(using("api", ""));
+        a.sync(&vault, &keys);
+        b.sync(&vault, &keys);
+        assert_eq!(b.held(), a.held());
+        let user = |store: &HostData, name: &str| {
+            let host = store.hosts().iter().find(|h| h.name == name).unwrap();
+            (host.user.to_string(), host.user_from_credential)
+        };
+        assert_eq!(user(&b.store, "web"), ("admin".into(), false));
+        assert_eq!(user(&b.store, "api"), ("deploy".into(), true));
+
+        // The credential's user changed on the other device moves the host
+        // that uses it as its user, and only that one.
+        let synced = b.store.credentials()[0].id;
+        let mut renamed = b.store.credential(synced).unwrap().draft();
+        renamed.user = "ops".into();
+        b.store.update_credential(synced, renamed);
+        b.sync(&vault, &keys);
+        a.sync(&vault, &keys);
+        assert_eq!(user(&a.store, "web"), ("admin".into(), false));
+        assert_eq!(user(&a.store, "api"), ("ops".into(), true));
+        assert_eq!(b.held(), a.held());
+        assert_eq!(a.sync(&vault, &keys), 0);
+        assert_eq!(b.sync(&vault, &keys), 0);
+    }
+
+    #[test]
     fn a_round_read_before_an_edit_is_not_applied() {
         let mut device = Device::new('a');
         let export = device.store.sync_export();
@@ -1887,6 +1953,7 @@ mod tests {
                 auth: sync::Auth::Password,
                 username: Some("root".into()),
                 credential: None,
+                credential_username: None,
                 route: sync::Route::Direct,
                 notes: String::new(),
             }),

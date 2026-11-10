@@ -308,9 +308,6 @@ cli.host.credential_with_own_auth:
 cli.host.no_credential:
   zh-CN: 请选择凭据
   en: Choose a credential.
-cli.host.credential_user:
-  zh-CN: 使用凭据的主机以凭据的用户名 %{user} 登录：去掉 user，或改凭据的用户名
-  en: A host using a credential logs in as the credential's user, %{user}. Leave out user, or change the credential's username.
 cli.host.password_without_auth:
   zh-CN: 只有 auth 为 password 的主机才保存自己的密码
   en: Only a host with auth password keeps a password of its own.

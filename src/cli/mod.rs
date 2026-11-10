@@ -68,7 +68,8 @@ Reads one JSON object from stdin. Every field may be left out; `update` changes 
   name        Default the address; an empty name is the address too.
   host        The address (IP or host name). Required to create. Also read as `address`.
   port        Default 22 (23 for Telnet).
-  user        Default root (none for Telnet). A host using a credential logs in as the credential's user.
+  user        Default root (none for Telnet). A host using a credential logs in as the credential's user,
+              or as this one when given; \"\" goes back to the credential's.
   group       A group path such as \"Production/Databases\", made when it is not there; null for the top level.
   auth        \"password\", \"credential\" or \"no_password\".
   credential  A credential ID from `shellrs credentials list`, for auth \"credential\" (implied).

@@ -85,7 +85,7 @@ EOF
 ```
 
 - `group` is a path such as `生产/web`; groups that are not there are made.
-- A host logs in with `"auth": "password"` (its own password), `"credential"` (a saved credential, by its ID; the host takes the credential's user) or `"no_password"` (the SSH agent and the default keys).
+- A host logs in with `"auth": "password"` (its own password), `"credential"` (a saved credential, by its ID; the host logs in as the credential's user, or as `user` when given, so one key serves several users; `"user": ""` goes back to the credential's) or `"no_password"` (the SSH agent and the default keys).
 - `route` is `{"type": "direct"}`, `{"type": "jump", "hosts": ["<host-id>", ...]}` or `{"type": "proxy", "kind": "http", "host": "...", "port": 3128}`.
 - A host listed with `"protocol": "serial"` is a serial port of the user's computer, opened in a ShellRS terminal; it has `serial` (`device`, `baud`, `data_bits`, `parity`, `stop_bits`, `flow_control`) instead of `host`, `port`, `user`, `auth` and `route`. Create one with `{"name": "console", "serial": {"device": "/dev/ttyUSB0", "baud": 115200}}`. `exec`, `upload`, `download` and `sync` don't work on serial hosts.
 - A host listed with `"protocol": "telnet"` is a Telnet server (switches, console servers, embedded devices), opened in a ShellRS terminal. It has `host`, `port` (23 by default), `route` and `telnet` (`user_prompt`, `password_prompt`); its `auth` is its automatic login: `password` types `user` and `password` at the device's prompts, `credential` a password credential's, `no_password` none. Create one with `{"name": "switch", "protocol": "telnet", "host": "10.0.0.5", "auth": "password", "user": "admin", "password": "…"}`. `exec`, `upload`, `download` and `sync` don't work on Telnet hosts either.

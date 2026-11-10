@@ -1166,7 +1166,12 @@ mod tests {
                 "wrong",
             )
             .unwrap();
-        let login = HostLogin::with_credential("127.0.0.1", server.port, &credential);
+        let login = HostLogin::with_credential(
+            "127.0.0.1",
+            server.port,
+            credential.user.as_ref(),
+            &credential,
+        );
 
         let connector = SshConnector::new(directory.path().join("known_hosts"), keychain);
         assert_eq!(
@@ -1229,11 +1234,8 @@ mod tests {
     /// `agent`.
     #[cfg(unix)]
     fn agent_login(port: u16, agent: std::path::PathBuf, known_hosts: &Path) -> Result<(), String> {
-        let login = HostLogin::with_credential(
-            "127.0.0.1",
-            port,
-            &credential(crate::host::CredentialKind::Agent),
-        );
+        let saved = credential(crate::host::CredentialKind::Agent);
+        let login = HostLogin::with_credential("127.0.0.1", port, saved.user.as_ref(), &saved);
         let connector = SshConnector::new(known_hosts, Arc::new(NoSecretStore))
             .with_agent(crate::ssh::AgentLocation::At(agent));
         test_through(connector, crate::connection::LoginTest::saved(login))
@@ -1846,7 +1848,12 @@ mod tests {
             .with_key_path(key_path.to_string_lossy().into_owned()),
         );
         connect(
-            HostLogin::with_credential("127.0.0.1", key_server.port, &key_credential),
+            HostLogin::with_credential(
+                "127.0.0.1",
+                key_server.port,
+                key_credential.user.as_ref(),
+                &key_credential,
+            ),
             &directory.path().join("key-known-hosts"),
             Arc::new(NoSecretStore),
             false,

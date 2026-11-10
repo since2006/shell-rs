@@ -96,6 +96,7 @@ pub(crate) fn repairs(set: &RecordSet) -> Vec<(RecordKey, Body)> {
                     // went with it, and the user fills in their own.
                     host.auth = Auth::Password;
                     host.credential = None;
+                    host.credential_username = None;
                     host.username = Some(String::new());
                     changed = true;
                 }

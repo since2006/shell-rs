@@ -85,8 +85,9 @@ impl TelnetLogin {
 
     /// How `host` connects as if it were reached directly: its route takes
     /// the store to look up. `credential` is ignored unless it is the one the
-    /// host names; one that is not a password credential gives only its
-    /// user name.
+    /// host names; one that is not a password credential gives nothing. The
+    /// user is the host's, which is the credential's unless the host names
+    /// another.
     pub fn of(host: &Host, settings: &TelnetSettings, credential: Option<&Credential>) -> Self {
         let address = host.address.to_string();
         let prompts = |user: String, password: Option<SecretRef>| TelnetAutoLogin {
@@ -99,7 +100,7 @@ impl TelnetLogin {
             .filter(|credential| host.credential == Some(credential.id))
         {
             Some(credential) => Some(prompts(
-                credential.user.to_string(),
+                host.user.to_string(),
                 (credential.kind == CredentialKind::Password).then(|| credential.password_secret()),
             )),
             None if host.auth == AuthKind::Password => Some(prompts(
@@ -150,8 +151,14 @@ pub trait HostLoginExt {
         auth: AuthKind,
     ) -> HostLogin;
 
-    /// A login through `credential` to `host:port`.
-    fn with_credential(host: impl Into<String>, port: u16, credential: &Credential) -> HostLogin;
+    /// A login through `credential` to `host:port` as `user`: the
+    /// credential's, or the one a host names to log in as with it.
+    fn with_credential(
+        host: impl Into<String>,
+        port: u16,
+        user: impl Into<String>,
+        credential: &Credential,
+    ) -> HostLogin;
 
     /// How `host` logs in, given the credential it uses, as if it were
     /// reached directly: its route takes the store to look up. `credential`
@@ -174,9 +181,14 @@ impl HostLoginExt for HostLogin {
         HostLogin::new(host, port, user, method)
     }
 
-    fn with_credential(host: impl Into<String>, port: u16, credential: &Credential) -> HostLogin {
+    fn with_credential(
+        host: impl Into<String>,
+        port: u16,
+        user: impl Into<String>,
+        credential: &Credential,
+    ) -> HostLogin {
         let host = host.into();
-        let user = credential.user.to_string();
+        let user = user.into();
         let (method, key_path, password) = match credential.kind {
             CredentialKind::Password => (LoginMethod::Password, None, credential.password_secret()),
             CredentialKind::Key => (
@@ -199,7 +211,12 @@ impl HostLoginExt for HostLogin {
 
     fn of(host: &Host, credential: Option<&Credential>) -> HostLogin {
         match credential.filter(|credential| host.credential == Some(credential.id)) {
-            Some(credential) => Self::with_credential(host.address.as_ref(), host.port, credential),
+            Some(credential) => Self::with_credential(
+                host.address.as_ref(),
+                host.port,
+                host.user.as_ref(),
+                credential,
+            ),
             None => Self::manual(
                 host.address.as_ref(),
                 host.port,
@@ -231,10 +248,14 @@ mod tests {
         Credential::new(CredentialId(7), draft)
     }
 
+    /// A host using a credential of `kind` as the store keeps it: with
+    /// the credential's user.
     fn using(kind: CredentialKind) -> (Host, Credential) {
         let credential = credential(kind);
         let mut host = host(AuthKind::Password);
         host.credential = Some(credential.id);
+        host.user = credential.user.clone();
+        host.user_from_credential = true;
         (host, credential)
     }
 
@@ -280,6 +301,24 @@ mod tests {
             agent.password,
             SecretRef::password("deploy", "10.0.0.1", 22)
         );
+    }
+
+    #[test]
+    fn a_host_can_log_in_as_another_user_with_its_credential() {
+        let (mut host, credential) = using(CredentialKind::Key);
+        host.user = "admin".into();
+        host.user_from_credential = false;
+        let login = HostLogin::of(&host, Some(&credential));
+        assert_eq!(login.method, LoginMethod::Key);
+        assert_eq!(login.user, "admin");
+        assert_eq!(login.key_path, Some(PathBuf::from("/tmp/id_deploy")));
+        assert_eq!(login.password, SecretRef::password("admin", "10.0.0.1", 22));
+
+        let (mut host, credential) = using(CredentialKind::Password);
+        host.user = "admin".into();
+        let login = HostLogin::of(&host, Some(&credential));
+        assert_eq!(login.user, "admin");
+        assert_eq!(login.password, credential.password_secret());
     }
 
     #[test]
@@ -341,7 +380,7 @@ mod tests {
         );
 
         let password = credential(CredentialKind::Password);
-        let mut host = telnet(AuthKind::Password, "");
+        let mut host = telnet(AuthKind::Password, "deploy");
         host.credential = Some(password.id);
         let saved = TelnetLogin::of(&host, &prompts, Some(&password))
             .auto_login
@@ -355,6 +394,14 @@ mod tests {
             .auto_login
             .unwrap();
         assert_eq!((keyed.user.as_str(), keyed.password), ("deploy", None));
+        // Another user, with the credential's password.
+        host.credential = Some(password.id);
+        host.user = "admin".into();
+        let other = TelnetLogin::of(&host, &prompts, Some(&password))
+            .auto_login
+            .unwrap();
+        assert_eq!(other.user, "admin");
+        assert_eq!(other.password, Some(password.password_secret()));
     }
 
     #[test]
@@ -363,7 +410,9 @@ mod tests {
         let before = HostLogin::of(&host, Some(&credential));
         credential.name = "别的名字".into();
         assert_eq!(HostLogin::of(&host, Some(&credential)), before);
-        credential.user = "admin".into();
+        // The user is the host's copy, which the store keeps in step.
+        let mut host = host;
+        host.user = "admin".into();
         assert_ne!(HostLogin::of(&host, Some(&credential)), before);
     }
 }

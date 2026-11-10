@@ -487,13 +487,15 @@ pub fn plan_host(
     match (fields.auth, credential) {
         (Some(AuthChoice::Credential), None) => return Err(bad(t!("cli.host.no_credential"))),
         (_, Some(credential)) => {
-            if let Some(user) = &fields.user
-                && user.trim() != credential.user.as_ref()
-            {
-                return Err(bad(t!("cli.host.credential_user", user = credential.user)));
-            }
+            // A user logs in as that one with the credential; empty, as the
+            // credential's. Without one, a host keeps whom it logs in as with
+            // its credential, and one moving to another logs in as its.
+            draft.user = match &fields.user {
+                Some(user) => user.trim().to_string().into(),
+                None if draft.credential == Some(credential.id) => draft.user,
+                None => credential.user.clone(),
+            };
             draft.credential = Some(credential.id);
-            draft.user = credential.user.clone();
             draft.auth = AuthKind::default();
         }
         (auth, None) => {
@@ -1085,10 +1087,6 @@ mod tests {
 
         let given = |json| refused(plan_host(fields(json), Some(web), &store));
         assert_eq!(
-            given(serde_json::json!({ "credential": credential, "user": "root" })),
-            bad("使用凭据的主机以凭据的用户名 deploy 登录：去掉 user，或改凭据的用户名")
-        );
-        assert_eq!(
             given(serde_json::json!({ "credential": credential, "auth": "password" })),
             bad("auth 为 password 或 no_password 时不能同时指定 credential")
         );
@@ -1096,6 +1094,42 @@ mod tests {
             given(serde_json::json!({ "credential": "nope" })).0,
             ErrorCode::CredentialNotFound
         );
+    }
+
+    #[test]
+    fn a_host_on_a_credential_can_log_in_as_another_user() {
+        let (mut store, web, credential) = store();
+        let plan = |json, store: &HostStore| plan_host(fields(json), Some(web), store).unwrap();
+        let as_admin = plan(
+            serde_json::json!({ "credential": credential, "user": " admin " }),
+            &store,
+        );
+        assert_eq!(as_admin.draft.user.as_ref(), "admin");
+        store.update_unnotified(web, as_admin.draft);
+        assert!(!store.host(web).unwrap().user_from_credential);
+
+        // Left out, it stays; empty, it is the credential's again.
+        let renamed = plan(serde_json::json!({ "name": "web-01" }), &store);
+        assert_eq!(renamed.draft.user.as_ref(), "admin");
+        let again = plan(serde_json::json!({ "credential": credential }), &store);
+        assert_eq!(again.draft.user.as_ref(), "admin");
+        let back = plan(serde_json::json!({ "user": "" }), &store);
+        store.update_unnotified(web, back.draft);
+        let host = store.host(web).unwrap();
+        assert_eq!(
+            (host.user.as_ref(), host.user_from_credential),
+            ("deploy", true)
+        );
+
+        // Moving to another credential without a user takes that one's.
+        let ops = store.insert_credential_unnotified(CredentialDraft::new(
+            "运维",
+            CredentialKind::Agent,
+            "ops",
+        ));
+        let ops = store.credential(ops).unwrap().keychain_id.to_string();
+        let moved = plan(serde_json::json!({ "credential": ops }), &store);
+        assert_eq!(moved.draft.user.as_ref(), "ops");
     }
 
     #[test]

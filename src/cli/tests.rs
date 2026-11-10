@@ -1016,7 +1016,8 @@ fn showing_a_host_or_a_credential_says_what_is_saved_and_never_what() {
         .keychain_id
         .to_string();
     let db = store.hosts()[1].id;
-    let draft = store.host(db).unwrap().draft().with_credential(credential);
+    let mut draft = store.host(db).unwrap().draft().with_credential(credential);
+    draft.user = "".into();
     store.update_unnotified(db, draft);
     fixture.server.set_hosts(&store);
     let web_host = store.hosts()[0].clone();

@@ -241,6 +241,9 @@ host.dialog.credential:
 host.dialog.choose_credential:
   zh-CN: 请选择凭据
   en: Choose a credential
+host.dialog.credential_user_placeholder:
+  zh-CN: 凭据中的用户名
+  en: The credential's
 host.dialog.search_credentials:
   zh-CN: 搜索凭据
   en: Search credentials

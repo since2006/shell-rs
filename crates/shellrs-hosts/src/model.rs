@@ -343,8 +343,9 @@ pub struct Host {
     pub address: SharedString,
     pub port: u16,
     /// The user it logs in as. For a host using a credential this is the
-    /// credential's user, which the store keeps in step. A Telnet host's
-    /// may be empty: its device asks only for a password.
+    /// credential's user, which the store keeps in step, unless the host
+    /// names another to log in as with it. A Telnet host's may be empty:
+    /// its device asks only for a password.
     pub user: SharedString,
     /// How a host logs in on its own. A host using a credential keeps
     /// the default here. For a Telnet host, [`AuthKind::Password`] is 自动登录
@@ -353,6 +354,11 @@ pub struct Host {
     pub auth: AuthKind,
     /// The credential it logs in with instead of `auth`, if any.
     pub credential: Option<CredentialId>,
+    /// Whether `user` is the credential's, following it as it changes,
+    /// rather than one the host form names to log in as with the
+    /// credential (issue #112). Never without a credential; the store sets
+    /// it.
+    pub user_from_credential: bool,
     /// How a connection reaches it.
     pub route: Route,
     pub group: Option<GroupId>,
@@ -394,6 +400,7 @@ impl Host {
             user: draft.user,
             auth: draft.auth,
             credential: draft.credential,
+            user_from_credential: false,
             route: draft.route,
             group: draft.group,
             notes: draft.notes,
@@ -576,8 +583,9 @@ impl HostDraft {
         }
     }
 
-    /// Log in with a saved credential instead of `auth`. The store takes the
-    /// user name from the credential when the draft is saved.
+    /// Log in with a saved credential instead of `auth`. A draft whose user
+    /// is empty, or the credential's, logs in as the credential's user and
+    /// follows it; any other user logs in as that one with the credential.
     pub fn with_credential(mut self, credential: CredentialId) -> Self {
         self.credential = Some(credential);
         self
@@ -602,7 +610,8 @@ impl HostDraft {
 
     /// The draft with surrounding blanks removed, an empty name taken as
     /// the address and an empty user name as [`super::DEFAULT_USER`] (a
-    /// Telnet host may have none), or the first thing wrong with it,
+    /// Telnet host may have none; one using a credential takes the
+    /// credential's), or the first thing wrong with it,
     /// in the order the host form checks. What the form cannot leave out
     /// of a draft (a credential to pick, a proxy password without a user)
     /// is the caller's to check.
@@ -626,7 +635,7 @@ impl HostDraft {
             return Err(HostDraftError::Port);
         }
         let user = self.user.trim();
-        self.user = if user.is_empty() && !self.protocol.is_telnet() {
+        self.user = if user.is_empty() && !self.protocol.is_telnet() && self.credential.is_none() {
             super::DEFAULT_USER.into()
         } else {
             user.to_string().into()

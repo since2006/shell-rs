@@ -305,7 +305,7 @@ fn deleting_a_credential_lets_its_hosts_log_in_on_their_own(cx: &mut TestAppCont
         "deploy",
     ));
     let host = seeded.insert_unnotified(
-        HostDraft::new("db-01", "10.0.2.5", 22, "root", AuthKind::Password, None)
+        HostDraft::new("db-01", "10.0.2.5", 22, "", AuthKind::Password, None)
             .with_credential(credential),
     );
     let id = seeded

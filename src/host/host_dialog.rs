@@ -9,7 +9,7 @@ use gpui_kit::component::{
     dialog::{Cancel, Confirm, DialogButtonProps, DialogFooter},
     form::{Field, Form},
     h_flex,
-    input::{Input, InputState, Textarea, TextareaState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     menu::{DropdownMenu as _, PopupMenuItem},
     notification::Notification,
     searchable_list::{SearchableListItem, SearchableVec},
@@ -236,6 +236,10 @@ pub struct HostForm {
     /// The password of a login typed here.
     fields: Entity<SecretFields>,
     credential: Entity<SelectState<Vec<SharedString>>>,
+    /// The user to log in as with the credential: empty for the
+    /// credential's own (issue #112). Apart from `user`, so the new host's
+    /// `root` does not come along to a credential.
+    credential_user: Entity<InputState>,
     /// The credentials as they were when the form opened, parallel to the
     /// credential select's rows. The dialog is modal, so nothing can change
     /// them while it is open.
@@ -305,10 +309,19 @@ impl HostForm {
         cx: &mut Context<Self>,
     ) -> Self {
         let secrets = store.read(cx).secrets();
-        let (draft, options, credentials, key_dir, jump_hosts) = {
+        let (draft, credential_user_value, options, credentials, key_dir, jump_hosts) = {
             let read = store.read(cx);
+            let editing_host = editing.and_then(|id| read.host(id));
             (
-                editing.and_then(|id| read.host(id)).map(Host::draft),
+                editing_host.map(Host::draft),
+                // The user an SSH host logs in as with its credential, when
+                // not the credential's.
+                editing_host
+                    .filter(|host| {
+                        host.is_ssh() && host.credential.is_some() && !host.user_from_credential
+                    })
+                    .map(|host| host.user.clone())
+                    .unwrap_or_default(),
                 group_options(read.groups(), &[]),
                 read.credentials().to_vec(),
                 read.key_dir().map(Path::to_path_buf),
@@ -452,6 +465,13 @@ impl HostForm {
                 cx,
             )
             .searchable(true)
+        });
+        let credential_user = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(credential_user_placeholder(
+                    credential_ix.and_then(|ix| credentials.get(ix)),
+                ))
+                .default_value(credential_user_value)
         });
         // Telnet: a password credential's user name and password, or
         // whatever the host already uses.
@@ -609,7 +629,19 @@ impl HostForm {
         });
 
         let subscriptions = vec![
-            cx.observe(&credential, |_, _, cx| cx.notify()),
+            cx.observe_in(&credential, window, |this, _, window, cx| {
+                let placeholder = credential_user_placeholder(this.selected_credential(cx));
+                this.credential_user.update(cx, |input, cx| {
+                    input.set_placeholder(placeholder, window, cx)
+                });
+                cx.notify();
+            }),
+            // What the credential's summary says it logs in as.
+            cx.subscribe(&credential_user, |_, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
             cx.observe(&fields, |_, _, cx| cx.notify()),
             cx.observe(&telnet_credential, |_, _, cx| cx.notify()),
             cx.observe(&telnet_fields, |_, _, cx| cx.notify()),
@@ -660,6 +692,7 @@ impl HostForm {
             user,
             fields,
             credential,
+            credential_user,
             credentials,
             key_dir,
             telnet_auto_login: telnet.is_some()
@@ -935,6 +968,27 @@ impl HostForm {
             .and_then(|ix| self.credentials.get(ix.row))
     }
 
+    /// The user typed to log in as with the credential; empty for its own.
+    fn typed_credential_user(&self, cx: &App) -> SharedString {
+        self.credential_user
+            .read(cx)
+            .value()
+            .trim()
+            .to_string()
+            .into()
+    }
+
+    /// Who the host logs in as with `credential`: the user typed, or the
+    /// credential's.
+    fn credential_login_user(&self, credential: &Credential, cx: &App) -> SharedString {
+        let typed = self.typed_credential_user(cx);
+        if typed.is_empty() {
+            credential.user.clone()
+        } else {
+            typed
+        }
+    }
+
     /// The address and port, or why they will not do.
     fn endpoint(&self, cx: &App) -> Result<(String, u16), SharedString> {
         let address = self.address.read(cx).value().trim().to_string();
@@ -957,8 +1011,10 @@ impl HostForm {
                 let credential = self
                     .selected_credential(cx)
                     .ok_or_else(|| t!("host.dialog.choose_credential"))?;
+                let user = self.credential_login_user(credential, cx);
                 LoginTest::saved(
-                    HostLogin::with_credential(host, port, credential).with_route(route_login),
+                    HostLogin::with_credential(host, port, user, credential)
+                        .with_route(route_login),
                 )
             }
             Some(auth) => {
@@ -1233,7 +1289,7 @@ impl HostForm {
                 .selected_credential(cx)
                 .map(|credential| CommittedLogin::Saved {
                     credential: credential.id,
-                    user: credential.user.clone(),
+                    user: self.typed_credential_user(cx),
                 })
                 .ok_or_else(|| t!("host.dialog.choose_credential")),
         }
@@ -1478,12 +1534,27 @@ impl HostForm {
         })
     }
 
+    /// The user to log in as with the credential, the credential's unless
+    /// another is typed.
+    fn credential_user_field(&self) -> Field {
+        Field::new()
+            .label(t!("host.dialog.user"))
+            .col_span(4)
+            .child(
+                Input::new(&self.credential_user)
+                    .id("host-credential-user")
+                    .small(),
+            )
+    }
+
     /// The field that picks a saved credential, with what it logs in as.
     fn credential_field(&self, cx: &App) -> Field {
+        let selected = self.selected_credential(cx);
         self.credential_choice(
             CredentialChoice {
                 state: &self.credential,
-                selected: self.selected_credential(cx),
+                selected,
+                user: selected.map(|credential| self.credential_login_user(credential, cx)),
                 none: self.credentials.is_empty(),
                 id: "host-credential",
                 summary_id: "host-credential-summary",
@@ -1500,6 +1571,7 @@ impl HostForm {
             CredentialChoice {
                 state: &self.telnet_credential,
                 selected: self.selected_telnet_credential(cx),
+                user: None,
                 none: self.telnet_credentials.is_empty(),
                 id: "host-telnet-credential",
                 summary_id: "host-telnet-credential-summary",
@@ -1512,7 +1584,11 @@ impl HostForm {
 
     fn credential_choice(&self, choice: CredentialChoice<'_>, _: &App) -> Field {
         let summary = match choice.selected {
-            Some(credential) => Some(logs_in_with(credential, self.key_dir.as_deref())),
+            Some(credential) => Some(logs_in_with(
+                credential,
+                choice.user.as_ref().unwrap_or(&credential.user),
+                self.key_dir.as_deref(),
+            )),
             None if choice.none => Some(choice.hint),
             None => None,
         };
@@ -2195,7 +2271,9 @@ impl HostForm {
         );
         match source.auth() {
             Some(auth) => self.own_fields(form, auth, cx),
-            None => form.child(self.credential_field(cx)),
+            None => form
+                .child(self.credential_user_field())
+                .child(self.credential_field(cx)),
         }
     }
 }
@@ -2220,6 +2298,8 @@ type TestJob = Box<dyn FnOnce(TrustCallback) -> Result<(), String> + Send>;
 struct CredentialChoice<'a> {
     state: &'a Entity<SelectState<Vec<SharedString>>>,
     selected: Option<&'a Credential>,
+    /// Who the host logs in as with it, when not the credential's user.
+    user: Option<SharedString>,
     /// Whether there are no credentials to pick at all.
     none: bool,
     id: &'static str,
@@ -2249,9 +2329,17 @@ pub(super) fn credential_option(credential: &Credential, key_dir: Option<&Path>)
     )
 }
 
-/// What a host using `credential` logs in as and with.
-fn logs_in_with(credential: &Credential, key_dir: Option<&Path>) -> SharedString {
-    let user = &credential.user;
+/// What the user field of a host using a credential shows while empty:
+/// the credential's user, which the host then logs in as.
+fn credential_user_placeholder(credential: Option<&Credential>) -> SharedString {
+    match credential {
+        Some(credential) => credential.user.clone(),
+        None => t!("host.dialog.credential_user_placeholder"),
+    }
+}
+
+/// What a host using `credential` logs in as, `user`, and with.
+fn logs_in_with(credential: &Credential, user: &str, key_dir: Option<&Path>) -> SharedString {
     match credential.kind {
         CredentialKind::Password => t!("host.dialog.logs_in_with.password", user = user),
         CredentialKind::Key if credential.keeps_key_in(key_dir) => {
