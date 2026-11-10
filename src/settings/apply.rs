@@ -4,7 +4,8 @@ use gpui_kit::*;
 use crate::explorer::{FileIconStyle, FileSizeFormat, ShowHiddenFiles};
 use crate::i18n::UiLocale;
 use crate::terminal::{
-    TerminalColors, TerminalFont, TerminalHighlights, TerminalInteraction, is_font_installed,
+    SendDelay, SessionLogSettings, TerminalColors, TerminalFont, TerminalHighlights,
+    TerminalInteraction, is_font_installed,
 };
 
 use super::AppSettings;
@@ -82,6 +83,15 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     // Terminals observe cursor changes; mouse behavior is read on input.
     if cx.try_global::<TerminalInteraction>() != Some(&settings.terminal_interaction) {
         cx.set_global(settings.terminal_interaction);
+    }
+
+    // Read when input is queued and a connection starts, so nothing is
+    // redrawn either.
+    if cx.try_global::<SendDelay>() != Some(&settings.send_delay) {
+        cx.set_global(settings.send_delay);
+    }
+    if cx.try_global::<SessionLogSettings>() != Some(&settings.session_log) {
+        cx.set_global(settings.session_log.clone());
     }
 
     // Compiled once here for every terminal, which observe it; only when

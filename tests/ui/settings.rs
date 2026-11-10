@@ -549,12 +549,24 @@ fn closing_to_the_tray_is_off_and_offered_only_on_windows(cx: &mut TestAppContex
 #[gpui_kit::test]
 fn terminal_cursor_settings_apply_to_open_and_restarted_terminals(cx: &mut TestAppContext) {
     use alacritty_terminal::vte::ansi::CursorShape;
-    use shellrs::terminal::{TerminalCursorStyle, TerminalEngine, TerminalInteraction};
+    use shellrs::terminal::{
+        SessionLogIdentity, TerminalCursorStyle, TerminalEngine, TerminalInteraction,
+    };
 
     let (handle, workspace) = open_workspace(cx);
     let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    let identity = SessionLogIdentity {
+        name: "cursor-test".into(),
+        address: "local".into(),
+    };
     let engine = cx.update(|cx| {
-        cx.new(|cx| TerminalEngine::new(Arc::new(FakeTerminalFactory::default()), cx))
+        cx.new(|cx| {
+            TerminalEngine::new(
+                Arc::new(FakeTerminalFactory::default()),
+                identity.clone(),
+                cx,
+            )
+        })
     });
     let assert_cursor = |shape, blinking, cx: &mut TestAppContext| {
         cx.update(|cx| {
@@ -679,7 +691,13 @@ fn terminal_cursor_settings_apply_to_open_and_restarted_terminals(cx: &mut TestA
     cx.update(|cx| engine.update(cx, |engine, cx| engine.restart(cx)));
     assert_cursor(CursorShape::Beam, false, cx);
     let new_engine = cx.update(|cx| {
-        cx.new(|cx| TerminalEngine::new(Arc::new(FakeTerminalFactory::default()), cx))
+        cx.new(|cx| {
+            TerminalEngine::new(
+                Arc::new(FakeTerminalFactory::default()),
+                identity.clone(),
+                cx,
+            )
+        })
     });
     cx.update(|cx| {
         assert_eq!(

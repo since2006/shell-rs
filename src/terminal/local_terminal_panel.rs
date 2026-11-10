@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::rc::Rc;
 use std::sync::LazyLock;
 
 use gpui_kit::component::{
@@ -13,13 +14,16 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use regex::Regex;
 
-use crate::app::{CatalogIcon, CenterTab, CloseLocalTerminal, RestartLocalTerminal};
+use crate::app::{
+    CatalogIcon, CenterTab, CloseLocalTerminal, RestartLocalTerminal, SendCommandsLocal,
+};
 use crate::i18n::t;
 use crate::shared::{ClosableTabTitle, close_tab_items};
 
 use super::{
-    LocalTerminalId, SharedTerminalTransportFactory, TerminalEvent, TerminalLifecycle,
-    TerminalNotice, TerminalStatus, TerminalView, ZmodemDirection, ZmodemReply,
+    LocalTerminalId, SessionLogIdentity, SharedTerminalTransportFactory, TerminalEvent,
+    TerminalLifecycle, TerminalMenuItems, TerminalNotice, TerminalStatus, TerminalView,
+    ZmodemDirection, ZmodemReply,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,14 +71,21 @@ impl LocalTerminalPanel {
         cx: &mut Context<Self>,
     ) -> Self {
         let fixed = name.as_ref().map(|name| name.name.clone());
+        let identity = SessionLogIdentity {
+            name: fixed.clone().unwrap_or_else(|| default_title(id)),
+            address: "local".into(),
+        };
         let terminal = cx.new(|cx| {
-            TerminalView::new(
+            let mut terminal = TerminalView::new(
                 ("local-terminal", id.0),
                 move |_| fixed.clone().unwrap_or_else(|| default_title(id)),
+                identity,
                 factory,
                 window,
                 cx,
-            )
+            );
+            terminal.set_menu_items(local_menu_items(id));
+            terminal
         });
         let subscriptions = vec![
             cx.observe(&terminal, move |_, _, cx| {
@@ -366,6 +377,26 @@ fn is_this_host(host: &str, this_host: &str) -> bool {
 /// 「本地终端 1」, in the interface language.
 fn default_title(id: LocalTerminalId) -> SharedString {
     t!("terminal.local.title", number = id.0)
+}
+
+/// What a local terminal adds to its context menu: 发送命令 at the bottom,
+/// while the shell takes input.
+fn local_menu_items(id: LocalTerminalId) -> TerminalMenuItems {
+    TerminalMenuItems {
+        copy: Rc::new(|menu, _| menu),
+        commands: Rc::new(move |menu, lifecycle| {
+            let connected = matches!(
+                lifecycle,
+                TerminalLifecycle::Starting | TerminalLifecycle::Running
+            );
+            menu.menu_with_icon_and_disabled(
+                t!("terminal.menu.send_commands"),
+                Icon::new(CatalogIcon::Send),
+                Box::new(SendCommandsLocal(id)),
+                !connected,
+            )
+        }),
+    }
 }
 
 /// The commands of a local terminal tab, shared by its context menu and the
