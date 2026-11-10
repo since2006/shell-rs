@@ -33,6 +33,7 @@ use crate::i18n::{UiLocale, t};
 
 use super::box_drawing::{self, CellMetrics};
 use super::font;
+use super::held_keys::RepeatingKeys;
 use super::mouse::{self, MouseReport, ReportButton, ReportKind};
 use super::scrollbar::ScrollbackHandle;
 use super::search::SearchMark;
@@ -1743,7 +1744,7 @@ impl Element for TerminalElement {
     ) {
         window.handle_input(
             &self.focus_handle,
-            ElementInputHandler::new(bounds, self.view.clone()),
+            RepeatingKeys(ElementInputHandler::new(bounds, self.view.clone())),
             cx,
         );
         let view = self.view.clone();

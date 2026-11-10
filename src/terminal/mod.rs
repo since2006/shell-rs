@@ -8,6 +8,7 @@ mod engine;
 mod environment;
 mod exec;
 mod font;
+mod held_keys;
 mod highlight;
 mod input;
 mod kept_output;
