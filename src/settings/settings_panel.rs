@@ -917,6 +917,7 @@ fn application_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
                 ),
             )
             .description(t!("settings.window.remember_position_description")),
+            sidebar_widths_item(store),
         ]);
     let window_group = if cfg!(windows) {
         window_group.item(
@@ -934,6 +935,35 @@ fn application_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
         window_group
     };
     vec![window_group, app_lock_group(&panel.store, cx)]
+}
+
+/// 侧栏宽度: the widths the sidebars were dragged to, kept for the next
+/// launch, back to the defaults. The workspace follows the settings.
+fn sidebar_widths_item(store: &Entity<SettingsStore>) -> SettingItem {
+    let reset = |store: &Entity<SettingsStore>, cx: &mut App| {
+        store.update(cx, |store, cx| {
+            store.update(|settings| settings.sidebar_widths = Default::default(), cx)
+        });
+    };
+    let (reader, button, dirty, page) =
+        (store.clone(), store.clone(), store.clone(), store.clone());
+    SettingItem::new(
+        t!("settings.window.sidebar_widths"),
+        SettingField::render(move |options, _, cx| {
+            let button = button.clone();
+            Button::new("sidebar-widths-reset")
+                .outline()
+                .with_size(options.size())
+                .label(t!("settings.window.sidebar_widths_reset"))
+                .disabled(reader.read(cx).settings().sidebar_widths.is_default())
+                .on_click(move |_, _, cx| reset(&button, cx))
+        })
+        .on_reset(
+            move |cx| !dirty.read(cx).settings().sidebar_widths.is_default(),
+            move |_, cx| reset(&page, cx),
+        ),
+    )
+    .description(t!("settings.window.sidebar_widths_description"))
 }
 
 fn app_lock_group(store: &Entity<SettingsStore>, cx: &App) -> SettingGroup {

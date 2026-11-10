@@ -72,10 +72,6 @@ impl ToolTarget {
     }
 }
 
-/// How wide the right sidebar opens, and the narrowest it can be dragged:
-/// the monitor's and the connections' cards are laid out for this width.
-pub(super) const TOOL_SIDEBAR_WIDTH: Pixels = px(320.);
-
 impl Workspace {
     pub(super) fn on_kubernetes_action(
         &mut self,
@@ -298,23 +294,6 @@ impl Workspace {
             self.deleted_host_tools.insert(host, tool);
         } else {
             self.deleted_host_tools.remove(&host);
-        }
-    }
-
-    /// Undo a drag that took the right sidebar below its narrowest. Runs
-    /// whenever the dock area changes; the dock has no minimum of its own
-    /// to set, and its drag callback is not ours to wrap. Set back within
-    /// the same update, so no frame shows it narrower.
-    pub(super) fn hold_tool_sidebar_width(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let narrower = self
-            .dock_area
-            .read(cx)
-            .dock_size(DockPlacement::Right)
-            .is_some_and(|width| width < TOOL_SIDEBAR_WIDTH);
-        if narrower {
-            self.dock_area.update(cx, |area, cx| {
-                area.set_dock_size(DockPlacement::Right, TOOL_SIDEBAR_WIDTH, window, cx);
-            });
         }
     }
 

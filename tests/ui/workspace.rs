@@ -1519,7 +1519,7 @@ fn the_start_page_has_no_tool_switch(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_tool_sidebar_drags_wider_but_never_narrower_than_it_opens(cx: &mut TestAppContext) {
+fn the_tool_sidebar_drags_wider_and_down_to_its_minimum(cx: &mut TestAppContext) {
     let (handle, _) = open_workspace(cx);
     in_frame(cx, handle, |window, cx| {
         window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
@@ -1576,17 +1576,19 @@ fn the_tool_sidebar_drags_wider_but_never_narrower_than_it_opens(cx: &mut TestAp
         "{opened:?} → {wider:?}"
     );
 
-    // Dragged back past where it opened: it stops there.
+    // Dragged back past its minimum, 100 narrower than it opened: it stops
+    // there.
     drag(cx, point(wider.left() + px(2.), wider.center().y), 250.);
     let narrowed = bounds(cx);
     assert!(
-        (narrowed.size.width - opened.size.width).abs() < px(1.),
+        (narrowed.size.width - (opened.size.width - px(100.))).abs() < px(1.),
         "{opened:?} → {narrowed:?}"
     );
 }
 
 /// The title-bar toggle sits just past the actual dock edge, including
-/// after a pointer resize, interface zoom and a hide/show round trip.
+/// after a pointer resize, interface zoom and a hide/show round trip; past
+/// the list switch instead, beside a sidebar narrower than that.
 #[gpui_kit::test]
 fn the_sidebar_toggle_tracks_the_host_panel_edge(cx: &mut TestAppContext) {
     use gpui_kit::component::dock::DockPlacement;
@@ -1597,8 +1599,9 @@ fn the_sidebar_toggle_tracks_the_host_panel_edge(cx: &mut TestAppContext) {
             let button = window.find("toggle-hosts");
             let panel = window.find("workspace-sidebar").bounds();
             let gap = window.rem_size() * 0.5;
+            let switch = window.find("show-credentials").bounds();
             assert!(
-                (button.bounds().left() - panel.right() - gap).abs() <= px(1.),
+                (button.bounds().left() - panel.right().max(switch.right()) - gap).abs() <= px(1.),
                 "button {:?}, panel {:?}, gap {:?}",
                 button.bounds(),
                 panel,
@@ -1652,14 +1655,128 @@ fn the_sidebar_toggle_tracks_the_host_panel_edge(cx: &mut TestAppContext) {
     }
     cx.simulate_window_resize(handle.into(), size(px(1000.), px(700.)));
     aligned(cx);
-    // The panel can be made wider, then dragged back only as far as the
-    // width it opened at. The title-bar toggle follows the clamped edge.
+    // Dragged back past its minimum, 100 narrower than it opened, it stops
+    // there. The toggle follows the clamped edge, or stays past the list
+    // switch where that ends later, as after the macOS window buttons.
     in_frame(cx, handle, |window, cx| {
         let wide = window.find("workspace-sidebar").bounds();
         let from = point(wide.right() - px(2.), wide.center().y);
-        window.drag(from, point(panel.right() - px(100.), from.y), cx);
+        window.drag(from, point(panel.right() - px(200.), from.y), cx);
     });
-    let (narrowed_button, narrowed_panel) = aligned(cx);
-    assert_eq!(narrowed_panel.size.width, panel.size.width);
-    assert_eq!(narrowed_button.left(), opened.left());
+    let (_, narrowed_panel) = aligned(cx);
+    assert_eq!(narrowed_panel.size.width, panel.size.width - px(100.));
+}
+
+/// Both sidebars open at the widths they were dragged to, once a drag has
+/// settled into the settings or as the window goes before it has. 恢复默认
+/// on 设置 › 应用 › 窗口 puts them back at once.
+#[gpui_kit::test]
+fn the_sidebars_keep_their_widths_until_reset(cx: &mut TestAppContext) {
+    use gpui_kit::{Entity, WindowHandle};
+    use shellrs::settings::SidebarWidths;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    let open = |cx: &mut TestAppContext| {
+        let (mut settings, problem) = SettingsStore::load(path.clone());
+        assert!(problem.is_none());
+        settings
+            .update_unnotified(|settings| settings.language = InterfaceLanguage::SimplifiedChinese);
+        open_workspace_with_settings_and_tester(
+            cx,
+            HostStore::seed(),
+            settings,
+            Arc::new(FakeConnectionTester::default()),
+        )
+    };
+    let widths = |cx: &mut TestAppContext, workspace: &Entity<Workspace>| {
+        cx.update(|cx| {
+            let area = workspace.read(cx).dock_area().read(cx);
+            (
+                area.dock_size(DockPlacement::Left).unwrap(),
+                area.dock_size(DockPlacement::Right).unwrap(),
+            )
+        })
+    };
+    let saved = || {
+        let (settings, problem) = SettingsStore::load(path.clone());
+        assert!(problem.is_none());
+        settings.settings().sidebar_widths
+    };
+    // The right sidebar shows only with a terminal's tool, and its drag is
+    // tested above: the dock reports a size set here as it does a drag.
+    let set_right =
+        |cx: &mut TestAppContext, handle: WindowHandle<Root>, workspace: &Entity<Workspace>| {
+            let area = cx.update(|cx| workspace.read(cx).dock_area().clone());
+            cx.update_window(handle.into(), |_, window, cx| {
+                area.update(cx, |area, cx| {
+                    area.set_dock_size(DockPlacement::Right, px(400.), window, cx)
+                })
+            })
+            .unwrap();
+            cx.run_until_parked();
+        };
+    let drag_left = |cx: &mut TestAppContext, handle: WindowHandle<Root>| {
+        in_frame(cx, handle, |window, cx| {
+            let panel = window.find("workspace-sidebar").bounds();
+            let from = point(panel.right() - px(2.), panel.center().y);
+            window.drag(from, point(from.x + px(60.), from.y), cx);
+        });
+    };
+
+    let (handle, workspace) = open(cx);
+    assert_eq!(widths(cx, &workspace), (px(280.), px(320.)));
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-7", cx)
+    });
+    // Nothing to restore yet.
+    in_frame(cx, handle, |window, _| {
+        assert!(!enabled(&window.find("sidebar-widths-reset")));
+    });
+    drag_left(cx, handle);
+    set_right(cx, handle, &workspace);
+    let (left, right) = widths(cx, &workspace);
+    assert!(left > px(320.), "{left:?}");
+    assert_eq!(right, px(400.));
+    // Written once the drag has settled, not at every step.
+    assert!(saved().is_default());
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    let dragged = SidebarWidths {
+        left: Some(f32::from(left).round()),
+        right: Some(400.),
+    };
+    assert_eq!(saved(), dragged);
+
+    // 恢复默认: both back at once, and nothing left to restore.
+    in_frame(cx, handle, |window, cx| {
+        assert!(enabled(&window.find("sidebar-widths-reset")));
+        window.click("sidebar-widths-reset", cx);
+    });
+    assert_eq!(widths(cx, &workspace), (px(280.), px(320.)));
+    assert!(saved().is_default());
+    in_frame(cx, handle, |window, _| {
+        assert!(!enabled(&window.find("sidebar-widths-reset")));
+    });
+    // Nor does a later drag write them back.
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    assert!(saved().is_default());
+
+    // Dragged again, and the window goes before the drag settles: the
+    // widths are written as it does, and the next launch opens at them.
+    drag_left(cx, handle);
+    set_right(cx, handle, &workspace);
+    assert!(saved().is_default());
+    drop(workspace);
+    cx.update_window(handle.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(saved(), dragged);
+    let (_, reopened) = open(cx);
+    assert_eq!(
+        widths(cx, &reopened),
+        (px(f32::from(left).round()), px(400.))
+    );
 }

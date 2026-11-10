@@ -371,6 +371,15 @@ settings.window.remember_position:
 settings.window.remember_position_description:
   zh-CN: 下次启动时把窗口放回上次所在的屏幕和位置；那块屏幕不在时放在主屏幕中间。
   en: The next launch puts the window back on the same screen and in the same place. If that screen is gone, it opens in the middle of the main screen.
+settings.window.sidebar_widths:
+  zh-CN: 侧栏宽度
+  en: Sidebar widths
+settings.window.sidebar_widths_description:
+  zh-CN: 恢复默认的左右侧栏宽度。
+  en: Restore the left and right sidebars to their default widths.
+settings.window.sidebar_widths_reset:
+  zh-CN: 恢复默认
+  en: Restore defaults
 settings.window.close_to_tray:
   zh-CN: 关闭窗口时最小化到托盘
   en: Minimize to tray on close

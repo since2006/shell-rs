@@ -35,6 +35,9 @@ pub struct AppSettings {
     pub sidebar_tools: SidebarTools,
     /// The left sidebar's visibility, restored on the next launch.
     pub sidebar_collapsed: bool,
+    /// How wide the two sidebars were dragged, for the next launch to open
+    /// them so; 应用 → 窗口 → 侧栏宽度 puts them back.
+    pub sidebar_widths: SidebarWidths,
     /// The right sidebar beside local terminals, switched from its tool
     /// buttons: the tool it shows, `None` while hidden. One for every local
     /// terminal, as a host keeps its own for its terminals.
@@ -96,6 +99,34 @@ impl Default for InterfaceSettings {
     fn default() -> Self {
         Self {
             font_size: DEFAULT_INTERFACE_FONT_SIZE,
+        }
+    }
+}
+
+/// The left and right sidebars' widths in pixels as the user dragged
+/// them: `None` for one at its default width, which the workspace knows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SidebarWidths {
+    pub left: Option<f32>,
+    pub right: Option<f32>,
+}
+
+impl SidebarWidths {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Whole pixels; what is not a width gives the default.
+    fn normalized(self) -> Self {
+        let width = |width: Option<f32>| {
+            width
+                .filter(|width| width.is_finite() && *width > 0.)
+                .map(f32::round)
+        };
+        Self {
+            left: width(self.left),
+            right: width(self.right),
         }
     }
 }
@@ -529,6 +560,7 @@ impl AppSettings {
         } else {
             DEFAULT_INTERFACE_FONT_SIZE
         };
+        self.sidebar_widths = self.sidebar_widths.normalized();
         self.transfers.parallel = self.transfers.parallel.clamp(
             *PARALLEL_TRANSFERS_RANGE.start(),
             *PARALLEL_TRANSFERS_RANGE.end(),

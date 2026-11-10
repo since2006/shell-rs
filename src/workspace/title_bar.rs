@@ -1,3 +1,6 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Selectable as _, Sizable as _, TITLE_BAR_HEIGHT, TitleBar,
     button::{Button, ButtonGroup, ButtonVariants as _},
@@ -24,10 +27,15 @@ use super::sidebar::SidebarMode;
 /// `sidebar` is what the left dock is showing, or `None` while it is hidden;
 /// `forwards` is how many port forwards are running; `update` is the
 /// newer ShellRS waiting to be installed, when there is one.
+///
+/// `switch_end` learns where the list switch ends, and `view` is redrawn
+/// when that moves.
 pub fn render_title_bar(
     sidebar: Option<SidebarMode>,
     forwards: usize,
     update: Option<UpdateBadge>,
+    switch_end: &SwitchEnd,
+    view: EntityId,
     target: &FocusHandle,
     cx: &App,
 ) -> TitleBar {
@@ -56,52 +64,58 @@ pub fn render_title_bar(
                 .child(
                     // Which list the sidebar shows. The choice stays marked
                     // while that list is up, and a hidden sidebar marks none.
-                    div().on_mouse_down(MouseButton::Left, no_drag).child(
-                        ButtonGroup::new("sidebar-mode")
-                            .ghost()
-                            .small()
-                            .child(
-                                Button::new("show-hosts")
-                                    .icon(CatalogIcon::Server)
-                                    .tooltip(t!("workspace.title_bar.hosts"))
-                                    .accessibility_label(t!("workspace.title_bar.hosts"))
-                                    .selected(sidebar == Some(SidebarMode::Hosts)),
-                            )
-                            .child(
-                                Button::new("show-forwards")
-                                    .icon(CatalogIcon::ArrowLeftRight)
-                                    .tooltip(t!("workspace.title_bar.forwards"))
-                                    .selected(sidebar == Some(SidebarMode::Forwards))
-                                    // Forwards run whether or not their list
-                                    // is showing, so the count is said here.
-                                    .map(|button| match forwards {
-                                        0 => button.accessibility_label(t!(
-                                            "workspace.title_bar.forwards"
-                                        )),
-                                        running => button
-                                            .label(running.to_string())
-                                            .accessibility_label(t!(
-                                                "workspace.title_bar.forwards_running",
-                                                count = running
+                    div()
+                        .relative()
+                        .on_mouse_down(MouseButton::Left, no_drag)
+                        .child(switch_end.measure(view))
+                        .child(
+                            ButtonGroup::new("sidebar-mode")
+                                .ghost()
+                                .small()
+                                .child(
+                                    Button::new("show-hosts")
+                                        .icon(CatalogIcon::Server)
+                                        .tooltip(t!("workspace.title_bar.hosts"))
+                                        .accessibility_label(t!("workspace.title_bar.hosts"))
+                                        .selected(sidebar == Some(SidebarMode::Hosts)),
+                                )
+                                .child(
+                                    Button::new("show-forwards")
+                                        .icon(CatalogIcon::ArrowLeftRight)
+                                        .tooltip(t!("workspace.title_bar.forwards"))
+                                        .selected(sidebar == Some(SidebarMode::Forwards))
+                                        // Forwards run whether or not their list
+                                        // is showing, so the count is said here.
+                                        .map(|button| match forwards {
+                                            0 => button.accessibility_label(t!(
+                                                "workspace.title_bar.forwards"
                                             )),
-                                    }),
-                            )
-                            .child(
-                                Button::new("show-credentials")
-                                    .icon(CatalogIcon::KeyRound)
-                                    .tooltip(t!("workspace.title_bar.credentials"))
-                                    .accessibility_label(t!("workspace.title_bar.credentials"))
-                                    .selected(sidebar == Some(SidebarMode::Credentials)),
-                            )
-                            .on_click(move |picked: &Vec<usize>, window, cx| {
-                                match picked.first() {
-                                    Some(0) => mode.dispatch_action(&ShowHosts, window, cx),
-                                    Some(1) => mode.dispatch_action(&ShowForwards, window, cx),
-                                    Some(2) => mode.dispatch_action(&ShowCredentials, window, cx),
-                                    _ => {}
-                                }
-                            }),
-                    ),
+                                            running => button
+                                                .label(running.to_string())
+                                                .accessibility_label(t!(
+                                                    "workspace.title_bar.forwards_running",
+                                                    count = running
+                                                )),
+                                        }),
+                                )
+                                .child(
+                                    Button::new("show-credentials")
+                                        .icon(CatalogIcon::KeyRound)
+                                        .tooltip(t!("workspace.title_bar.credentials"))
+                                        .accessibility_label(t!("workspace.title_bar.credentials"))
+                                        .selected(sidebar == Some(SidebarMode::Credentials)),
+                                )
+                                .on_click(move |picked: &Vec<usize>, window, cx| {
+                                    match picked.first() {
+                                        Some(0) => mode.dispatch_action(&ShowHosts, window, cx),
+                                        Some(1) => mode.dispatch_action(&ShowForwards, window, cx),
+                                        Some(2) => {
+                                            mode.dispatch_action(&ShowCredentials, window, cx)
+                                        }
+                                        _ => {}
+                                    }
+                                }),
+                        ),
                 ),
         )
         .child(
@@ -186,12 +200,41 @@ pub fn render_title_bar(
         )
 }
 
+/// Where the title bar's list switch ends, as the last frame drew it: past
+/// a narrow sidebar's edge on macOS, after the window buttons.
+#[derive(Clone, Default)]
+pub(super) struct SwitchEnd(Rc<Cell<Pixels>>);
+
+impl SwitchEnd {
+    /// Fills the switch's box to learn its right edge as it is drawn, and
+    /// redraws `view` when that moves.
+    fn measure(&self, view: EntityId) -> impl IntoElement + use<> {
+        let end = self.0.clone();
+        canvas(
+            move |bounds, window, _| {
+                if end.get() != bounds.right() {
+                    end.set(bounds.right());
+                    window.on_next_frame(move |_, cx| cx.notify(view));
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+    }
+}
+
 /// Position against the workspace, whose left edge is also the dock's,
-/// rather than against TitleBar's platform-dependent traffic-light inset.
-/// The closed dock keeps its width, so the reopen button stays put.
+/// rather than against TitleBar's platform-dependent traffic-light inset:
+/// just past the sidebar's edge, or past the list switch when the sidebar
+/// is narrower than that. The closed dock keeps its width, so the reopen
+/// button stays put.
 pub(super) fn render_sidebar_toggle(
     open: bool,
     sidebar_width: Pixels,
+    switch_end: &SwitchEnd,
     target: &FocusHandle,
 ) -> impl IntoElement {
     let target = target.clone();
@@ -203,7 +246,7 @@ pub(super) fn render_sidebar_toggle(
     h_flex()
         .absolute()
         .top_0()
-        .left(sidebar_width)
+        .left(sidebar_width.max(switch_end.0.get()))
         .h(TITLE_BAR_HEIGHT)
         .pl_2()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())

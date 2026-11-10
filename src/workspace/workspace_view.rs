@@ -88,11 +88,12 @@ use super::{
     compose_pane::ComposePane,
     dock_skin::WorkspaceDockSkin,
     recent_hosts::RecentHosts,
-    sidebar::{SIDEBAR_WIDTH, Sidebar},
+    sidebar::Sidebar,
+    sidebar_widths::opening_widths,
     status_bar::WorkspaceStatus,
-    title_bar::{render_sidebar_toggle, render_title_bar},
+    title_bar::{SwitchEnd, render_sidebar_toggle, render_title_bar},
     tool_sidebar::{ToolSidebar, render_tool_switch},
-    tools::{TOOL_SIDEBAR_WIDTH, set_right_dock_open},
+    tools::set_right_dock_open,
     window_state::{WindowState, window_placement},
 };
 
@@ -244,6 +245,13 @@ pub struct Workspace {
     /// The pending write of the window's size and place, see
     /// `window_state.rs`.
     pub(super) window_state_save: Option<Task<()>>,
+    /// The sidebars' widths as the settings last had them from this
+    /// workspace, and the pending write of new ones; see
+    /// `sidebar_widths.rs`.
+    pub(super) sidebar_widths: crate::settings::SidebarWidths,
+    pub(super) sidebar_widths_save: Option<Task<()>>,
+    /// Where the title bar's list switch ends, for the sidebar toggle.
+    pub(super) switch_end: SwitchEnd,
     /// Where 导入 reads `~/.ssh/config` and `known_hosts`. Production only:
     /// UI tests hand in a temporary one, so nothing reads the home
     /// directory.
@@ -445,13 +453,17 @@ impl Workspace {
             // What the saved terminals show, for the next launch to draw: the
             // workspace goes with its window, as ShellRS quits (and on
             // Windows and Linux as the window closes, before it quits).
-            cx.on_release(|this, cx| this.keep_on_close(cx)),
-            // Neither sidebar is dragged narrower than it opens, nor
+            // So are the sidebars' widths, if a drag has not settled.
+            cx.on_release(|this, cx| {
+                this.keep_on_close(cx);
+                this.save_sidebar_widths(cx);
+            }),
+            // Neither sidebar is dragged narrower than its minimum, nor
             // 撰写窗格 lower than a line or two.
             cx.observe_in(&dock_area, window, move |this, area, window, cx| {
-                this.hold_sidebar_width(window, cx);
-                this.hold_tool_sidebar_width(window, cx);
+                this.hold_sidebar_widths(window, cx);
                 this.hold_compose_height(window, cx);
+                this.remember_sidebar_widths(cx);
                 // Keep every entry point, including search and the list
                 // switches that reopen the sidebar, for the next launch.
                 let collapsed = !area.read(cx).is_dock_open(DockPlacement::Left);
@@ -511,6 +523,7 @@ impl Workspace {
                         .update(cx, |tools, cx| tools.disable_kubernetes(cx));
                 }
                 this.sync_tool_sidebar(window, cx);
+                this.follow_sidebar_widths(window, cx);
             }),
             cx.subscribe_in(
                 &updater,
@@ -644,6 +657,7 @@ impl Workspace {
             center = center.active_index(terminals.len() + index);
         }
         let center_empty = terminals.is_empty() && local_terminals.is_empty();
+        let (left_width, right_width) = opening_widths(launch_settings.sidebar_widths);
 
         dock_area.update(cx, |area, cx| {
             // With nothing to show, the center keeps the empty layout the
@@ -658,7 +672,7 @@ impl Workspace {
                 cx,
             );
             // Dock geometry is an API boundary that takes `Pixels`.
-            area.set_dock_size(DockPlacement::Left, SIDEBAR_WIDTH, window, cx);
+            area.set_dock_size(DockPlacement::Left, left_width, window, cx);
             area.set_dock_collapsible(DockPlacement::Left, true, window, cx);
             if launch_settings.sidebar_collapsed {
                 area.toggle_dock(DockPlacement::Left, window, cx);
@@ -669,7 +683,7 @@ impl Workspace {
                 window,
                 cx,
             );
-            area.set_dock_size(DockPlacement::Right, TOOL_SIDEBAR_WIDTH, window, cx);
+            area.set_dock_size(DockPlacement::Right, right_width, window, cx);
             // Hidden until a tool is picked; see `set_right_dock_open`.
             set_right_dock_open(area, false, window, cx);
             area.set_dock_collapsible(DockPlacement::Right, false, window, cx);
@@ -738,6 +752,9 @@ impl Workspace {
             next_editor_id: 1,
             notice_times: HashMap::new(),
             window_state_save: None,
+            sidebar_widths: launch_settings.sidebar_widths,
+            sidebar_widths_save: None,
+            switch_end: SwitchEnd::default(),
             ssh_dir: None,
             _subscriptions: subscriptions,
         };
@@ -3177,6 +3194,8 @@ impl Render for Workspace {
                 sidebar,
                 running_forwards,
                 self.updater.read(cx).snapshot().badge(),
+                &self.switch_end,
+                cx.entity_id(),
                 &self.focus_handle,
                 cx,
             ))
@@ -3186,6 +3205,7 @@ impl Render for Workspace {
                     .read(cx)
                     .dock_size(DockPlacement::Left)
                     .unwrap_or_default(),
+                &self.switch_end,
                 &self.focus_handle,
             ))
             .child(

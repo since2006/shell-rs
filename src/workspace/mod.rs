@@ -21,6 +21,7 @@ mod notices;
 mod projects;
 mod recent_hosts;
 mod sidebar;
+mod sidebar_widths;
 mod snippets;
 mod status_bar;
 mod sync;
