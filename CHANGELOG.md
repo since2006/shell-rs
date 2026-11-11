@@ -4,6 +4,25 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.19]
+
+### Added
+
+- SSH hosts can fill in one-time codes (TOTP). In the host dialog’s Advanced, turn on Fill in one-time codes and enter the OTP secret: when the server asks for a code during keyboard-interactive login, ShellRS sends the current 6-digit code. With Prompt to match left empty, it recognizes the usual prompts, such as Verification code, OTP and MFA. Terminals, SFTP, port forwarding, the external CLI, Test connection and jump hosts all fill it in. The OTP secret is stored only in the system keychain and syncs with cloud sync.
+- Terminal background images: in Appearance, set one for light and one for dark, each with its own on switch and Transparency, and they follow the appearance. The image covers only the terminal; with split panes, each pane gets the whole image. ([#43](https://github.com/since2006/shell-rs/issues/43), [#113](https://github.com/since2006/shell-rs/issues/113))
+- A Show host details button right of the search box in the host list: each host shows user@address:port under its name, and its notes on another line if it has any. Click it again for names only. ShellRS remembers the setting. ([#116](https://github.com/since2006/shell-rs/issues/116))
+
+### Improved
+
+- A host that uses a credential can have its own username, so one private key logs in to servers with different usernames. Leave it empty to use the credential’s. ShellRS 0.1.18 and earlier still log these hosts in with the credential’s username. ([#112](https://github.com/since2006/shell-rs/issues/112))
+- Highlighting comes with 11 preset rules, from the scheme a user shared in [#113](https://github.com/since2006/shell-rs/issues/113): errors, successes, warnings, IP and MAC addresses, sizes with units, dates and times, numbers and more, in colors that read well on the default light and dark backgrounds. If you hadn’t changed the three old examples, they’re replaced with the new presets; rules you changed stay.
+- The left and right sidebars can be dragged narrower (to 180 and 220), and the widths you set stay after restarting. Settings › General › Window › Sidebar widths restores the defaults.
+
+### Fixed
+
+- On macOS, holding down a key in a terminal showed the accent picker and typed the character once; it now repeats. ([#114](https://github.com/since2006/shell-rs/issues/114))
+- With cloud sync on a ZSpace NAS’s WebDAV, setting up sync in an empty folder said another device had already turned on sync.
+
 ## [0.1.18]
 
 ### Added
