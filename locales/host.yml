@@ -286,6 +286,33 @@ host.dialog.no_group:
 host.dialog.notes:
   zh-CN: 备注
   en: Notes
+host.dialog.advanced:
+  zh-CN: 高级设置
+  en: Advanced
+host.dialog.totp:
+  zh-CN: 启用动态验证码
+  en: Fill in one-time codes
+host.dialog.totp_note:
+  zh-CN: 启用后匹配 SSH 交互认证提示，并自动提交当前 6 位动态验证码。
+  en: When a keyboard-interactive prompt matches, ShellRS sends the current 6-digit code.
+host.dialog.totp_secret:
+  zh-CN: OTP 密钥
+  en: OTP secret
+host.dialog.totp_secret_placeholder:
+  zh-CN: Base32 密钥
+  en: Base32 secret
+host.dialog.totp_prompt:
+  zh-CN: 交互认证识别文本
+  en: Prompt to match
+host.dialog.totp_prompt_placeholder:
+  zh-CN: 留空使用常见提示
+  en: Leave empty for the usual prompts
+host.dialog.totp_secret_required:
+  zh-CN: 填写 OTP 密钥
+  en: Enter the OTP secret
+host.dialog.totp_secret_invalid:
+  zh-CN: OTP 密钥不是有效的 Base32
+  en: The OTP secret isn’t valid Base32
 host.dialog.optional:
   zh-CN: 可选
   en: Optional
@@ -772,6 +799,12 @@ host.store.secret.proxy_write:
 host.store.secret.proxy_delete:
   zh-CN: 代理的密码未能从系统钥匙串删除：%{error}
   en: "Couldn’t delete the proxy’s password from the system keychain: %{error}"
+host.store.secret.totp_write:
+  zh-CN: 动态验证码的密钥未能写入系统钥匙串：%{error}
+  en: "Couldn’t save the OTP secret to the system keychain: %{error}"
+host.store.secret.totp_delete:
+  zh-CN: 动态验证码的密钥未能从系统钥匙串删除：%{error}
+  en: "Couldn’t delete the OTP secret from the system keychain: %{error}"
 host.store.secret.temporary:
   zh-CN: 这次连接的密码未能记下：%{error}
   en: "Couldn’t keep the password for this connection: %{error}"

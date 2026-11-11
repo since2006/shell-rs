@@ -17,10 +17,13 @@ dirs = "6"
 # Canonical local paths without the `\\?\` prefix std adds on Windows.
 dunce = "1"
 futures = "0.3"
+# One-time codes (RFC 6238) are HMAC-SHA1; russh builds both already.
+hmac = "0.13"
 russh = "0.63"
 russh-sftp = "=3.0.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha1 = "0.11"
 # Resume records are named by a digest of what they resume; the names are
 # kept across versions, so the digest stays this one.
 sha2 = "0.10"

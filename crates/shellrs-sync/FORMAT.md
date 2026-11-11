@@ -117,7 +117,7 @@ References are other records' ids. `null` means none.
 | --- | --- |
 | `group` | `name` (not empty), `parent` (group or null), `sort_order` |
 | `credential` | `name` (not empty), `kind` (`password`, `key`, `agent`), `username`, `sort_order` |
-| `host` | `name`, `address` (not empty), `port` (1–65535), `group` (or null), `sort_order`, `protocol` (`ssh`, `telnet`), `telnet` {`user_prompt`, `pass_prompt`} when Telnet, `auth` (`password`, `no-password`, `credential`), `username` (null exactly when `auth` is `credential`), `credential` (set exactly then), `credential_username` (the user a host using a credential signs in as instead of the credential's, or null)², `route` (`direct`, `jump`, `proxy`), `jumps` [host or null] when `jump`, `proxy` {`kind` (`http`, `socks5`), `host`, `port`, `username`} when `proxy`, `notes` |
+| `host` | `name`, `address` (not empty), `port` (1–65535), `group` (or null), `sort_order`, `protocol` (`ssh`, `telnet`), `telnet` {`user_prompt`, `pass_prompt`} when Telnet, `auth` (`password`, `no-password`, `credential`), `username` (null exactly when `auth` is `credential`), `credential` (set exactly then), `credential_username` (the user a host using a credential signs in as instead of the credential's, or null)², `route` (`direct`, `jump`, `proxy`), `jumps` [host or null] when `jump`, `proxy` {`kind` (`http`, `socks5`), `host`, `port`, `username`} when `proxy`, `notes`, `totp` ({`prompt` (what the question for a one-time code says, not empty, or null for the usual)} for an SSH host that fills in one-time codes, or null)² |
 | `bookmark` | `host`, `path`, `sort_order`; its id is the first 16 bytes, hex, of SHA-256(`host` ‖ 0x00 ‖ `path`) |
 | `forward` | `host`, `name`, `kind` (`local`, `remote`, `dynamic`), `bind_host`, `bind_port`, `target_host` and `target_port` (null exactly when dynamic), `sort_order` |
 | `snippet_category` | `name` (not empty), `parent` (snippet category or null)¹, `sort_order`¹ |
@@ -127,9 +127,11 @@ References are other records' ids. `null` means none.
 | `secret.credential` | `value`: the password of the password credential with this id |
 | `secret.passphrase` | `value`: the passphrase of the key credential with this id |
 | `secret.private_key` | `value`: the private key file, as text, of the key credential with this id |
+| `secret.totp` | `value`: the base32 secret of the one-time codes of the host with this id² |
 
 A secret's `value` is not empty and at most 64 KiB. A credential's secret is
-used only while the credential is of the kind that has it. Secrets always
+used only while the credential is of the kind that has it, a host's
+`secret.totp` only while the host's `totp` is set. Secrets always
 sync; there is no setting to keep them out.
 
 Every field listed is written, `null` where it has none: a record missing one
@@ -139,10 +141,13 @@ missing, `parent` reads as null and `sort_order` as 0. An older version keeps
 them as fields it does not know, so they survive its edits; it lists snippet
 categories flat.
 
-The field marked ² was added after ShellRS 0.1.18: missing, it reads as null,
-and so does an empty one. It counts only while `auth` is `credential`: an
-older version that turns the host to another sign-in keeps it as it was.
-Repairing a host whose credential was deleted sets it to null.
+The fields and kind marked ² were added after ShellRS 0.1.18. Missing,
+`credential_username` reads as null, and so does an empty one. It counts only
+while `auth` is `credential`: an older version that turns the host to another
+sign-in keeps it as it was. Repairing a host whose credential was deleted sets
+it to null. Missing, `totp` reads as null; it counts only for an SSH host. An
+older version keeps `totp` as a field it does not know and `secret.totp` as a
+secret of a kind it does not know.
 
 Not synced, each device's own: serial hosts (their port is this computer's);
 a host's detected system, last connection and sidebar tool; a group's expanded
@@ -163,5 +168,6 @@ A copy pointing at a deleted record is repaired, as the device's own edit:
 | a snippet's scope group or host | the snippet is deleted |
 | a snippet's category | to the top level |
 | a credential | its `secret.credential`, `secret.passphrase` and `secret.private_key` are deleted |
+| a host | its `secret.totp` is deleted |
 
 A record that is only missing (not deleted) is never repaired.

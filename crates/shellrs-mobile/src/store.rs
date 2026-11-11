@@ -761,6 +761,11 @@ fn checked_host(
     {
         draft.user = Default::default();
     }
+    // Nor have they the one-time codes the desktop fills in: an edit keeps
+    // them as they were, while the host stays SSH.
+    draft.totp = old
+        .filter(|_| draft.protocol.is_ssh())
+        .and_then(|old| old.totp.clone());
     if draft.group.is_some_and(|group| data.group(group).is_none()) {
         return Err(StoreError::GroupNotFound);
     }
@@ -1039,7 +1044,9 @@ impl From<Change> for ChangeKind {
 
 #[cfg(test)]
 mod tests {
-    use shellrs_hosts::{AuthKind, CredentialDraft, CredentialKind, HostData, HostDraft};
+    use shellrs_hosts::{
+        AuthKind, CredentialDraft, CredentialKind, HostData, HostDraft, TotpSettings,
+    };
 
     use super::checked_host;
 
@@ -1062,5 +1069,21 @@ mod tests {
         let checked = |id, user| checked_host(&data, id, draft(user)).unwrap().user;
         assert_eq!(checked(Some(web), "admin").as_ref(), "admin");
         assert_eq!(checked(Some(web), "root").as_ref(), "");
+    }
+
+    #[test]
+    fn an_edit_on_the_phone_keeps_the_one_time_codes_the_desktop_set() {
+        let mut data = HostData::empty();
+        let totp = Some(TotpSettings {
+            prompt: Some("OTP verification code".into()),
+        });
+        let draft = || HostDraft::new("web", "10.0.0.1", 22, "root", AuthKind::Password, None);
+        let web = data.insert_unnotified(draft().with_totp(totp.clone()));
+        // The app's form says nothing of them.
+        assert_eq!(checked_host(&data, Some(web), draft()).unwrap().totp, totp);
+        assert_eq!(checked_host(&data, None, draft()).unwrap().totp, None);
+        // A Telnet host has none.
+        let telnet = HostDraft::telnet("web", "10.0.0.1", 23, None);
+        assert_eq!(checked_host(&data, Some(web), telnet).unwrap().totp, None);
     }
 }

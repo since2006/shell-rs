@@ -24,6 +24,7 @@ mod session;
 pub mod sftp;
 #[cfg(feature = "testing")]
 pub mod testing;
+pub mod totp;
 
 pub use connection::{
     AgentLocation, ForwardedTcpip, SshConnectionConfig, SshConnector, SshHandle, SshPrompts,
@@ -38,6 +39,7 @@ pub use exec::{ExecError, ExecErrorKind, ExecExit, ExecFailure, ExecStream, run_
 pub use latency::{LATENCY_INTERVAL, Latency, LatencyLevel, round_trip};
 pub use login::{
     DEFAULT_KEY_FILES, HostLogin, JumpLogin, LoginMethod, LoginRoute, ProxyKind, ProxyLogin,
+    TotpLogin,
 };
 pub use probe::{HOST_OS_KEYS, HostOsProbe, PROBE_COMMAND, ProbeOutcome, WINDOWS_PROBE_COMMAND};
 pub use prompt::{

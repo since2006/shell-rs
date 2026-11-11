@@ -2,7 +2,8 @@
 # so this takes minutes. Its tests also run with the app's (`cargo test`)
 # and, but for the SFTP engine's, on Windows (windows.yml); the engine's
 # against OpenSSH's own sftp-server only here and on the Macs. The
-# `testing` feature holds the test server other crates' tests use.
+# `testing` feature holds the test server other crates' tests use. One-time
+# codes are tried against OpenSSH with pam_google_authenticator, in Docker.
 name: ssh
 
 on:
@@ -34,3 +35,6 @@ jobs:
       - run: cargo clippy -p shellrs-ssh --all-targets -- -D warnings
       - run: cargo clippy -p shellrs-ssh --all-targets --features testing -- -D warnings
       - run: cargo test --locked -p shellrs-ssh
+      # Pulled first, so that no test waits on a download.
+      - run: docker pull --quiet debian:stable-slim
+      - run: cargo test --locked -p shellrs-ssh totp -- --include-ignored

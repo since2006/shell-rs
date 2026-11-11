@@ -15,7 +15,9 @@ use zeroize::Zeroizing;
 /// user and endpoint share it. A passphrase belongs to its key file, so one
 /// key is asked about once. A password credential's password belongs to the
 /// credential, shared by the hosts that use it. A proxy's password belongs
-/// to the proxy's address and user, shared by the hosts behind it.
+/// to the proxy's address and user, shared by the hosts behind it. A
+/// one-time code's secret belongs to the saved host that fills its codes in,
+/// whoever it logs in as.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SecretRef {
     /// The login password of an SSH endpoint.
@@ -35,6 +37,9 @@ pub enum SecretRef {
         host: String,
         port: u16,
     },
+    /// The secret a saved host's one-time codes come from (TOTP), by the
+    /// host's public id.
+    Totp { host: String },
     /// The password of a connection that is not saved (an external or quick
     /// connection), by that temporary host's id. Only ever held in memory,
     /// never in a keychain.
@@ -77,6 +82,10 @@ impl SecretRef {
         }
     }
 
+    pub fn totp(host: impl Into<String>) -> Self {
+        Self::Totp { host: host.into() }
+    }
+
     pub fn temporary(host: u64) -> Self {
         Self::Temporary { host }
     }
@@ -90,6 +99,7 @@ impl SecretRef {
             Self::Passphrase { key_path } => format!("passphrase:{key_path}"),
             Self::Credential { keychain_id } => format!("credential:{keychain_id}"),
             Self::Proxy { user, host, port } => format!("proxy:{user}@{host}:{port}"),
+            Self::Totp { host } => format!("totp:{host}"),
             Self::Temporary { host } => format!("temporary:{host}"),
             Self::SyncKeyring => "sync:keyring".into(),
             Self::SyncLogin => "sync:login".into(),
@@ -155,6 +165,12 @@ mod tests {
     }
 
     #[test]
+    fn one_time_code_accounts_name_the_host() {
+        let secret = SecretRef::totp("Jwg5rHvXCxw89paM");
+        assert_eq!(secret.account(), "totp:Jwg5rHvXCxw89paM");
+    }
+
+    #[test]
     fn other_accounts_are_fixed() {
         assert_eq!(SecretRef::temporary(7).account(), "temporary:7");
         assert_eq!(SecretRef::SyncKeyring.account(), "sync:keyring");
@@ -168,6 +184,7 @@ mod tests {
             SecretRef::passphrase("root@10.0.1.12:22"),
             SecretRef::credential("root@10.0.1.12:22"),
             SecretRef::proxy("root", "10.0.1.12", 22),
+            SecretRef::totp("root@10.0.1.12:22"),
             SecretRef::temporary(22),
             SecretRef::SyncKeyring,
             SecretRef::SyncLogin,

@@ -19,7 +19,7 @@ use super::{
     GroupId, Host, HostDraft, HostGroup, HostId, HostOs, Parity, Protocol, ProxyKind,
     ProxySettings, PublicId, Route, SavedTerminal, SavedTerminalId, SavedTerminalTab,
     SerialSettings, Snippet, SnippetCategory, SnippetCategoryId, SnippetDraft, SnippetId,
-    SnippetScope, StopBits, TelnetSettings, TerminalGroup, TerminalGroupId,
+    SnippetScope, StopBits, TelnetSettings, TerminalGroup, TerminalGroupId, TotpSettings,
 };
 
 /// SQLite's only integer type is `i64`, so the `u64` ids cross the boundary
@@ -41,8 +41,9 @@ fn from_sql(id: i64) -> u64 {
 /// command snippets, 15 the serial hosts, 16 the Telnet hosts, 17 each
 /// host's right sidebar, 18 the saved local terminals, 19 their titles, 20
 /// what sync needs, 21 the snippet categories' nesting and the snippets'
-/// order.
-const SCHEMA_VERSION: i64 = 23;
+/// order, 22 目录跟随 per host, 23 the user a host logs in as with its
+/// credential, 24 the one-time codes an SSH host fills in.
+const SCHEMA_VERSION: i64 = 24;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -78,6 +79,12 @@ const SCHEMA_VERSION: i64 = 23;
 ///     route columns as an SSH host does (`no-password` is no 自动登录), and
 ///     the prompts its 自动登录 waits for are in the two `telnet_*` columns,
 ///     `NULL` for the usual ones and always for other hosts.
+///   - `one_time_code` is set for an SSH host that fills in the one-time
+///     codes its server asks for, and `one_time_code_prompt` is what the
+///     question says, `NULL` for the usual wordings and for a host without
+///     codes. Their secret is in the keychain, never here; the columns do
+///     not say `otp` so that `schema_never_contains_secret_columns` can
+///     keep any column that does out.
 /// - **host_jumps** lists a host's jump hosts in order. A deleted jump
 ///   host leaves its row behind with no `jump_id`, so the host fails to
 ///   connect rather than skip the hop.
@@ -179,6 +186,10 @@ CREATE TABLE hosts (
     directory_follow  INTEGER CHECK (directory_follow IN (0, 1)),
     credential_username TEXT CHECK (credential_username <> '')
         CHECK (auth = 'credential' OR credential_username IS NULL),
+    one_time_code     INTEGER NOT NULL DEFAULT 0 CHECK (one_time_code IN (0, 1))
+        CHECK (protocol = 'ssh' OR one_time_code = 0),
+    one_time_code_prompt TEXT CHECK (one_time_code_prompt <> '')
+        CHECK (one_time_code = 1 OR one_time_code_prompt IS NULL),
     CHECK ((auth = 'credential') = (credential_id IS NOT NULL)),
     CHECK ((auth = 'credential') = (username IS NULL)),
     CHECK ((route = 'proxy') = (proxy_kind IS NOT NULL)),
@@ -303,7 +314,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 10] = [
+const STEPS: [(i64, Step); 11] = [
     (
     13,
     // The command snippets.
@@ -437,6 +448,19 @@ COMMIT;",
 ALTER TABLE hosts ADD COLUMN credential_username TEXT CHECK (credential_username <> '')
         CHECK (auth = 'credential' OR credential_username IS NULL);
 PRAGMA user_version = 23;
+COMMIT;",
+        ),
+    ),
+    (
+        23,
+        // The one-time codes an SSH host fills in: none so far.
+        Step::Sql(
+            "BEGIN;
+ALTER TABLE hosts ADD COLUMN one_time_code     INTEGER NOT NULL DEFAULT 0 CHECK (one_time_code IN (0, 1))
+        CHECK (protocol = 'ssh' OR one_time_code = 0);
+ALTER TABLE hosts ADD COLUMN one_time_code_prompt TEXT CHECK (one_time_code_prompt <> '')
+        CHECK (one_time_code = 1 OR one_time_code_prompt IS NULL);
+PRAGMA user_version = 24;
 COMMIT;",
         ),
     ),
@@ -815,7 +839,8 @@ impl HostDatabase {
                  credential_id, route, proxy_kind, proxy_host, proxy_port, proxy_username, \
                  notes, os, protocol, serial_baud, serial_data_bits, serial_parity, \
                  serial_stop_bits, serial_flow, telnet_user_prompt, telnet_pass_prompt, \
-                 sidebar_tool, edited_ms, directory_follow, credential_username \
+                 sidebar_tool, edited_ms, directory_follow, credential_username, \
+                 one_time_code, one_time_code_prompt \
                  FROM hosts ORDER BY id",
             )?
             .query_map([], |row| {
@@ -884,6 +909,11 @@ impl HostDatabase {
                 host.sidebar_tool = sidebar_tool.map(SharedString::from);
                 host.edited_ms = from_sql(row.get(26)?);
                 host.directory_follow = row.get::<_, Option<i64>>(27)?.map(|follow| follow != 0);
+                // The table's CHECKs keep the codes to SSH hosts.
+                let totp_prompt: Option<String> = row.get(30)?;
+                host.totp = row.get::<_, bool>(29)?.then(|| TotpSettings {
+                    prompt: totp_prompt.map(SharedString::from),
+                });
                 match protocol.as_str() {
                     "serial" => host.protocol = Protocol::Serial(serial.settings()),
                     "telnet" => host.protocol = Protocol::Telnet(telnet),
@@ -1297,9 +1327,9 @@ impl HostDatabase {
              proxy_username, notes, os, protocol, serial_baud, serial_data_bits, \
              serial_parity, serial_stop_bits, serial_flow, telnet_user_prompt, \
              telnet_pass_prompt, sidebar_tool, edited_ms, directory_follow, \
-             credential_username) \
+             credential_username, one_time_code, one_time_code_prompt) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
+             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
             params![
                 to_sql(host.id.0),
                 host.public_id.as_str(),
@@ -1330,6 +1360,8 @@ impl HostDatabase {
                 to_sql(host.edited_ms),
                 host.directory_follow,
                 row.credential_username,
+                row.one_time_code,
+                row.one_time_code_prompt,
             ],
         )?;
             write_jumps(connection, host)
@@ -1352,7 +1384,8 @@ impl HostDatabase {
              notes = ?15, serial_baud = ?16, serial_data_bits = ?17, serial_parity = ?18, \
              serial_stop_bits = ?19, serial_flow = ?20, telnet_user_prompt = ?21, \
              telnet_pass_prompt = ?22, protocol = ?23, edited_ms = ?24, \
-             credential_username = ?25 WHERE id = ?1",
+             credential_username = ?25, one_time_code = ?26, one_time_code_prompt = ?27 \
+             WHERE id = ?1",
                 params![
                     to_sql(host.id.0),
                     host.group.map(|group| to_sql(group.0)),
@@ -1379,6 +1412,8 @@ impl HostDatabase {
                     host.protocol.as_str(),
                     to_sql(host.edited_ms),
                     row.credential_username,
+                    row.one_time_code,
+                    row.one_time_code_prompt,
                 ],
             )?;
             write_jumps(connection, host)
@@ -1919,6 +1954,10 @@ struct HostRow<'a> {
     /// The user a host using a credential logs in as with it, when not the
     /// credential's.
     credential_username: Option<&'a str>,
+    /// Whether an SSH host fills in one-time codes, and what their
+    /// question says when not the usual.
+    one_time_code: bool,
+    one_time_code_prompt: Option<&'a str>,
     route: &'static str,
     proxy_kind: Option<&'static str>,
     proxy_host: Option<&'a str>,
@@ -1935,6 +1974,7 @@ impl<'a> HostRow<'a> {
         let telnet = host.protocol.telnet();
         let prompt =
             |prompt: &'a SharedString| Some(prompt.as_ref()).filter(|prompt| !prompt.is_empty());
+        let totp = host.totp.as_ref().filter(|_| host.is_ssh());
         Self {
             serial: SerialColumns::of(&host.protocol),
             telnet_user_prompt: telnet.and_then(|telnet| prompt(&telnet.user_prompt)),
@@ -1953,6 +1993,10 @@ impl<'a> HostRow<'a> {
             credential_username: Some(host.user.as_ref()).filter(|user| {
                 host.credential.is_some() && !host.user_from_credential && !user.is_empty()
             }),
+            one_time_code: totp.is_some(),
+            one_time_code_prompt: totp
+                .and_then(|totp| totp.prompt.as_deref())
+                .filter(|prompt| !prompt.is_empty()),
             route: match host.route {
                 Route::Direct => "direct",
                 Route::Jump(_) => "jump",
@@ -3085,6 +3129,95 @@ INSERT INTO hosts (id, name, address, port, auth, credential_id, edited_ms) \
             (web.credential, web.user.as_ref(), web.edited_ms),
             (Some(CredentialId(1)), "", 5)
         );
+    }
+
+    #[test]
+    fn a_version_23_file_gets_the_one_time_code_columns_and_keeps_its_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            // Version 23 as files of it have it: 15's schema, taken on by
+            // its steps.
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(&format!(
+                "BEGIN;\n{SCHEMA_15}\nPRAGMA user_version = 15;\nCOMMIT;"
+            ))
+            .unwrap();
+            add_telnet(&old).unwrap();
+            for (_, step) in &STEPS[3..6] {
+                let Step::Sql(sql) = step else {
+                    panic!("versions 17 to 19 are SQL steps");
+                };
+                old.execute_batch(sql).unwrap();
+            }
+            add_sync(&old).unwrap();
+            for (_, step) in &STEPS[7..10] {
+                let Step::Sql(sql) = step else {
+                    panic!("versions 21 to 23 are SQL steps");
+                };
+                old.execute_batch(sql).unwrap();
+            }
+            old.execute_batch(
+                "INSERT INTO hosts (id, name, address, port, auth, username, edited_ms) \
+ VALUES (1, 'web', '10.0.0.1', 22, 'password', 'root', 5);",
+            )
+            .unwrap();
+        }
+
+        let db = HostDatabase::open(&path).unwrap();
+        let version: i64 = db
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(dir.path().join("shellrs.db.v23.bak").exists());
+        let fresh = HostDatabase::in_memory().unwrap();
+        assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
+
+        // No codes yet; nothing else touched.
+        let data = db.load().unwrap();
+        let web = &data.hosts[0];
+        assert_eq!(
+            (web.totp.clone(), web.user.as_ref(), web.edited_ms),
+            (None, "root", 5)
+        );
+    }
+
+    #[test]
+    fn a_host_filling_in_one_time_codes_keeps_them() {
+        let db = HostDatabase::in_memory().unwrap();
+        let mut web = host(1, "web", None);
+        web.totp = Some(TotpSettings {
+            prompt: Some("OTP verification code".into()),
+        });
+        db.insert_host(&web).unwrap();
+        let mut api = host(2, "api", None);
+        api.totp = Some(TotpSettings::default());
+        db.insert_host(&api).unwrap();
+        db.insert_host(&host(3, "db", None)).unwrap();
+
+        let data = db.load().unwrap();
+        let codes: Vec<_> = data.hosts.iter().map(|host| host.totp.clone()).collect();
+        assert_eq!(codes, [web.totp.clone(), api.totp.clone(), None]);
+
+        web.totp = None;
+        db.update_host(&web).unwrap();
+        assert_eq!(db.load().unwrap().hosts[0].totp, None);
+
+        // Only an SSH host fills in codes, and only one that does has a
+        // wording for them.
+        for wrong in [
+            "UPDATE hosts SET one_time_code_prompt = 'code' WHERE id = 3",
+            "UPDATE hosts SET one_time_code_prompt = '' WHERE id = 2",
+            "UPDATE hosts SET protocol = 'telnet' WHERE id = 2",
+        ] {
+            assert!(db.connection.execute(wrong, []).is_err(), "{wrong}");
+        }
+        // Whatever reaches the database, a Telnet host stores none.
+        let mut telnet = Host::new(HostId(4), HostDraft::telnet("switch", "10.0.0.5", 23, None));
+        telnet.totp = Some(TotpSettings::default());
+        db.insert_host(&telnet).unwrap();
+        assert_eq!(db.load().unwrap().hosts[3].totp, None);
     }
 
     #[test]

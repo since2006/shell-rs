@@ -3,12 +3,15 @@ use super::error::{
     AgentProblem, AgentUnreachable, AuthError, ConnectError, ForwardProblem, KnownHostsError,
     MissingCredential, PasswordWanted, RouteFailure, WrapErr, find_cause, wrap,
 };
-use super::login::{DEFAULT_KEY_FILES, HostLogin, JumpLogin, LoginMethod, LoginRoute, ProxyLogin};
+use super::login::{
+    DEFAULT_KEY_FILES, HostLogin, JumpLogin, LoginMethod, LoginRoute, ProxyLogin, TotpLogin,
+};
 use super::prompt::{
     AuthenticationRequest, ConnectionPrompt, ConnectionPromptField, ConnectionPromptKind,
     ConnectionPromptReply, ConnectionSecret,
 };
 use super::session::ChannelStream;
+use super::totp;
 use anyhow::{Result, anyhow, bail};
 use russh::keys::{
     HashAlg, PrivateKeyWithHashAlg, PublicKey,
@@ -601,6 +604,20 @@ impl SshPrompts {
         self.ask(kind).await
     }
 
+    /// Wait `duration` without it counting toward the connection's
+    /// timeouts, as the time a person takes to answer does not: the server
+    /// is not slow, the login waits for the next one-time code.
+    async fn wait_untimed(&self, duration: Duration) -> Result<()> {
+        let _ = self.prompt_activity.send(true);
+        let mut shutdown = self.shutdown.clone();
+        let result = tokio::select! {
+            _ = tokio::time::sleep(duration) => Ok(()),
+            _ = shutdown.changed() => Err(anyhow!(ConnectError::Cancelled)),
+        };
+        let _ = self.prompt_activity.send(false);
+        result
+    }
+
     pub fn respond(&self, request_id: u64, reply: ConnectionPromptReply) {
         if let Some(sender) = lock(&self.pending).remove(&request_id) {
             let _ = sender.send(reply);
@@ -983,8 +1000,13 @@ async fn authenticate(
 
     // Nothing typed is all a login without a password has. A server that
     // wants more is told no here, not answered with a question; a code it
-    // asks for after a key is still asked, below.
-    if method == LoginMethod::NoPassword && !partial {
+    // asks for after a key is still asked, below. A host that fills in its
+    // one-time codes goes on to answer those, and nothing else.
+    let codes_only = method == LoginMethod::NoPassword
+        && !partial
+        && login.totp.is_some()
+        && methods.contains(&MethodKind::KeyboardInteractive);
+    if method == LoginMethod::NoPassword && !partial && !codes_only {
         if methods.contains(&MethodKind::Password)
             || methods.contains(&MethodKind::KeyboardInteractive)
         {
@@ -993,74 +1015,87 @@ async fn authenticate(
         bail!(AuthError::NoKeyAccepted);
     }
 
-    if method == LoginMethod::Password || partial {
-        // The saved password goes to the server once, by whichever method
-        // asks for it first.
-        let mut saved_offered = false;
-        let mut saved_rejected = false;
-        if methods.contains(&MethodKind::Password) {
-            // Try what the host has saved before bothering anyone.
-            if let Some(saved) = read_secret(secrets, &login.password).await {
-                saved_offered = true;
+    let wants_password = method == LoginMethod::Password || partial;
+    // The saved password goes to the server once, by whichever method
+    // asks for it first.
+    let mut saved_offered = false;
+    let mut saved_rejected = false;
+    if wants_password && methods.contains(&MethodKind::Password) {
+        // Try what the host has saved before bothering anyone.
+        if let Some(saved) = read_secret(secrets, &login.password).await {
+            saved_offered = true;
+            let result = handle
+                .authenticate_password(user, saved.to_string())
+                .await
+                .map_err(|_| anyhow!(AuthError::PasswordFailed))?;
+            if result.success() {
+                return Ok(());
+            }
+            // The entry stays: the user typed it into the host dialog,
+            // and deleting it behind their back would be baffling. This
+            // connection just falls back to asking, and says why.
+            saved_rejected = true;
+            partial = is_partial(&result);
+            methods = remaining_methods(result);
+        }
+        if !partial && methods.contains(&MethodKind::Password) {
+            for _ in 0..AUTH_RETRIES {
+                let answer = ask_one_secret(
+                    broker,
+                    MissingCredential::Password {
+                        rejected: saved_rejected,
+                    },
+                    AuthenticationRequest::Password { saved_rejected },
+                )
+                .await?;
                 let result = handle
-                    .authenticate_password(user, saved.to_string())
+                    .authenticate_password(user, answer.into_inner())
                     .await
                     .map_err(|_| anyhow!(AuthError::PasswordFailed))?;
                 if result.success() {
                     return Ok(());
                 }
-                // The entry stays: the user typed it into the host dialog,
-                // and deleting it behind their back would be baffling. This
-                // connection just falls back to asking, and says why.
-                saved_rejected = true;
                 partial = is_partial(&result);
                 methods = remaining_methods(result);
-            }
-            if !partial && methods.contains(&MethodKind::Password) {
-                for _ in 0..AUTH_RETRIES {
-                    let answer = ask_one_secret(
-                        broker,
-                        MissingCredential::Password {
-                            rejected: saved_rejected,
-                        },
-                        AuthenticationRequest::Password { saved_rejected },
-                    )
-                    .await?;
-                    let result = handle
-                        .authenticate_password(user, answer.into_inner())
-                        .await
-                        .map_err(|_| anyhow!(AuthError::PasswordFailed))?;
-                    if result.success() {
-                        return Ok(());
-                    }
-                    partial = is_partial(&result);
-                    methods = remaining_methods(result);
-                    if partial || !methods.contains(&MethodKind::Password) {
-                        break;
-                    }
+                if partial || !methods.contains(&MethodKind::Password) {
+                    break;
                 }
             }
         }
-        if methods.contains(&MethodKind::KeyboardInteractive) {
-            // A password login whose server takes passwords only this way
-            // (ESXi) is asked for it as a single hidden question. After a
-            // password that got partway, the question is a second factor.
-            let mut password = if method == LoginMethod::Password && !partial {
-                Some(KeyboardPassword {
-                    saved: if saved_offered {
-                        None
-                    } else {
-                        read_secret(secrets, &login.password).await
-                    },
-                    rejected: saved_rejected,
-                })
-            } else {
-                None
-            };
-            for _ in 0..AUTH_RETRIES {
-                if keyboard_interactive(handle, user, broker, password.as_mut()).await? {
-                    return Ok(());
-                }
+    }
+    if (wants_password || codes_only) && methods.contains(&MethodKind::KeyboardInteractive) {
+        // A password login whose server takes passwords only this way
+        // (ESXi) is asked for it as a single hidden question. After a
+        // password that got partway, the question is a second factor.
+        let mut password = if method == LoginMethod::Password && !partial {
+            Some(KeyboardPassword {
+                saved: if saved_offered {
+                    None
+                } else {
+                    read_secret(secrets, &login.password).await
+                },
+                sent: None,
+                rejected: saved_rejected,
+            })
+        } else {
+            None
+        };
+        let mut codes = login
+            .totp
+            .as_ref()
+            .map(|totp| OneTimeCodes::new(totp, codes_only));
+        for _ in 0..AUTH_RETRIES {
+            if keyboard_interactive(
+                handle,
+                user,
+                broker,
+                secrets,
+                password.as_mut(),
+                codes.as_mut(),
+            )
+            .await?
+            {
+                return Ok(());
             }
         }
     }
@@ -1071,8 +1106,66 @@ async fn authenticate(
 struct KeyboardPassword {
     /// The saved password, until it is sent.
     saved: Option<Zeroizing<String>>,
+    /// The saved password once it is sent, to send again when the server
+    /// may have refused the one-time code beside it rather than it.
+    sent: Option<Zeroizing<String>>,
     /// The server refused the saved password.
     rejected: bool,
+}
+
+/// The one-time codes of a host that fills them in ([`TotpLogin`]).
+struct OneTimeCodes<'a> {
+    login: &'a TotpLogin,
+    /// A login without a password: the codes are all it answers.
+    only: bool,
+    /// The secret, once a question has asked for a code: `None` inside when
+    /// none is saved or what is saved is not base32, and then the question
+    /// is asked as any other.
+    secret: Option<Option<Zeroizing<Vec<u8>>>>,
+    /// The step of the code sent last.
+    sent: Option<u64>,
+    /// How many exchanges with a code in them the server has refused.
+    refused: u32,
+}
+
+impl<'a> OneTimeCodes<'a> {
+    fn new(login: &'a TotpLogin, only: bool) -> Self {
+        Self {
+            login,
+            only,
+            secret: None,
+            sent: None,
+            refused: 0,
+        }
+    }
+
+    /// The code to send now. After a refusal it is a later one than the
+    /// code refused, waited for if need be: a server may take each code
+    /// once only (pam_google_authenticator's `DISALLOW_REUSE`), and another
+    /// connection of the same host may have just sent it.
+    async fn next(
+        &mut self,
+        secrets: &SharedSecretSource,
+        broker: Asker<'_>,
+    ) -> Result<Option<Zeroizing<String>>> {
+        if self.secret.is_none() {
+            let saved = read_secret(secrets, &self.login.secret).await;
+            self.secret = Some(saved.and_then(|saved| totp::parse_secret(&saved).ok()));
+        }
+        let Some(Some(secret)) = &self.secret else {
+            return Ok(None);
+        };
+        let mut step = totp::current_step();
+        if self.refused > 0
+            && let Some(sent) = self.sent
+            && step <= sent
+        {
+            step = sent + 1;
+            broker.prompts.wait_untimed(totp::until_step(step)).await?;
+        }
+        self.sent = Some(step);
+        Ok(Some(totp::code(secret, step)))
+    }
 }
 
 type Agent = russh::keys::agent::client::AgentClient<
@@ -1258,14 +1351,18 @@ async fn ask_one_secret(
 
 /// One keyboard-interactive exchange, `false` when the server refuses it.
 ///
-/// For a password login, the exchange's first single hidden question asks
-/// for the password: the saved one answers it unasked, as WinSCP's does,
-/// and a connection that cannot ask says the password is what it lacks.
+/// A host that fills in its one-time codes answers the questions that ask
+/// for one with the current code. For a password login, the exchange's
+/// first single hidden question left asks for the password: the saved one
+/// answers it unasked, as WinSCP's does, and a connection that cannot ask
+/// says the password is what it lacks. The rest are asked of the user.
 async fn keyboard_interactive(
     handle: &mut SshHandle,
     user: &str,
     broker: Asker<'_>,
+    secrets: &SharedSecretSource,
     mut password: Option<&mut KeyboardPassword>,
+    mut codes: Option<&mut OneTimeCodes<'_>>,
 ) -> Result<bool> {
     let mut response = handle
         .authenticate_keyboard_interactive_start(user, None)
@@ -1273,12 +1370,25 @@ async fn keyboard_interactive(
         .map_err(|_| anyhow!(AuthError::KeyboardStartFailed))?;
     let mut password_asked = false;
     let mut saved_sent = false;
+    let mut code_sent = false;
     loop {
         match response {
             KeyboardInteractiveAuthResponse::Success => return Ok(true),
             KeyboardInteractiveAuthResponse::Failure { .. } => {
+                // The first time a code is refused, the code may be all
+                // that was wrong: the next exchange sends a later one, and
+                // the saved password beside it again.
+                let code_refused = code_sent
+                    && codes.as_deref_mut().is_some_and(|codes| {
+                        codes.refused += 1;
+                        codes.refused == 1
+                    });
                 if saved_sent && let Some(password) = password.as_deref_mut() {
-                    password.rejected = true;
+                    if code_refused {
+                        password.saved = password.sent.take();
+                    } else {
+                        password.rejected = true;
+                    }
                 }
                 return Ok(false);
             }
@@ -1287,53 +1397,97 @@ async fn keyboard_interactive(
                 instructions,
                 prompts,
             } => {
-                let asks_password = password.is_some()
-                    && !password_asked
-                    && matches!(prompts.as_slice(), [prompt] if !prompt.echo);
-                password_asked |= asks_password;
-                let saved = password
-                    .as_deref_mut()
-                    .filter(|_| asks_password)
-                    .and_then(|password| password.saved.take());
-                let answers = if prompts.is_empty() {
-                    // Only something to read, which OpenSSH passes on from
-                    // PAM this way; the server waits for the empty reply.
-                    Vec::new()
-                } else if let Some(saved) = saved {
-                    saved_sent = true;
-                    vec![saved.to_string()]
-                } else {
-                    let rejected = password
-                        .as_deref()
-                        .is_some_and(|password| password.rejected);
-                    let need = if asks_password {
-                        MissingCredential::Password { rejected }
-                    } else {
-                        MissingCredential::KeyboardInteractive
-                    };
-                    let fields = prompts
-                        .into_iter()
-                        .map(|prompt| ConnectionPromptField::new(prompt.prompt, prompt.echo))
+                let mut answers: Vec<Option<String>> = vec![None; prompts.len()];
+                if let Some(codes) = codes.as_deref_mut() {
+                    let questions: Vec<&str> = prompts
+                        .iter()
+                        .map(|prompt| prompt.prompt.as_str())
                         .collect();
-                    let request = AuthenticationRequest::KeyboardInteractive {
-                        name,
-                        instructions,
-                        fields,
-                        saved_password_rejected: asks_password && rejected,
+                    let asked = totp::asked_for_code(
+                        codes.login.prompt.as_deref(),
+                        &name,
+                        &instructions,
+                        &questions,
+                    );
+                    if asked.contains(&true)
+                        && let Some(code) = codes.next(secrets, broker).await?
+                    {
+                        code_sent = true;
+                        for (answer, asked) in answers.iter_mut().zip(asked) {
+                            if asked {
+                                *answer = Some(code.to_string());
+                            }
+                        }
+                    }
+                }
+                // What is left to answer, by its place in the exchange. An
+                // exchange of no questions is only something to read, which
+                // OpenSSH passes on from PAM this way; the server waits for
+                // the empty reply.
+                let rest: Vec<(usize, russh::client::Prompt)> = prompts
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(ix, _)| answers[*ix].is_none())
+                    .collect();
+                if !rest.is_empty() {
+                    if codes.as_deref().is_some_and(|codes| codes.only) {
+                        return Err(PasswordWanted.into());
+                    }
+                    let asks_password = password.is_some()
+                        && !password_asked
+                        && matches!(rest.as_slice(), [(_, prompt)] if !prompt.echo);
+                    password_asked |= asks_password;
+                    let saved = password
+                        .as_deref_mut()
+                        .filter(|_| asks_password)
+                        .and_then(|password| password.saved.take());
+                    let filled: Vec<String> = if let Some(saved) = saved {
+                        saved_sent = true;
+                        let answer = saved.to_string();
+                        if let Some(password) = password.as_deref_mut() {
+                            password.sent = Some(saved);
+                        }
+                        vec![answer]
+                    } else {
+                        let rejected = password
+                            .as_deref()
+                            .is_some_and(|password| password.rejected);
+                        let need = if asks_password {
+                            MissingCredential::Password { rejected }
+                        } else {
+                            MissingCredential::KeyboardInteractive
+                        };
+                        let fields = rest
+                            .iter()
+                            .map(|(_, prompt)| {
+                                ConnectionPromptField::new(prompt.prompt.clone(), prompt.echo)
+                            })
+                            .collect();
+                        let request = AuthenticationRequest::KeyboardInteractive {
+                            name,
+                            instructions,
+                            fields,
+                            saved_password_rejected: asks_password && rejected,
+                        };
+                        let reply = broker
+                            .ask_credential(need, ConnectionPromptKind::authentication(request))
+                            .await?;
+                        let ConnectionPromptReply::Answers(answers) = reply else {
+                            bail!(AuthError::KeyboardCancelled)
+                        };
+                        answers
+                            .into_iter()
+                            .map(|answer| answer.into_inner())
+                            .collect()
                     };
-                    let reply = broker
-                        .ask_credential(need, ConnectionPromptKind::authentication(request))
-                        .await?;
-                    let ConnectionPromptReply::Answers(answers) = reply else {
-                        bail!(AuthError::KeyboardCancelled)
-                    };
-                    answers
-                        .into_iter()
-                        .map(|answer| answer.into_inner())
-                        .collect()
-                };
+                    for ((ix, _), answer) in rest.iter().zip(filled) {
+                        answers[*ix] = Some(answer);
+                    }
+                }
                 response = handle
-                    .authenticate_keyboard_interactive_respond(answers)
+                    .authenticate_keyboard_interactive_respond(
+                        answers.into_iter().map(Option::unwrap_or_default).collect(),
+                    )
                     .await
                     .map_err(|_| anyhow!(AuthError::KeyboardFailed))?;
             }

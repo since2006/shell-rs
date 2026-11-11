@@ -279,6 +279,10 @@ fn secret_failure(secret: &SecretRef, writing: bool) -> fn(&str) -> SharedString
         (SecretRef::Proxy { .. }, false) => {
             |error| t!("host.store.secret.proxy_delete", error = error)
         }
+        (SecretRef::Totp { .. }, true) => |error| t!("host.store.secret.totp_write", error = error),
+        (SecretRef::Totp { .. }, false) => {
+            |error| t!("host.store.secret.totp_delete", error = error)
+        }
         // Kept in memory, which does not fail.
         (SecretRef::Temporary { .. }, _) => {
             |error| t!("host.store.secret.temporary", error = error)

@@ -33,6 +33,8 @@ pub enum RecordData {
     /// The private key file, as text, of the key credential with the
     /// record's id.
     PrivateKey(Secret),
+    /// The secret of the one-time codes of the host with the record's id.
+    Totp(Secret),
 }
 
 /// A host group; `parent` is another group's id, `None` at the top.
@@ -81,6 +83,16 @@ pub struct HostData {
     pub credential_username: Option<String>,
     pub route: Route,
     pub notes: String,
+    /// The one-time codes an SSH host fills in, `None` for none. It came
+    /// after ShellRS 0.1.18: a copy an older version wrote has none, which
+    /// reads as `None`, and an older version keeps it as it is.
+    pub totp: Option<TotpData>,
+}
+
+/// What the question for a one-time code says; `None` for the usual.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TotpData {
+    pub prompt: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -245,6 +257,7 @@ impl RecordData {
             Self::CredentialPassword(_) => Kind::SecretCredential,
             Self::Passphrase(_) => Kind::SecretPassphrase,
             Self::PrivateKey(_) => Kind::SecretPrivateKey,
+            Self::Totp(_) => Kind::SecretTotp,
         }
     }
 
@@ -311,6 +324,7 @@ pub(crate) fn parse(key: &RecordKey, data: &Map) -> Result<RecordData, String> {
         Kind::SecretCredential => RecordData::CredentialPassword(r.secret()?),
         Kind::SecretPassphrase => RecordData::Passphrase(r.secret()?),
         Kind::SecretPrivateKey => RecordData::PrivateKey(r.secret()?),
+        Kind::SecretTotp => RecordData::Totp(r.secret()?),
         Kind::Secret(_) | Kind::Other(_) => return Err(format!("unknown kind {}", key.kind)),
     })
 }
@@ -358,6 +372,21 @@ fn parse_host(key: &RecordKey, r: &Reader) -> Result<HostData, String> {
             None,
         )?
         .filter(|user| auth == Auth::Credential && !user.is_empty());
+    let totp = r
+        .later(
+            |r| match r.0.get("totp") {
+                Some(Value::Null) => Ok(None),
+                _ => {
+                    let totp = r.object("totp")?;
+                    Ok(Some(TotpData {
+                        prompt: Reader(&totp).prompt("prompt")?,
+                    }))
+                }
+            },
+            "totp",
+            None,
+        )?
+        .filter(|_| protocol == Protocol::Ssh);
     let route = match r.string("route")?.as_str() {
         "direct" => Route::Direct,
         "jump" => {
@@ -401,6 +430,7 @@ fn parse_host(key: &RecordKey, r: &Reader) -> Result<HostData, String> {
         credential_username,
         route,
         notes: r.string("notes")?,
+        totp,
     })
 }
 
@@ -474,6 +504,7 @@ fn known_fields(kind: &Kind) -> &'static [&'static str] {
             "jumps",
             "proxy",
             "notes",
+            "totp",
         ],
         Kind::Bookmark => &["host", "path", "sort_order"],
         Kind::Forward => &[
@@ -497,7 +528,10 @@ fn known_fields(kind: &Kind) -> &'static [&'static str] {
             "sort_order",
         ],
         Kind::SecretPassword | Kind::SecretProxy => &["user", "host", "port", "value"],
-        Kind::SecretCredential | Kind::SecretPassphrase | Kind::SecretPrivateKey => &["value"],
+        Kind::SecretCredential
+        | Kind::SecretPassphrase
+        | Kind::SecretPrivateKey
+        | Kind::SecretTotp => &["value"],
         Kind::Secret(_) | Kind::Other(_) => &[],
     }
 }
@@ -557,6 +591,13 @@ fn fields(data: &RecordData) -> Vec<(&'static str, Value)> {
                 }
             }
             out.push(("notes", json!(host.notes)));
+            out.push((
+                "totp",
+                match &host.totp {
+                    Some(totp) => json!({"prompt": totp.prompt}),
+                    None => Value::Null,
+                },
+            ));
             out
         }
         RecordData::Bookmark(bookmark) => vec![
@@ -609,7 +650,8 @@ fn fields(data: &RecordData) -> Vec<(&'static str, Value)> {
         ],
         RecordData::CredentialPassword(value)
         | RecordData::Passphrase(value)
-        | RecordData::PrivateKey(value) => vec![("value", json!(value.expose()))],
+        | RecordData::PrivateKey(value)
+        | RecordData::Totp(value) => vec![("value", json!(value.expose()))],
     }
 }
 
@@ -741,6 +783,7 @@ pub(crate) mod tests {
             credential_username: None,
             route: Route::Direct,
             notes: String::new(),
+            totp: None,
         }
     }
 
@@ -955,7 +998,7 @@ pub(crate) mod tests {
                 "name": "web", "address": "10.0.0.1", "port": 22, "group": null,
                 "sort_order": 0, "protocol": "ssh", "auth": "password",
                 "username": "root", "credential": null, "credential_username": null,
-                "route": "direct", "notes": ""
+                "route": "direct", "notes": "", "totp": null
             })
         );
     }
@@ -1090,6 +1133,68 @@ pub(crate) mod tests {
         let mut wrong = written;
         wrong.insert("credential_username".into(), json!(7));
         assert!(parse(&key, &wrong).is_err());
+    }
+
+    #[test]
+    fn a_host_fills_in_one_time_codes_and_keeps_their_secret_apart() {
+        let key = RecordKey::new(Kind::Host, "h9");
+        let coded = HostData {
+            totp: Some(TotpData {
+                prompt: Some("OTP verification code".into()),
+            }),
+            ..ssh_host("web")
+        };
+        let written = write_into(&RecordData::Host(coded.clone()), None);
+        assert_eq!(written["totp"], json!({"prompt": "OTP verification code"}));
+        assert_eq!(parse(&key, &written), Ok(RecordData::Host(coded.clone())));
+        let usual = HostData {
+            totp: Some(TotpData::default()),
+            ..ssh_host("web")
+        };
+        let written_usual = write_into(&RecordData::Host(usual.clone()), None);
+        assert_eq!(written_usual["totp"], json!({"prompt": null}));
+        assert_eq!(parse(&key, &written_usual), Ok(RecordData::Host(usual)));
+
+        // A copy an older version wrote fills in none.
+        let mut old = written.clone();
+        old.remove("totp");
+        assert_eq!(parse(&key, &old), Ok(RecordData::Host(ssh_host("web"))));
+
+        // Only an SSH host asks for codes.
+        let telnet = samples()
+            .into_iter()
+            .find(|(key, _)| key.id == "h2")
+            .unwrap()
+            .1;
+        let mut telnet = write_into(&telnet, None);
+        telnet.insert("totp".into(), json!({"prompt": null}));
+        let Ok(RecordData::Host(telnet)) = parse(&key, &telnet) else {
+            panic!("a Telnet host with codes is damaged");
+        };
+        assert_eq!(telnet.totp, None);
+
+        for wrong in [
+            json!(true),
+            json!({}),
+            json!({"prompt": ""}),
+            json!({"prompt": 7}),
+        ] {
+            let mut fields = written.clone();
+            fields.insert("totp".into(), wrong.clone());
+            assert!(parse(&key, &fields).is_err(), "{wrong}");
+        }
+
+        // The secret is a record of its own, under the host's id.
+        let secret = RecordKey::new(Kind::SecretTotp, "h9");
+        let mut fields = Map::new();
+        fields.insert("value".into(), json!("JBSWY3DPEHPK3PXP"));
+        let Ok(RecordData::Totp(value)) = parse(&secret, &fields) else {
+            panic!("the secret does not read");
+        };
+        assert_eq!(value.expose(), "JBSWY3DPEHPK3PXP");
+        assert!(!format!("{value:?}").contains("JBSWY3DP"));
+        assert_eq!(Kind::parse("secret.totp"), Some(Kind::SecretTotp));
+        assert!(Kind::SecretTotp.is_secret());
     }
 
     #[test]

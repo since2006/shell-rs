@@ -50,6 +50,22 @@ pub struct HostLogin {
     /// session per connection and ends it when another channel comes and
     /// goes, as Xshell and OpenSSH never make it do.
     pub shell_only: bool,
+    /// The one-time codes the host fills in when the server asks for one.
+    /// Boxed: few hosts have them, and logins are copied about.
+    pub totp: Option<Box<TotpLogin>>,
+}
+
+/// A host that answers the server's one-time code questions itself, with
+/// the current code of its saved secret (RFC 6238: six digits, every 30
+/// seconds).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TotpLogin {
+    /// What a question says when it asks for the code, matched without
+    /// regard to case; `None` for the usual wordings
+    /// ([`crate::totp::prompt_matches`]).
+    pub prompt: Option<String>,
+    /// Where the secret is saved.
+    pub secret: SecretRef,
 }
 
 impl HostLogin {
@@ -72,6 +88,7 @@ impl HostLogin {
             key_path: None,
             route: LoginRoute::Direct,
             shell_only: false,
+            totp: None,
         }
     }
 

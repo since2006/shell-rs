@@ -314,7 +314,8 @@ impl Sim {
             RecordData::Password(e) | RecordData::ProxyPassword(e) => e.value = value,
             RecordData::CredentialPassword(s)
             | RecordData::Passphrase(s)
-            | RecordData::PrivateKey(s) => *s = value,
+            | RecordData::PrivateKey(s)
+            | RecordData::Totp(s) => *s = value,
         }
         self.save(d, &key.id, data);
     }

@@ -265,9 +265,13 @@ impl FormSecrets {
                 typed.push((SecretRef::passphrase(path), owned(request.passphrase())));
             }
         }
-        // The proxy is the form's whichever way the host logs in.
+        // The proxy is the form's whichever way the host logs in, and so
+        // are the one-time codes; their secret left empty is the saved one.
         if let Some(proxy) = login.route.proxy_password() {
             typed.push((proxy, owned(request.proxy_password())));
+        }
+        if let (Some(totp), Some(secret)) = (&login.totp, request.totp_secret()) {
+            typed.push((totp.secret.clone(), owned(Some(secret))));
         }
         Self { typed, fallback }
     }

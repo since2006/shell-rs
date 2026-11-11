@@ -887,6 +887,7 @@ async fn a_temporary_connection_has_every_feature_and_saves_nothing(cx: &mut Tes
         // Only what a login needs.
         assert!(window.try_find("host-route").is_none());
         assert!(window.try_find("host-notes").is_none());
+        assert!(window.try_find("host-advanced").is_none());
         assert!(window.try_find("test-connection").is_some());
         assert_eq!(
             window.find("temporary-note").label(),

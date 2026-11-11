@@ -260,16 +260,30 @@ pub enum HostEvent {
 pub struct SecretJob {
     secrets: SharedSecretStore,
     secret: SecretRef,
-    value: Option<Zeroizing<String>>,
+    value: SecretValue,
+}
+
+/// What a [`SecretJob`] writes.
+enum SecretValue {
+    Set(Zeroizing<String>),
+    Delete,
+    /// Whatever another entry holds, read first: a copied host's secret.
+    /// Nothing is written when it holds nothing.
+    CopyOf(SecretRef),
 }
 
 impl SecretJob {
     /// Write the secret, or delete it.
     pub fn run(self) -> SecretOutcome {
-        let writing = self.value.is_some();
+        let writing = !matches!(self.value, SecretValue::Delete);
         let result = match &self.value {
-            Some(value) => self.secrets.set(&self.secret, value),
-            None => self.secrets.delete(&self.secret),
+            SecretValue::Set(value) => self.secrets.set(&self.secret, value),
+            SecretValue::Delete => self.secrets.delete(&self.secret),
+            SecretValue::CopyOf(original) => match self.secrets.get(original) {
+                Ok(Some(value)) => self.secrets.set(&self.secret, &value),
+                Ok(None) => Ok(()),
+                Err(error) => Err(error),
+            },
         };
         SecretOutcome {
             secret: self.secret,
@@ -913,6 +927,7 @@ impl HostData {
     /// login is the next connection's, as in Xshell.
     pub fn update(&mut self, id: HostId, draft: HostDraft) -> bool {
         let previous = self.connection(id);
+        let had_codes = self.totp_secret_of(id);
         let updated = self.update_unnotified(id, draft);
         if updated {
             if let Some(host) = self.host(id) {
@@ -924,9 +939,21 @@ impl HostData {
                 // entry is an orphan unless another host still uses it.
                 self.forget_passwords_of(&previous);
             }
+            // Codes turned off take their secret with them.
+            if let Some(secret) = had_codes.filter(|_| self.totp_secret_of(id).is_none()) {
+                self.save_secret(secret, None);
+            }
             self.changed();
         }
         updated
+    }
+
+    /// The keychain entry of the one-time codes `id` fills in, for a host
+    /// that does.
+    fn totp_secret_of(&self, id: HostId) -> Option<SecretRef> {
+        self.saved_host(id)
+            .filter(|host| host.totp.is_some() && host.is_ssh())
+            .map(Host::totp_secret)
     }
 
     /// A draft of another protocol is taken, except that an SSH host other
@@ -973,6 +1000,7 @@ impl HostData {
     /// not drop a working connection behind it.
     pub fn remove(&mut self, id: HostId) -> bool {
         let connection = self.connection(id);
+        let codes = self.totp_secret_of(id);
         let emptied = self.jumping_through(&[id]);
         let removed = self.remove_unnotified(id);
         if removed {
@@ -980,6 +1008,9 @@ impl HostData {
             self.write_hops_emptied(&emptied);
             if let Some(connection) = connection {
                 self.forget_passwords_of(&connection);
+            }
+            if let Some(secret) = codes {
+                self.save_secret(secret, None);
             }
             self.changed();
         }
@@ -1024,6 +1055,10 @@ impl HostData {
             self.persist(Change::HostOrder, |db| {
                 db.save_tree_order(&self.groups, &self.hosts)
             });
+        }
+        // The copy fills in the same codes, from a secret of its own.
+        if let Some((original, secret)) = self.totp_secret_of(id).zip(self.totp_secret_of(copy)) {
+            self.copy_secret(original, secret);
         }
         self.changed();
         Some(copy)
@@ -1859,6 +1894,11 @@ impl HostData {
             return Vec::new();
         }
         let passwords = self.passwords_of(&self.hosts_under(id));
+        let codes: Vec<SecretRef> = self
+            .hosts_under(id)
+            .into_iter()
+            .filter_map(|host| self.totp_secret_of(host))
+            .collect();
         let emptied = self.jumping_through(&self.hosts_under(id));
         let removed = self.remove_group_unnotified(id);
         // One delete mirrors the whole subtree: both foreign keys cascade.
@@ -1866,6 +1906,9 @@ impl HostData {
         self.write_hops_emptied(&emptied);
         for password in passwords {
             self.forget_password(password);
+        }
+        for secret in codes {
+            self.save_secret(secret, None);
         }
         self.changed();
         removed
@@ -2109,8 +2152,22 @@ impl HostData {
         SecretJob {
             secrets: self.secrets(),
             secret,
-            value: value.map(Zeroizing::new),
+            value: match value {
+                Some(value) => SecretValue::Set(Zeroizing::new(value)),
+                None => SecretValue::Delete,
+            },
         }
+    }
+
+    /// Queue a copy of `original`'s secret into `secret`, as
+    /// [`Self::save_secret`] queues a write.
+    fn copy_secret(&mut self, original: SecretRef, secret: SecretRef) {
+        let job = SecretJob {
+            secrets: self.secrets(),
+            secret,
+            value: SecretValue::CopyOf(original),
+        };
+        self.secret_jobs.push(job);
     }
 
     /// The keychain writes waiting to run, oldest first.
@@ -2388,7 +2445,10 @@ fn normalized(credentials: &[Credential], mut draft: HostDraft) -> (HostDraft, b
 
 #[cfg(test)]
 mod tests {
-    use super::super::{ForwardEndpoint, ForwardKind, LoginMethod, ProxyKind, ProxySettings};
+    use super::super::{
+        ForwardEndpoint, ForwardKind, LoginMethod, ProxyKind, ProxySettings, SerialSettings,
+        TotpSettings,
+    };
     use super::*;
 
     fn draft(name: &str, group: Option<GroupId>) -> HostDraft {
@@ -3924,6 +3984,107 @@ mod tests {
         let outer = store.begin_capture();
         store.insert(draft("db", None));
         assert!(store.end_capture(outer).is_empty());
+    }
+
+    #[test]
+    fn one_time_codes_keep_a_secret_of_the_host_s_own() {
+        use crate::secrets::SecretStore as _;
+        use shellrs_ssh::TotpLogin;
+
+        let secrets = Arc::new(crate::secrets::InMemorySecretStore::default());
+        let mut store = HostData::empty().with_secrets(secrets.clone());
+        let coded = |name: &str| {
+            draft(name, None).with_totp(Some(TotpSettings {
+                prompt: Some("OTP verification code".into()),
+            }))
+        };
+        let web = store.insert(coded("web"));
+        let web_secret = store.host(web).unwrap().totp_secret();
+        secrets.set(&web_secret, "JBSWY3DPEHPK3PXP").unwrap();
+
+        // Its login fills them in, and so does its login as a jump host.
+        let expected = Some(Box::new(TotpLogin {
+            prompt: Some("OTP verification code".into()),
+            secret: web_secret.clone(),
+        }));
+        assert_eq!(store.login(web).unwrap().totp, expected);
+        let behind = store.insert(draft("behind", None).with_route(Route::Jump(vec![Some(web)])));
+        let LoginRoute::Jump(hops) = store.login(behind).unwrap().route else {
+            panic!("not through the jump host");
+        };
+        let [JumpLogin::Host { login, .. }] = hops.as_slice() else {
+            panic!("{hops:?}");
+        };
+        assert_eq!(login.totp, expected);
+        assert_eq!(store.login(behind).unwrap().totp, None);
+
+        // A copy fills in the same codes from a secret of its own.
+        let copy = store.duplicate(web, "web copy".into()).unwrap();
+        run_secret_jobs(&mut store);
+        let copy_secret = store.host(copy).unwrap().totp_secret();
+        assert_ne!(copy_secret, web_secret);
+        assert_eq!(
+            secrets
+                .get(&copy_secret)
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
+            Some("JBSWY3DPEHPK3PXP")
+        );
+
+        // Turning them off takes the secret along; other edits keep it.
+        let mut renamed = store.host(web).unwrap().draft();
+        renamed.name = "web 2".into();
+        store.update(web, renamed.clone());
+        run_secret_jobs(&mut store);
+        assert!(secrets.get(&web_secret).unwrap().is_some());
+        store.update(web, renamed.with_totp(None));
+        run_secret_jobs(&mut store);
+        assert!(secrets.get(&web_secret).unwrap().is_none());
+        assert_eq!(store.login(web).unwrap().totp, None);
+
+        // So does deleting the host, or its group.
+        store.remove(copy);
+        run_secret_jobs(&mut store);
+        assert!(secrets.get(&copy_secret).unwrap().is_none());
+        let group = store.insert_group(GroupDraft::new("ops", None));
+        let db = store.insert(HostDraft {
+            group: Some(group),
+            ..coded("db")
+        });
+        let db_secret = store.host(db).unwrap().totp_secret();
+        secrets.set(&db_secret, "JBSWY3DPEHPK3PXP").unwrap();
+        store.remove_group(group);
+        run_secret_jobs(&mut store);
+        assert!(secrets.get(&db_secret).unwrap().is_none());
+        let failures: Vec<HostEvent> = store
+            .take_events()
+            .into_iter()
+            .filter(|event| matches!(event, HostEvent::Failed(_)))
+            .collect();
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+
+    #[test]
+    fn only_an_ssh_host_fills_in_one_time_codes() {
+        let totp = Some(TotpSettings {
+            prompt: Some("  ".into()),
+        });
+        let ssh = draft("web", None)
+            .with_totp(totp.clone())
+            .validated()
+            .unwrap();
+        assert_eq!(ssh.totp, Some(TotpSettings { prompt: None }));
+        let telnet = HostDraft::telnet("switch", "10.0.0.5", 23, None)
+            .with_totp(totp.clone())
+            .validated()
+            .unwrap();
+        assert_eq!(telnet.totp, None);
+        let serial = HostDraft::serial("console", "/dev/ttyUSB0", SerialSettings::default(), None)
+            .with_totp(totp)
+            .validated()
+            .unwrap();
+        assert_eq!(serial.totp, None);
     }
 
     #[test]

@@ -37,7 +37,7 @@ use crate::{
     ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft, GroupId, Host,
     HostDraft, HostGroup, HostId, Protocol, ProxyKind, ProxySettings, PublicId, Route, Snippet,
     SnippetCategory, SnippetCategoryDraft, SnippetCategoryId, SnippetDraft, SnippetId,
-    SnippetScope, TelnetSettings,
+    SnippetScope, TelnetSettings, TotpSettings,
 };
 
 /// What one round of sync takes from the store, on the UI thread.
@@ -181,6 +181,7 @@ pub fn read_secrets(
             (Kind::SecretCredential, _) => Some(RecordData::CredentialPassword(value)),
             (Kind::SecretPassphrase, _) => Some(RecordData::Passphrase(value)),
             (Kind::SecretPrivateKey, _) => Some(RecordData::PrivateKey(value)),
+            (Kind::SecretTotp, _) => Some(RecordData::Totp(value)),
             _ => None,
         };
         if let Some(data) = data {
@@ -465,6 +466,13 @@ impl HostData {
                     credential_username,
                     route,
                     notes: host.notes.to_string(),
+                    totp: host
+                        .totp
+                        .as_ref()
+                        .filter(|_| host.is_ssh())
+                        .map(|totp| sync::TotpData {
+                            prompt: totp.prompt.as_ref().map(ToString::to_string),
+                        }),
                 }),
                 edited_ms: host.edited_ms,
             });
@@ -604,6 +612,13 @@ impl HostData {
                 let id = sync::endpoint_secret_id(&endpoint.user, &endpoint.host, endpoint.port);
                 add(kind, id, SecretPlace::Keychain(secret, Some(endpoint)));
             }
+            if host.totp.is_some() && host.is_ssh() {
+                add(
+                    Kind::SecretTotp,
+                    host.public_id.to_string(),
+                    SecretPlace::Keychain(host.totp_secret(), None),
+                );
+            }
         }
         for credential in &self.credentials {
             let id = credential.keychain_id.to_string();
@@ -652,6 +667,7 @@ impl HostData {
             SecretRef::Credential { keychain_id } => {
                 vec![(Kind::SecretCredential, keychain_id.clone())]
             }
+            SecretRef::Totp { host } => vec![(Kind::SecretTotp, host.clone())],
             SecretRef::Passphrase { key_path } => self
                 .credentials
                 .iter()
@@ -1109,6 +1125,13 @@ impl HostData {
                         password_prompt: telnet.pass_prompt.clone().unwrap_or_default().into(),
                     });
                 }
+                draft.totp = data
+                    .totp
+                    .as_ref()
+                    .filter(|_| !draft.protocol.is_telnet())
+                    .map(|totp| TotpSettings {
+                        prompt: totp.prompt.clone().map(Into::into),
+                    });
                 let mut fresh = Host::new(host_id, draft);
                 fresh.user_from_credential = follows;
                 fresh.public_id = PublicId::from_stored(id.to_owned());
@@ -1269,6 +1292,11 @@ impl HostData {
                 SecretRef::credential(id),
                 Some(Zeroizing::new(value.expose().to_owned())),
             )),
+            RecordData::Totp(value) => work.keychain.push((
+                RecordKey::new(Kind::SecretTotp, id),
+                SecretRef::totp(id),
+                Some(Zeroizing::new(value.expose().to_owned())),
+            )),
             RecordData::Passphrase(value) => passphrases.push((
                 PublicId::from_stored(id.to_owned()),
                 Zeroizing::new(value.expose().to_owned()),
@@ -1391,6 +1419,11 @@ impl HostData {
             Kind::SecretCredential => work.keychain.push((
                 RecordKey::new(Kind::SecretCredential, id),
                 SecretRef::credential(id),
+                None,
+            )),
+            Kind::SecretTotp => work.keychain.push((
+                RecordKey::new(Kind::SecretTotp, id),
+                SecretRef::totp(id),
                 None,
             )),
             Kind::SecretPassphrase | Kind::SecretPrivateKey => {
@@ -1656,7 +1689,8 @@ mod tests {
                         }
                         RecordData::CredentialPassword(s)
                         | RecordData::Passphrase(s)
-                        | RecordData::PrivateKey(s) => s.expose().to_owned(),
+                        | RecordData::PrivateKey(s)
+                        | RecordData::Totp(s) => s.expose().to_owned(),
                         other => format!("{other:?}"),
                     };
                     (format!("{}/{}", record.data.kind(), record.id), shown)
@@ -1911,6 +1945,82 @@ mod tests {
     }
 
     #[test]
+    fn a_host_s_one_time_codes_sync_with_their_secret() {
+        use crate::secrets::SecretStore as _;
+
+        let (vault, keys) = vault();
+        let mut a = Device::new('a');
+        let mut b = Device::new('b');
+        let web = a.store.insert(
+            HostDraft::new("web", "10.0.0.1", 22, "root", AuthKind::Password, None).with_totp(
+                Some(TotpSettings {
+                    prompt: Some("OTP verification code".into()),
+                }),
+            ),
+        );
+        let secret = a.store.host(web).unwrap().totp_secret();
+        a.store
+            .save_secret(secret.clone(), Some("JBSWY3DPEHPK3PXP".into()));
+        run_secret_jobs(&mut a.store);
+        a.sync(&vault, &keys);
+        b.sync(&vault, &keys);
+        assert_eq!(b.held(), a.held());
+        let synced = &b.store.hosts()[0];
+        assert_eq!(
+            synced.totp,
+            Some(TotpSettings {
+                prompt: Some("OTP verification code".into()),
+            })
+        );
+        // The same host, so the same entry.
+        assert_eq!(synced.totp_secret(), secret);
+        let id = synced.id;
+        assert_eq!(
+            b.secrets
+                .get(&secret)
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
+            Some("JBSWY3DPEHPK3PXP")
+        );
+        assert_eq!(a.sync(&vault, &keys), 0);
+        assert_eq!(b.sync(&vault, &keys), 0);
+
+        // Turned off on one, the secret goes on both.
+        let off = b.store.host(id).unwrap().draft().with_totp(None);
+        b.store.update(id, off);
+        run_secret_jobs(&mut b.store);
+        b.sync(&vault, &keys);
+        a.sync(&vault, &keys);
+        assert_eq!(a.store.host(web).unwrap().totp, None);
+        assert!(a.secrets.get(&secret).unwrap().is_none());
+        assert!(b.secrets.get(&secret).unwrap().is_none());
+        assert_eq!(b.held(), a.held());
+
+        // On again, then the host deleted: the secret goes with it.
+        let on = a
+            .store
+            .host(web)
+            .unwrap()
+            .draft()
+            .with_totp(Some(TotpSettings::default()));
+        a.store.update(web, on);
+        a.store
+            .save_secret(secret.clone(), Some("JBSWY3DPEHPK3PXP".into()));
+        run_secret_jobs(&mut a.store);
+        a.sync(&vault, &keys);
+        b.sync(&vault, &keys);
+        assert!(b.secrets.get(&secret).unwrap().is_some());
+        b.store.remove(id);
+        run_secret_jobs(&mut b.store);
+        b.sync(&vault, &keys);
+        a.sync(&vault, &keys);
+        assert!(a.store.hosts().is_empty());
+        assert!(a.secrets.get(&secret).unwrap().is_none());
+        assert_eq!(b.held(), a.held());
+    }
+
+    #[test]
     fn a_round_read_before_an_edit_is_not_applied() {
         let mut device = Device::new('a');
         let export = device.store.sync_export();
@@ -1956,6 +2066,7 @@ mod tests {
                 credential_username: None,
                 route: sync::Route::Direct,
                 notes: String::new(),
+                totp: None,
             }),
         };
         let export = store.sync_export();

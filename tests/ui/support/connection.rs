@@ -72,6 +72,8 @@ pub struct FakeConnectionTester {
     pub serial_lines: Mutex<Vec<SerialLine>>,
     /// Each Telnet test: address, port, route, and the proxy password typed.
     pub telnet_tests: Mutex<Vec<TestedTelnet>>,
+    /// The one-time codes each test was to fill in, with the secret typed.
+    pub totps: Mutex<Vec<(Option<TotpLogin>, Option<String>)>>,
 }
 
 impl Default for FakeConnectionTester {
@@ -84,6 +86,7 @@ impl Default for FakeConnectionTester {
             trust_answers: Mutex::default(),
             serial_lines: Mutex::default(),
             telnet_tests: Mutex::default(),
+            totps: Mutex::default(),
         }
     }
 }
@@ -131,6 +134,13 @@ impl FakeConnectionTester {
             .clone()
     }
 
+    pub fn totps(&self) -> Vec<(Option<TotpLogin>, Option<String>)> {
+        self.totps
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
     pub fn telnet_tests(&self) -> Vec<TestedTelnet> {
         self.telnet_tests
             .lock()
@@ -156,6 +166,13 @@ impl ConnectionTester for FakeConnectionTester {
             .push((
                 request.login().route.clone(),
                 request.proxy_password().map(str::to_string),
+            ));
+        self.totps
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push((
+                request.login().totp.as_deref().cloned(),
+                request.totp_secret().map(str::to_string),
             ));
         if self.asks_trust {
             let ConnectionPromptKind::UnknownHost(prompt) = ConnectionPromptKind::unknown_host(

@@ -21,7 +21,7 @@ ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH �
 - **标签各自记着打开时的主机**（同 Xshell、SecureCRT）：编辑、删除主机或分组都不碰已打开的标签（不重连、不改标题、不关）；没有主机级的连接状态，状态栏显示当前标签自己的连接。
 - **主机树**：搜索匹配主机和分组名；分组可任意嵌套；删除分组连同子分组和主机。首次启动是空库。
 - **导入主机**（issue #1）：从 `~/.ssh/config` 和 `~/.ssh/known_hosts` 导入，入口在主机侧栏的「…」菜单和空白处右键菜单（用得少，不占工具栏）。先预览再导入，只追加、不改已有主机；每行可改名称、分组、用户名和认证，状态写「新增」/「已存在」。ProxyJump、ProxyCommand 不导入；known_hosts 用户名填 root；非默认私钥建密钥凭据，私钥复制进 `keys/`（再导入同一个文件认得出那份副本），其余默认「无密码」。
-- **主机对话框**：协议 SSH / Telnet / 串口，编辑时也能换（被当跳板或有转发经由的 SSH 主机除外）。认证三选一：密码（留空就每次问）/ 使用凭据 / 无密码（试 Agent 和默认私钥，不问密码）；主机自己没有私钥文件，要用私钥就建凭据。「测试连接」是真登录。连接方式：直接 / SSH 跳板（只走列出的链）/ HTTP 或 SOCKS5 代理，跳板和代理不叠加。
+- **主机对话框**：协议 SSH / Telnet / 串口，编辑时也能换（被当跳板或有转发经由的 SSH 主机除外）。认证三选一：密码（留空就每次问）/ 使用凭据 / 无密码（试 Agent 和默认私钥，不问密码）；主机自己没有私钥文件，要用私钥就建凭据。「测试连接」是真登录。连接方式：直接 / SSH 跳板（只走列出的链）/ HTTP 或 SOCKS5 代理，跳板和代理不叠加。备注下面是「高级设置」（默认折叠，编辑已启用的主机时展开，只有 SSH 主机有）：「启用动态验证码」按「交互认证识别文本」（留空用常见说法，包含即可、不分大小写）匹配 keyboard-interactive 问题，自动提交当前 6 位 TOTP 码；OTP 密钥按主机记（`totp:<主机 PublicId>`），只进钥匙串、跟着同步（`secret.totp`）；同一个码被拒就等下一个码再试；外部 CLI 不设这一项（用户定的）。
 - **凭据**：侧栏第三个列表（密码 / 密钥 / SSH Agent），带用户名；主机用凭据时可以另填用户名，不填就用凭据的、跟着凭据变（issue #112，用户定的）。密钥来源本机文件 / 粘贴 / 生成，私钥一律存成 `keys/` 下的文件（Windows 凭据管理器装不下 RSA 私钥）：粘贴和生成的直接写进去，选本机文件的复制一份进去，不出勾选框；原文件只读这一次、从不改动，用户改了原文件、连不上时自己重新选（用户定的）。同步只同步 `keys/` 里的私钥；升级前只记路径的旧凭据不动。删除在用的凭据要确认，那些主机改回自己登录。
 - **串口主机**：默认 115200 8N1；连接是普通远程终端标签，Unix 上独占；没有 SFTP、跳板、转发，右侧栏只有命令片段，有「发送 Break」。
 - **Telnet 主机**：协议自己写，不引第三方库。可选自动登录（手动或密码凭据）；连接方式同 SSH；服务器不回显时在本地编辑一行；不做 `telnet://` 外部连接；右侧栏只有命令片段。
@@ -72,6 +72,7 @@ cargo test -p shellrs-sync webdav -- --include-ignored  # WebDAV 后端对本机
 cargo test -p shellrs-sync s3 -- --include-ignored      # S3 后端对 SHELLRS_TEST_S3_ENDPOINT/_ACCESS_KEY/_SECRET_KEY 指的服务（CI 起 versitygw）；不设就跳过
 cargo test --lib terminal::run -- --include-ignored     # exec --terminal 对 Docker 里的真实 shell
 cargo test --lib terminal::zmodem -- --include-ignored  # ZMODEM 对 Docker 里的 lrzsz
+cargo test -p shellrs-ssh totp -- --include-ignored     # 动态验证码对 Docker 里的 OpenSSH + Google Authenticator
 cargo clippy --all-targets -- -D warnings   # 必须无警告
 cargo fmt --check
 ```

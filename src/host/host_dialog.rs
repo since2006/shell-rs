@@ -5,6 +5,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, IndexPath, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     checkbox::Checkbox,
+    collapsible::Collapsible,
     combobox::{Combobox, ComboboxEvent, ComboboxState},
     dialog::{Cancel, Confirm, DialogButtonProps, DialogFooter},
     form::{Field, Form},
@@ -34,7 +35,7 @@ use super::{
     ErrorMessage as _, FlowControl, GroupId, Host, HostDraft, HostDraftError, HostId, HostLogin,
     HostLoginExt, HostStore, KindLabel as _, Parity, Protocol, ProtocolKind, ProxyKind,
     ProxySettings, Route, SSH_PORT, SerialLine, SerialSettings, StopBits, TELNET_PORT,
-    TelnetSettings, credential_summary, group_options,
+    TelnetSettings, TotpLogin, TotpSettings, credential_summary, group_options,
 };
 pub use crate::shared::DeleteHandler;
 use crate::shared::{
@@ -264,6 +265,18 @@ pub struct HostForm {
     /// The proxy's password.
     proxy_secret: Entity<SecretFields>,
     notes: Entity<TextareaState>,
+    /// 「高级设置」 is unfolded: at first only for a host that uses what it
+    /// holds.
+    advanced_open: bool,
+    /// An SSH host fills in the one-time codes its server asks for.
+    totp: bool,
+    /// The secret they come from, in the field of a password.
+    totp_secret: Entity<SecretFields>,
+    /// Where the host being edited keeps that secret, and whether it filled
+    /// in codes when the form opened (the secret was read back then).
+    saved_totp: Option<(SecretRef, bool)>,
+    /// What the server's question for a code says; empty for the usual.
+    totp_prompt: Entity<InputState>,
     /// A Telnet host's 自动登录: whether it is on, where it takes the
     /// user name and password from, and the prompts it waits for.
     telnet_auto_login: bool,
@@ -309,11 +322,12 @@ impl HostForm {
         cx: &mut Context<Self>,
     ) -> Self {
         let secrets = store.read(cx).secrets();
-        let (draft, credential_user_value, options, credentials, key_dir, jump_hosts) = {
+        let (draft, saved_totp, credential_user_value, options, credentials, key_dir, jump_hosts) = {
             let read = store.read(cx);
             let editing_host = editing.and_then(|id| read.host(id));
             (
                 editing_host.map(Host::draft),
+                editing_host.map(|host| (host.totp_secret(), host.is_ssh() && host.totp.is_some())),
                 // The user an SSH host logs in as with its credential, when
                 // not the credential's.
                 editing_host
@@ -614,7 +628,7 @@ impl HostForm {
                 )
         });
         let proxy_secret = cx.new(|cx| {
-            let mut fields = SecretFields::new(secrets, None, window, cx);
+            let mut fields = SecretFields::new(secrets.clone(), None, window, cx);
             fields.set_password_placeholder(t!("host.dialog.optional"), window, cx);
             fields
         });
@@ -626,6 +640,26 @@ impl HostForm {
             TextareaState::new(window, cx)
                 .auto_grow(2, 6)
                 .default_value(draft.notes.clone())
+        });
+        let totp_secret = cx.new(|cx| {
+            let mut fields = SecretFields::new(secrets, None, window, cx);
+            fields.set_password_placeholder(t!("host.dialog.totp_secret_placeholder"), window, cx);
+            fields
+        });
+        if let Some((secret, true)) = &saved_totp {
+            let secret = secret.clone();
+            totp_secret.update(cx, |fields, cx| fields.load_saved(Some(secret), None, cx));
+        }
+        let totp_prompt = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("host.dialog.totp_prompt_placeholder"))
+                .default_value(
+                    draft
+                        .totp
+                        .as_ref()
+                        .and_then(|totp| totp.prompt.clone())
+                        .unwrap_or_default(),
+                )
         });
 
         let subscriptions = vec![
@@ -720,6 +754,11 @@ impl HostForm {
             proxy_user,
             proxy_secret,
             notes,
+            advanced_open: draft.totp.is_some(),
+            totp: draft.totp.is_some(),
+            totp_secret,
+            saved_totp,
+            totp_prompt,
             device,
             baud,
             data_bits,
@@ -1006,25 +1045,34 @@ impl HostForm {
         let (host, port) = self.endpoint(cx)?;
         let route = self.committed_route(cx)?;
         let route_login = self.store.read(cx).route_login(&route);
+        let (totp, totp_secret) = self.committed_totp(cx)?;
+        let totp = totp.map(|totp| {
+            Box::new(TotpLogin {
+                prompt: totp.prompt.map(|prompt| prompt.to_string()),
+                secret: self.totp_secret_ref(),
+            })
+        });
         let request = match self.source.auth() {
             None => {
                 let credential = self
                     .selected_credential(cx)
                     .ok_or_else(|| t!("host.dialog.choose_credential"))?;
                 let user = self.credential_login_user(credential, cx);
-                LoginTest::saved(
-                    HostLogin::with_credential(host, port, user, credential)
-                        .with_route(route_login),
-                )
+                LoginTest::saved(HostLogin {
+                    totp,
+                    ..HostLogin::with_credential(host, port, user, credential)
+                        .with_route(route_login)
+                })
             }
             Some(auth) => {
                 let user = self.user.read(cx).value().trim().to_string();
                 if user.is_empty() {
                     return Err(t!("host.dialog.enter_user"));
                 }
-                let mut request = LoginTest::typed(
-                    HostLogin::manual(host, port, user, auth).with_route(route_login),
-                );
+                let mut request = LoginTest::typed(HostLogin {
+                    totp,
+                    ..HostLogin::manual(host, port, user, auth).with_route(route_login)
+                });
                 // Only what the chosen way uses, which is also what the form
                 // shows.
                 let password = self.fields.read(cx).password(cx);
@@ -1034,10 +1082,50 @@ impl HostForm {
                 request
             }
         };
+        let request = request.with_totp_secret(totp_secret.unwrap_or_default());
         Ok(match route {
             Route::Proxy(_) => request.with_proxy_password(self.proxy_secret.read(cx).password(cx)),
             _ => request,
         })
+    }
+
+    /// The one-time codes the form has an SSH host fill in, `None` for
+    /// none, with the secret typed to save (written as it is kept), `None`
+    /// to keep the saved one; or what is wrong with them.
+    fn committed_totp(
+        &self,
+        cx: &App,
+    ) -> Result<(Option<TotpSettings>, Option<String>), SharedString> {
+        if !self.totp || self.temporary || self.protocol != ProtocolKind::Ssh {
+            return Ok((None, None));
+        }
+        let prompt = self.totp_prompt.read(cx).value().trim().to_string();
+        let settings = TotpSettings {
+            prompt: (!prompt.is_empty()).then(|| prompt.into()),
+        };
+        let fields = self.totp_secret.read(cx);
+        let typed = fields.password(cx);
+        if typed.trim().is_empty() {
+            // The saved one is still being read back: it stays.
+            if matches!(self.saved_totp, Some((_, true))) && !fields.password_loaded() {
+                return Ok((Some(settings), None));
+            }
+            return Err(t!("host.dialog.totp_secret_required"));
+        }
+        crate::ssh::totp::parse_secret(&typed)
+            .map_err(|_| t!("host.dialog.totp_secret_invalid"))?;
+        let secret = crate::ssh::totp::normalize_secret(&typed);
+        Ok((Some(settings), Some(secret.to_string())))
+    }
+
+    /// Where the secret of the host's one-time codes is kept: the host
+    /// being edited's entry, or, for 测试连接 of a host not saved yet, one
+    /// only the form answers for.
+    fn totp_secret_ref(&self) -> SecretRef {
+        self.saved_totp
+            .as_ref()
+            .map(|(secret, _)| secret.clone())
+            .unwrap_or_else(|| SecretRef::totp(""))
     }
 
     /// The way to the Telnet host the form describes, or why there is
@@ -1326,9 +1414,10 @@ impl HostForm {
                 endpoint,
                 self.committed_login(cx)?,
                 self.committed_route(cx)?,
+                self.committed_totp(cx)?,
             ))
         });
-        let ((host, port), login, route) = match checked {
+        let ((host, port), login, route, (totp, totp_secret)) = match checked {
             Ok(checked) => checked,
             Err(error) => {
                 window.push_notification(form_error_notification(error), cx);
@@ -1367,22 +1456,28 @@ impl HostForm {
         // The proxy's password goes the same way, under the proxy's entry.
         let proxy_change = self.proxy_change(&route, cx);
         let notes = self.notes.read(cx).value().trim().to_string();
-        let draft = draft.with_route(route).with_notes(notes);
+        let draft = draft.with_route(route).with_notes(notes).with_totp(totp);
 
         let editing = self.editing;
         self.store.update(cx, |store, cx| {
-            match editing {
+            let id = match editing {
                 Some(id) => {
                     store.update(id, draft, cx);
+                    id
                 }
-                None => {
-                    store.insert(draft, cx);
-                }
-            }
+                None => store.insert(draft, cx),
+            };
             // `update` above may have dropped the entry for the endpoint the
             // host just left; this writes the one it moved to.
             for (secret, change) in password_change.into_iter().chain(proxy_change) {
                 store.save_secret(secret, change, cx);
+            }
+            // The codes' secret is the host's own: a new host's is named
+            // once it is saved. Turned off, the store drops it.
+            if let Some(value) = totp_secret
+                && let Some(secret) = store.host(id).map(Host::totp_secret)
+            {
+                store.save_secret(secret, Some(value), cx);
             }
         });
         self.clear_secrets(window, cx);
@@ -1431,7 +1526,12 @@ impl HostForm {
     /// The dialog is about to close and take the form with it; drop the
     /// plaintext now rather than waiting for the entity.
     fn clear_secrets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for fields in [&self.fields, &self.telnet_fields, &self.proxy_secret] {
+        for fields in [
+            &self.fields,
+            &self.telnet_fields,
+            &self.proxy_secret,
+            &self.totp_secret,
+        ] {
             fields.update(cx, |fields, cx| fields.clear(window, cx));
         }
     }
@@ -2104,6 +2204,9 @@ impl Render for HostForm {
                             .child(Textarea::new(&self.notes).text_sm()),
                     ),
             )
+            .when(self.protocol == ProtocolKind::Ssh, |form| {
+                form.child(self.advanced_field(cx))
+            })
         };
         v_flex()
             .gap_3()
@@ -2239,6 +2342,83 @@ impl HostForm {
                 .col_span(4)
                 .child(prompts)
                 .description(t!("host.dialog.telnet_prompt_note")),
+        )
+    }
+
+    /// 「高级设置」, folded away below the notes: what few hosts need.
+    fn advanced_field(&self, cx: &mut Context<Self>) -> Field {
+        let open = self.advanced_open;
+        Field::new().label_indent(false).col_span(4).child(
+            Collapsible::new()
+                .w_full()
+                .gap_2()
+                .open(open)
+                .child(
+                    h_flex().child(
+                        Button::new("host-advanced")
+                            .ghost()
+                            .small()
+                            .compact()
+                            .icon(if open {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
+                            })
+                            .label(t!("host.dialog.advanced"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.advanced_open = !this.advanced_open;
+                                cx.notify();
+                            })),
+                    ),
+                )
+                .content(self.totp_box(cx)),
+        )
+    }
+
+    /// 启用动态验证码, and once on, the secret and the question it answers.
+    fn totp_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let body = v_flex()
+            .id("host-advanced-box")
+            .w_full()
+            .gap_3()
+            .p_3()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(
+                Checkbox::new("host-totp")
+                    .label(t!("host.dialog.totp"))
+                    .checked(self.totp)
+                    .small()
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.totp = *checked;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(t!("host.dialog.totp_note")),
+                    ),
+            );
+        if !self.totp {
+            return body;
+        }
+        body.child(
+            Form::new()
+                .columns(2)
+                .child(
+                    Field::new()
+                        .label(t!("host.dialog.totp_secret"))
+                        .required(true)
+                        .child(self.totp_secret.read(cx).password_input("host-totp-secret")),
+                )
+                .child(
+                    Field::new()
+                        .label(t!("host.dialog.totp_prompt"))
+                        .child(Input::new(&self.totp_prompt).id("host-totp-prompt").small()),
+                ),
         )
     }
 

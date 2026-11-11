@@ -75,6 +75,8 @@ pub enum Kind {
     SecretPassphrase,
     /// A key credential's private key; its id is the credential's.
     SecretPrivateKey,
+    /// The secret of a host's one-time codes; its id is the host's.
+    SecretTotp,
     Secret(String),
     Other(String),
 }
@@ -82,7 +84,7 @@ pub enum Kind {
 impl Kind {
     /// Every kind this version knows, in the order the app takes them in:
     /// what a record points at comes before it.
-    pub const KNOWN: [Kind; 12] = [
+    pub const KNOWN: [Kind; 13] = [
         Kind::Group,
         Kind::Credential,
         Kind::Host,
@@ -95,6 +97,7 @@ impl Kind {
         Kind::SecretCredential,
         Kind::SecretPassphrase,
         Kind::SecretPrivateKey,
+        Kind::SecretTotp,
     ];
 
     /// The kind written as `name`, or `None` when it is not shaped like a
@@ -121,6 +124,7 @@ impl Kind {
             "secret.credential" => Self::SecretCredential,
             "secret.passphrase" => Self::SecretPassphrase,
             "secret.private_key" => Self::SecretPrivateKey,
+            "secret.totp" => Self::SecretTotp,
             secret if secret == "secret" || secret.starts_with("secret.") => {
                 Self::Secret(secret.to_owned())
             }
@@ -142,6 +146,7 @@ impl Kind {
             Self::SecretCredential => "secret.credential",
             Self::SecretPassphrase => "secret.passphrase",
             Self::SecretPrivateKey => "secret.private_key",
+            Self::SecretTotp => "secret.totp",
             Self::Secret(name) | Self::Other(name) => name,
         }
     }
@@ -160,6 +165,7 @@ impl Kind {
                 | Self::SecretCredential
                 | Self::SecretPassphrase
                 | Self::SecretPrivateKey
+                | Self::SecretTotp
                 | Self::Secret(_)
         )
     }

@@ -127,10 +127,11 @@ pub(crate) fn repairs(set: &RecordSet) -> Vec<(RecordKey, Body)> {
                     changed = true;
                 }
             }
-            // A credential's own secrets go with it.
+            // A credential's own secrets go with it, as a host's go with it.
             RecordData::CredentialPassword(_)
             | RecordData::Passphrase(_)
             | RecordData::PrivateKey(_) => delete = deleted(Kind::Credential, &record.key.id),
+            RecordData::Totp(_) => delete = deleted(Kind::Host, &record.key.id),
             RecordData::SnippetCategory(category) => {
                 let gone = category.parent.as_deref().is_some_and(|parent| {
                     deleted(Kind::SnippetCategory, parent)

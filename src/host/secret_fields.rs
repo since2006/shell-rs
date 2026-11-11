@@ -237,6 +237,12 @@ impl SecretFields {
         self.passphrase.read(cx).value().to_string()
     }
 
+    /// Whether the saved password has been read back, so that an empty
+    /// field means it is empty.
+    pub fn password_loaded(&self) -> bool {
+        self.password_loaded
+    }
+
     /// What a commit does with the password's keychain entry.
     pub fn password_change(&self, cx: &App) -> Option<Option<String>> {
         secret_change(self.password(cx), self.password_loaded)

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use crate::secrets::SecretRef;
 pub use shellrs_ssh::{
-    DEFAULT_KEY_FILES, HostLogin, JumpLogin, LoginMethod, LoginRoute, ProxyLogin,
+    DEFAULT_KEY_FILES, HostLogin, JumpLogin, LoginMethod, LoginRoute, ProxyLogin, TotpLogin,
 };
 
 use super::{
@@ -210,7 +210,7 @@ impl HostLoginExt for HostLogin {
     }
 
     fn of(host: &Host, credential: Option<&Credential>) -> HostLogin {
-        match credential.filter(|credential| host.credential == Some(credential.id)) {
+        let login = match credential.filter(|credential| host.credential == Some(credential.id)) {
             Some(credential) => Self::with_credential(
                 host.address.as_ref(),
                 host.port,
@@ -223,6 +223,15 @@ impl HostLoginExt for HostLogin {
                 host.user.as_ref(),
                 host.auth,
             ),
+        };
+        HostLogin {
+            totp: host.totp.as_ref().filter(|_| host.is_ssh()).map(|totp| {
+                Box::new(TotpLogin {
+                    prompt: totp.prompt.as_ref().map(ToString::to_string),
+                    secret: host.totp_secret(),
+                })
+            }),
+            ..login
         }
     }
 }

@@ -1170,3 +1170,176 @@ async fn a_dialogs_choices_are_equal_segments_of_one_track(cx: &mut TestAppConte
         assert!(window.find("host-credential").visible());
     });
 }
+
+/// Scroll the host dialog's body down, from over `anchor`: what is below
+/// the window's fold comes up.
+fn scroll_dialog_down(window: &mut gpui_kit::Window, anchor: &'static str, cx: &mut App) {
+    let position = window.find(anchor).bounds().center();
+    window.dispatch_event(
+        gpui_kit::ScrollWheelEvent {
+            position,
+            delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-600.))),
+            modifiers: gpui_kit::Modifiers::default(),
+            touch_phase: gpui_kit::TouchPhase::Moved,
+        }
+        .to_platform_input(),
+        cx,
+    );
+}
+
+#[gpui_kit::test]
+async fn one_time_codes_are_folded_under_advanced_and_kept_in_the_keychain(
+    cx: &mut TestAppContext,
+) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let tester = Arc::new(FakeConnectionTester::default());
+    let (handle, workspace) = open_workspace_with_tester(
+        cx,
+        HostStore::empty().with_secrets(secrets.clone()),
+        tester.clone(),
+    );
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
+    in_frame(cx, handle, |window, cx| {
+        // Folded away at first.
+        assert!(window.try_find("host-advanced").is_some());
+        assert!(window.try_find("host-totp").is_none());
+        window.click("host-name", cx);
+        window.input("bastion", cx);
+        window.click("host-address", cx);
+        window.input("10.0.0.9", cx);
+        window.click("host-password", cx);
+        window.input("hunter2", cx);
+        scroll_dialog_down(window, "host-notes", cx);
+    });
+    in_frame(cx, handle, |window, cx| window.click("host-advanced", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("host-totp").checked(), Some(false));
+        assert!(window.try_find("host-totp-secret").is_none());
+        // What unfolded is below the fold.
+        scroll_dialog_down(window, "host-notes", cx);
+    });
+    in_frame(cx, handle, |window, cx| window.click("host-totp", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("host-totp").checked(), Some(true));
+        scroll_dialog_down(window, "host-notes", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("host-totp-prompt").visible());
+        window.click("commit", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("form-error").label(), Some("填写 OTP 密钥"));
+        window.click("host-totp-secret", cx);
+        window.input("JBSW1Y3DP", cx);
+        window.click("commit", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("form-error").label(),
+            Some("OTP 密钥不是有效的 Base32")
+        );
+        window.click("host-totp-secret", cx);
+        window.press("secondary-a", cx);
+        window.input("jbsw y3dp ehpk 3pxp", cx);
+        window.click("host-totp-prompt", cx);
+        window.input("OTP verification code", cx);
+        window.click("test-connection", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.render_frame(cx);
+        tester.totps().len() == 1
+    })
+    .await;
+    // 测试连接 fills in codes from the secret typed, saved or not.
+    let tested = tester.totps();
+    let [(Some(totp), Some(typed))] = tested.as_slice() else {
+        panic!("the test fills in no codes: {tested:?}");
+    };
+    assert_eq!(totp.prompt.as_deref(), Some("OTP verification code"));
+    assert_eq!(typed, "JBSWY3DPEHPK3PXP");
+
+    in_frame(cx, handle, |window, cx| window.click("commit", cx));
+    wait_for_dialog_to_close(cx, handle).await;
+    let host = cx.update(|cx| workspace.read(cx).store().read(cx).hosts()[0].clone());
+    assert_eq!(
+        host.totp,
+        Some(TotpSettings {
+            prompt: Some("OTP verification code".into()),
+        })
+    );
+    // Written as it is kept, and only in the keychain.
+    assert_eq!(
+        secrets
+            .get(&host.totp_secret())
+            .unwrap()
+            .as_deref()
+            .map(String::as_str),
+        Some("JBSWY3DPEHPK3PXP")
+    );
+    assert!(!format!("{host:?}").contains("JBSWY3DP"));
+    let login = cx.update(|cx| workspace.read(cx).store().read(cx).login(host.id).unwrap());
+    assert_eq!(login.totp.unwrap().secret, host.totp_secret());
+}
+
+#[gpui_kit::test]
+async fn a_host_with_one_time_codes_opens_unfolded_and_turning_them_off_forgets_the_secret(
+    cx: &mut TestAppContext,
+) {
+    let secrets = Arc::new(InMemorySecretStore::default());
+    let mut store = HostStore::empty();
+    let id = store.insert_unnotified(
+        HostDraft::new("bastion", "10.0.0.9", 22, "root", AuthKind::Password, None).with_totp(
+            Some(TotpSettings {
+                prompt: Some("OTP verification code".into()),
+            }),
+        ),
+    );
+    let secret = store.host(id).unwrap().totp_secret();
+    secrets.set(&secret, "JBSWY3DPEHPK3PXP").unwrap();
+    let (handle, workspace) = open_workspace_with_store(cx, store.with_secrets(secrets.clone()));
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_action(Box::new(EditHost(id)), cx);
+    })
+    .unwrap();
+    // The saved secret is read on a background thread, then fills the field.
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("host-totp").checked(), Some(true));
+        assert_eq!(
+            window.find("host-totp-prompt").value(),
+            Some("OTP verification code")
+        );
+        scroll_dialog_down(window, "host-notes", cx);
+    });
+    in_frame(cx, handle, |window, cx| window.click("host-totp", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("host-totp-secret").is_none());
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(store.host(id).unwrap().totp, None);
+    });
+    assert!(secrets.get(&secret).unwrap().is_none());
+}
+
+#[gpui_kit::test]
+async fn only_an_ssh_host_has_one_time_codes(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
+    for (protocol, shown) in [(1usize, false), (2usize, false), (0usize, true)] {
+        in_frame(cx, handle, |window, cx| {
+            window.within("host-protocol").click(protocol, cx)
+        });
+        in_frame(cx, handle, |window, _| {
+            assert_eq!(
+                window.try_find("host-advanced").is_some(),
+                shown,
+                "{protocol}"
+            );
+        });
+    }
+}

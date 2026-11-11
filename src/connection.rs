@@ -19,6 +19,9 @@ pub struct LoginTest {
     /// The proxy's password as the form has it, whichever way the host logs
     /// in: the proxy is the form's either way.
     proxy_password: Option<Zeroizing<String>>,
+    /// The secret of the one-time codes as the form has it, whichever way
+    /// the host logs in; `None` for the one saved, if any.
+    totp_secret: Option<Zeroizing<String>>,
 }
 
 #[derive(Default)]
@@ -35,6 +38,7 @@ impl LoginTest {
             login,
             typed: Some(TypedSecrets::default()),
             proxy_password: None,
+            totp_secret: None,
         }
     }
 
@@ -44,6 +48,7 @@ impl LoginTest {
             login,
             typed: None,
             proxy_password: None,
+            totp_secret: None,
         }
     }
 
@@ -51,6 +56,14 @@ impl LoginTest {
     pub fn with_proxy_password(mut self, password: impl Into<String>) -> Self {
         let password = password.into();
         self.proxy_password = (!password.is_empty()).then(|| Zeroizing::new(password));
+        self
+    }
+
+    /// The secret of the one-time codes typed into the form. An empty one
+    /// leaves the saved one to be used.
+    pub fn with_totp_secret(mut self, secret: impl Into<String>) -> Self {
+        let secret = secret.into();
+        self.totp_secret = (!secret.is_empty()).then(|| Zeroizing::new(secret));
         self
     }
 
@@ -112,6 +125,9 @@ impl LoginTest {
     pub fn proxy_password(&self) -> Option<&str> {
         self.proxy_password.as_deref().map(String::as_str)
     }
+    pub fn totp_secret(&self) -> Option<&str> {
+        self.totp_secret.as_deref().map(String::as_str)
+    }
 }
 
 impl std::fmt::Debug for LoginTest {
@@ -125,6 +141,7 @@ impl std::fmt::Debug for LoginTest {
                 "proxy_password",
                 &self.proxy_password().map(|_| "<redacted>"),
             )
+            .field("totp_secret", &self.totp_secret().map(|_| "<redacted>"))
             .finish()
     }
 }

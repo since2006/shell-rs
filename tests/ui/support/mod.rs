@@ -33,7 +33,7 @@ pub use shellrs::host::{
     ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GeneratedKey, GroupDraft, GroupId,
     HostDatabase, HostDraft, HostId, HostLogin, HostLoginExt, HostOs, HostStore, JumpLogin,
     KeyAlgorithm, LoginMethod, LoginRoute, PastedKey, ProxyKind, ProxySettings, Route, SerialLine,
-    read_public_key,
+    TotpLogin, TotpSettings, read_public_key,
 };
 pub use shellrs::secrets::{InMemorySecretStore, SecretRef, SecretStore as _};
 pub use shellrs::settings::{

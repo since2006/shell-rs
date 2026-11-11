@@ -825,6 +825,15 @@ fn deliverable(
             _ => None,
         })
         .collect();
+    // The hosts that fill in one-time codes, of those that stay.
+    let totp_hosts: BTreeSet<&str> = parsed
+        .iter()
+        .filter_map(|(key, data)| match data {
+            RecordData::Host(host) if host.totp.is_some() => Some(key.id.as_str()),
+            _ => None,
+        })
+        .filter(|id| hosts.contains(id))
+        .collect();
     let credential_kind = |id: &str| match parsed.get(&RecordKey::new(Kind::Credential, id)) {
         Some(RecordData::Credential(credential)) => Some(credential.kind),
         _ => None,
@@ -880,6 +889,8 @@ fn deliverable(
             RecordData::Passphrase(_) | RecordData::PrivateKey(_) => {
                 credential_kind(&key.id) == Some(CredentialKind::Key)
             }
+            // A host's, only while it fills in codes.
+            RecordData::Totp(_) => totp_hosts.contains(key.id.as_str()),
             RecordData::Credential(_)
             | RecordData::SnippetCategory(_)
             | RecordData::Password(_)

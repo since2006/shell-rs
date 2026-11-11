@@ -335,6 +335,8 @@ mod tests {
         /// This connection answered [`TestAuth::KeyboardPassword`]'s
         /// password question correctly.
         password_answered: bool,
+        /// How far this connection got through [`TestAuth::Totp`]'s rounds.
+        totp_stage: u8,
     }
 
     #[derive(Clone)]
@@ -344,6 +346,36 @@ mod tests {
         KeyboardInteractive,
         /// The password, through keyboard-interactive only, as ESXi takes it.
         KeyboardPassword,
+        /// A one-time code of [`TOTP_SECRET`], asked as the shape says.
+        Totp(TotpShape),
+    }
+
+    /// The secret of [`TestAuth::Totp`]'s codes.
+    const TOTP_SECRET: &str = "JBSWY3DPEHPK3PXP";
+    /// What the server in the user's screenshot asks.
+    const SCREENSHOT_QUESTION: &str = "Please enter the mobile app OTP verification code: ";
+
+    /// How a server that wants a one-time code puts its questions.
+    #[derive(Clone, Copy)]
+    enum TotpShape {
+        /// The password, then the code with this question, a round each.
+        PasswordThenCode(&'static str),
+        /// The password and the code with this question, in one round.
+        Together(&'static str),
+        /// Only `Code: `, under these instructions.
+        Explained(&'static str),
+        /// The code alone, with this question.
+        CodeOnly(&'static str),
+    }
+
+    /// The codes a server takes now: this one and the ones either side.
+    fn current_codes() -> Vec<String> {
+        use crate::ssh::totp;
+        let secret = totp::parse_secret(TOTP_SECRET).unwrap();
+        let step = totp::current_step();
+        [step - 1, step, step + 1]
+            .map(|step| totp::code(&secret, step).to_string())
+            .into()
     }
 
     impl TestAuth {
@@ -351,7 +383,7 @@ mod tests {
             let method = match self {
                 Self::Password => MethodKind::Password,
                 Self::PublicKey(_) => MethodKind::PublicKey,
-                Self::KeyboardInteractive | Self::KeyboardPassword => {
+                Self::KeyboardInteractive | Self::KeyboardPassword | Self::Totp(_) => {
                     MethodKind::KeyboardInteractive
                 }
             };
@@ -385,6 +417,60 @@ mod tests {
                 [] if self.password_answered => server::Auth::Accept,
                 // Refused, with keyboard-interactive still on offer, as
                 // OpenSSH does.
+                _ => server::Auth::Reject {
+                    proceed_with_methods: Some(MethodSet::from(
+                        &[MethodKind::KeyboardInteractive][..],
+                    )),
+                    partial_success: false,
+                },
+            }
+        }
+    }
+
+    impl TestServer {
+        /// One round of [`TestAuth::Totp`].
+        fn totp_question(
+            &mut self,
+            shape: TotpShape,
+            response: Option<server::Response<'_>>,
+        ) -> server::Auth {
+            let ask =
+                |instructions: &'static str, questions: &[&'static str]| server::Auth::Partial {
+                    name: Cow::Borrowed(""),
+                    instructions: Cow::Borrowed(instructions),
+                    prompts: Cow::Owned(
+                        questions
+                            .iter()
+                            .map(|question| (Cow::Borrowed(*question), false))
+                            .collect(),
+                    ),
+                };
+            let Some(response) = response else {
+                self.totp_stage = 0;
+                return match shape {
+                    TotpShape::PasswordThenCode(_) => ask("", &["Password: "]),
+                    TotpShape::Together(question) => ask("", &["Password: ", question]),
+                    TotpShape::Explained(instructions) => ask(instructions, &["Code: "]),
+                    TotpShape::CodeOnly(question) => ask("", &[question]),
+                };
+            };
+            let answers: Vec<Vec<u8>> = response.map(|answer| answer.as_ref().to_vec()).collect();
+            let password = |answer: &[u8]| answer == TEST_PASSWORD.as_bytes();
+            let code = |answer: &[u8]| current_codes().iter().any(|code| code.as_bytes() == answer);
+            match (shape, self.totp_stage, answers.as_slice()) {
+                (TotpShape::PasswordThenCode(question), 0, [answer]) if password(answer) => {
+                    self.totp_stage = 1;
+                    ask("", &[question])
+                }
+                (TotpShape::PasswordThenCode(_), 1, [answer]) if code(answer) => {
+                    server::Auth::Accept
+                }
+                (TotpShape::Together(_), 0, [first, second]) if password(first) && code(second) => {
+                    server::Auth::Accept
+                }
+                (TotpShape::Explained(_) | TotpShape::CodeOnly(_), 0, [answer]) if code(answer) => {
+                    server::Auth::Accept
+                }
                 _ => server::Auth::Reject {
                     proceed_with_methods: Some(MethodSet::from(
                         &[MethodKind::KeyboardInteractive][..],
@@ -448,6 +534,7 @@ mod tests {
             match self.auth {
                 TestAuth::KeyboardInteractive => {}
                 TestAuth::KeyboardPassword => return Ok(self.password_question(response)),
+                TestAuth::Totp(shape) => return Ok(self.totp_question(shape, response)),
                 _ => return Ok(server::Auth::UnsupportedMethod),
             }
             let Some(mut response) = response else {
@@ -655,6 +742,7 @@ mod tests {
                     auth,
                     probe_reply,
                     password_answered: false,
+                    totp_stage: 0,
                 };
                 let running = server.run_on_socket(config, &listener);
                 ready_tx.send(Ok((port, running.handle()))).unwrap();
@@ -2011,6 +2099,220 @@ mod tests {
             .filter(|prompt| matches!(prompt, ConnectionPromptKind::Authentication(_)))
             .count();
         assert_eq!(asked, 1);
+    }
+
+    /// A host that fills in one-time codes asked as `wording` says, `None`
+    /// for the usual wordings, logging in as `auth`.
+    fn coded_host(port: u16, auth: AuthKind, wording: Option<&str>) -> Host {
+        Host::new(
+            crate::host::HostId(1),
+            crate::host::HostDraft::new("coded", "127.0.0.1", port, "tester", auth, None)
+                .with_totp(Some(crate::host::TotpSettings {
+                    prompt: wording.map(Into::into),
+                })),
+        )
+    }
+
+    /// A keychain with the code's secret of `host`, and its password.
+    fn coded_keychain(host: &Host, password: bool) -> Arc<InMemorySecretStore> {
+        let keychain = Arc::new(InMemorySecretStore::default());
+        keychain.set(&host.totp_secret(), TOTP_SECRET).unwrap();
+        if password {
+            keychain
+                .set(&host.password_secret(), TEST_PASSWORD)
+                .unwrap();
+        }
+        keychain
+    }
+
+    /// Trust the host and nothing else: a question for a code fails the test.
+    fn trust_only(kind: &ConnectionPromptKind) -> ConnectionPromptReply {
+        match kind {
+            ConnectionPromptKind::UnknownHost(_) => ConnectionPromptReply::TrustAndSave,
+            other => panic!("unexpected prompt: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_host_fills_in_the_one_time_code_its_server_asks_for() {
+        let shapes = [
+            // The screenshot's server, matched by the host's wording.
+            (
+                TotpShape::PasswordThenCode(SCREENSHOT_QUESTION),
+                Some("Please enter the mobile app OTP verification code"),
+            ),
+            // The same, by the usual wordings.
+            (TotpShape::PasswordThenCode(SCREENSHOT_QUESTION), None),
+            (TotpShape::Together("Verification code: "), None),
+            (
+                TotpShape::Explained("Please enter the mobile app OTP verification code."),
+                Some("OTP verification code"),
+            ),
+        ];
+        for (shape, wording) in shapes {
+            let Some(server) = start_server(TestAuth::Totp(shape)) else {
+                eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+                return;
+            };
+            let directory = tempfile::tempdir().unwrap();
+            let host = coded_host(server.port, AuthKind::Password, wording);
+            let keychain = coded_keychain(&host, true);
+            connect_with_secrets(
+                host,
+                &directory.path().join("known_hosts"),
+                keychain,
+                trust_only,
+            );
+        }
+    }
+
+    #[test]
+    fn a_connection_nobody_can_answer_for_logs_in_with_the_code() {
+        let Some(server) = start_server(TestAuth::Totp(TotpShape::PasswordThenCode(
+            SCREENSHOT_QUESTION,
+        ))) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        trust_server_with_code(server.port, &known_hosts);
+
+        // The CLI's `exec`, with what the keychain has.
+        let host = coded_host(server.port, AuthKind::Password, None);
+        let (result, stdout, _) = run_cli_command(&host, &known_hosts, coded_keychain(&host, true));
+        assert_eq!(result.unwrap(), crate::ssh::ExecExit::Code(3));
+        assert_eq!(stdout, b"out");
+        // Without the secret, the code is a question nobody can answer.
+        let keychain = Arc::new(InMemorySecretStore::default());
+        keychain
+            .set(&host.password_secret(), TEST_PASSWORD)
+            .unwrap();
+        let (result, _, _) = run_cli_command(&host, &known_hosts, keychain);
+        assert_eq!(
+            result.unwrap_err().kind,
+            crate::ssh::ExecErrorKind::MissingCredential
+        );
+
+        // 测试连接, with what the form has typed.
+        let typed = |secret: &str| {
+            let mut login =
+                HostLogin::manual("127.0.0.1", server.port, "tester", AuthKind::Password);
+            login.totp = Some(Box::new(crate::host::TotpLogin {
+                prompt: None,
+                secret: SecretRef::totp(""),
+            }));
+            crate::connection::LoginTest::typed(login)
+                .with_password(TEST_PASSWORD)
+                .with_totp_secret(secret)
+        };
+        let test = |request| {
+            test_login(
+                request,
+                &known_hosts,
+                Arc::new(InMemorySecretStore::default()),
+                false,
+            )
+            .0
+        };
+        assert_eq!(test(typed(TOTP_SECRET)), Ok(()));
+        assert!(test(typed("")).is_err());
+    }
+
+    /// Trust the TOTP test server's key, logging in as the host form's
+    /// 测试连接 would.
+    fn trust_server_with_code(port: u16, known_hosts: &Path) {
+        let mut login = HostLogin::manual("127.0.0.1", port, "tester", AuthKind::Password);
+        login.totp = Some(Box::new(crate::host::TotpLogin {
+            prompt: None,
+            secret: SecretRef::totp(""),
+        }));
+        let (result, _) = test_login(
+            crate::connection::LoginTest::typed(login)
+                .with_password(TEST_PASSWORD)
+                .with_totp_secret(TOTP_SECRET),
+            known_hosts,
+            Arc::new(InMemorySecretStore::default()),
+            true,
+        );
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn a_code_without_its_secret_is_asked_alone() {
+        let Some(server) = start_server(TestAuth::Totp(TotpShape::PasswordThenCode(
+            SCREENSHOT_QUESTION,
+        ))) else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let host = coded_host(server.port, AuthKind::Password, None);
+        // The password is saved; the code's secret is not.
+        let keychain = Arc::new(InMemorySecretStore::default());
+        keychain
+            .set(&host.password_secret(), TEST_PASSWORD)
+            .unwrap();
+        let report = connect_with_secrets(
+            host,
+            &directory.path().join("known_hosts"),
+            keychain,
+            |prompt| match prompt {
+                ConnectionPromptKind::UnknownHost(_) => ConnectionPromptReply::TrustAndSave,
+                ConnectionPromptKind::Authentication(authentication) => {
+                    let fields = crate::ssh::authentication_fields(authentication);
+                    assert_eq!(fields.len(), 1);
+                    assert_eq!(fields[0].label(), SCREENSHOT_QUESTION);
+                    ConnectionPromptReply::Answers(vec![ConnectionSecret::new(
+                        current_codes()[1].clone(),
+                    )])
+                }
+                other => panic!("unexpected prompt: {other:?}"),
+            },
+        );
+        let asked = report
+            .prompts
+            .iter()
+            .filter(|prompt| matches!(prompt, ConnectionPromptKind::Authentication(_)))
+            .count();
+        assert_eq!(asked, 1);
+    }
+
+    #[test]
+    fn a_login_without_a_password_answers_only_the_code() {
+        let Some(server) = start_server(TestAuth::Totp(TotpShape::CodeOnly("Verification code: ")))
+        else {
+            eprintln!("loopback sockets are unavailable in this sandbox; skipping");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let host = coded_host(server.port, AuthKind::NoPassword, None);
+        let keychain = coded_keychain(&host, false);
+        connect_with_secrets(
+            host,
+            &directory.path().join("known_hosts"),
+            keychain,
+            trust_only,
+        );
+
+        // A password the server asks for first is still not asked.
+        let Some(server) = start_server(TestAuth::Totp(TotpShape::PasswordThenCode(
+            "Verification code: ",
+        ))) else {
+            panic!("loopback became unavailable");
+        };
+        let mut login = HostLogin::manual("127.0.0.1", server.port, "tester", AuthKind::NoPassword);
+        login.totp = Some(Box::new(crate::host::TotpLogin {
+            prompt: None,
+            secret: SecretRef::totp(""),
+        }));
+        let (result, _) = test_login(
+            crate::connection::LoginTest::typed(login).with_totp_secret(TOTP_SECRET),
+            &directory.path().join("known_hosts"),
+            Arc::new(InMemorySecretStore::default()),
+            true,
+        );
+        assert!(result.is_err());
     }
 
     /// A terminal connecting to a server whose key is not the one saved for

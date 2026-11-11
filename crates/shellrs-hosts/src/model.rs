@@ -364,6 +364,10 @@ pub struct Host {
     pub group: Option<GroupId>,
     /// Whatever the user wants to remember about it; empty for none.
     pub notes: SharedString,
+    /// The one-time codes it fills in, for an SSH host that does; `None`
+    /// for every other. The secret they come from is in the keychain
+    /// ([`Self::totp_secret`]).
+    pub totp: Option<TotpSettings>,
     /// Order among hosts in the same group.
     pub sort_order: i64,
     /// Detected on every successful connection and persisted, so the tree can
@@ -404,6 +408,7 @@ impl Host {
             route: draft.route,
             group: draft.group,
             notes: draft.notes,
+            totp: draft.totp,
             sort_order: 0,
             os: None,
             sidebar_tool: None,
@@ -448,6 +453,13 @@ impl Host {
         SecretRef::password(self.user.as_ref(), self.address.as_ref(), self.port)
     }
 
+    /// Where the secret of this host's one-time codes lives in the
+    /// keychain: keyed by the host, so it stays whoever the host logs in
+    /// as, and a copy of the host gets one of its own.
+    pub fn totp_secret(&self) -> SecretRef {
+        SecretRef::totp(self.public_id.as_str())
+    }
+
     /// The editable fields, for pre-filling the host form.
     pub fn draft(&self) -> HostDraft {
         HostDraft {
@@ -461,8 +473,20 @@ impl Host {
             route: self.route.clone(),
             group: self.group,
             notes: self.notes.clone(),
+            totp: self.totp.clone(),
         }
     }
+}
+
+/// A host that fills in the one-time codes its server asks for when it
+/// logs in (TOTP: six digits, a new one every 30 seconds), with a secret in
+/// the keychain. SSH only: the server asks in keyboard-interactive
+/// questions.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TotpSettings {
+    /// What the server's question says, matched without regard to case;
+    /// `None` for the usual wordings, such as `Verification code`.
+    pub prompt: Option<SharedString>,
 }
 
 /// IPv6 literals are accepted with or without the brackets a URL puts around
@@ -531,6 +555,7 @@ pub struct HostDraft {
     pub route: Route,
     pub group: Option<GroupId>,
     pub notes: SharedString,
+    pub totp: Option<TotpSettings>,
 }
 
 impl HostDraft {
@@ -553,6 +578,7 @@ impl HostDraft {
             route: Route::Direct,
             group,
             notes: SharedString::default(),
+            totp: None,
         }
     }
 
@@ -602,6 +628,12 @@ impl HostDraft {
         self
     }
 
+    /// Fill in one-time codes, for an SSH host.
+    pub fn with_totp(mut self, totp: Option<TotpSettings>) -> Self {
+        self.totp = totp;
+        self
+    }
+
     /// The keychain entry this draft would log in with. Matches
     /// [`Host::password_secret`] once the draft is applied.
     pub fn password_secret(&self) -> SecretRef {
@@ -624,6 +656,12 @@ impl HostDraft {
         if let Protocol::Telnet(settings) = &mut self.protocol {
             settings.user_prompt = settings.user_prompt.trim().to_string().into();
             settings.password_prompt = settings.password_prompt.trim().to_string().into();
+            // The codes are asked in SSH's questions only.
+            self.totp = None;
+        }
+        if let Some(totp) = &mut self.totp {
+            let prompt = totp.prompt.as_deref().map(str::trim).unwrap_or_default();
+            totp.prompt = (!prompt.is_empty()).then(|| prompt.to_string().into());
         }
         if self.address.is_empty() {
             return Err(HostDraftError::Address);
