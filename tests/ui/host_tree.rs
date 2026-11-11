@@ -875,3 +875,176 @@ async fn the_tree_falls_back_to_the_first_letter_until_a_host_is_probed(cx: &mut
     })
     .unwrap();
 }
+
+/// The seed, with notes of two lines on web-01, so its row has all three
+/// lines of 显示主机详情 and web-02's only two.
+fn store_with_notes() -> HostStore {
+    let mut store = HostStore::seed();
+    let web = HostId(WEB_01);
+    let draft = store
+        .host(web)
+        .unwrap()
+        .draft()
+        .with_notes("机房 A\n负责人：张三");
+    store.update_unnotified(web, draft);
+    store
+}
+
+fn host_details_shown(workspace: &Entity<Workspace>, cx: &mut TestAppContext) -> bool {
+    workspace.read_with(cx, |workspace, cx| {
+        workspace.settings().read(cx).settings().host_details
+    })
+}
+
+#[gpui_kit::test]
+fn the_button_beside_the_search_shows_each_hosts_address_and_notes(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace_with_store(cx, store_with_notes());
+    let collapsed = in_frame(cx, handle, |window, _| {
+        let collapsed = window.find(("host-row", WEB_01)).bounds().size.height;
+        // Off at first: a row is the name alone.
+        assert!(window.try_find(("host-address", WEB_01)).is_none());
+        assert_eq!(
+            window.find("toggle-host-details").label(),
+            Some("显示主机详情")
+        );
+        assert_eq!(
+            collapsed,
+            window.find(("group-row", PRODUCTION)).bounds().size.height
+        );
+        collapsed
+    });
+    assert!(!host_details_shown(&workspace, cx));
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("toggle-host-details", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find(("host-address", WEB_01)).label(),
+            Some("root@10.0.1.12:22")
+        );
+        // Notes of several lines on the one line.
+        assert_eq!(
+            window.find(("host-note", WEB_01)).label(),
+            Some("机房 A · 负责人：张三")
+        );
+        assert_eq!(
+            window.find(("host-address", WEB_02)).label(),
+            Some("root@10.0.1.13:22")
+        );
+        assert!(window.try_find(("host-note", WEB_02)).is_none());
+
+        // Under the name, clear of the mark, the second line below the first.
+        let mark = window.find(("host-os", WEB_01)).bounds();
+        let address = window.find(("host-address", WEB_01)).bounds();
+        let note = window.find(("host-note", WEB_01)).bounds();
+        assert!(address.left() >= mark.right());
+        assert_eq!(note.left(), address.left());
+        assert!(note.top() >= address.bottom());
+
+        // A row as tall as its lines: groups keep one, and the rows follow
+        // each other without overlapping.
+        let group = window.find(("group-row", PRODUCTION)).bounds();
+        let web_01 = window.find(("host-row", WEB_01)).bounds();
+        let web_02 = window.find(("host-row", WEB_02)).bounds();
+        assert_eq!(group.size.height, collapsed);
+        assert!(web_02.size.height > collapsed);
+        assert!(web_01.size.height > web_02.size.height);
+        assert!(note.bottom() <= web_01.bottom());
+        assert!(web_01.top() >= group.bottom() - px(0.5));
+        assert!(web_02.top() >= web_01.bottom() - px(0.5));
+    });
+    assert!(host_details_shown(&workspace, cx));
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("toggle-host-details", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find(("host-address", WEB_01)).is_none());
+        assert_eq!(
+            window.find(("host-row", WEB_01)).bounds().size.height,
+            collapsed
+        );
+    });
+    assert!(!host_details_shown(&workspace, cx));
+}
+
+#[gpui_kit::test]
+fn host_details_come_back_at_launch_without_the_row_tooltip(cx: &mut TestAppContext) {
+    let mut settings = settings_store();
+    settings.update_unnotified(|settings| settings.host_details = true);
+    let (handle, _) = open_workspace_with_settings_and_tester(
+        cx,
+        store_with_notes(),
+        settings,
+        Arc::new(FakeConnectionTester::default()),
+    );
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find(("host-address", WEB_01)).label(),
+            Some("root@10.0.1.12:22")
+        );
+        window.hover(("host-row", WEB_01), cx);
+    });
+    // What the tooltip would say is on the row already.
+    cx.executor().advance_clock(Duration::from_millis(1000));
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("host-tooltip").is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn the_arrow_keys_move_through_the_host_tree(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace(cx);
+    let selected = |window: &mut gpui_kit::Window, row: (&'static str, u64)| {
+        window.find(row).selected() == Some(true)
+    };
+    // The fixture's terminal takes the focus as its tab comes forward.
+    in_frame(cx, handle, |_, _| {});
+    in_frame(cx, handle, |window, cx| {
+        window.click(("host-row", WEB_01), cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(selected(window, ("host-row", WEB_01)));
+        assert_eq!(window.find("host-tree").focused(), Some(true));
+        window.press("down", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(selected(window, ("host-row", WEB_02)));
+        assert!(!selected(window, ("host-row", WEB_01)));
+        window.press("up", cx);
+        window.press("up", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(selected(window, ("group-row", PRODUCTION)));
+        assert_eq!(
+            window.find(("group-row", PRODUCTION)).expanded(),
+            Some(true)
+        );
+        window.press("left", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find(("group-row", PRODUCTION)).expanded(),
+            Some(false)
+        );
+        assert!(window.try_find(("host-row", WEB_01)).is_none());
+        // Folded already: Left again leaves it so.
+        window.press("left", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find(("host-row", WEB_01)).is_none());
+        window.press("right", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find(("host-row", WEB_01)).visible());
+        assert!(selected(window, ("group-row", PRODUCTION)));
+        // Up from the first row goes round to the last.
+        window.press("up", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(!selected(window, ("group-row", PRODUCTION)));
+        assert!(window.find(("host-row", DEV_BOX)).selected() == Some(true));
+    });
+}

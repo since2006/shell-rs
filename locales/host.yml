@@ -498,6 +498,9 @@ host.panel.title:
 host.panel.search:
   zh-CN: 搜索主机或分组
   en: Search hosts or groups
+host.panel.show_details:
+  zh-CN: 显示主机详情
+  en: Show host details
 
 host.menu.connect:
   zh-CN: 连接

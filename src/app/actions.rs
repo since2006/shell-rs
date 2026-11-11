@@ -170,6 +170,19 @@ gpui_kit::actions!(
         FocusSearch,
         /// Connect the host selected in the focused host list.
         ConnectSelected,
+        /// Show or hide 主机详情 in the host tree: each host's address and
+        /// notes under its name.
+        ToggleHostDetails,
+        /// Move the host tree's selection to the row above, the last row
+        /// above the first.
+        SelectPreviousHostRow,
+        /// Move the host tree's selection to the row below, the first row
+        /// below the last.
+        SelectNextHostRow,
+        /// Fold away the group selected in the host tree.
+        CollapseSelectedGroup,
+        /// Unfold the group selected in the host tree.
+        ExpandSelectedGroup,
         /// Expand every group in the host tree.
         ExpandAllGroups,
         /// Collapse every group in the host tree.

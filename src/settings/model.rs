@@ -50,6 +50,10 @@ pub struct AppSettings {
     /// 撰写窗格 below the terminals, switched from its shortcut and the
     /// terminal's context menu: shown while true. 命令广播 shows it anyway.
     pub compose_pane: bool,
+    /// 显示主机详情, switched from the button beside the host search: while
+    /// true the host tree shows each host's address and notes under its
+    /// name.
+    pub host_details: bool,
     /// 终端 → 本地终端.
     pub local_terminal: LocalTerminalSettings,
     pub external_cli: ExternalCliSettings,

@@ -47,6 +47,9 @@ use crate::i18n::t;
 
 /// Key context of the host panel, for bindings that only apply there.
 pub const HOST_PANEL_CONTEXT: &str = "HostPanel";
+/// Key context of the host panel's tree, inside `HOST_PANEL_CONTEXT`: the
+/// arrow keys move through it, not through the search field.
+pub const HOST_TREE_CONTEXT: &str = "HostTree";
 pub const RECENT_HOSTS_CONTEXT: &str = "RecentHosts";
 /// Key context of the port-forwarding list.
 pub const FORWARD_PANEL_CONTEXT: &str = "ForwardPanel";

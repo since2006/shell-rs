@@ -72,6 +72,7 @@ icon_assets!(
         ArrowDownLeft,
         ArrowUpRight,
         ListFilter,
+        LayoutList,
         CircleStop,
         OctagonX,
         ServerCog,

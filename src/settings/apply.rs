@@ -2,6 +2,7 @@ use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
 use gpui_kit::*;
 
 use crate::explorer::{FileIconStyle, FileSizeFormat, ShowHiddenFiles};
+use crate::host::ShowHostDetails;
 use crate::i18n::UiLocale;
 use crate::terminal::{
     BackgroundImage, TerminalBackground, TerminalColors, TerminalFont, TerminalHighlights,
@@ -16,8 +17,8 @@ use super::app_theme::{ui_theme, ui_theme_name};
 /// picture for it, the interface's font size, the
 /// locale, the terminal font,
 /// mouse and highlight rules, the keyboard shortcuts, the SFTP size format and
-/// icons, how many files SFTP moves at once, and whether it shows hidden
-/// files.
+/// icons, how many files SFTP moves at once, whether it shows hidden files,
+/// and whether the host tree shows its hosts' details.
 /// Does nothing where they already agree, so it can run on every settings
 /// change and every change of the system appearance.
 pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
@@ -132,5 +133,11 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
     // The SFTP lists observe it and list their rows again.
     if cx.try_global::<ShowHiddenFiles>() != Some(&settings.show_hidden) {
         cx.set_global(settings.show_hidden);
+    }
+
+    // The host tree observes it and lays its rows out again.
+    let host_details = ShowHostDetails(settings.host_details);
+    if cx.try_global::<ShowHostDetails>() != Some(&host_details) {
+        cx.set_global(host_details);
     }
 }

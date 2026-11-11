@@ -24,7 +24,7 @@ pub use host_dialog::{
     DeleteHandler, Dependents, HostForm, confirm_delete_host, join_sentences, open_host_dialog,
     open_temporary_connection_dialog,
 };
-pub use host_panel::{HostPanel, host_menu, import_menu_items};
+pub use host_panel::{HostPanel, ShowHostDetails, host_menu, import_menu_items};
 pub use import::{ImportHandler, ImportOutcome, ImportSource, open_import_dialog};
 pub use outline::{first_matching_host, group_options, host_tree_items, matches_query};
 pub use quick_connect::{QuickChoice, QuickHost, open_quick_connect_dialog, quick_hosts};

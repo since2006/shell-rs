@@ -36,8 +36,8 @@ use crate::app::{
     QuickConnect, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand,
     RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal, RestoreWindow,
     SelectAllTerminal, SendBreak, SetFileSizeFormat, ShowOrHideApp, ToggleHiddenFiles,
-    ToggleHostPanel, ToggleTheme, ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn,
-    ZoomTerminalOut, ZoomTerminalReset,
+    ToggleHostDetails, ToggleHostPanel, ToggleTheme, ToolKind, ZoomIn, ZoomOut, ZoomReset,
+    ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
 };
 use crate::cli::{CliIntegration, CliServer, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -2587,6 +2587,22 @@ impl Workspace {
         });
     }
 
+    /// Saved like any setting; applying it lays the host tree's rows out
+    /// again.
+    fn on_toggle_host_details(
+        &mut self,
+        _: &ToggleHostDetails,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| settings.host_details = !settings.host_details,
+                cx,
+            )
+        });
+    }
+
     fn on_focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
         if !self.dock_area.read(cx).is_dock_open(DockPlacement::Left) {
             self.dock_area.update(cx, |area, cx| {
@@ -3069,6 +3085,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_install_agent_skill))
             .on_action(cx.listener(Self::on_set_file_size_format))
             .on_action(cx.listener(Self::on_toggle_hidden_files))
+            .on_action(cx.listener(Self::on_toggle_host_details))
             .on_action(cx.listener(Self::on_remove_agent_skill))
             .on_action(cx.listener(Self::on_refresh_cli_integration))
             .on_action(cx.listener(Self::on_check_for_updates))
