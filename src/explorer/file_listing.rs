@@ -85,8 +85,8 @@ pub struct FileListing {
     show_hidden: bool,
     sort: Option<(usize, ColumnSort)>,
     side: PaneSide,
-    /// The right sidebar's narrow list: names and sizes, and rows that do
-    /// not drag out (see `set_compact`).
+    /// The right sidebar's narrow list: names, sizes and times, and rows
+    /// that do not drag out (see `set_compact`).
     compact: bool,
     context: ListingContext,
 }
@@ -143,16 +143,22 @@ impl FileListing {
         }
     }
 
-    /// Fit the right sidebar: only names and sizes. Rows no longer drag
-    /// out: dropped on an SFTP tab's local pane, they would be fetched from
-    /// that tab's host, not this one.
+    /// Fit the right sidebar: names, sizes and times, so the list sorts by
+    /// any of the three. They are wider than the sidebar opens, which the
+    /// table scrolls sideways; 权限 and 所有者 stay with the SFTP tab. Rows
+    /// no longer drag out: dropped on an SFTP tab's local pane, they would
+    /// be fetched from that tab's host, not this one.
     pub(super) fn set_compact(&mut self) {
         self.compact = true;
+        let column = |key: &'static str, width: f32| {
+            Column::new(key, column_title(key))
+                .width(px(width))
+                .sortable()
+        };
         self.columns = vec![
             name_column(px(200.)),
-            Column::new("size", column_title("size"))
-                .width(px(88.))
-                .sortable(),
+            column("size", 88.),
+            column("modified", 150.),
         ];
         self.sort = None;
         self.apply_sort();

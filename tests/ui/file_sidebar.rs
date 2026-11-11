@@ -161,7 +161,10 @@ async fn files_open_on_the_terminals_own_connection(cx: &mut TestAppContext) {
         let panel = sidebar(&fixture, INITIAL_WEB_TERMINAL, cx).unwrap();
         let panel = panel.read(cx);
         assert!(panel.is_sidebar());
-        assert_eq!(panel.remote().read(cx).column_names(cx), ["名称", "大小"]);
+        assert_eq!(
+            panel.remote().read(cx).column_names(cx),
+            ["名称", "大小", "修改时间"]
+        );
         // Downloads go to Downloads, and the folder is never listed.
         assert_eq!(panel.local().read(cx).path(), "/local/tester/Downloads");
     });
@@ -177,6 +180,76 @@ async fn files_open_on_the_terminals_own_connection(cx: &mut TestAppContext) {
     wait_for_path(cx, fixture.handle, FILES, "/home/tester").await;
     assert_eq!(*fixture.sftp.on_terminal.lock().unwrap(), 1);
     assert_eq!(fixture.terminals.sftp_opens(), [1]);
+}
+
+/// 修改时间 is past the sidebar's right edge as it opens: the list scrolls
+/// sideways to it, and a click on its title sorts by it as in an SFTP tab,
+/// newest first, then oldest first, then back to by name.
+#[gpui_kit::test]
+async fn files_scroll_sideways_to_the_times_and_sort_by_them(cx: &mut TestAppContext) {
+    use gpui_kit::ScrollDelta;
+    let fixture = open(cx, FakeSftpProvider::default());
+    show_files(cx, &fixture, INITIAL_WEB_TERMINAL, FILES).await;
+    let names = |cx: &mut TestAppContext| {
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let panel = sidebar(&fixture, INITIAL_WEB_TERMINAL, cx).unwrap();
+            let entries = panel.read(cx).remote().read(cx).entries(cx);
+            entries
+                .into_iter()
+                .map(|entry| entry.name.to_string())
+                .collect::<Vec<_>>()
+        })
+    };
+    let by_name = ["..", "目录", "链接目录", "文件 乙.txt", "文件 甲.txt"];
+    assert_eq!(names(cx), by_name);
+
+    // The title is there, cut off by the sidebar's edge.
+    let (before, edge) = in_frame(cx, fixture.handle, |window, _| {
+        let edge = window.find(("remote-pane", FILES)).bounds().right();
+        let title = window
+            .within(("remote-pane", FILES))
+            .find("column:modified");
+        (title.bounds(), edge)
+    });
+    assert!(before.right() > edge, "{before:?} ends within {edge:?}");
+
+    in_frame(cx, fixture.handle, |window, cx| {
+        window.within(("remote-pane", FILES)).scroll(
+            "column:size",
+            ScrollDelta::Pixels(point(px(-400.), px(0.))),
+            cx,
+        );
+    });
+    let after = in_frame(cx, fixture.handle, |window, _| {
+        window
+            .within(("remote-pane", FILES))
+            .find("column:modified")
+            .bounds()
+    });
+    assert!(after.left() < before.left(), "{after:?} did not move");
+    assert!(after.right() <= edge, "{after:?} is still past {edge:?}");
+
+    let click_modified = |cx: &mut TestAppContext| {
+        in_frame(cx, fixture.handle, |window, cx| {
+            window
+                .within(("remote-pane", FILES))
+                .click("column:modified", cx);
+        });
+    };
+    // Folders stay ahead of files whichever way.
+    click_modified(cx);
+    assert_eq!(
+        names(cx),
+        ["..", "链接目录", "目录", "文件 乙.txt", "文件 甲.txt"]
+    );
+    click_modified(cx);
+    assert_eq!(
+        names(cx),
+        ["..", "目录", "链接目录", "文件 甲.txt", "文件 乙.txt"]
+    );
+    click_modified(cx);
+    assert_eq!(names(cx), by_name);
 }
 
 #[gpui_kit::test]
