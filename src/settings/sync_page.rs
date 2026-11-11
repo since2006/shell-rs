@@ -1,7 +1,7 @@
-//! 设置 › 云同步: off, the ways to turn it on (a folder, a WebDAV server,
-//! an S3 bucket, or the setup code another device shows); on, where this
-//! computer stands, its setup code, the other devices, and the sync
-//! password.
+//! 设置 › 云同步: off, the places to turn it on at (a folder, a WebDAV
+//! server, an S3 bucket) and, in a group of its own, joining with the setup
+//! code another device shows; on, where this computer stands, its setup
+//! code, the other devices, and the sync password.
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Sizable as _,
@@ -28,7 +28,10 @@ use crate::sync::{Attention, JobError, SyncPhase, SyncService, SyncSnapshot};
 pub(super) fn sync_groups(sync: &Entity<SyncService>, cx: &App) -> Vec<SettingGroup> {
     let snapshot = sync.read(cx).snapshot(cx);
     let Some(location) = snapshot.location.clone() else {
-        return vec![set_up_group(snapshot.available)];
+        return vec![
+            set_up_group(snapshot.available),
+            join_code_group(snapshot.available),
+        ];
     };
     let name = snapshot
         .device
@@ -36,38 +39,42 @@ pub(super) fn sync_groups(sync: &Entity<SyncService>, cx: &App) -> Vec<SettingGr
         .map(|device| device.name.clone())
         .unwrap_or_default();
     let busy = snapshot.busy;
-    vec![
-        SettingGroup::new()
-            .title(t!("settings.sync.this_computer"))
-            .description(t!("settings.sync.this_computer_description", name = name))
-            .items(
-                [status_item(snapshot.clone())]
-                    .into_iter()
-                    .chain(location_items(&location, busy))
-                    .chain(setup_code_item(&location, snapshot.available))
-                    .chain([command_item(
-                        t!("settings.sync.turn_off"),
-                        t!("settings.sync.turn_off_description"),
-                        ("turn-off-sync", t!("settings.sync.turn_off_button")),
-                        busy,
-                        || Box::new(TurnOffSync),
-                    )]),
-            ),
-        devices_group(&snapshot),
-        SettingGroup::new()
-            .title(t!("settings.sync.password"))
-            .items([command_item(
-                t!("settings.sync.change_password"),
-                t!("settings.sync.change_password_description"),
-                ("change-sync-password", t!("settings.sync.change")),
-                busy,
-                || Box::new(ChangeSyncPassword),
-            )]),
+    let this_computer = SettingGroup::new()
+        .title(t!("settings.sync.this_computer"))
+        .description(t!("settings.sync.this_computer_description", name = name))
+        .items(
+            [status_item(snapshot.clone())]
+                .into_iter()
+                .chain(location_items(&location, busy))
+                .chain([command_item(
+                    t!("settings.sync.turn_off"),
+                    t!("settings.sync.turn_off_description"),
+                    ("turn-off-sync", t!("settings.sync.turn_off_button")),
+                    busy,
+                    || Box::new(TurnOffSync),
+                )]),
+        );
+    let password = SettingGroup::new()
+        .title(t!("settings.sync.password"))
+        .items([command_item(
+            t!("settings.sync.change_password"),
+            t!("settings.sync.change_password_description"),
+            ("change-sync-password", t!("settings.sync.change")),
+            busy,
+            || Box::new(ChangeSyncPassword),
+        )]);
+    [
+        Some(this_computer),
+        show_code_group(&location, snapshot.available),
+        Some(devices_group(&snapshot)),
+        Some(password),
     ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
-/// Sync is off: what it does, the places it can go through, and joining
-/// with the setup code of a device that is in sync already.
+/// Sync is off: what it does, and the places it can go through.
 fn set_up_group(available: bool) -> SettingGroup {
     let description = if available {
         t!("settings.sync.description")
@@ -100,28 +107,38 @@ fn set_up_group(available: bool) -> SettingGroup {
                 !available,
                 || Box::new(SetUpS3Sync),
             ),
-            command_item(
-                t!("settings.sync.code"),
-                t!("settings.sync.code_join_description"),
-                ("sync-set-up-code", t!("settings.sync.enter_code")),
-                !available,
-                || Box::new(SetUpSyncWithCode),
-            ),
         ])
 }
 
-/// 配置码: the code another device joins this sync with. It only reads the
-/// place, so it is there beside a round as well. A folder has none: its
-/// path is this computer's.
-fn setup_code_item(location: &SyncLocation, available: bool) -> Option<SettingItem> {
-    location.signs_in().then(|| {
-        command_item(
-            t!("settings.sync.code"),
-            t!("settings.sync.code_show_description"),
-            ("show-sync-setup-code", t!("settings.sync.show_code")),
+/// 配置码, while sync is off: joining the sync another device is in with
+/// the code it shows. A group of its own, apart from the places above:
+/// those ask for an address and a login, this for neither.
+fn join_code_group(available: bool) -> SettingGroup {
+    SettingGroup::new()
+        .title(t!("settings.sync.code"))
+        .items([command_item(
+            t!("settings.sync.code_join"),
+            t!("settings.sync.code_join_description"),
+            ("sync-set-up-code", t!("settings.sync.enter_code")),
             !available,
-            || Box::new(ShowSyncSetupCode),
-        )
+            || Box::new(SetUpSyncWithCode),
+        )])
+}
+
+/// 配置码, while sync is on: the code another device joins this sync with,
+/// in a group of its own. Showing it only reads the place, so it is there
+/// beside a round as well. A folder has none: its path is this computer's.
+fn show_code_group(location: &SyncLocation, available: bool) -> Option<SettingGroup> {
+    location.signs_in().then(|| {
+        SettingGroup::new()
+            .title(t!("settings.sync.code"))
+            .items([command_item(
+                t!("settings.sync.code_show"),
+                t!("settings.sync.code_show_description"),
+                ("show-sync-setup-code", t!("settings.sync.show_code")),
+                !available,
+                || Box::new(ShowSyncSetupCode),
+            )])
     })
 }
 

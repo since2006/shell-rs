@@ -677,15 +677,21 @@ settings.sync.connect_s3:
 settings.sync.code:
   zh-CN: 配置码
   en: Setup code
+settings.sync.code_join:
+  zh-CN: 加入已有的同步
+  en: Join an existing sync
 settings.sync.code_join_description:
-  zh-CN: 粘贴另一台设备显示的配置码，再输入同步密码，不用重填地址和密钥。
-  en: Paste the setup code another device shows, then enter the sync password. Nothing else to fill in.
+  zh-CN: 粘贴另一台设备显示的配置码，快速加入现有同步服务器。
+  en: Paste the setup code another device shows to quickly join an existing sync server.
 settings.sync.enter_code:
   zh-CN: 输入配置码…
   en: Enter setup code…
+settings.sync.code_show:
+  zh-CN: 添加其他设备
+  en: Add another device
 settings.sync.code_show_description:
-  zh-CN: 在另一台设备上扫描或粘贴它，再输入同步密码，就能加入这个同步。
-  en: Scan or paste it on another device, then enter the sync password there to join this sync.
+  zh-CN: 在另一台设备上扫描或粘贴配置码，再输入同步密码，就能加入这个同步。
+  en: Scan or paste the setup code on another device, then enter the sync password there to join this sync.
 settings.sync.show_code:
   zh-CN: 显示配置码…
   en: Show setup code…
