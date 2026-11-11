@@ -2,7 +2,9 @@
 //! computer, what waits for the user, and turning it off. The folder is one
 //! `MemoryStore` shared by every computer of a test.
 
-use shellrs::app::{RemoveSyncDevice, ReviewSync, SetUpSync, SyncNow, TurnOffSync};
+use shellrs::app::{
+    RemoveSyncDevice, ReviewSync, SetUpSync, ShowSyncSetupCode, SyncNow, TurnOffSync,
+};
 use shellrs::settings::SyncLocation;
 use shellrs::sync::{Attention, EDIT_PAUSE, SyncPhase, SyncService, SyncServices};
 use shellrs_sync::store::Op;
@@ -51,9 +53,14 @@ fn desk(cx: &mut TestAppContext, folder: &Arc<MemoryStore>) -> Desk {
 }
 
 fn desk_with(cx: &mut TestAppContext, services: SyncServices) -> Desk {
+    desk_of(cx, HostStore::seed(), services)
+}
+
+/// A computer with a window that keeps `store`.
+fn desk_of(cx: &mut TestAppContext, store: HostStore, services: SyncServices) -> Desk {
     let secrets = Arc::new(InMemorySecretStore::default());
     let keys = tempfile::tempdir().unwrap();
-    let store = HostStore::seed()
+    let store = store
         .with_secrets(secrets.clone())
         .with_key_dir(keys.path());
     let (handle, workspace) = open_workspace_with_store(cx, store);
@@ -908,5 +915,221 @@ async fn sync_is_set_up_in_an_s3_bucket(cx: &mut TestAppContext) {
             Some(format!("shellrs/ShellRS · {S3_ENDPOINT}").as_str())
         );
         assert!(window.try_find("change-sync-login").is_some());
+    });
+}
+
+/// Open 同步配置码 on a computer in sync and take the code it shows.
+async fn shown_setup_code(cx: &mut TestAppContext, desk: &Desk) -> String {
+    in_frame(cx, desk.handle, |window, cx| {
+        window.click("show-sync-setup-code", cx)
+    });
+    cx.wait_for(desk.handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("sync-setup-code").is_some()
+    })
+    .await;
+    in_frame(cx, desk.handle, |window, _| {
+        window.find("sync-setup-code").label().unwrap().to_string()
+    })
+}
+
+/// Paste the clipboard into 用配置码加入同步, type `password`, and commit.
+fn join_with_pasted_code(cx: &mut TestAppContext, desk: &Desk, password: &str) {
+    in_frame(cx, desk.handle, |window, cx| {
+        window.click("sync-code", cx);
+        window.press("secondary-a", cx);
+        window.press("secondary-v", cx);
+        window.click("sync-code-password", cx);
+        window.press("secondary-a", cx);
+        window.press("backspace", cx);
+        window.input(password, cx);
+        window.click("sync-code-commit", cx);
+    });
+}
+
+async fn form_error(cx: &mut TestAppContext, desk: &Desk) -> String {
+    cx.wait_for(desk.handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("form-error").is_some()
+    })
+    .await;
+    in_frame(cx, desk.handle, |window, _| {
+        window.find("form-error").label().unwrap().to_string()
+    })
+}
+
+/// The second computer types nothing of the server: the code the first
+/// shows and the sync password are enough.
+#[gpui_kit::test]
+async fn a_setup_code_takes_another_computer_into_the_sync(cx: &mut TestAppContext) {
+    let server = Server::new();
+    let desk = desk_with(cx, server.services("desk"));
+    set_up_on_the_server(cx, &desk, &server).await;
+
+    let code = shown_setup_code(cx, &desk).await;
+    assert!(code.starts_with("shellrs-sync:"), "{code}");
+    assert!(!code.contains("app-password") && !code.contains("dav.example"));
+    // 复制配置码 copies it and leaves the QR code up to be scanned.
+    in_frame(cx, desk.handle, |window, cx| {
+        assert!(enabled(&window.find("sync-copy-code")));
+        window.click("sync-copy-code", cx);
+    });
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|item| item.text()),
+        Some(code.clone())
+    );
+    in_frame(cx, desk.handle, |window, _| {
+        assert!(window.try_find("sync-setup-code").is_some());
+    });
+
+    let other = desk_of(cx, HostStore::empty(), server.services("laptop"));
+    open_sync_settings(cx, other.handle);
+    in_frame(cx, other.handle, |window, cx| {
+        window.click("sync-set-up-code", cx)
+    });
+
+    // A password that does not open the code is said over the dialog, and
+    // nothing is kept of the try.
+    join_with_pasted_code(cx, &other, "wrong horse battery");
+    assert_eq!(
+        form_error(cx, &other).await,
+        "同步密码不对，或者这个配置码是更换同步密码之前生成的。"
+    );
+    assert_eq!(other.location_setting(cx), None);
+    assert!(other.secrets.get(&SecretRef::SyncLogin).unwrap().is_none());
+    assert!(
+        other
+            .secrets
+            .get(&SecretRef::SyncKeyring)
+            .unwrap()
+            .is_none()
+    );
+
+    join_with_pasted_code(cx, &other, PASSWORD);
+    cx.wait_for(other.handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("sync-code-commit").is_none()
+    })
+    .await;
+    cx.run_until_parked();
+
+    assert_eq!(other.location_setting(cx), Some(at_dav()));
+    let kept = other.secrets.get(&SecretRef::SyncLogin).unwrap();
+    assert_eq!(kept.as_deref().map(String::as_str), Some("app-password"));
+    assert!(
+        other
+            .secrets
+            .get(&SecretRef::SyncKeyring)
+            .unwrap()
+            .is_some()
+    );
+    let desk_hosts = host_names(&desk.store(cx), cx);
+    assert_eq!(desk_hosts.len(), 6);
+    assert_eq!(host_names(&other.store(cx), cx), desk_hosts);
+    // The server never saw a login but the one the code carried.
+    let logins = server.logins.lock().unwrap().clone();
+    assert!(
+        logins
+            .iter()
+            .all(|login| login.as_deref() == Some("app-password")),
+        "{logins:?}"
+    );
+    in_frame(cx, other.handle, |window, _| {
+        assert_eq!(window.find("sync-webdav-url").label(), Some(DAV));
+        // The one who joined shows the code as well.
+        assert!(window.try_find("show-sync-setup-code").is_some());
+    });
+}
+
+/// What is not a setup code is said before the password is looked at or
+/// the server asked anything.
+#[gpui_kit::test]
+async fn what_is_not_a_setup_code_is_refused_at_once(cx: &mut TestAppContext) {
+    let server = Server::new();
+    let desk = desk_with(cx, server.services("desk"));
+    set_up_on_the_server(cx, &desk, &server).await;
+    let code = shown_setup_code(cx, &desk).await;
+    let asked = server.logins.lock().unwrap().len();
+
+    let other = desk_of(cx, HostStore::empty(), server.services("laptop"));
+    open_sync_settings(cx, other.handle);
+    in_frame(cx, other.handle, |window, cx| {
+        window.click("sync-set-up-code", cx)
+    });
+    in_frame(cx, other.handle, |window, cx| {
+        window.click("sync-code-commit", cx)
+    });
+    assert_eq!(form_error(cx, &other).await, "粘贴配置码。");
+
+    for (pasted, said) in [
+        (
+            "https://dav.example/dav/ShellRS".to_owned(),
+            "这不是有效的配置码，可能没有复制完整。",
+        ),
+        (
+            code[..code.len() - 12].to_owned(),
+            "这不是有效的配置码，可能没有复制完整。",
+        ),
+        // "SRSC", then version 2.
+        (
+            "shellrs-sync:U1JTQwI".to_owned(),
+            "这个配置码来自更新版本的 ShellRS，升级后才能使用。",
+        ),
+    ] {
+        cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(pasted)));
+        join_with_pasted_code(cx, &other, PASSWORD);
+        assert_eq!(form_error(cx, &other).await, said);
+    }
+    // The whole code with no password asks for one.
+    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string(code)));
+    join_with_pasted_code(cx, &other, "");
+    assert_eq!(form_error(cx, &other).await, "输入同步密码。");
+
+    assert_eq!(other.location_setting(cx), None);
+    assert_eq!(server.logins.lock().unwrap().len(), asked);
+}
+
+/// A folder's path is this computer's: it has no setup code to show.
+#[gpui_kit::test]
+async fn a_folder_has_no_setup_code(cx: &mut TestAppContext) {
+    let folder = Arc::new(MemoryStore::new());
+    let desk = desk(cx, &folder);
+    // Off, the code another device shows is one of the ways in.
+    open_sync_settings(cx, desk.handle);
+    in_frame(cx, desk.handle, |window, cx| {
+        assert!(window.try_find("sync-set-up-code").is_some());
+        window.click("open-settings", cx);
+    });
+    set_up_on_the_desk(cx, &desk).await;
+    in_frame(cx, desk.handle, |window, cx| {
+        assert!(window.try_find("sync-folder").is_some());
+        assert!(window.try_find("show-sync-setup-code").is_none());
+        window.dispatch_action(Box::new(ShowSyncSetupCode), cx);
+    });
+    in_frame(cx, desk.handle, |window, _| {
+        assert!(window.try_find("sync-copy-code").is_none());
+    });
+}
+
+/// The code is made from what the place holds now: a login the server
+/// refuses is said in the dialog, with nothing to copy.
+#[gpui_kit::test]
+async fn a_setup_code_that_cannot_be_made_says_why(cx: &mut TestAppContext) {
+    let server = Server::new();
+    let desk = desk_with(cx, server.services("desk"));
+    set_up_on_the_server(cx, &desk, &server).await;
+    *server.password.lock().unwrap() = "changed".into();
+
+    in_frame(cx, desk.handle, |window, cx| {
+        window.click("show-sync-setup-code", cx)
+    });
+    cx.wait_for(desk.handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("sync-code-failed").is_some()
+    })
+    .await;
+    in_frame(cx, desk.handle, |window, _| {
+        assert_eq!(
+            window.find("sync-code-failed").label(),
+            Some("未能生成配置码：同步的位置拒绝了访问：检查用户名和密码，或文件夹的权限。")
+        );
+        assert!(window.try_find("sync-setup-code").is_none());
+        assert!(!enabled(&window.find("sync-copy-code")));
     });
 }

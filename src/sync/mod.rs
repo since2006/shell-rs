@@ -9,11 +9,14 @@
 //! in the keychain, the state in the database, and the secrets go where the
 //! store keeps them. Its dialogs and the words for its errors are here too.
 
+mod code_dialog;
 mod describe;
+mod qr;
 mod remote_dialog;
 mod service;
 mod sync_dialog;
 
+pub use code_dialog::{open_join_code_dialog, open_setup_code_dialog};
 pub use remote_dialog::{RemoteDialog, RemoteKind, open_remote_dialog};
 pub use service::{EDIT_PAUSE, SyncEvent, SyncPhase, SyncService, SyncSnapshot, system_services};
 pub use shellrs_hosts::sync::*;

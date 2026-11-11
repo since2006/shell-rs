@@ -674,6 +674,21 @@ settings.sync.s3_option_description:
 settings.sync.connect_s3:
   zh-CN: 连接 S3…
   en: Connect S3…
+settings.sync.code:
+  zh-CN: 配置码
+  en: Setup code
+settings.sync.code_join_description:
+  zh-CN: 粘贴另一台设备显示的配置码，再输入同步密码，不用重填地址和密钥。
+  en: Paste the setup code another device shows, then enter the sync password. Nothing else to fill in.
+settings.sync.enter_code:
+  zh-CN: 输入配置码…
+  en: Enter setup code…
+settings.sync.code_show_description:
+  zh-CN: 在另一台设备上扫描或粘贴它，再输入同步密码，就能加入这个同步。
+  en: Scan or paste it on another device, then enter the sync password there to join this sync.
+settings.sync.show_code:
+  zh-CN: 显示配置码…
+  en: Show setup code…
 settings.sync.s3:
   zh-CN: S3 位置
   en: S3 location

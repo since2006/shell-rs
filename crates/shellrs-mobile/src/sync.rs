@@ -235,6 +235,15 @@ pub enum SyncFailure {
     LocationNotSaved {
         detail: String,
     },
+    /// The text is not a setup code, or not a whole one: maybe not all of
+    /// it was copied.
+    BadSetupCode,
+    /// The setup code was made by a newer ShellRS: update the app.
+    SetupCodeTooNew,
+    /// The setup code does not open with the password, or opens a sync
+    /// that has another now: it is not the sync password, or the code was
+    /// made before the password changed.
+    SetupCodeWrongPassword,
     /// The core is gone.
     Closed,
     /// What should never happen: a bug in ShellRS.
@@ -309,6 +318,23 @@ pub fn check_sync_password(password: String) -> Option<PasswordProblem> {
 #[uniffi::export]
 pub fn random_sync_password() -> String {
     hosts_sync::random_password().to_string()
+}
+
+/// Whether `text` starts as a setup code does: to tell one from whatever
+/// else the camera reads. [`check_sync_setup_code`] says what is wrong
+/// with it.
+#[uniffi::export]
+pub fn is_sync_setup_code(text: String) -> bool {
+    shellrs_sync::is_setup_code(&text)
+}
+
+/// What is wrong with a setup code as scanned or pasted, as far as can be
+/// told before the sync password is asked for: not one or cut short
+/// ([`SyncFailure::BadSetupCode`]), or a newer ShellRS's
+/// ([`SyncFailure::SetupCodeTooNew`]). White space in it is passed over.
+#[uniffi::export]
+pub fn check_sync_setup_code(code: String) -> Result<(), SyncFailure> {
+    shellrs_sync::check_setup_code(&code).map_err(Into::into)
 }
 
 /// A WebDAV server's fields as typed, checked. The password is taken as
@@ -686,6 +712,74 @@ impl SyncService {
         .await
     }
 
+    /// The setup code of this sync, to show as text and as a QR code:
+    /// where sync goes and the login the keychain keeps, sealed for
+    /// whoever knows the sync password, so another device joins with
+    /// [`Self::join_with_setup_code`] and nothing typed but the password.
+    /// It reads the place once, beside a round as well. A folder has
+    /// none ([`SyncFailure::NoLogin`]); a password changed elsewhere and
+    /// not yet typed here is [`SyncFailure::NeedsPassword`].
+    pub async fn setup_code(&self) -> Result<String, SyncFailure> {
+        let inner = self.inner.clone();
+        task::run(&self.inner.store.runtime, async move {
+            let location = inner.location()?;
+            if !location.signs_in() {
+                return Err(SyncFailure::NoLogin);
+            }
+            let secrets = inner.secrets()?;
+            let services = inner.services.clone();
+            task::blocking(&inner.store.runtime, move || {
+                let remote = worker::open(&services, &location, None, &*secrets)?;
+                worker::setup_code(&*remote, &*secrets, &location)
+            })
+            .await
+            .map_err(SyncFailure::from)
+        })
+        .await
+    }
+
+    /// Join the sync a setup code is of, with its sync password: the
+    /// place and the login come from the code, and the login is kept in
+    /// the keychain. As [`Self::join`] the first time; then
+    /// [`Self::sync_now`]. [`SyncFailure::SetupCodeWrongPassword`] when
+    /// the password does not open the code, or the sync there.
+    pub async fn join_with_setup_code(
+        &self,
+        code: String,
+        password: String,
+    ) -> Result<(), SyncFailure> {
+        let password = Zeroizing::new(password);
+        if let Err(problem) = hosts_sync::check_password(&password) {
+            return Err(SyncFailure::Password {
+                problem: problem.into(),
+            });
+        }
+        let inner = self.inner.clone();
+        task::run(&self.inner.store.runtime, async move {
+            // Deriving the key takes about a second.
+            let typed = password.clone();
+            let (location, login) = task::blocking(&inner.store.runtime, move || {
+                worker::open_setup_code(&code, &typed)
+            })
+            .await?;
+            let kept = login.clone();
+            let joined = inner
+                .job(location.clone(), Some(login), move |remote, secrets, _| {
+                    worker::join(remote, secrets, &password)?;
+                    worker::keep_login(secrets, Some(kept.as_str()))
+                })
+                .await;
+            match joined {
+                // The code opened: the sync there took another password
+                // since.
+                Err(SyncFailure::WrongPassword) => return Err(SyncFailure::SetupCodeWrongPassword),
+                joined => joined?,
+            }
+            inner.joined(location, true)
+        })
+        .await
+    }
+
     /// Sign in anew to the server or bucket sync goes through: `location`
     /// is the same place, maybe as another user or with another key, and
     /// `login` must get in before it is kept. Then [`Self::sync_now`].
@@ -965,6 +1059,9 @@ impl From<SyncError> for SyncFailure {
             SyncError::MassDelete { count, of } => Self::MassDelete { count, of },
             SyncError::ReadOnly { min_reader } => Self::ReadOnly { min_reader },
             SyncError::Random => Self::Random,
+            SyncError::BadSetupCode => Self::BadSetupCode,
+            SyncError::SetupCodeTooNew => Self::SetupCodeTooNew,
+            SyncError::SetupCodeWrongPassword => Self::SetupCodeWrongPassword,
         }
     }
 }
@@ -990,10 +1087,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use futures::executor::block_on;
-    use shellrs_hosts::sync::SyncServices;
-    use shellrs_sync::{DeviceInfo, KdfParams};
+    use shellrs_hosts::sync::{self as hosts_sync, SyncServices};
+    use shellrs_sync::{DeviceInfo, KdfParams, MemoryStore, StoreError, SyncStore};
 
-    use super::{PasswordProblem, SyncFailure, SyncLocation, SyncOutcome};
+    use super::{
+        PasswordProblem, SyncFailure, SyncLocation, SyncOutcome, check_sync_setup_code,
+        is_sync_setup_code,
+    };
     use crate::{
         Core, CoreConfig, HostAuth, HostDraft, HostProtocol, HostRoute, Keychain, KeychainError,
         SecretChange,
@@ -1037,6 +1137,17 @@ mod tests {
 
     /// A phone called `name`, keeping its data in `data`.
     fn phone(data: &Path, name: &str, keychain: &Arc<Memory>) -> Arc<Core> {
+        phone_reaching(data, name, keychain, None)
+    }
+
+    /// A phone for which every place but a folder is `server`, a WebDAV
+    /// server or a bucket that takes its one login only.
+    fn phone_reaching(
+        data: &Path,
+        name: &str,
+        keychain: &Arc<Memory>,
+        server: Option<(Arc<MemoryStore>, &'static str)>,
+    ) -> Arc<Core> {
         let device = DeviceInfo {
             name: name.into(),
             platform: "ios".into(),
@@ -1044,6 +1155,14 @@ mod tests {
         };
         let mut services = SyncServices::system("ShellRS/0.0.0", device.clone());
         services.kdf = FAST;
+        if let Some((store, login)) = server {
+            let system = services.open.clone();
+            services.open = Arc::new(move |location, typed| match location {
+                hosts_sync::SyncLocation::Folder { .. } => system(location, typed),
+                _ if typed == Some(login) => Ok(store.clone() as Arc<dyn SyncStore>),
+                _ => Err(StoreError::Unauthorized),
+            });
+        }
         let config = CoreConfig {
             data_dir: data.display().to_string(),
             device_name: device.name,
@@ -1170,5 +1289,149 @@ mod tests {
             );
             assert!(!one.sync().status().devices.iter().any(|d| d.id == two_id));
         });
+    }
+
+    fn host(name: &str) -> HostDraft {
+        HostDraft {
+            name: name.into(),
+            protocol: HostProtocol::Ssh,
+            address: "10.0.0.1".into(),
+            port: 22,
+            user: "root".into(),
+            auth: HostAuth::Password,
+            route: HostRoute::Direct,
+            group: None,
+            notes: String::new(),
+        }
+    }
+
+    /// The second phone types nothing of the bucket: the code the first
+    /// shows and the sync password are enough.
+    #[test]
+    fn a_setup_code_takes_another_phone_into_the_sync() {
+        let (one_dir, two_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let bucket = Arc::new(MemoryStore::new());
+        let location = SyncLocation::S3 {
+            endpoint: "https://s3.example.com".into(),
+            region: "us-east-1".into(),
+            bucket: "shellrs".into(),
+            prefix: "sync".into(),
+            path_style: false,
+            access_key: "AKIAEXAMPLE".into(),
+        };
+        let (one_keys, two_keys) = (Arc::new(Memory::default()), Arc::new(Memory::default()));
+        let server = || Some((bucket.clone(), "secret key"));
+        let one = phone_reaching(one_dir.path(), "one", &one_keys, server());
+        let two = phone_reaching(two_dir.path(), "two", &two_keys, server());
+        block_on(async {
+            one.store()
+                .add_host(host("web"), SecretChange::Keep, SecretChange::Keep)
+                .await
+                .unwrap();
+            let sync = one.sync();
+            assert!(matches!(
+                sync.setup_code().await,
+                Err(SyncFailure::NotSetUp)
+            ));
+            sync.create(location.clone(), Some("secret key".into()), PASSWORD.into())
+                .await
+                .unwrap();
+            sync.sync_now(false, false).await.unwrap();
+            let code = sync.setup_code().await.unwrap();
+            assert!(is_sync_setup_code(code.clone()));
+            assert!(check_sync_setup_code(code.clone()).is_ok());
+            assert!(!code.contains("secret") && !code.contains("example"));
+
+            let sync = two.sync();
+            assert!(matches!(
+                sync.join_with_setup_code(code.clone(), String::new()).await,
+                Err(SyncFailure::Password {
+                    problem: PasswordProblem::Missing
+                })
+            ));
+            assert!(matches!(
+                sync.join_with_setup_code(code.clone(), "wrong horse battery".into())
+                    .await,
+                Err(SyncFailure::SetupCodeWrongPassword)
+            ));
+            assert!(matches!(
+                sync.join_with_setup_code(code[..code.len() - 9].into(), PASSWORD.into())
+                    .await,
+                Err(SyncFailure::BadSetupCode)
+            ));
+            // Nothing was kept of the tries that failed.
+            assert_eq!(sync.status().location, None);
+            assert!(two_keys.read("sync:login").is_none());
+
+            // Pasted wrapped, as a chat app may leave it.
+            let wrapped = format!(" {}\n{}\n", &code[..40], &code[40..]);
+            sync.join_with_setup_code(wrapped, PASSWORD.into())
+                .await
+                .unwrap();
+            assert_eq!(sync.status().location, Some(location.clone()));
+            assert_eq!(two_keys.read("sync:login").as_deref(), Some("secret key"));
+            assert_eq!(names(sync.sync_now(false, false).await.unwrap()), ["one"]);
+            assert_eq!(two.store().hosts().len(), 1);
+
+            // The one who joined can show the code as well.
+            let again = sync.setup_code().await.unwrap();
+            assert_ne!(again, code);
+            assert!(check_sync_setup_code(again).is_ok());
+
+            // After the password changed, the old code tells of it rather
+            // than of a wrong password for the sync.
+            one.sync()
+                .change_password("staple battery horse".into())
+                .await
+                .unwrap();
+            sync.turn_off(false).await.unwrap();
+            assert!(matches!(
+                sync.join_with_setup_code(code.clone(), PASSWORD.into())
+                    .await,
+                Err(SyncFailure::SetupCodeWrongPassword)
+            ));
+            assert!(matches!(
+                sync.join_with_setup_code(code, "staple battery horse".into())
+                    .await,
+                Err(SyncFailure::SetupCodeWrongPassword)
+            ));
+            let code = one.sync().setup_code().await.unwrap();
+            sync.join_with_setup_code(code, "staple battery horse".into())
+                .await
+                .unwrap();
+        });
+    }
+
+    /// A folder's path is this phone's, and what is not a code is told
+    /// before any password is asked for.
+    #[test]
+    fn a_folder_has_no_setup_code_and_other_text_is_not_one() {
+        let (dir, folder) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let keys = Arc::new(Memory::default());
+        let one = phone(dir.path(), "one", &keys);
+        block_on(async {
+            let location = SyncLocation::Folder {
+                path: folder.path().display().to_string(),
+            };
+            one.sync()
+                .create(location, None, PASSWORD.into())
+                .await
+                .unwrap();
+            assert!(matches!(
+                one.sync().setup_code().await,
+                Err(SyncFailure::NoLogin)
+            ));
+        });
+        assert!(!is_sync_setup_code("https://example.com/".into()));
+        assert!(matches!(
+            check_sync_setup_code("https://example.com/".into()),
+            Err(SyncFailure::BadSetupCode)
+        ));
+        // A code of a version to come: "SRSC", then 2.
+        assert!(is_sync_setup_code("shellrs-sync:U1JTQwI".into()));
+        assert!(matches!(
+            check_sync_setup_code("shellrs-sync:U1JTQwI".into()),
+            Err(SyncFailure::SetupCodeTooNew)
+        ));
     }
 }

@@ -1,6 +1,7 @@
-//! 设置 › 云同步: off, the three ways to turn it on (a folder, a WebDAV
-//! server, an S3 bucket); on, where this computer stands, the other
-//! devices, and the sync password.
+//! 设置 › 云同步: off, the ways to turn it on (a folder, a WebDAV server,
+//! an S3 bucket, or the setup code another device shows); on, where this
+//! computer stands, its setup code, the other devices, and the sync
+//! password.
 
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Sizable as _,
@@ -17,7 +18,7 @@ use shellrs_sync::RemoteDevice;
 use super::settings_panel::keywords;
 use crate::app::{
     CatalogIcon, ChangeSyncLogin, ChangeSyncPassword, RemoveSyncDevice, ReviewSync, SetUpS3Sync,
-    SetUpSync, SetUpWebDavSync, SyncNow, TurnOffSync,
+    SetUpSync, SetUpSyncWithCode, SetUpWebDavSync, ShowSyncSetupCode, SyncNow, TurnOffSync,
 };
 use crate::host::ErrorMessage as _;
 use crate::i18n::{t, tn};
@@ -43,6 +44,7 @@ pub(super) fn sync_groups(sync: &Entity<SyncService>, cx: &App) -> Vec<SettingGr
                 [status_item(snapshot.clone())]
                     .into_iter()
                     .chain(location_items(&location, busy))
+                    .chain(setup_code_item(&location, snapshot.available))
                     .chain([command_item(
                         t!("settings.sync.turn_off"),
                         t!("settings.sync.turn_off_description"),
@@ -64,7 +66,8 @@ pub(super) fn sync_groups(sync: &Entity<SyncService>, cx: &App) -> Vec<SettingGr
     ]
 }
 
-/// Sync is off: what it does, and the two places it can go through.
+/// Sync is off: what it does, the places it can go through, and joining
+/// with the setup code of a device that is in sync already.
 fn set_up_group(available: bool) -> SettingGroup {
     let description = if available {
         t!("settings.sync.description")
@@ -97,7 +100,29 @@ fn set_up_group(available: bool) -> SettingGroup {
                 !available,
                 || Box::new(SetUpS3Sync),
             ),
+            command_item(
+                t!("settings.sync.code"),
+                t!("settings.sync.code_join_description"),
+                ("sync-set-up-code", t!("settings.sync.enter_code")),
+                !available,
+                || Box::new(SetUpSyncWithCode),
+            ),
         ])
+}
+
+/// 配置码: the code another device joins this sync with. It only reads the
+/// place, so it is there beside a round as well. A folder has none: its
+/// path is this computer's.
+fn setup_code_item(location: &SyncLocation, available: bool) -> Option<SettingItem> {
+    location.signs_in().then(|| {
+        command_item(
+            t!("settings.sync.code"),
+            t!("settings.sync.code_show_description"),
+            ("show-sync-setup-code", t!("settings.sync.show_code")),
+            !available,
+            || Box::new(ShowSyncSetupCode),
+        )
+    })
 }
 
 /// Where sync goes through: a folder's path, or a WebDAV server's

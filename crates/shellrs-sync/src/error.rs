@@ -76,6 +76,14 @@ pub enum SyncError {
     },
     /// The system's random source failed.
     Random,
+    /// The text is not a setup code, or not a whole one.
+    BadSetupCode,
+    /// The setup code was made by a newer ShellRS, in a version or for a
+    /// kind of place this one does not know.
+    SetupCodeTooNew,
+    /// The setup code does not open with this password: it is not the
+    /// sync password, or the code was made before the password changed.
+    SetupCodeWrongPassword,
 }
 
 impl fmt::Display for SyncError {
@@ -93,6 +101,11 @@ impl fmt::Display for SyncError {
             Self::MassDelete { count, of } => write!(f, "would delete {count} of {of} records"),
             Self::ReadOnly { min_reader } => write!(f, "a snapshot needs format {min_reader}"),
             Self::Random => f.write_str("no random numbers"),
+            Self::BadSetupCode => f.write_str("not a setup code"),
+            Self::SetupCodeTooNew => f.write_str("the setup code needs a newer version"),
+            Self::SetupCodeWrongPassword => {
+                f.write_str("the setup code does not open with this password")
+            }
         }
     }
 }

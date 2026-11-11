@@ -12,11 +12,18 @@ use crate::store::MemoryStore;
 use crate::vault::tests::FAST;
 use crate::{
     DeviceId, DeviceInfo, FixedEnv, Kind, RecordKey, Stamp, Version, create_vault, envelope,
-    layout, snapshot, unlock_vault, wire,
+    layout, open_setup_code, seal_setup_code, snapshot, unlock_vault, wire,
 };
 
 const PASSWORD: &str = "correct horse battery staple";
 const DEVICE: &str = "k3jq8x0m2pa7d4vn";
+/// What the setup code of `testdata/v1` holds, as the apps write it: a
+/// place nothing answers at, so a test that joins with it stays off the
+/// network.
+const SETUP_CODE: &str = concat!(
+    r#"{"location":{"kind":"webdav","url":"http://127.0.0.1:1/shellrs","username":"me"},"#,
+    r#""login":"test login"}"#
+);
 
 fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/v1")
@@ -135,4 +142,32 @@ fn format_1_files_still_read_the_same() {
         let fields = read.records[&key].live().unwrap();
         assert_eq!(wire::parse(&key, fields), Ok(data), "{key}");
     }
+}
+
+/// Write the setup code of the vault in `testdata/v1`, and nothing else:
+/// the vault and the device file there are released and stay as they are.
+#[test]
+#[ignore]
+fn write_golden_setup_code() {
+    let store = MemoryStore::new();
+    store.set_raw(
+        layout::VAULT,
+        std::fs::read(dir().join("vault.json")).unwrap(),
+    );
+    let keys = unlock_vault(&store, PASSWORD).unwrap();
+    let code = seal_setup_code(
+        &store,
+        &keys,
+        SETUP_CODE.as_bytes(),
+        &mut FixedEnv::new(0, 95),
+    )
+    .unwrap();
+    std::fs::write(dir().join("setup-code.txt"), format!("{code}\n")).unwrap();
+}
+
+#[test]
+fn a_version_1_setup_code_still_opens() {
+    let code = std::fs::read_to_string(dir().join("setup-code.txt")).unwrap();
+    let plain = open_setup_code(&code, PASSWORD).unwrap();
+    assert_eq!(std::str::from_utf8(&plain), Ok(SETUP_CODE));
 }

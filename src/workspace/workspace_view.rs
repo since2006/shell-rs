@@ -3099,6 +3099,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_set_up_sync_in))
             .on_action(cx.listener(Self::on_set_up_webdav_sync))
             .on_action(cx.listener(Self::on_set_up_s3_sync))
+            .on_action(cx.listener(Self::on_set_up_sync_with_code))
+            .on_action(cx.listener(Self::on_show_sync_setup_code))
             .on_action(cx.listener(Self::on_change_sync_login))
             .on_action(cx.listener(Self::on_sync_now))
             .on_action(cx.listener(Self::on_review_sync))

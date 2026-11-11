@@ -261,6 +261,12 @@ gpui_kit::actions!(
         /// 开启同步 › 连接 S3…: name the bucket and its keys, then make sync
         /// there or join it.
         SetUpS3Sync,
+        /// 开启同步 › 输入配置码…: paste the setup code another device shows
+        /// and type the sync password, then join the sync it is of.
+        SetUpSyncWithCode,
+        /// Open 同步配置码: this sync's setup code, as a QR code and as text
+        /// to copy, for another device to join with.
+        ShowSyncSetupCode,
         /// Sign in anew to the WebDAV server or bucket sync goes through.
         ChangeSyncLogin,
         /// Run a round of sync now.

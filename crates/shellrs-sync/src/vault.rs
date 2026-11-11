@@ -16,7 +16,9 @@ use std::fmt;
 use argon2::{Algorithm, Argon2, Params, Version as ArgonVersion};
 use chacha20poly1305::aead::{Aead as _, KeyInit as _, Payload};
 use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+use hmac::{Hmac, Mac as _};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use unicode_normalization::UnicodeNormalization as _;
 use zeroize::Zeroizing;
 
@@ -52,7 +54,7 @@ impl KdfParams {
         parallelism: 4,
     };
 
-    fn argon2(self) -> Result<Argon2<'static>, SyncError> {
+    pub(crate) fn argon2(self) -> Result<Argon2<'static>, SyncError> {
         let within = self.memory_kib <= Self::MAX.memory_kib
             && (1..=Self::MAX.passes).contains(&self.passes)
             && (1..=Self::MAX.parallelism).contains(&self.parallelism);
@@ -303,6 +305,49 @@ fn derive(
         .hash_password_into(password.as_bytes(), salt, &mut *kek)
         .map_err(|error| SyncError::BadVault(error.to_string()))?;
     Ok(kek)
+}
+
+/// The key of a setup code (`setup_code`), from the key-encryption key:
+/// whoever knows the sync password can derive it, and a password change
+/// leaves the codes made before it closed to the new one.
+fn code_key(kek: &[u8; 32]) -> Zeroizing<[u8; 32]> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(kek).expect("a key of any length");
+    mac.update(b"shellrs-sync setup code");
+    Zeroizing::new(mac.finalize().into_bytes().into())
+}
+
+/// What a device of the vault seals a setup code with: the cost and the
+/// salt the vault's password takes now, which the code carries, and the
+/// code's key.
+pub(crate) struct CodeKey {
+    pub params: KdfParams,
+    pub salt: [u8; 16],
+    pub key: Zeroizing<[u8; 32]>,
+}
+
+/// The key of the setup codes of the vault in `store`, without the
+/// password. `NeedsPassword` or `VaultReplaced` when the keyring is no
+/// longer the vault's, so a code is never made that the password of today
+/// does not open.
+pub(crate) fn code_key_of(store: &dyn SyncStore, keyring: &Keyring) -> Result<CodeKey, SyncError> {
+    let (file, _) = read(store)?;
+    let (params, salt) = file.params()?;
+    let current = current_keys(&file, keyring)?;
+    Ok(CodeKey {
+        params,
+        salt,
+        key: code_key(&current.kek),
+    })
+}
+
+/// The key of a setup code that carries `salt` and `params`, from the
+/// password typed.
+pub(crate) fn code_key_from(
+    password: &str,
+    salt: &[u8; 16],
+    params: KdfParams,
+) -> Result<Zeroizing<[u8; 32]>, SyncError> {
+    Ok(code_key(&*derive(password, salt, params)?))
 }
 
 fn wrap(
@@ -591,6 +636,17 @@ pub(crate) mod tests {
         assert_eq!(
             hex::encode(&*kek),
             "77c7165d162cfa442dd959d139711790f84c091401080df1b8cbdb1855ccf11e"
+        );
+    }
+
+    /// And so is a setup code's key from it: HMAC-SHA256 of the words, as
+    /// Python's `hmac` gives it.
+    #[test]
+    fn the_setup_code_key_is_pinned() {
+        let key = code_key_from("correct horse", &[7; 16], FAST).unwrap();
+        assert_eq!(
+            hex::encode(&*key),
+            "31da6ee0ff19b0caf535b9be89b74e309f56b8dace4cc6d568eb5161ad317abe"
         );
     }
 

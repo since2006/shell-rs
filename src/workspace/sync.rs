@@ -13,7 +13,7 @@ use gpui_kit::*;
 
 use crate::app::{
     ChangeSyncLogin, ChangeSyncPassword, RemoveSyncDevice, ReviewSync, SetUpS3Sync, SetUpSync,
-    SetUpSyncIn, SetUpWebDavSync, SyncNow, TurnOffSync,
+    SetUpSyncIn, SetUpSyncWithCode, SetUpWebDavSync, ShowSyncSetupCode, SyncNow, TurnOffSync,
 };
 use crate::host::ErrorMessage as _;
 use crate::i18n::{t, tn};
@@ -21,7 +21,8 @@ use crate::settings::SyncLocation;
 use crate::shared::confirm_danger;
 use crate::sync::{
     Attention, JoinReason, PasswordDialog, RemoteDialog, RemoteKind, SyncEvent,
-    open_password_dialog, open_remote_dialog, open_turn_off_dialog,
+    open_join_code_dialog, open_password_dialog, open_remote_dialog, open_setup_code_dialog,
+    open_turn_off_dialog,
 };
 
 use super::workspace_view::Workspace;
@@ -116,6 +117,29 @@ impl Workspace {
     ) {
         let dialog = RemoteDialog::SetUp(RemoteKind::S3);
         open_remote_dialog(self.sync.clone(), dialog, window, cx);
+    }
+
+    pub(super) fn on_set_up_sync_with_code(
+        &mut self,
+        _: &SetUpSyncWithCode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        open_join_code_dialog(self.sync.clone(), window, cx);
+    }
+
+    /// This sync's setup code, when it goes through a place with a login:
+    /// a folder's path is this computer's, and has none.
+    pub(super) fn on_show_sync_setup_code(
+        &mut self,
+        _: &ShowSyncSetupCode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let location = self.sync.read(cx).snapshot(cx).location;
+        if location.is_some_and(|location| location.signs_in()) {
+            open_setup_code_dialog(self.sync.clone(), window, cx);
+        }
     }
 
     pub(super) fn on_change_sync_login(

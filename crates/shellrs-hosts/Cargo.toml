@@ -20,6 +20,8 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 # Generating and reading private keys.
 russh = "0.63"
 serde = { version = "1", features = ["derive"] }
+# What a setup code holds.
+serde_json = "1"
 shellrs-ssh = { path = "../shellrs-ssh" }
 shellrs-sync = { path = "../shellrs-sync" }
 # The address of a WebDAV server or an S3 service, as typed.
@@ -32,6 +34,4 @@ zeroize = "1"
 testing = []
 
 [dev-dependencies]
-# The settings file's spelling of each sync location, pinned.
-serde_json = "1"
 tempfile = "3"

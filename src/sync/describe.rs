@@ -64,6 +64,9 @@ fn describe_sync(error: &SyncError) -> SharedString {
         }
         SyncError::ReadOnly { .. } => t!("sync.error.read_only"),
         SyncError::Random => t!("sync.error.random"),
+        SyncError::BadSetupCode => t!("sync.error.bad_setup_code"),
+        SyncError::SetupCodeTooNew => t!("sync.error.setup_code_too_new"),
+        SyncError::SetupCodeWrongPassword => t!("sync.error.setup_code_wrong_password"),
     }
 }
 

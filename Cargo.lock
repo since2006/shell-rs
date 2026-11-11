@@ -6473,6 +6473,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "qrcodegen"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4339fc7a1021c9c1621d87f5e3505f2805c8c105420ba2f2a4df86814590c142"
+
+[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7968,6 +7974,7 @@ dependencies = [
  "os_info",
  "percent-encoding",
  "portable-pty",
+ "qrcodegen",
  "rand 0.9.5",
  "raw-window-handle",
  "regex",
@@ -8071,6 +8078,7 @@ name = "shellrs-sync"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "base64 0.22.1",
  "chacha20poly1305",
  "flate2",
  "getrandom 0.3.4",

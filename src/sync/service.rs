@@ -417,6 +417,58 @@ impl SyncService {
         })
     }
 
+    /// The setup code of this sync: the place and the login the keychain
+    /// keeps, sealed for whoever knows the sync password, for another
+    /// device to join with. It reads the place once; beside a round as
+    /// well. A folder has none, its path being this computer's.
+    pub fn setup_code(&mut self, cx: &mut Context<Self>) -> Task<Result<String, JobError>> {
+        let Some(services) = self.services.clone().filter(|_| self.available(cx)) else {
+            return Task::ready(Err(JobError::Unavailable));
+        };
+        let Some(location) = self.location.clone().filter(SyncLocation::signs_in) else {
+            return Task::ready(Err(JobError::NoLogin));
+        };
+        let secrets = self.secrets(cx);
+        cx.background_executor().spawn(async move {
+            let remote = worker::open(&services, &location, None, &*secrets)?;
+            worker::setup_code(&*remote, &*secrets, &location)
+        })
+    }
+
+    /// Join the sync a setup code is of, with its sync password: the place
+    /// and the login come out of the code, and the login is kept in the
+    /// keychain once joined. A password that opens the code but not the
+    /// sync there is the code's to tell of: the password changed since.
+    pub fn join_with_setup_code(
+        &mut self,
+        code: String,
+        password: Zeroizing<String>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), JobError>> {
+        if self.services.is_none() || !self.available(cx) {
+            return Task::ready(Err(JobError::Unavailable));
+        }
+        // Deriving the key takes about a second.
+        let typed = password.clone();
+        let opened = cx
+            .background_executor()
+            .spawn(async move { worker::open_setup_code(&code, &typed) });
+        cx.spawn(async move |this, cx| {
+            let (location, login) = opened.await?;
+            let joined = this
+                .update(cx, |this, cx| {
+                    this.join(location, Some(login), password, true, cx)
+                })
+                .map_err(|_| JobError::Unavailable)?;
+            match joined.await {
+                Err(JobError::Sync(SyncError::WrongPassword)) => {
+                    Err(SyncError::SetupCodeWrongPassword.into())
+                }
+                joined => joined,
+            }
+        })
+    }
+
     fn joined(&mut self, location: SyncLocation, fresh: bool, cx: &mut Context<Self>) {
         if fresh {
             self.store.update(cx, |store, _| store.clear_sync_state());

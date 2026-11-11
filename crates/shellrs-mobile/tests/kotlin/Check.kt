@@ -86,6 +86,21 @@ fun main() = runBlocking {
         check(false) { "a bad address passed" }
     } catch (_: LoginProblem.UrlInvalid) {}
     check(core.sync().status().location == null) { "sync is on" }
+    // A setup code is told from other text, and a newer one from a bad one.
+    check(!isSyncSetupCode("https://example.com/")) { "an address passed for a setup code" }
+    check(isSyncSetupCode("shellrs-sync:U1JTQwI")) { "a setup code was not seen" }
+    try {
+        checkSyncSetupCode("shellrs-sync:U1JTQwI")
+        check(false) { "a newer setup code passed" }
+    } catch (_: SyncFailure.SetupCodeTooNew) {}
+    try {
+        core.sync().setupCode()
+        check(false) { "a setup code without sync" }
+    } catch (_: SyncFailure.NotSetUp) {}
+    try {
+        core.sync().joinWithSetupCode("not a code", "a sync password")
+        check(false) { "joined with no setup code" }
+    } catch (_: SyncFailure.BadSetupCode) {}
 
     // Nothing listens on port 1.
     val connection = core.connect(

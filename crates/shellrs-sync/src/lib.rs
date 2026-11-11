@@ -31,6 +31,7 @@ mod round_tests;
 mod secret;
 #[cfg(test)]
 mod secret_tests;
+mod setup_code;
 #[cfg(test)]
 mod simulation;
 mod snapshot;
@@ -50,6 +51,7 @@ pub use round::{
     RoundReport, Unchanged, pull, push,
 };
 pub use secret::{EndpointSecret, Secret, endpoint_secret_id};
+pub use setup_code::{check_setup_code, is_setup_code, open_setup_code, seal_setup_code};
 pub use snapshot::DeviceInfo;
 pub use state::SyncState;
 pub use store::{

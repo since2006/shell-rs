@@ -214,7 +214,7 @@ impl PasswordForm {
 
 /// Close the dialog when its job went through; say why not when it did
 /// not.
-fn finish(result: Result<(), JobError>, window: &mut Window, cx: &mut App) {
+pub(super) fn finish(result: Result<(), JobError>, window: &mut Window, cx: &mut App) {
     match result {
         Ok(()) => {
             // Closing it from here skips the dialog's `on_close`.

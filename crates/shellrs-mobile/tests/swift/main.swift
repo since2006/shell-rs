@@ -83,6 +83,21 @@ do {
     check(false, "a bad address passed")
 } catch LoginProblem.UrlInvalid {}
 check(core.sync().status().location == nil, "sync is on")
+// A setup code is told from other text, and a newer one from a bad one.
+check(!isSyncSetupCode(text: "https://example.com/"), "an address passed for a setup code")
+check(isSyncSetupCode(text: "shellrs-sync:U1JTQwI"), "a setup code was not seen")
+do {
+    try checkSyncSetupCode(code: "shellrs-sync:U1JTQwI")
+    check(false, "a newer setup code passed")
+} catch SyncFailure.SetupCodeTooNew {}
+do {
+    _ = try await core.sync().setupCode()
+    check(false, "a setup code without sync")
+} catch SyncFailure.NotSetUp {}
+do {
+    try await core.sync().joinWithSetupCode(code: "not a code", password: "a sync password")
+    check(false, "joined with no setup code")
+} catch SyncFailure.BadSetupCode {}
 
 // Nothing listens on port 1.
 let connection = core.connect(

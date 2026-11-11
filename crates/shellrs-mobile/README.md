@@ -153,6 +153,16 @@ with `checkWebdavLogin`, `checkS3Login` and `checkNewSyncPassword`.
   then `create` with a new sync password, or `join` with its password
   (`fresh` the first time). Then `syncNow`. `changeLogin`,
   `changePassword`, `removeDevice` and `turnOff` are the settings page's.
+- **Setup code.** A device in sync through a server or a bucket shows
+  `setupCode()` as text and as a QR code: the place and its login, sealed
+  with the sync password (the desktop shows the same). Another device scans
+  or pastes it and calls `joinWithSetupCode` with the sync password, typing
+  nothing else. `isSyncSetupCode` tells a code from whatever else the camera
+  reads; `checkSyncSetupCode` says what is wrong with one (`badSetupCode`,
+  `setupCodeTooNew`) before the password is asked for. A wrong password and
+  a code made before the password changed are both
+  `setupCodeWrongPassword`. The code is as good as the login to whoever
+  knows the sync password: show it, do not log it.
 - **When to sync is the app's**: when it starts, when it comes to the
   foreground (at most once a minute), a few seconds after the user stops
   editing, and before it goes to the background if `status().hasChanges`.

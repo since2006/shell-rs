@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
+use serde::{Deserialize, Serialize};
 use shellrs_sync::{
     Capabilities, DeviceId, DeviceInfo, KdfParams, Keyring, Pulled, Pushed, PutCondition,
     RoundOptions, StoreError, SyncError, SyncState, SyncStore, SystemEnv, VaultStatus,
@@ -13,7 +14,7 @@ use shellrs_sync::{
 };
 use zeroize::Zeroizing;
 
-use super::{JobError, SyncLocation, SyncServices};
+use super::{JobError, S3Form, SyncLocation, SyncServices, WebDavForm};
 use crate::secrets::{SecretRef, SecretStore};
 use crate::{SecretWork, SecretsWritten, SyncExport};
 
@@ -123,6 +124,95 @@ pub fn join(
 ) -> Result<(), JobError> {
     let keyring = unlock_vault(store, password)?;
     save_keyring(secrets, &keyring)
+}
+
+/// What a setup code holds, as written. No `Debug`: it carries the login.
+#[derive(Serialize)]
+struct CodeOut<'a> {
+    location: &'a SyncLocation,
+    login: &'a str,
+}
+
+/// What a setup code holds, as read: the place still as JSON, so one of a
+/// kind a newer ShellRS added is told from a damaged one.
+#[derive(Deserialize)]
+struct CodeIn {
+    location: serde_json::Value,
+    login: String,
+}
+
+/// The setup code of the sync in `store`, which `location` is: the place
+/// and the login the keychain keeps, for another device to join with the
+/// sync password alone. A folder has none, its path being this computer's.
+pub fn setup_code(
+    store: &dyn SyncStore,
+    secrets: &dyn SecretStore,
+    location: &SyncLocation,
+) -> Result<String, JobError> {
+    if !location.signs_in() {
+        return Err(JobError::NoLogin);
+    }
+    let login = secrets
+        .get(&SecretRef::SyncLogin)
+        .map_err(JobError::keychain)?
+        .ok_or(JobError::NoLogin)?;
+    let keyring = load_keyring(secrets)?;
+    let held = CodeOut {
+        location,
+        login: &login,
+    };
+    let plain = Zeroizing::new(serde_json::to_vec(&held).expect("a location serializes"));
+    Ok(shellrs_sync::seal_setup_code(
+        store,
+        &keyring,
+        &plain,
+        &mut SystemEnv,
+    )?)
+}
+
+/// The place and the login a setup code holds, opened with the sync
+/// password: what [`join`] and [`keep_login`] take. They are checked as
+/// the ones typed into the forms are, so a code brings nothing a form
+/// would refuse.
+pub fn open_setup_code(
+    code: &str,
+    password: &str,
+) -> Result<(SyncLocation, Zeroizing<String>), JobError> {
+    let plain = shellrs_sync::open_setup_code(code, password)?;
+    let held: CodeIn = serde_json::from_slice(&plain).map_err(|_| SyncError::BadSetupCode)?;
+    let login = Zeroizing::new(held.login);
+    match held.location.get("kind").and_then(|kind| kind.as_str()) {
+        Some("webdav" | "s3") => {}
+        Some("folder") | None => return Err(SyncError::BadSetupCode.into()),
+        Some(_) => return Err(SyncError::SetupCodeTooNew.into()),
+    }
+    let checked = match serde_json::from_value(held.location) {
+        Ok(SyncLocation::WebDav { url, username }) => WebDavForm {
+            url: &url,
+            username: &username,
+            password: &login,
+        }
+        .login(),
+        Ok(SyncLocation::S3 {
+            endpoint,
+            region,
+            bucket,
+            prefix,
+            path_style,
+            access_key,
+        }) => S3Form {
+            endpoint: &endpoint,
+            region: &region,
+            bucket: &bucket,
+            prefix: &prefix,
+            path_style,
+            access_key: &access_key,
+            secret_key: &login,
+        }
+        .login(),
+        Ok(SyncLocation::Folder { .. }) | Err(_) => return Err(SyncError::BadSetupCode.into()),
+    };
+    checked.map_err(|_| SyncError::BadSetupCode.into())
 }
 
 /// A new sync password, and a new data key after it: a device that kept the
@@ -243,5 +333,161 @@ mod tests {
         join(&store, &two, "staple battery horse").unwrap();
         forget_keyring(&two).unwrap();
         assert_eq!(load_keyring(&two).unwrap_err(), JobError::NoKeyring);
+    }
+
+    const PASSWORD: &str = "correct horse battery";
+
+    fn webdav() -> SyncLocation {
+        SyncLocation::WebDav {
+            url: "https://dav.example.com/shellrs".into(),
+            username: "me".into(),
+        }
+    }
+
+    fn bucket() -> SyncLocation {
+        SyncLocation::S3 {
+            endpoint: "https://s3.example.com".into(),
+            region: "us-east-1".into(),
+            bucket: "shellrs".into(),
+            prefix: "sync".into(),
+            path_style: true,
+            access_key: "AKIAEXAMPLE".into(),
+        }
+    }
+
+    /// A device in the sync of `store`, signed in with `login`.
+    fn device_in_sync(store: &MemoryStore, login: &str) -> InMemorySecretStore {
+        let secrets = InMemorySecretStore::default();
+        create(store, &secrets, PASSWORD, FAST).unwrap();
+        keep_login(&secrets, Some(login)).unwrap();
+        secrets
+    }
+
+    /// A setup code of `store`'s sync holding `plain`, whatever it is.
+    fn code_holding(store: &MemoryStore, secrets: &InMemorySecretStore, plain: &str) -> String {
+        let keyring = load_keyring(secrets).unwrap();
+        shellrs_sync::seal_setup_code(store, &keyring, plain.as_bytes(), &mut SystemEnv).unwrap()
+    }
+
+    #[test]
+    fn a_setup_code_takes_another_device_into_the_sync() {
+        for (location, login) in [(webdav(), " dav password "), (bucket(), "secret/key+")] {
+            let store = MemoryStore::new();
+            let one = device_in_sync(&store, login);
+            let code = setup_code(&store, &one, &location).unwrap();
+            assert!(shellrs_sync::is_setup_code(&code));
+            assert!(!code.contains("password") && !code.contains("example"));
+
+            assert_eq!(
+                open_setup_code(&code, "wrong horse battery").map(|_| ()),
+                Err(JobError::Sync(SyncError::SetupCodeWrongPassword))
+            );
+            let (place, opened) = open_setup_code(&code, PASSWORD).unwrap();
+            assert_eq!(place, location);
+            assert_eq!(opened.as_str(), login);
+
+            // What it gave is all the other device needs.
+            let two = InMemorySecretStore::default();
+            join(&store, &two, PASSWORD).unwrap();
+            keep_login(&two, Some(&opened)).unwrap();
+            assert_eq!(
+                load_keyring(&one).unwrap().vault_id(),
+                load_keyring(&two).unwrap().vault_id()
+            );
+            assert_eq!(
+                two.get(&SecretRef::SyncLogin).unwrap().as_deref(),
+                Some(&login.to_owned())
+            );
+        }
+    }
+
+    /// What a code holds is the format (`FORMAT.md` of the sync core): the
+    /// one kept there opens as this in every version.
+    #[test]
+    fn what_a_setup_code_holds_is_pinned() {
+        let held = CodeOut {
+            location: &bucket(),
+            login: "secret",
+        };
+        assert_eq!(
+            serde_json::to_string(&held).unwrap(),
+            concat!(
+                r#"{"location":{"kind":"s3","endpoint":"https://s3.example.com","#,
+                r#""region":"us-east-1","bucket":"shellrs","prefix":"sync","path_style":true,"#,
+                r#""access_key":"AKIAEXAMPLE"},"login":"secret"}"#
+            )
+        );
+        let golden = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../shellrs-sync/testdata/v1/setup-code.txt"
+        ))
+        .unwrap();
+        let (place, login) = open_setup_code(&golden, "correct horse battery staple").unwrap();
+        assert_eq!(
+            place,
+            SyncLocation::WebDav {
+                url: "http://127.0.0.1:1/shellrs".into(),
+                username: "me".into(),
+            }
+        );
+        assert_eq!(login.as_str(), "test login");
+    }
+
+    #[test]
+    fn no_setup_code_without_a_login_or_the_keys() {
+        let store = MemoryStore::new();
+        let one = device_in_sync(&store, "dav password");
+        let folder = SyncLocation::Folder {
+            path: "/sync".into(),
+        };
+        assert_eq!(setup_code(&store, &one, &folder), Err(JobError::NoLogin));
+        keep_login(&one, None).unwrap();
+        assert_eq!(setup_code(&store, &one, &webdav()), Err(JobError::NoLogin));
+        keep_login(&one, Some("dav password")).unwrap();
+        forget_keyring(&one).unwrap();
+        assert_eq!(
+            setup_code(&store, &one, &webdav()),
+            Err(JobError::NoKeyring)
+        );
+    }
+
+    /// A code brings nothing a form would refuse, and says when it takes
+    /// a newer ShellRS to read.
+    #[test]
+    fn a_setup_code_holding_what_no_form_takes_is_refused() {
+        let store = MemoryStore::new();
+        let one = device_in_sync(&store, "dav password");
+        let open = |plain: &str| {
+            open_setup_code(&code_holding(&store, &one, plain), PASSWORD).map(|(place, _)| place)
+        };
+        let bad = Err(JobError::Sync(SyncError::BadSetupCode));
+        for plain in [
+            "not json",
+            "{}",
+            r#"{"location":{"kind":"webdav","url":"https://dav.example.com","username":"me"}}"#,
+            r#"{"location":{"kind":"folder","path":"/sync"},"login":"x"}"#,
+            r#"{"location":{"url":"https://dav.example.com","username":"me"},"login":"x"}"#,
+            r#"{"location":{"kind":"webdav","url":"ftp://dav.example.com","username":"me"},"login":"x"}"#,
+            r#"{"location":{"kind":"webdav","url":"file:///etc","username":"me"},"login":"x"}"#,
+            r#"{"location":{"kind":"webdav","url":"https://dav.example.com","username":""},"login":"x"}"#,
+            r#"{"location":{"kind":"webdav","url":"https://dav.example.com","username":"me"},"login":""}"#,
+            r#"{"location":{"kind":"s3","endpoint":"https://s3.example.com"},"login":"x"}"#,
+            r#"{"location":"webdav","login":"x"}"#,
+        ] {
+            assert_eq!(open(plain), bad, "{plain}");
+        }
+        assert_eq!(
+            open(r#"{"location":{"kind":"gdrive","folder":"abc"},"login":"x"}"#),
+            Err(JobError::Sync(SyncError::SetupCodeTooNew))
+        );
+        // What a newer version added to a kind this one knows is passed
+        // over.
+        assert_eq!(
+            open(concat!(
+                r#"{"location":{"kind":"webdav","url":"https://dav.example.com/shellrs","#,
+                r#""username":"me","depth":1},"login":"x","name":"NAS"}"#
+            )),
+            Ok(webdav())
+        );
     }
 }

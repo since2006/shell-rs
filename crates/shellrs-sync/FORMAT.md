@@ -51,6 +51,8 @@ shellrs-sync/v1/devices/<device>.srs   one device's encrypted snapshot
 - Only the entries of `keys` may be wrapped with the key-encryption key: an
   older version changing the password rewraps those and nothing else. A key
   added later is wrapped with a data key, or with a password of its own.
+  (A setup code, below, is sealed with a key derived from it, but is not
+  kept in the store: it is meant to stop opening when the password changes.)
 
 ## Device file (`.srs`)
 
@@ -171,3 +173,52 @@ A copy pointing at a deleted record is repaired, as the device's own edit:
 | a host | its `secret.totp` is deleted |
 
 A record that is only missing (not deleted) is never repaired.
+
+## Setup code
+
+Not a file of the store: text a device in sync shows, also as a QR code, for
+another to join with. It holds where the store is and the login to it, for
+whoever knows the sync password.
+
+```text
+"shellrs-sync:" then the unpadded base64url (RFC 4648 §5) of:
+
+"SRSC" | version (1 byte) = 1 | memory_kib (u32) | passes (u32) | parallelism (u32) | salt (16) | nonce (24)
+XChaCha20-Poly1305 ciphertext and tag
+check (4): the first bytes of the SHA-256 of all before it
+```
+
+- The numbers are big-endian. `memory_kib`, `passes`, `parallelism` and
+  `salt` are the vault's `kdf` as it was when the code was made: a reader
+  derives the key-encryption key from the sync password with them, as for
+  the vault, and refuses the same costs.
+- The key is HMAC-SHA256, keyed with the key-encryption key, of the ASCII
+  text `shellrs-sync setup code`. The associated data is the 57-byte header.
+  A device of the vault makes a code with the keys it holds, without the
+  password. A code made before the password changed does not open with the
+  new one.
+- A reader passes over white space anywhere in the text. A text over 4096
+  characters, without the prefix, not base64url, without the magic, of
+  version 0, shorter than a header, a tag and a check, with a wrong check or
+  a cost out of bounds is not a setup code. The check tells a code cut short
+  from a wrong password; it protects nothing.
+- A version above the reader's own needs a newer ShellRS, which is told
+  before anything after the version is read: only the prefix, the base64url,
+  the magic and the version byte are the same in every version. A writer
+  keeps to version 1 while it can say what the code holds.
+- The plaintext is JSON, `location` as the apps keep it in their settings:
+
+```json
+{"location": {"kind": "webdav", "url": "<the folder's address>", "username": "<user>"},
+ "login": "<the WebDAV password>"}
+{"location": {"kind": "s3", "endpoint": "<address>", "region": "<region>", "bucket": "<bucket>",
+              "prefix": "<the folder in the bucket, or empty>", "path_style": false,
+              "access_key": "<access key id>"},
+ "login": "<the secret access key>"}
+```
+
+- Unknown fields are ignored. A `kind` the reader does not know needs a
+  newer ShellRS. A local folder has no setup code: its path is one device's.
+- The code is no easier to guess the password of than `vault.json`, which
+  has the same salt and cost. Whoever has a code and the password it was made
+  under has the login, even after the password changed.

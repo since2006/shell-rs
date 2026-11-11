@@ -74,6 +74,8 @@ futures = "0.3"
 portable-pty = "0.9"
 # Serial ports, for serial hosts: portable-pty already builds it.
 serial2 = "0.2"
+# The sync setup code as a QR code, for a phone to scan.
+qrcodegen = "1.8"
 rand = "0.9"
 # 关键字高亮: the rules match the terminal's text, not Alacritty's grid
 # search, whose DFA cannot build `\b` and loses `^` after the first line.

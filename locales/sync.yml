@@ -54,6 +54,15 @@ sync.error.read_only:
 sync.error.random:
   zh-CN: 系统的随机数源出错了。
   en: The system’s random number source failed.
+sync.error.bad_setup_code:
+  zh-CN: 这不是有效的配置码，可能没有复制完整。
+  en: That’s not a valid setup code. It may not have been copied whole.
+sync.error.setup_code_too_new:
+  zh-CN: 这个配置码来自更新版本的 ShellRS，升级后才能使用。
+  en: This setup code is from a newer ShellRS. Update to use it.
+sync.error.setup_code_wrong_password:
+  zh-CN: 同步密码不对，或者这个配置码是更换同步密码之前生成的。
+  en: That’s not the sync password, or the setup code was made before the password was changed.
 sync.error.store.not_found:
   zh-CN: 同步文件夹里找不到需要的文件。
   en: A file sync needs isn’t in the sync folder.
@@ -152,6 +161,41 @@ sync.dialog.generate:
 sync.dialog.cannot_recover:
   zh-CN: 忘了同步密码就无法找回，记在安全的地方。
   en: A forgotten sync password can’t be recovered. Keep it somewhere safe.
+
+# 配置码: this sync's, shown, and another device's, to join with.
+sync.code.show_title:
+  zh-CN: 同步配置码
+  en: Sync setup code
+sync.code.show_description:
+  zh-CN: 在另一台设备上扫描这个二维码，或者粘贴配置码，再输入同步密码。
+  en: On another device, scan this QR code or paste the setup code, then enter the sync password.
+sync.code.warning:
+  zh-CN: 配置码里有同步位置的地址和登录密钥，已用同步密码加密。不要发到公开的地方。
+  en: The setup code holds the sync location and its login, encrypted with the sync password. Don’t post it anywhere public.
+sync.code.making:
+  zh-CN: 正在生成配置码…
+  en: Making the setup code…
+sync.code.failed:
+  zh-CN: 未能生成配置码：%{reason}
+  en: "Couldn’t make the setup code: %{reason}"
+sync.code.copy:
+  zh-CN: 复制配置码
+  en: Copy setup code
+sync.code.copied:
+  zh-CN: 配置码已复制
+  en: Setup code copied
+sync.code.join_title:
+  zh-CN: 用配置码加入同步
+  en: Join sync with a setup code
+sync.code.join_description:
+  zh-CN: 粘贴另一台设备显示的配置码，输入同步密码。这台电脑上的数据会和其他设备的合并。
+  en: Paste the setup code another device shows and enter the sync password. What’s on this computer is merged with the other devices’.
+sync.code.code:
+  zh-CN: 配置码
+  en: Setup code
+sync.code.missing:
+  zh-CN: 粘贴配置码。
+  en: Paste the setup code.
 
 # 关闭同步.
 sync.turn_off.title:
