@@ -141,6 +141,16 @@ desktop for now (`connectHost` fails with `notSsh`).
 - **Connections not saved** (`core.connect` with a `Login`) read their
   password as `SecretRef.temporary(host:)`, which
   `core.setTemporaryPassword` keeps in memory, never in the keychain.
+- **Trying a form.** `core.testHost(editing:draft:password:)` logs in with
+  what a host form holds, as the desktop's 测试连接 does: the draft is
+  checked as saving it would be, the password typed is kept in memory for
+  that connection only (`nil` asks), and nothing of the host is saved. A
+  credential, a proxy and the edited host's one-time codes log in with what
+  is saved for them.
+- **Looking at a host.** `core.watchHost(id:)` connects as `connectHost`
+  does, for what the app reads on its own (`exec`) rather than a terminal
+  the user opened: the host does not go to the front of the recent ones,
+  and its mark is not asked again.
 
 ## Sync
 

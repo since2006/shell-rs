@@ -1015,3 +1015,133 @@ async fn deleting_says_what_goes_with_a_host_or_a_group() {
         Dependents::default()
     );
 }
+
+/// Log in on `connection`, trusting the server's key and typing
+/// `password` when asked; whether a password was asked for.
+async fn logged_in(connection: &Connection, password: &str) -> bool {
+    let mut asked = false;
+    loop {
+        match next(connection).await {
+            ConnectionEvent::Prompt { prompt } => match prompt.kind {
+                PromptKind::UnknownHost { .. } => {
+                    connection.answer(prompt.id, PromptReply::TrustAndSave)
+                }
+                PromptKind::Password { .. } => {
+                    asked = true;
+                    connection.answer(
+                        prompt.id,
+                        PromptReply::Answers {
+                            answers: vec![password.into()],
+                        },
+                    );
+                }
+                kind => panic!("{kind:?}"),
+            },
+            ConnectionEvent::Connected { .. } => return asked,
+            event => panic!("{event:?}"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_form_is_tried_without_saving_anything() {
+    let data = tempfile::tempdir().unwrap();
+    let server = TestServer::start(data.path().into()).await.unwrap();
+    let keychain = Arc::new(TestKeychain::default());
+    let core = core_with(data.path(), &keychain);
+    let store = core.store();
+    let draft = HostDraft {
+        port: server.port,
+        user: TEST_USER.into(),
+        ..host("test", "127.0.0.1")
+    };
+
+    // The password typed in the form, in memory only.
+    let connection = core
+        .test_host(None, draft.clone(), Some(TEST_PASSWORD.into()))
+        .unwrap();
+    assert!(!logged_in(&connection, "never asked").await);
+    connection.disconnect();
+    assert_eq!(
+        next(&connection).await,
+        ConnectionEvent::Closed { failure: None }
+    );
+    assert!(store.hosts().is_empty());
+    assert!(store.recent_hosts().is_empty());
+    assert!(keychain.0.lock().unwrap().is_empty());
+    assert!(server.seen().commands.is_empty(), "no mark asked for");
+
+    // None typed: asked for, as a host with no saved password is.
+    let connection = core.test_host(None, draft.clone(), None).unwrap();
+    assert!(logged_in(&connection, TEST_PASSWORD).await);
+    connection.disconnect();
+
+    // A saved host's form, changed or not, leaves the host as it was.
+    let id = soon(store.add_host(draft.clone(), SecretChange::Keep, SecretChange::Keep))
+        .await
+        .unwrap();
+    let saved = store.host(id).unwrap();
+    let renamed = HostDraft {
+        name: "renamed".into(),
+        ..draft.clone()
+    };
+    let connection = core
+        .test_host(Some(id), renamed, Some(TEST_PASSWORD.into()))
+        .unwrap();
+    assert!(!logged_in(&connection, "never asked").await);
+    connection.disconnect();
+    assert_eq!(store.host(id).unwrap(), saved);
+    assert!(store.recent_hosts().is_empty());
+    assert!(keychain.0.lock().unwrap().is_empty());
+
+    // Checked as saving would check it.
+    assert!(matches!(
+        core.test_host(None, host("web", " "), None),
+        Err(StoreError::Host {
+            problem: HostProblem::Address
+        })
+    ));
+    assert!(matches!(
+        core.test_host(Some(999), draft.clone(), None),
+        Err(StoreError::NotFound)
+    ));
+    let telnet = HostDraft {
+        protocol: HostProtocol::Telnet {
+            user_prompt: String::new(),
+            password_prompt: String::new(),
+        },
+        port: 23,
+        ..host("switch", "10.0.0.9")
+    };
+    assert!(matches!(
+        core.test_host(None, telnet, None),
+        Err(StoreError::NotSsh)
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn watching_a_saved_host_leaves_the_recent_ones_and_its_mark() {
+    let data = tempfile::tempdir().unwrap();
+    let server = TestServer::start(data.path().into()).await.unwrap();
+    let keychain = Arc::new(TestKeychain::default());
+    let core = core_with(data.path(), &keychain);
+    let store = core.store();
+    let draft = HostDraft {
+        port: server.port,
+        user: TEST_USER.into(),
+        ..host("test", "127.0.0.1")
+    };
+    let id = soon(store.add_host(draft, set(TEST_PASSWORD), SecretChange::Keep))
+        .await
+        .unwrap();
+
+    let connection = core.watch_host(id).unwrap();
+    assert!(!logged_in(&connection, "never asked").await);
+    // The test server prints the command it was given.
+    let output = soon(connection.exec("uptime".into())).await.unwrap();
+    assert_eq!(output.stdout, b"uptime\n");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(store.recent_hosts().is_empty());
+    assert_eq!(server.seen().commands, ["uptime"], "no mark asked for");
+    assert!(matches!(core.watch_host(999), Err(StoreError::NotFound)));
+}

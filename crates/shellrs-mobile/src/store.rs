@@ -738,7 +738,7 @@ async fn save_host(
 }
 
 /// `draft` checked against the data, for host `id` or a new one.
-fn checked_host(
+pub(crate) fn checked_host(
     data: &HostData,
     id: Option<HostId>,
     draft: hosts::HostDraft,

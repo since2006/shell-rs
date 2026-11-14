@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,9 +15,10 @@ use shellrs_sync::DeviceInfo;
 use tokio::runtime::{Handle, Runtime};
 
 use crate::connection::{Connection, State};
+use crate::hosts::HostDraft;
 use crate::login::Login;
 use crate::secrets::{AppKeychain, Keychain};
-use crate::store::{HostStore, Shared, StoreError, StoreFailure};
+use crate::store::{self, HostStore, Shared, StoreError, StoreFailure};
 use crate::sync::{self, SyncService};
 
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -90,6 +92,11 @@ pub struct Core {
 /// the `known_hosts` and the resume records.
 static DATA_DIRS: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 
+/// The ids [`Core::test_host`] gives the hosts it tries, for their passwords
+/// in memory: counting down from the top, far from the store's and the
+/// app's own temporary ones.
+static TEST_HOSTS: AtomicU64 = AtomicU64::new(u64::MAX);
+
 #[uniffi::export]
 impl Core {
     /// Opens the database, upgrading one an older version wrote: a moment
@@ -126,26 +133,11 @@ impl Core {
     /// asked again for its mark.
     pub fn connect_host(&self, id: u64) -> Result<Arc<Connection>, StoreError> {
         let id = HostId(id);
-        let login = {
-            let data = self.store.lock();
-            let host = data
-                .saved_host(id)
-                .filter(|host| !host.is_serial())
-                .ok_or(StoreError::NotFound)?;
-            if !host.is_ssh() {
-                return Err(StoreError::NotSsh);
-            }
-            data.login_of(host)
-        };
+        let login = self.saved_login(id)?;
         // Not through a bastion host that opened a link: another channel
         // ends its session.
         let shell_only = login.shell_only;
-        let connection = Connection::start(
-            self.handle.clone(),
-            self.connector.clone(),
-            login,
-            self.data_dir.clone(),
-        );
+        let connection = self.start(login);
         let (store, mut state) = (self.store.clone(), connection.inner.state.clone());
         self.handle.spawn(async move {
             let handle = loop {
@@ -169,15 +161,79 @@ impl Core {
         Ok(connection)
     }
 
+    /// Start connecting to a saved SSH host for the app's own look at it,
+    /// such as how busy it is, and return at once: what happens comes as
+    /// the connection's events. As [`Self::connect_host`], except that the
+    /// user did not open it: the host does not go to the front of the
+    /// recent ones, and its mark is not asked again.
+    pub fn watch_host(&self, id: u64) -> Result<Arc<Connection>, StoreError> {
+        let login = self.saved_login(HostId(id))?;
+        Ok(self.start(login))
+    }
+
+    /// Start connecting with what a host form holds, saved or not, for its
+    /// 测试连接, and return at once: what happens comes as the connection's
+    /// events. The host is not saved, nor goes among the recent ones, and
+    /// no mark changes; a host key the user trusts is kept, as always.
+    ///
+    /// `editing` is the host the form edits, `None` for a new one: the
+    /// draft is checked as saving it would be, and fails the same way, or
+    /// with `NotSsh` for a Telnet host. A host logging in with its own
+    /// password uses `password`, kept in memory for this connection only,
+    /// never in the keychain; `None` has the connection ask for one. A host
+    /// using a credential logs in with what the credential saved, its proxy
+    /// with the password saved for it, and the host being edited with its
+    /// one-time codes.
+    pub fn test_host(
+        &self,
+        editing: Option<u64>,
+        draft: HostDraft,
+        password: Option<String>,
+    ) -> Result<Arc<Connection>, StoreError> {
+        let id = TEST_HOSTS.fetch_sub(1, Ordering::Relaxed);
+        let secret = ssh::SecretRef::temporary(id);
+        let (login, secrets) = {
+            let data = self.store.lock();
+            let editing = editing.map(HostId);
+            let draft = store::checked_host(&data, editing, draft.core())?;
+            if !draft.protocol.is_ssh() {
+                return Err(StoreError::NotSsh);
+            }
+            let mut host = shellrs_hosts::Host::new(HostId(id), draft);
+            // As the store would keep it: the codes are the edited host's,
+            // and a host naming no user of its own logs in as its
+            // credential's.
+            if let Some(old) = editing.and_then(|old| data.saved_host(old)) {
+                host.public_id = old.public_id.clone();
+            }
+            if host.user.trim().is_empty()
+                && let Some(credential) = host.credential.and_then(|c| data.credential(c))
+            {
+                host.user = credential.user.clone();
+            }
+            let mut login = data.login_of(&host);
+            if host.credential.is_none() {
+                login.password = secret.clone();
+            }
+            (login, data.secrets())
+        };
+        // Memory only, never the keychain: neither blocks nor fails.
+        if let Some(password) = password {
+            let _ = secrets.set(&secret, &password);
+        }
+        let connection = self.start(login);
+        let mut state = connection.inner.state.clone();
+        self.handle.spawn(async move {
+            let _ = state.wait_for(|state| matches!(state, State::Closed)).await;
+            let _ = secrets.delete(&secret);
+        });
+        Ok(connection)
+    }
+
     /// Start connecting to `login`'s host, saved or not, and return at
     /// once: what happens comes as the connection's events.
     pub fn connect(&self, login: Login) -> Arc<Connection> {
-        Connection::start(
-            self.handle.clone(),
-            self.connector.clone(),
-            login.into(),
-            self.data_dir.clone(),
-        )
+        self.start(login.into())
     }
 
     /// The password of a connection that is not saved
@@ -201,6 +257,28 @@ impl Core {
 }
 
 impl Core {
+    /// How a saved SSH host logs in.
+    fn saved_login(&self, id: HostId) -> Result<ssh::HostLogin, StoreError> {
+        let data = self.store.lock();
+        let host = data
+            .saved_host(id)
+            .filter(|host| !host.is_serial())
+            .ok_or(StoreError::NotFound)?;
+        if !host.is_ssh() {
+            return Err(StoreError::NotSsh);
+        }
+        Ok(data.login_of(host))
+    }
+
+    fn start(&self, login: ssh::HostLogin) -> Arc<Connection> {
+        Connection::start(
+            self.handle.clone(),
+            self.connector.clone(),
+            login,
+            self.data_dir.clone(),
+        )
+    }
+
     /// A core whose sync works with `services`.
     pub(crate) fn open(
         config: CoreConfig,
