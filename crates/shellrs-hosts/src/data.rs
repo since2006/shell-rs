@@ -17,9 +17,9 @@ use super::{
     AuthKind, BookmarkSide, Credential, CredentialDraft, CredentialId, CredentialKind,
     ForwardDraft, ForwardId, ForwardRule, GroupDraft, GroupId, GroupPathError, GroupPlan, Host,
     HostConnection, HostDatabase, HostDraft, HostGroup, HostId, HostLogin, HostLoginExt, HostNode,
-    HostOs, JumpLogin, LoginRoute, NodeDrop, Protocol, ProxyLogin, PublicId, Route, SavedTerminal,
-    SavedTerminalTab, SerialLine, Snippet, SnippetCategory, SnippetScope, StoredData, TelnetLogin,
-    TerminalGroup,
+    HostOs, JumpLogin, LoginRoute, NodeDrop, Protocol, ProxyCommandLogin, ProxyLogin, PublicId,
+    Route, SavedTerminal, SavedTerminalTab, SerialLine, Snippet, SnippetCategory, SnippetScope,
+    StoredData, TelnetLogin, TerminalGroup,
 };
 
 mod saved_terminals;
@@ -1515,6 +1515,7 @@ impl HostData {
                     .collect(),
             ),
             Route::Proxy(proxy) => LoginRoute::Proxy(ProxyLogin::from(proxy)),
+            Route::ProxyCommand(proxy) => LoginRoute::ProxyCommand(ProxyCommandLogin::from(proxy)),
         }
     }
 

@@ -113,6 +113,9 @@ pub enum LoginRoute {
     /// one before it, whatever its own route says.
     Jump(Vec<JumpLogin>),
     Proxy(ProxyLogin),
+    /// Through a `ProxyCommand`: an external process whose stdin and stdout
+    /// carry the connection's bytes.
+    ProxyCommand(ProxyCommandLogin),
 }
 
 impl LoginRoute {
@@ -191,6 +194,16 @@ pub struct ProxyLogin {
     pub host: String,
     pub port: u16,
     pub user: Option<String>,
+}
+
+/// A host reached through an external command whose stdin and stdout carry
+/// the SSH bytes, OpenSSH's `ProxyCommand`: `ncat`, `cloudflared access
+/// ssh`, `tailcat ssh`, and so on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProxyCommandLogin {
+    /// The command line as the user wrote it, with `%h`, `%p` and `%r` to
+    /// be expanded for the host being reached.
+    pub command: String,
 }
 
 impl ProxyLogin {

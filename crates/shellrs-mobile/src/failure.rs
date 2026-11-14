@@ -678,6 +678,8 @@ pub enum RouteFailure {
     ProxyUnreachable { host: String, port: u16 },
     /// The proxy answered other than with a tunnel.
     Proxy,
+    /// The proxy command failed to start or stay running.
+    ProxyCommand,
 }
 
 impl From<&ssh::RouteFailure> for RouteFailure {
@@ -703,6 +705,7 @@ impl From<&ssh::RouteFailure> for RouteFailure {
                 port: *port,
             },
             ssh::RouteFailure::Proxy => Self::Proxy,
+            ssh::RouteFailure::ProxyCommand => Self::ProxyCommand,
         }
     }
 }

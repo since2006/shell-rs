@@ -16,8 +16,8 @@ use rusqlite::{Connection, params};
 use super::{
     AuthKind, BookmarkSide, Credential, CredentialDraft, CredentialId, CredentialKind, DataBits,
     FlowControl, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft,
-    GroupId, Host, HostDraft, HostGroup, HostId, HostOs, Parity, Protocol, ProxyKind,
-    ProxySettings, PublicId, Route, SavedTerminal, SavedTerminalId, SavedTerminalTab,
+    GroupId, Host, HostDraft, HostGroup, HostId, HostOs, Parity, Protocol, ProxyCommandSettings,
+    ProxyKind, ProxySettings, PublicId, Route, SavedTerminal, SavedTerminalId, SavedTerminalTab,
     SerialSettings, Snippet, SnippetCategory, SnippetCategoryId, SnippetDraft, SnippetId,
     SnippetScope, StopBits, TelnetSettings, TerminalGroup, TerminalGroupId, TotpSettings,
 };
@@ -43,8 +43,8 @@ fn from_sql(id: i64) -> u64 {
 /// what sync needs, 21 the snippet categories' nesting and the snippets'
 /// order, 22 目录跟随 per host, 23 the user a host logs in as with its
 /// credential, 24 the one-time codes an SSH host fills in, 25 what an SSH
-/// host types once logged in.
-const SCHEMA_VERSION: i64 = 25;
+/// host types once logged in, 26 a host's `ProxyCommand`.
+const SCHEMA_VERSION: i64 = 26;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -65,7 +65,8 @@ const SCHEMA_VERSION: i64 = 25;
 ///     credential that is still used is refused: the store first gives its
 ///     hosts a login of their own.
 ///   - `route` is `direct`, `jump` (the hops are in `host_jumps`) or
-///     `proxy`, whose four columns are set exactly for a proxy route.
+///     `proxy`, whose four columns are set exactly for a proxy route, or
+///     `proxy-command`, whose command is in `proxy_command`.
 ///   - `public_id` may be missing, which a row added by hand is until the
 ///     next open (see `fill_missing_public_ids`); the ones there are unique.
 ///   - `os` and `last_connected_at` are written by connections, and
@@ -161,7 +162,7 @@ CREATE TABLE hosts (
     auth              TEXT NOT NULL CHECK (auth IN ('password', 'no-password', 'credential')),
     username          TEXT,
     credential_id     INTEGER REFERENCES credentials(id),
-    route             TEXT NOT NULL DEFAULT 'direct' CHECK (route IN ('direct', 'jump', 'proxy')),
+    route             TEXT NOT NULL DEFAULT 'direct' CHECK (route IN ('direct', 'jump', 'proxy', 'proxy-command')),
     proxy_kind        TEXT CHECK (proxy_kind IN ('http', 'socks5')),
     proxy_host        TEXT,
     proxy_port        INTEGER CHECK (proxy_port BETWEEN 1 AND 65535),
@@ -194,12 +195,14 @@ CREATE TABLE hosts (
     one_time_code_prompt TEXT CHECK (one_time_code_prompt <> '')
         CHECK (one_time_code = 1 OR one_time_code_prompt IS NULL),
     login_commands    TEXT NOT NULL DEFAULT '',
+    proxy_command     TEXT CHECK (proxy_command <> ''),
     CHECK ((auth = 'credential') = (credential_id IS NOT NULL)),
     CHECK ((auth = 'credential') = (username IS NULL)),
     CHECK ((route = 'proxy') = (proxy_kind IS NOT NULL)),
     CHECK ((proxy_kind IS NULL) = (proxy_host IS NULL)
         AND (proxy_kind IS NULL) = (proxy_port IS NULL)),
-    CHECK (proxy_kind IS NOT NULL OR proxy_username IS NULL)
+    CHECK (proxy_kind IS NOT NULL OR proxy_username IS NULL),
+    CHECK ((route = 'proxy-command') = (proxy_command IS NOT NULL))
 ) STRICT;
 CREATE INDEX hosts_group_id ON hosts(group_id);
 CREATE INDEX hosts_credential_id ON hosts(credential_id);
@@ -318,7 +321,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 12] = [
+const STEPS: [(i64, Step); 13] = [
     (
     13,
     // The command snippets.
@@ -478,6 +481,11 @@ PRAGMA user_version = 25;
 COMMIT;",
         ),
     ),
+    // A host reached through a ProxyCommand: `route` takes `proxy-command`
+    // and the command lives in the `proxy_command` column. The CHECK on
+    // `route` cannot be changed with ALTER, so `hosts` is made again as
+    // `add_telnet` makes it.
+    (25, Step::Code(add_proxy_command)),
 ];
 
 /// Version 16, the Telnet hosts: `protocol` takes `telnet`, and the two
@@ -556,6 +564,95 @@ DROP TABLE hosts_15;
 CREATE INDEX hosts_group_id ON hosts(group_id);
 CREATE INDEX hosts_credential_id ON hosts(credential_id);
 PRAGMA user_version = 16;
+COMMIT;";
+
+/// Version 26, a host reached through a `ProxyCommand`: `route` takes
+/// `proxy-command` and the command lives in the `proxy_command` column.
+/// SQLite cannot change the CHECK on `route`, so `hosts` is made again as
+/// `add_telnet` makes it.
+fn add_proxy_command(connection: &Connection) -> rusqlite::Result<()> {
+    connection.pragma_update(None, "foreign_keys", false)?;
+    let result = connection.execute_batch(PROXY_COMMAND_HOSTS);
+    if result.is_err() {
+        let _ = connection.execute_batch("ROLLBACK");
+    }
+    connection.pragma_update(None, "foreign_keys", true)?;
+    result
+}
+
+const PROXY_COMMAND_HOSTS: &str = "BEGIN;
+CREATE TEMP TABLE hosts_25 AS SELECT * FROM main.hosts;
+DROP TABLE main.hosts;
+CREATE TABLE hosts (
+    id                INTEGER PRIMARY KEY,
+    public_id         TEXT UNIQUE,
+    group_id          INTEGER REFERENCES groups(id) ON DELETE CASCADE,
+    sort_order        INTEGER NOT NULL DEFAULT 0,
+    name              TEXT NOT NULL CHECK (name <> ''),
+    address           TEXT NOT NULL CHECK (address <> ''),
+    port              INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+    auth              TEXT NOT NULL CHECK (auth IN ('password', 'no-password', 'credential')),
+    username          TEXT,
+    credential_id     INTEGER REFERENCES credentials(id),
+    route             TEXT NOT NULL DEFAULT 'direct' CHECK (route IN ('direct', 'jump', 'proxy', 'proxy-command')),
+    proxy_kind        TEXT CHECK (proxy_kind IN ('http', 'socks5')),
+    proxy_host        TEXT,
+    proxy_port        INTEGER CHECK (proxy_port BETWEEN 1 AND 65535),
+    proxy_username    TEXT,
+    notes             TEXT NOT NULL DEFAULT '',
+    os                TEXT,
+    last_connected_at INTEGER,
+    protocol          TEXT NOT NULL DEFAULT 'ssh' CHECK (protocol IN ('ssh', 'serial', 'telnet')),
+    serial_baud       INTEGER CHECK (serial_baud > 0)
+        CHECK ((protocol = 'serial') = (serial_baud IS NOT NULL)),
+    serial_data_bits  INTEGER CHECK (serial_data_bits BETWEEN 5 AND 8)
+        CHECK ((protocol = 'serial') = (serial_data_bits IS NOT NULL)),
+    serial_parity     TEXT CHECK (serial_parity IN ('none', 'odd', 'even'))
+        CHECK ((protocol = 'serial') = (serial_parity IS NOT NULL)),
+    serial_stop_bits  INTEGER CHECK (serial_stop_bits IN (1, 2))
+        CHECK ((protocol = 'serial') = (serial_stop_bits IS NOT NULL)),
+    serial_flow       TEXT CHECK (serial_flow IN ('none', 'rts-cts', 'xon-xoff'))
+        CHECK ((protocol = 'serial') = (serial_flow IS NOT NULL)),
+    telnet_user_prompt TEXT CHECK (telnet_user_prompt <> '')
+        CHECK (protocol = 'telnet' OR telnet_user_prompt IS NULL),
+    telnet_pass_prompt TEXT CHECK (telnet_pass_prompt <> '')
+        CHECK (protocol = 'telnet' OR telnet_pass_prompt IS NULL),
+    sidebar_tool      TEXT,
+    edited_ms         INTEGER NOT NULL DEFAULT 0,
+    directory_follow  INTEGER CHECK (directory_follow IN (0, 1)),
+    credential_username TEXT CHECK (credential_username <> '')
+        CHECK (auth = 'credential' OR credential_username IS NULL),
+    one_time_code     INTEGER NOT NULL DEFAULT 0 CHECK (one_time_code IN (0, 1))
+        CHECK (protocol = 'ssh' OR one_time_code = 0),
+    one_time_code_prompt TEXT CHECK (one_time_code_prompt <> '')
+        CHECK (one_time_code = 1 OR one_time_code_prompt IS NULL),
+    login_commands    TEXT NOT NULL DEFAULT '',
+    proxy_command     TEXT CHECK (proxy_command <> ''),
+    CHECK ((auth = 'credential') = (credential_id IS NOT NULL)),
+    CHECK ((auth = 'credential') = (username IS NULL)),
+    CHECK ((route = 'proxy') = (proxy_kind IS NOT NULL)),
+    CHECK ((proxy_kind IS NULL) = (proxy_host IS NULL)
+        AND (proxy_kind IS NULL) = (proxy_port IS NULL)),
+    CHECK (proxy_kind IS NOT NULL OR proxy_username IS NULL),
+    CHECK ((route = 'proxy-command') = (proxy_command IS NOT NULL))
+) STRICT;
+INSERT INTO hosts (id, public_id, group_id, sort_order, name, address, port, auth, username,
+    credential_id, route, proxy_kind, proxy_host, proxy_port, proxy_username, notes, os,
+    last_connected_at, protocol, serial_baud, serial_data_bits, serial_parity, serial_stop_bits,
+    serial_flow, telnet_user_prompt, telnet_pass_prompt, sidebar_tool, edited_ms,
+    directory_follow, credential_username, one_time_code, one_time_code_prompt, login_commands,
+    proxy_command)
+SELECT id, public_id, group_id, sort_order, name, address, port, auth, username,
+    credential_id, route, proxy_kind, proxy_host, proxy_port, proxy_username, notes, os,
+    last_connected_at, protocol, serial_baud, serial_data_bits, serial_parity, serial_stop_bits,
+    serial_flow, telnet_user_prompt, telnet_pass_prompt, sidebar_tool, edited_ms,
+    directory_follow, credential_username, one_time_code, one_time_code_prompt, login_commands,
+    NULL
+FROM hosts_25;
+DROP TABLE hosts_25;
+CREATE INDEX hosts_group_id ON hosts(group_id);
+CREATE INDEX hosts_credential_id ON hosts(credential_id);
+PRAGMA user_version = 26;
 COMMIT;";
 
 /// Version 20, what sync needs: global ids and edit times, the tables of
@@ -854,7 +951,7 @@ impl HostDatabase {
                  notes, os, protocol, serial_baud, serial_data_bits, serial_parity, \
                  serial_stop_bits, serial_flow, telnet_user_prompt, telnet_pass_prompt, \
                  sidebar_tool, edited_ms, directory_follow, credential_username, \
-                 one_time_code, one_time_code_prompt, login_commands \
+                 one_time_code, one_time_code_prompt, login_commands, proxy_command \
                  FROM hosts ORDER BY id",
             )?
             .query_map([], |row| {
@@ -887,6 +984,7 @@ impl HostDatabase {
                     password_prompt: row.get::<_, Option<String>>(24)?.unwrap_or_default().into(),
                 };
                 let sidebar_tool: Option<String> = row.get(25)?;
+                let proxy_command: Option<String> = row.get(32)?;
                 // Empty for a host using a credential as its user.
                 let credential_user: Option<String> = row.get(28)?;
                 let mut host = Host::new(
@@ -905,8 +1003,14 @@ impl HostDatabase {
                 host.sort_order = row.get(3)?;
                 host.credential = credential.map(|id| CredentialId(from_sql(id)));
                 // The table's CHECKs keep the proxy's columns whole.
-                host.route = match (route.as_str(), proxy_kind, proxy_host, proxy_port) {
-                    ("proxy", Some(kind), Some(proxy_host), Some(port)) => {
+                host.route = match (
+                    route.as_str(),
+                    proxy_kind,
+                    proxy_host,
+                    proxy_port,
+                    proxy_command,
+                ) {
+                    ("proxy", Some(kind), Some(proxy_host), Some(port), _) => {
                         ProxyKind::from_stored(&kind)
                             .map(|kind| {
                                 Route::Proxy(
@@ -917,6 +1021,9 @@ impl HostDatabase {
                             .unwrap_or_default()
                     }
                     ("jump", ..) => Route::Jump(Vec::new()),
+                    ("proxy-command", .., Some(command)) => {
+                        Route::ProxyCommand(ProxyCommandSettings::new(command))
+                    }
                     _ => Route::Direct,
                 };
                 host.os = os.as_deref().and_then(HostOs::from_stored);
@@ -1342,9 +1449,10 @@ impl HostDatabase {
              proxy_username, notes, os, protocol, serial_baud, serial_data_bits, \
              serial_parity, serial_stop_bits, serial_flow, telnet_user_prompt, \
              telnet_pass_prompt, sidebar_tool, edited_ms, directory_follow, \
-             credential_username, one_time_code, one_time_code_prompt, login_commands) \
+             credential_username, one_time_code, one_time_code_prompt, login_commands, \
+             proxy_command) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)",
+             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
             params![
                 to_sql(host.id.0),
                 host.public_id.as_str(),
@@ -1378,6 +1486,7 @@ impl HostDatabase {
                 row.one_time_code,
                 row.one_time_code_prompt,
                 row.login_commands,
+                row.proxy_command,
             ],
         )?;
             write_jumps(connection, host)
@@ -1401,7 +1510,7 @@ impl HostDatabase {
              serial_stop_bits = ?19, serial_flow = ?20, telnet_user_prompt = ?21, \
              telnet_pass_prompt = ?22, protocol = ?23, edited_ms = ?24, \
              credential_username = ?25, one_time_code = ?26, one_time_code_prompt = ?27, \
-             login_commands = ?28 WHERE id = ?1",
+             login_commands = ?28, proxy_command = ?29 WHERE id = ?1",
                 params![
                     to_sql(host.id.0),
                     host.group.map(|group| to_sql(group.0)),
@@ -1431,6 +1540,7 @@ impl HostDatabase {
                     row.one_time_code,
                     row.one_time_code_prompt,
                     row.login_commands,
+                    row.proxy_command,
                 ],
             )?;
             write_jumps(connection, host)
@@ -1982,6 +2092,7 @@ struct HostRow<'a> {
     proxy_host: Option<&'a str>,
     proxy_port: Option<u16>,
     proxy_username: Option<&'a str>,
+    proxy_command: Option<&'a str>,
 }
 
 impl<'a> HostRow<'a> {
@@ -2025,11 +2136,16 @@ impl<'a> HostRow<'a> {
                 Route::Direct => "direct",
                 Route::Jump(_) => "jump",
                 Route::Proxy(_) => "proxy",
+                Route::ProxyCommand(_) => "proxy-command",
             },
             proxy_kind: proxy.map(|proxy| proxy.kind.as_str()),
             proxy_host: proxy.map(|proxy| proxy.host.as_ref()),
             proxy_port: proxy.map(|proxy| proxy.port),
             proxy_username: proxy.and_then(|proxy| proxy.user.as_deref()),
+            proxy_command: match &host.route {
+                Route::ProxyCommand(proxy) => Some(proxy.command.as_ref()),
+                _ => None,
+            },
         }
     }
 }
@@ -3901,6 +4017,33 @@ INSERT INTO hosts (id, name, address, port, auth, credential_id, edited_ms) \
             )
             .unwrap();
         assert_eq!(proxies, 0);
+    }
+
+    #[test]
+    fn a_proxy_command_route_round_trips() {
+        let db = HostDatabase::in_memory().unwrap();
+        let command = "cloudflared access ssh --hostname %h";
+        let secure = routed(
+            host(1, "secure", None),
+            Route::ProxyCommand(ProxyCommandSettings::new(command)),
+        );
+        db.insert_host(&secure).unwrap();
+        assert_eq!(
+            db.load().unwrap().hosts[0].route,
+            Route::ProxyCommand(ProxyCommandSettings::new(command))
+        );
+
+        // Editing the host to connect directly clears the command column.
+        db.update_host(&host(1, "secure", None)).unwrap();
+        let proxy_commands: i64 = db
+            .connection
+            .query_row(
+                "SELECT COUNT(*) FROM hosts WHERE proxy_command IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(proxy_commands, 0);
     }
 
     #[test]
