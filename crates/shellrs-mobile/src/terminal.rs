@@ -193,6 +193,9 @@ async fn pump(
             },
         }
     };
+    // Typing fails from here on, before the app can take the last event:
+    // after it, `write` says the terminal is closed.
+    drop(commands);
     output.finish(end);
 }
 
