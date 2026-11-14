@@ -33,8 +33,8 @@ use super::secret_fields::SecretFields;
 use super::{
     AuthKind, COMMON_BAUD_RATES, Credential, CredentialId, CredentialKind, DEFAULT_USER, DataBits,
     ErrorMessage as _, FlowControl, GroupId, Host, HostDraft, HostDraftError, HostId, HostLogin,
-    HostLoginExt, HostStore, KindLabel as _, Parity, Protocol, ProtocolKind, ProxyKind,
-    ProxySettings, Route, SSH_PORT, SerialLine, SerialSettings, StopBits, TELNET_PORT,
+    HostLoginExt, HostStore, KindLabel as _, Parity, Protocol, ProtocolKind, ProxyCommandSettings,
+    ProxyKind, ProxySettings, Route, SSH_PORT, SerialLine, SerialSettings, StopBits, TELNET_PORT,
     TelnetSettings, TotpLogin, TotpSettings, credential_summary, group_options,
 };
 pub use crate::shared::DeleteHandler;
@@ -144,17 +144,24 @@ enum RouteChoice {
     Direct,
     Jump,
     Proxy,
+    ProxyCommand,
 }
 
 impl RouteChoice {
     /// Every way, in the order the form lists them.
-    const ALL: [RouteChoice; 3] = [RouteChoice::Direct, RouteChoice::Jump, RouteChoice::Proxy];
+    const ALL: [RouteChoice; 4] = [
+        RouteChoice::Direct,
+        RouteChoice::Jump,
+        RouteChoice::Proxy,
+        RouteChoice::ProxyCommand,
+    ];
 
     fn label(self) -> SharedString {
         match self {
             RouteChoice::Direct => t!("host.route.direct"),
             RouteChoice::Jump => t!("host.route.jump"),
             RouteChoice::Proxy => t!("host.route.proxy"),
+            RouteChoice::ProxyCommand => t!("host.route.proxy_command"),
         }
     }
 
@@ -163,6 +170,7 @@ impl RouteChoice {
             Route::Direct => RouteChoice::Direct,
             Route::Jump(_) => RouteChoice::Jump,
             Route::Proxy(_) => RouteChoice::Proxy,
+            Route::ProxyCommand(_) => RouteChoice::ProxyCommand,
         }
     }
 }
@@ -264,6 +272,7 @@ pub struct HostForm {
     proxy_user: Entity<InputState>,
     /// The proxy's password.
     proxy_secret: Entity<SecretFields>,
+    proxy_command: Entity<InputState>,
     notes: Entity<TextareaState>,
     /// 「高级设置」 is unfolded: at first only for a host that uses what it
     /// holds.
@@ -636,6 +645,15 @@ impl HostForm {
             proxy_secret.update(cx, |fields, cx| fields.load_saved(Some(secret), None, cx));
         }
 
+        let proxy_command = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(t!("host.dialog.proxy_command_placeholder"))
+                .default_value(match &draft.route {
+                    Route::ProxyCommand(proxy) => proxy.command.to_string(),
+                    _ => String::new(),
+                })
+        });
+
         let notes = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(2, 6)
@@ -753,6 +771,7 @@ impl HostForm {
             proxy_port,
             proxy_user,
             proxy_secret,
+            proxy_command,
             notes,
             advanced_open: draft.totp.is_some(),
             totp: draft.totp.is_some(),
@@ -995,6 +1014,13 @@ impl HostForm {
                 Ok(Route::Proxy(
                     ProxySettings::new(kind, host, port).with_user(user),
                 ))
+            }
+            RouteChoice::ProxyCommand => {
+                let command = self.proxy_command.read(cx).value().trim().to_string();
+                if command.is_empty() {
+                    return Err(HostDraftError::ProxyCommand.message());
+                }
+                Ok(Route::ProxyCommand(ProxyCommandSettings::new(command)))
             }
         }
     }
@@ -1882,6 +1908,7 @@ impl HostForm {
             RouteChoice::Direct => None,
             RouteChoice::Jump => Some(self.jump_box(cx).into_any_element()),
             RouteChoice::Proxy => Some(self.proxy_box(cx).into_any_element()),
+            RouteChoice::ProxyCommand => Some(self.proxy_command_box(cx).into_any_element()),
         };
         Field::new()
             .label(t!("host.dialog.route"))
@@ -2135,6 +2162,32 @@ impl HostForm {
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
                     .child(t!("host.dialog.proxy_note")),
+            )
+    }
+
+    /// The command whose stdin and stdout carry the connection's bytes.
+    fn proxy_command_box(&self, cx: &App) -> impl IntoElement {
+        v_flex()
+            .w_full()
+            .gap_2()
+            .child(
+                Field::new()
+                    .label(t!("host.dialog.proxy_command"))
+                    .required(true)
+                    .child(
+                        Input::new(&self.proxy_command)
+                            .id("host-proxy-command")
+                            .small(),
+                    ),
+            )
+            .child(
+                div()
+                    .id("host-route-note")
+                    .test_support()
+                    .aria_label(t!("host.dialog.proxy_command_note"))
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("host.dialog.proxy_command_note")),
             )
     }
 }
@@ -2830,7 +2883,7 @@ mod tests {
             describe_host_delete(dependents).as_deref(),
             Some(
                 "2 port forwards through this host will also be deleted. \
-                 1 host uses it as a jump host and will need another one to connect."
+                 1 host uses it as a jump host and will need another to connect."
             )
         );
     }

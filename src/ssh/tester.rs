@@ -132,6 +132,7 @@ impl SshConnectionTester {
                 request.route(),
                 request.host(),
                 request.port(),
+                "",
                 &broker,
                 &secrets,
             ),
@@ -157,6 +158,8 @@ async fn resolve_first_leg(route: &LoginRoute, host: &str, port: u16) -> Result<
     let first = match route {
         LoginRoute::Direct => Some((host, port)),
         LoginRoute::Proxy(proxy) => Some((proxy.host.as_str(), proxy.port)),
+        // The command itself resolves the host; nothing to look up here.
+        LoginRoute::ProxyCommand(_) => None,
         LoginRoute::Jump(hops) => match hops.first() {
             Some(JumpLogin::Host { login, .. }) => Some((login.host.as_str(), login.port)),
             _ => None,

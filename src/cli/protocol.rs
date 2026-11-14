@@ -603,6 +603,10 @@ pub enum RouteDetails {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         password_saved: Option<bool>,
     },
+    /// A host reached through an external command (OpenSSH's ProxyCommand).
+    ProxyCommand {
+        command: String,
+    },
 }
 
 /// What `hosts create` sets and `hosts update` changes: every field may be
@@ -678,6 +682,9 @@ pub enum RouteFields {
             skip_serializing_if = "Option::is_none"
         )]
         password: Option<Option<Secret>>,
+    },
+    ProxyCommand {
+        command: String,
     },
 }
 

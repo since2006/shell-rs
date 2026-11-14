@@ -183,6 +183,9 @@ cli.route.http:
 cli.route.socks5:
   zh-CN: SOCKS5 代理 %{address}
   en: SOCKS5 proxy %{address}
+cli.route.proxy_command:
+  zh-CN: 代理命令 %{command}
+  en: Proxy command %{command}
 cli.route.password_saved:
   zh-CN: "%{proxy}（密码已保存）"
   en: "%{proxy} (password saved)"

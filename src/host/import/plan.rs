@@ -10,7 +10,7 @@ use crate::i18n::t;
 
 use super::super::{
     AuthKind, CredentialDraft, CredentialId, CredentialKind, DEFAULT_USER, ErrorMessage as _,
-    GroupPathError, HostDraft, HostDraftError, HostStore, read_small,
+    GroupPathError, HostDraft, HostDraftError, HostStore, ProxyCommandSettings, Route, read_small,
 };
 use super::{ImportCandidate, ImportScan};
 
@@ -238,16 +238,20 @@ pub fn plan_import(rows: &[ImportRow], store: &HostStore) -> Result<ImportPlan, 
                 None => (AuthKind::NoPassword, Login::Own),
             },
         };
-        let draft = HostDraft::new(
+        let mut draft = HostDraft::new(
             row.name.trim().to_string(),
             candidate.address.clone(),
             candidate.port,
             user,
             auth,
             None,
-        )
-        .validated()
-        .map_err(|error| ImportError::Host {
+        );
+        if let Some(command) = &candidate.proxy_command {
+            draft = draft.with_route(Route::ProxyCommand(ProxyCommandSettings::new(
+                command.as_str(),
+            )));
+        }
+        let draft = draft.validated().map_err(|error| ImportError::Host {
             name: shown_name,
             error,
         })?;
@@ -360,6 +364,7 @@ mod tests {
             port: 22,
             user: "deploy".into(),
             identity: identity.map(PathBuf::from),
+            proxy_command: None,
         }
     }
 
