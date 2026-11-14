@@ -351,6 +351,13 @@ fn route(failure: &RouteFailure, rest: &[Cause<'_>]) -> String {
                 [] => String::new(),
             };
         }
+        // What the command could not start with, or wrote, says it all.
+        RouteFailure::ProxyCommand => {
+            return match rest {
+                [answer, under @ ..] => link(*answer, under),
+                [] => t!("ssh.proxy.command_failed").into(),
+            };
+        }
     }
     .into()
 }

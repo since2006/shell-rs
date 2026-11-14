@@ -101,6 +101,9 @@ ssh.proxy.socks.no_connect:
 ssh.proxy.socks.address_type:
   zh-CN: 代理服务器不支持这种地址类型
   en: The proxy doesn’t support this type of address
+ssh.proxy.command_failed:
+  zh-CN: 无法启动代理命令，请检查命令和 %h、%p、%r 占位符
+  en: Couldn't start the proxy command. Check it and its %h, %p, %r placeholders
 
 # A credential a connection without anyone to ask needed
 ssh.missing.password_rejected:

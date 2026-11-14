@@ -120,6 +120,10 @@ pub enum Route {
     Jump(Vec<Option<HostId>>),
     /// Through an HTTP or SOCKS5 proxy.
     Proxy(ProxySettings),
+    /// Through an external command whose stdin and stdout carry the
+    /// connection's bytes, OpenSSH's `ProxyCommand` (`ncat`, `cloudflared
+    /// access ssh`, `tailcat ssh`, …).
+    ProxyCommand(ProxyCommandSettings),
 }
 
 impl Route {
@@ -169,6 +173,24 @@ impl ProxySettings {
         self.user
             .as_ref()
             .map(|user| SecretRef::proxy(user.as_ref(), self.host.as_ref(), self.port))
+    }
+}
+
+/// The command a host connects through, OpenSSH's `ProxyCommand`: an
+/// external process whose stdin and stdout carry the connection's bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ProxyCommandSettings {
+    /// The command line, with `%h` (address), `%p` (port) and `%r` (user)
+    /// still to be expanded for the host being reached.
+    pub command: SharedString,
+}
+
+impl ProxyCommandSettings {
+    pub fn new(command: impl Into<SharedString>) -> Self {
+        Self {
+            command: command.into(),
+        }
     }
 }
 
@@ -696,6 +718,12 @@ impl HostDraft {
                 let user = proxy.user.as_deref().map(str::trim).unwrap_or_default();
                 proxy.user = (!user.is_empty()).then(|| user.to_string().into());
             }
+            Route::ProxyCommand(proxy) => {
+                proxy.command = proxy.command.trim().to_string().into();
+                if proxy.command.is_empty() {
+                    return Err(HostDraftError::ProxyCommand);
+                }
+            }
         }
         self.notes = self.notes.trim().to_string().into();
         Ok(self)
@@ -738,6 +766,7 @@ pub enum HostDraftError {
     DeletedJumpHost,
     ProxyAddress,
     ProxyPort,
+    ProxyCommand,
 }
 
 #[cfg(test)]

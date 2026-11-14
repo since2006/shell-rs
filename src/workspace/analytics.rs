@@ -93,6 +93,7 @@ impl Workspace {
                 Route::Direct => {}
                 Route::Jump(_) => counters.push(Counter::SshJump),
                 Route::Proxy(_) => counters.push(Counter::SshProxy),
+                Route::ProxyCommand(_) => counters.push(Counter::SshProxyCommand),
             }
             if saved.credential.is_some() {
                 counters.push(Counter::SshCredential);

@@ -86,6 +86,7 @@ impl ErrorMessage for HostDraftError {
             HostDraftError::DeletedJumpHost => t!("host.draft.deleted_jump_host"),
             HostDraftError::ProxyAddress => t!("host.draft.proxy_address"),
             HostDraftError::ProxyPort => t!("host.draft.proxy_port"),
+            HostDraftError::ProxyCommand => t!("host.draft.proxy_command"),
         }
     }
 }
