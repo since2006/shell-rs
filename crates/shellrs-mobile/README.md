@@ -185,6 +185,24 @@ with `checkWebdavLogin`, `checkS3Login` and `checkNewSyncPassword`.
 - Passwords, passphrases and keys sync with everything else, encrypted
   with the sync password: as on the desktop, there is no switch.
 
+## Updates outside the app stores
+
+The Android app installed from somewhere other than Google Play updates
+itself from `dl.shellrs.com`, as the desktop does. `androidUpdateManifestUrl`
+is where the channel's manifest is; the app downloads it and hands the bytes
+to `checkAndroidUpdate` with its own version and the device's rollout draw
+(a number in `0..1` drawn once and kept). The manifest is the desktop's
+signed envelope, signed with the desktop's keys, its trusted comment
+`shellrs-android-manifest <channel> <version>`: nothing in it is believed
+before the signature checks out, and a desktop manifest is never taken for
+the app's. The result is `upToDate`, `update` with the package's addresses,
+size and SHA-256, or `manual` for a version this copy cannot install itself
+(the person goes to the website). The app downloads and checks the package,
+and Android installs it only over an app signed by the same key.
+`extraKeys` is for a debug build trying updates against a server of its own;
+a release build passes none. An app from a store updates through the store
+and calls none of this.
+
 ## Threads
 
 - Every method may be called from any thread. The ones that are not `async`

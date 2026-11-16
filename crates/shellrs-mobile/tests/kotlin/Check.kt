@@ -102,6 +102,15 @@ fun main() = runBlocking {
         check(false) { "joined with no setup code" }
     } catch (_: SyncFailure.BadSetupCode) {}
 
+    // The Android app's updates outside Google Play: where the manifest is, and nothing unsigned believed.
+    check(androidUpdateManifestUrl(UpdateChannel.STABLE) == "https://dl.shellrs.com/update/android/v1/stable.json") {
+        "the manifest moved"
+    }
+    try {
+        checkAndroidUpdate("{}".toByteArray(), UpdateChannel.STABLE, "0.1.0", 0.5, emptyList())
+        check(false) { "an unsigned manifest passed" }
+    } catch (_: UpdateFailure.BadManifest) {}
+
     // Nothing listens on port 1.
     val connection = core.connect(
         Login("127.0.0.1", 1u, "nobody", LoginMethod.NO_PASSWORD, null, SecretRef.Temporary(1u), Route.Direct)

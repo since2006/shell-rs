@@ -98,6 +98,15 @@ do {
     try await core.sync().joinWithSetupCode(code: "not a code", password: "a sync password")
     check(false, "joined with no setup code")
 } catch SyncFailure.BadSetupCode {}
+// The Android app's updates: the same interface, nothing unsigned believed.
+check(
+    androidUpdateManifestUrl(channel: .stable) == "https://dl.shellrs.com/update/android/v1/stable.json",
+    "the manifest moved")
+do {
+    _ = try checkAndroidUpdate(
+        envelope: Data("{}".utf8), channel: .stable, current: "0.1.0", draw: 0.5, extraKeys: [])
+    check(false, "an unsigned manifest passed")
+} catch UpdateFailure.BadManifest {}
 
 // Nothing listens on port 1.
 let connection = core.connect(

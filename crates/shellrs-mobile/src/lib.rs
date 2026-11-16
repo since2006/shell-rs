@@ -26,6 +26,7 @@ mod store;
 mod sync;
 mod task;
 mod terminal;
+mod update;
 
 pub use connection::{Connection, ConnectionEvent, ExecOutput};
 pub use core::{Core, CoreConfig, CoreError};
@@ -54,5 +55,9 @@ pub use sync::{
     random_sync_password,
 };
 pub use terminal::{Terminal, TerminalEvent, TerminalOptions};
+pub use update::{
+    UpdateChannel, UpdateFailure, UpdateOffer, UpdatePackage, UpdateRelease,
+    android_update_manifest_url, check_android_update,
+};
 
 uniffi::setup_scaffolding!();
