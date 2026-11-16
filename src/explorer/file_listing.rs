@@ -83,7 +83,9 @@ pub struct FileListing {
     /// are not shown.
     rows: Vec<FileEntry>,
     show_hidden: bool,
-    sort: Option<(usize, ColumnSort)>,
+    /// The column sorted by, by its key: a column keeps its sort when a
+    /// drag of its title moves it.
+    sort: Option<(SharedString, ColumnSort)>,
     side: PaneSide,
     /// The right sidebar's narrow list: names and sizes, and rows that do
     /// not drag out (see `set_compact`).
@@ -181,9 +183,15 @@ impl FileListing {
     /// A click on a column's title sorts as one on its arrow does:
     /// descending, then ascending, then back to by name.
     fn cycle_sort(&mut self, col_ix: usize) {
-        let sort = match self.sort {
-            Some((ix, ColumnSort::Descending)) if ix == col_ix => ColumnSort::Ascending,
-            Some((ix, ColumnSort::Ascending)) if ix == col_ix => ColumnSort::Default,
+        let sorted = self.columns.get(col_ix).and_then(|column| {
+            self.sort
+                .as_ref()
+                .filter(|(key, _)| *key == column.key)
+                .map(|(_, sort)| *sort)
+        });
+        let sort = match sorted {
+            Some(ColumnSort::Descending) => ColumnSort::Ascending,
+            Some(ColumnSort::Ascending) => ColumnSort::Default,
             _ => ColumnSort::Descending,
         };
         self.set_sort(col_ix, sort);
@@ -193,9 +201,9 @@ impl FileListing {
     /// takes again on each `refresh`: otherwise the arrows would go back to
     /// unsorted with the next listing while the rows stayed sorted.
     fn set_sort(&mut self, col_ix: usize, sort: ColumnSort) {
-        self.sort = match sort {
-            ColumnSort::Default => None,
-            sort => Some((col_ix, sort)),
+        self.sort = match (sort, self.columns.get(col_ix)) {
+            (ColumnSort::Default, _) | (_, None) => None,
+            (sort, Some(column)) => Some((column.key.clone(), sort)),
         };
         for (ix, column) in self.columns.iter_mut().enumerate() {
             column.sort = Some(if ix == col_ix {
@@ -364,11 +372,8 @@ impl FileListing {
     fn apply_sort(&mut self) {
         let (key, descending) = self
             .sort
-            .and_then(|(col_ix, sort)| {
-                self.columns
-                    .get(col_ix)
-                    .map(|column| (column.key.clone(), sort == ColumnSort::Descending))
-            })
+            .as_ref()
+            .map(|(key, sort)| (key.clone(), *sort == ColumnSort::Descending))
             .unwrap_or_else(|| ("name".into(), false));
         let start = usize::from(self.rows.first().is_some_and(FileEntry::is_parent));
         self.rows[start..].sort_by(|a, b| {
@@ -587,6 +592,24 @@ impl TableDelegate for FileListing {
             context.explorer,
             self.child_path(&name),
         )
+    }
+
+    /// A title dragged past another puts its column there. The table moves
+    /// only what it keeps of the column, its width and arrow; the title and
+    /// the cells are drawn from these columns, which it takes again on each
+    /// `refresh`: left as they were, the widths alone would change places,
+    /// until the next listing put them back.
+    fn move_column(
+        &mut self,
+        col_ix: usize,
+        to_ix: usize,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) {
+        if col_ix < self.columns.len() && to_ix < self.columns.len() {
+            let column = self.columns.remove(col_ix);
+            self.columns.insert(to_ix, column);
+        }
     }
 
     fn perform_sort(

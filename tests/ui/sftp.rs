@@ -1711,6 +1711,115 @@ async fn sftp_clicking_a_column_title_sorts_by_it(cx: &mut TestAppContext) {
     assert_eq!(names(cx), by_name);
 }
 
+/// A column's title dragged past another moves the whole column there: its
+/// title, its cells and the sort it carries. The order outlives a refresh,
+/// which gives the table its columns again.
+#[gpui_kit::test]
+async fn sftp_dragging_a_column_title_moves_the_column(cx: &mut TestAppContext) {
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let pane = ("local-pane", SFTP_TAB);
+    let local = |cx: &mut TestAppContext| {
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let explorer = workspace.read(cx).explorer(ExplorerId(SFTP_TAB)).unwrap();
+            explorer.read(cx).local().clone()
+        })
+    };
+    let titles = |cx: &mut TestAppContext| {
+        let local = local(cx);
+        cx.update(|cx| local.read(cx).column_names(cx))
+    };
+    let names = |cx: &mut TestAppContext| {
+        let local = local(cx);
+        cx.update(|cx| {
+            let entries = local.read(cx).entries(cx);
+            entries
+                .into_iter()
+                .map(|entry| entry.name.to_string())
+                .collect::<Vec<_>>()
+        })
+    };
+    let click_size = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within(pane).click("column:size", cx);
+        })
+        .unwrap();
+    };
+    assert_eq!(titles(cx), ["名称", "大小", "类型", "修改时间"]);
+    // Sorted by 大小, largest first, before it moves.
+    click_size(cx);
+    let descending = ["..", "链接目录", "目录", "文件 乙.txt", "文件 甲.txt"];
+    assert_eq!(names(cx), descending);
+
+    // 大小's title, let go past the middle of 类型.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let size = window.within(pane).find(("col-header", 1usize)).bounds();
+        let kind = window.within(pane).find(("col-header", 2usize)).bounds();
+        let to = point(kind.right() - px(20.), kind.center().y);
+        window.drag(size.center(), to, cx);
+    })
+    .unwrap();
+    let moved = ["名称", "类型", "大小", "修改时间"];
+    assert_eq!(titles(cx), moved);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let pane = window.within(pane);
+        // The title and the cells are where the column now is.
+        let column = pane.find(("col-header", 2usize)).bounds();
+        let title = pane.find("column:size").bounds();
+        let cell = pane.find("size:文件 甲.txt").bounds();
+        assert!(column.contains(&title.center()), "{title:?} in {column:?}");
+        assert!(
+            column.left() <= cell.left() && cell.right() <= column.right(),
+            "{cell:?} in {column:?}"
+        );
+        assert!(pane.find("column:type").bounds().right() <= column.left());
+    })
+    .unwrap();
+    // The rows stay sorted by it.
+    assert_eq!(names(cx), descending);
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ExplorerAction::new(
+                ExplorerId(SFTP_TAB),
+                ExplorerCommand::Refresh { remote: false },
+            )),
+            cx,
+        );
+    })
+    .unwrap();
+    assert_eq!(titles(cx), moved);
+    assert_eq!(names(cx), descending);
+
+    // The sort went with the column: the next click on 大小 carries on to
+    // smallest first, rather than starting over.
+    click_size(cx);
+    assert_eq!(
+        names(cx),
+        ["..", "目录", "链接目录", "文件 甲.txt", "文件 乙.txt"]
+    );
+
+    // And leftwards: 修改时间's title, let go before the middle of 类型.
+    // The pane is narrower than its columns, so the title is taken by its
+    // left end, the part in view.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let modified = window.within(pane).find(("col-header", 3usize)).bounds();
+        let kind = window.within(pane).find(("col-header", 1usize)).bounds();
+        let from = point(modified.left() + px(20.), modified.center().y);
+        let to = point(kind.left() + px(20.), kind.center().y);
+        window.drag(from, to, cx);
+    })
+    .unwrap();
+    assert_eq!(titles(cx), ["名称", "修改时间", "类型", "大小"]);
+}
+
 /// A column dragged wider stays so with the next listing, which gives the
 /// table its columns again.
 #[gpui_kit::test]
