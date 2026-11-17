@@ -40,6 +40,7 @@ pub enum Counter {
     Ssh,
     SshJump,
     SshProxy,
+    SshProxyCommand,
     SshCredential,
     SshNoPassword,
     /// 临时连接.
@@ -118,10 +119,11 @@ pub enum Counter {
 }
 
 impl Counter {
-    pub const ALL: [Counter; 57] = [
+    pub const ALL: [Counter; 58] = [
         Self::Ssh,
         Self::SshJump,
         Self::SshProxy,
+        Self::SshProxyCommand,
         Self::SshCredential,
         Self::SshNoPassword,
         Self::SshTemporary,
@@ -183,6 +185,7 @@ impl Counter {
             Self::Ssh => "ssh",
             Self::SshJump => "ssh_jump",
             Self::SshProxy => "ssh_proxy",
+            Self::SshProxyCommand => "ssh_proxy_command",
             Self::SshCredential => "ssh_credential",
             Self::SshNoPassword => "ssh_no_password",
             Self::SshTemporary => "ssh_temporary",

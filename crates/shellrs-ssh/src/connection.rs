@@ -182,7 +182,14 @@ impl SshConnector {
     ) -> Result<(client::Handle<SshClientHandler>, String)> {
         let login = &config.login;
         let tunnel = self
-            .open_route(&login.route, &login.host, login.port, &broker, secrets)
+            .open_route(
+                &login.route,
+                &login.host,
+                login.port,
+                &login.user,
+                &broker,
+                secrets,
+            )
             .await?;
         self.log_in(tunnel, login, None, &broker, secrets, forwarded)
             .await
@@ -199,6 +206,7 @@ impl SshConnector {
         route: &LoginRoute,
         host: &str,
         port: u16,
+        user: &str,
         broker: &Arc<SshPrompts>,
         secrets: &SharedSecretSource,
     ) -> Result<Tunnel> {
@@ -207,6 +215,12 @@ impl SshConnector {
             LoginRoute::Proxy(proxy) => {
                 let proxied = through_proxy(proxy, (host, port), secrets, self.nat64);
                 Box::new(step(broker, proxied).await?)
+            }
+            LoginRoute::ProxyCommand(proxy) => {
+                let command = super::proxy_command::expand(&proxy.command, host, port, user);
+                let stream =
+                    super::proxy_command::spawn(&command).wrap_err(RouteFailure::ProxyCommand)?;
+                Box::new(stream)
             }
             LoginRoute::Jump(hops) => {
                 self.through_jumps(hops, (host, port), broker, secrets)

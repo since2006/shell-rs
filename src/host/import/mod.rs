@@ -46,6 +46,9 @@ pub struct ImportCandidate {
     /// not try anyway: the file is there, is no public key and is not one
     /// of the default keys.
     pub identity: Option<PathBuf>,
+    /// A `ProxyCommand`, with its `%h`/`%p`/`%r` tokens still to be
+    /// expanded for the host when it connects.
+    pub proxy_command: Option<String>,
 }
 
 /// What reading a source found.

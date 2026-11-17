@@ -122,6 +122,9 @@ pub enum Route {
     /// connection fails there rather than skip it.
     Jump(Vec<Option<String>>),
     Proxy(ProxyData),
+    /// A host reached through an external command whose stdin and stdout
+    /// carry the connection's bytes (OpenSSH's `ProxyCommand`).
+    ProxyCommand(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -415,6 +418,7 @@ fn parse_host(key: &RecordKey, r: &Reader) -> Result<HostData, String> {
                 username: proxy.optional_string("username")?,
             })
         }
+        "proxy-command" => Route::ProxyCommand(r.string("command")?),
         other => return Err(format!("unknown route {other}")),
     };
     Ok(HostData {
@@ -588,6 +592,10 @@ fn fields(data: &RecordData) -> Vec<(&'static str, Value)> {
                             "username": proxy.username,
                         }),
                     ));
+                }
+                Route::ProxyCommand(command) => {
+                    out.push(("route", json!("proxy-command")));
+                    out.push(("command", json!(command)));
                 }
             }
             out.push(("notes", json!(host.notes)));

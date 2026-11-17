@@ -44,6 +44,7 @@ enum Setting {
     Port,
     User,
     IdentityFile,
+    ProxyCommand,
 }
 
 impl Setting {
@@ -53,6 +54,7 @@ impl Setting {
             "port" => Some(Setting::Port),
             "user" => Some(Setting::User),
             "identityfile" => Some(Setting::IdentityFile),
+            "proxycommand" => Some(Setting::ProxyCommand),
             _ => None,
         }
     }
@@ -65,6 +67,9 @@ struct Resolved {
     port: Option<u16>,
     user: Option<String>,
     identity: Option<String>,
+    /// A `ProxyCommand`, with its `%h`/`%p`/`%r` tokens still to be
+    /// expanded for the host when it connects.
+    proxy_command: Option<String>,
 }
 
 impl SshConfig {
@@ -123,6 +128,7 @@ impl SshConfig {
                 port,
                 user,
                 identity,
+                proxy_command: resolved.proxy_command.clone(),
             });
         }
         hosts
@@ -169,8 +175,19 @@ fn parse_items(text: &str, includes: Option<&Includes>) -> Vec<Item> {
                 }
             }
             _ => {
-                if let (Some(setting), Some(value)) = (Setting::parse(&keyword), args.first()) {
-                    items.push(Item::Setting(setting, value.clone()));
+                if let Some(setting) = Setting::parse(&keyword) {
+                    // A ProxyCommand is the whole rest of the line; every
+                    // other setting takes its first argument.
+                    let value = if setting == Setting::ProxyCommand {
+                        args.join(" ")
+                    } else if let Some(value) = args.first() {
+                        value.clone()
+                    } else {
+                        continue;
+                    };
+                    if !value.is_empty() {
+                        items.push(Item::Setting(setting, value));
+                    }
                 }
             }
         }
@@ -368,6 +385,12 @@ impl Resolved {
             }
             Setting::IdentityFile => {
                 self.identity.get_or_insert_with(|| value.to_string());
+            }
+            Setting::ProxyCommand => {
+                // `none` means no command; the first real one wins.
+                if !value.eq_ignore_ascii_case("none") {
+                    self.proxy_command.get_or_insert_with(|| value.to_string());
+                }
             }
         }
     }
@@ -573,6 +596,20 @@ Host web-root
             summary(text),
             ["app me@10.0.0.5:22", "bastion me@bastion:22"]
         );
+    }
+
+    #[test]
+    fn a_proxy_command_is_imported_with_its_tokens_intact() {
+        let text =
+            "Host app\n  HostName 10.0.0.5\n  ProxyCommand cloudflared access ssh --hostname %h\n";
+        let parsed = hosts(text);
+        assert_eq!(
+            parsed[0].proxy_command,
+            Some("cloudflared access ssh --hostname %h".to_string())
+        );
+        // `none` means no command, not a command that is the word `none`.
+        let none = hosts("Host plain\n  ProxyCommand none\n");
+        assert_eq!(none[0].proxy_command, None);
     }
 
     #[test]

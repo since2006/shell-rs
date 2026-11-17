@@ -10,8 +10,8 @@ use gpui_kit::SharedString;
 use crate::host::{
     AuthKind, Credential, CredentialDraft, CredentialId, CredentialKind, DataBits,
     ErrorMessage as _, FlowControl, GroupId, GroupPathError, GroupPlan, Host, HostConnection,
-    HostDraft, HostId, HostStore, Parity, PastedKey, Protocol, ProxyKind, ProxySettings, Route,
-    SSH_PORT, SerialSettings, StopBits, TELNET_PORT,
+    HostDraft, HostId, HostStore, Parity, PastedKey, Protocol, ProxyCommandSettings, ProxyKind,
+    ProxySettings, Route, SSH_PORT, SerialSettings, StopBits, TELNET_PORT,
 };
 use crate::i18n::{t, tn};
 use crate::secrets::SecretRef;
@@ -142,6 +142,9 @@ pub fn host_details(host: &Host, store: &HostStore) -> HostDetails {
             port: proxy.port,
             user: proxy.user.as_ref().map(ToString::to_string),
             password_saved: None,
+        },
+        Route::ProxyCommand(proxy) => RouteDetails::ProxyCommand {
+            command: proxy.command.to_string(),
         },
     };
     let prompt = |prompt: &SharedString| (!prompt.is_empty()).then(|| prompt.to_string());
@@ -546,6 +549,9 @@ pub fn plan_host(
                     ProxyChoice::Socks5 => ProxyKind::Socks5,
                 };
                 Route::Proxy(ProxySettings::new(kind, host, port).with_user(user))
+            }
+            RouteFields::ProxyCommand { command } => {
+                Route::ProxyCommand(ProxyCommandSettings::new(command))
             }
         };
     }

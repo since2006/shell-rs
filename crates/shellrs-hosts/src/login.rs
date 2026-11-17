@@ -7,11 +7,13 @@ use std::path::PathBuf;
 
 use crate::secrets::SecretRef;
 pub use shellrs_ssh::{
-    DEFAULT_KEY_FILES, HostLogin, JumpLogin, LoginMethod, LoginRoute, ProxyLogin, TotpLogin,
+    DEFAULT_KEY_FILES, HostLogin, JumpLogin, LoginMethod, LoginRoute, ProxyCommandLogin,
+    ProxyLogin, TotpLogin,
 };
 
 use super::{
-    AuthKind, Credential, CredentialKind, Host, ProxySettings, SerialSettings, TelnetSettings,
+    AuthKind, Credential, CredentialKind, Host, ProxyCommandSettings, ProxySettings,
+    SerialSettings, TelnetSettings,
 };
 
 /// How a host's terminal connects, looked up by the store when it connects.
@@ -136,6 +138,14 @@ impl From<&ProxySettings> for ProxyLogin {
             host: proxy.host.to_string(),
             port: proxy.port,
             user: proxy.user.as_ref().map(ToString::to_string),
+        }
+    }
+}
+
+impl From<&ProxyCommandSettings> for ProxyCommandLogin {
+    fn from(proxy: &ProxyCommandSettings) -> Self {
+        Self {
+            command: proxy.command.to_string(),
         }
     }
 }

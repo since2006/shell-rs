@@ -27,18 +27,19 @@ sha1 = "0.11"
 # Resume records are named by a digest of what they resume; the names are
 # kept across versions, so the digest stays this one.
 sha2 = "0.10"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1"
 
 [features]
 # An SSH server in the process for the tests of what builds on this crate
 # (`testing`): the mobile bindings take it as a dev-dependency.
-testing = ["tokio/process"]
+testing = []
 
-[target.'cfg(target_vendor = "apple")'.dependencies]
-# Plain `fsync(2)` for resume records: std's `sync_all` is the much slower
-# `F_FULLFSYNC` there.
+[target.'cfg(unix)'.dependencies]
+# `fsync(2)` for resume records (std's `sync_all` is the much slower
+# `F_FULLFSYNC` on Apple), and `kill(2)` to end a ProxyCommand's process
+# group.
 libc = "0.2"
 
 [dev-dependencies]

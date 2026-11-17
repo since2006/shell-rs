@@ -392,6 +392,8 @@ pub enum RouteFailure {
     ProxyUnreachable { host: String, port: u16 },
     /// The proxy answered other than with a tunnel.
     Proxy,
+    /// The proxy command could not be started.
+    ProxyCommand,
 }
 
 /// Why a jump host could not open the way onward.
@@ -429,6 +431,7 @@ impl fmt::Display for RouteFailure {
                 write!(f, "couldn't connect to the proxy at {host}:{port}")
             }
             Self::Proxy => f.write_str("the proxy"),
+            Self::ProxyCommand => f.write_str("the proxy command"),
         }
     }
 }

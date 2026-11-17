@@ -37,6 +37,9 @@ host.draft.proxy_address:
 host.draft.proxy_port:
   zh-CN: 代理端口必须是 1 到 65535 之间的数字
   en: The proxy port must be a number from 1 to 65535
+host.draft.proxy_command:
+  zh-CN: 请填写代理命令
+  en: Enter a proxy command
 host.draft.device:
   zh-CN: 请输入串口设备
   en: Enter a serial port
@@ -134,6 +137,9 @@ host.route.jump:
 host.route.proxy:
   zh-CN: 代理连接
   en: Proxy
+host.route.proxy_command:
+  zh-CN: 代理命令
+  en: Proxy command
 
 host.dialog.title_new:
   zh-CN: 新建主机
@@ -398,6 +404,15 @@ host.dialog.proxy_note:
 host.dialog.proxy_password_needs_user:
   zh-CN: 填写代理密码时请同时填写用户名
   en: Enter a username to go with the proxy password
+host.dialog.proxy_command:
+  zh-CN: 代理命令
+  en: Proxy command
+host.dialog.proxy_command_placeholder:
+  zh-CN: 例如 cloudflared access ssh --hostname %h
+  en: e.g. cloudflared access ssh --hostname %h
+host.dialog.proxy_command_note:
+  zh-CN: 命令的 stdin/stdout 作为 SSH 传输，可用 %h（地址）、%p（端口）、%r（用户）占位符；无窗口启动，随连接关闭。
+  en: Its stdin/stdout carry SSH; %h, %p and %r expand. No window.
 
 host.dialog.test_start_failed:
   zh-CN: 无法启动连接测试：%{error}
@@ -431,10 +446,10 @@ host.delete.forwards.other:
   zh-CN: 将同时删除经由该主机的 %{count} 条端口转发。
   en: "%{count} port forwards through this host will also be deleted."
 host.delete.jump_users.one:
-  en: "%{count} host uses it as a jump host and will need another one to connect."
+  en: "%{count} host uses it as a jump host and will need another to connect."
 host.delete.jump_users.other:
   zh-CN: 有 %{count} 台主机把它用作跳板主机，删除后要重新选择跳板主机才能连接。
-  en: "%{count} hosts use it as a jump host and will need another one to connect."
+  en: "%{count} hosts use it as a jump host and will need another to connect."
 
 host.count.hosts.one:
   en: "%{count} host"
@@ -827,8 +842,8 @@ host.import.title.known_hosts:
   zh-CN: 从 ~/.ssh/known_hosts 导入
   en: Import from ~/.ssh/known_hosts
 host.import.note.ssh_config:
-  zh-CN: 列出 Host 行里写明名称的主机，通配符条目里的设置会带上。ProxyJump 和 ProxyCommand 不导入，主机按直接连接导入；Match 块不读。
-  en: Lists the hosts named on Host lines, with the settings of the wildcard entries that match them. ProxyJump and ProxyCommand aren’t imported, so the hosts connect directly; Match blocks are skipped.
+  zh-CN: 列出 Host 行里的主机，通配符设置会带上。ProxyCommand 会导入，ProxyJump 不导入。
+  en: Lists hosts and wildcard settings. ProxyCommand is kept, ProxyJump isn't.
 host.import.note.known_hosts:
   zh-CN: 列出连接过的主机。known_hosts 里没有用户名，都填 root。
   en: Lists the hosts you’ve connected to. known_hosts has no usernames, so each one is set to root.

@@ -35,9 +35,9 @@ use crate::secrets::{SecretRef, SecretStore};
 use crate::{
     AuthKind, BookmarkSide, Credential, CredentialDraft, CredentialId, CredentialKind,
     ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft, GroupId, Host,
-    HostDraft, HostGroup, HostId, Protocol, ProxyKind, ProxySettings, PublicId, Route, Snippet,
-    SnippetCategory, SnippetCategoryDraft, SnippetCategoryId, SnippetDraft, SnippetId,
-    SnippetScope, TelnetSettings, TotpSettings,
+    HostDraft, HostGroup, HostId, Protocol, ProxyCommandSettings, ProxyKind, ProxySettings,
+    PublicId, Route, Snippet, SnippetCategory, SnippetCategoryDraft, SnippetCategoryId,
+    SnippetDraft, SnippetId, SnippetScope, TelnetSettings, TotpSettings,
 };
 
 /// What one round of sync takes from the store, on the UI thread.
@@ -450,6 +450,7 @@ impl HostData {
                     port: proxy.port,
                     username: proxy.user.as_ref().map(ToString::to_string),
                 }),
+                Route::ProxyCommand(proxy) => sync::Route::ProxyCommand(proxy.command.to_string()),
             };
             records.push(LocalRecord {
                 id: host.public_id.to_string(),
@@ -1117,6 +1118,9 @@ impl HostData {
                         )
                         .with_user(proxy.username.clone().unwrap_or_default()),
                     ),
+                    sync::Route::ProxyCommand(command) => {
+                        Route::ProxyCommand(ProxyCommandSettings::new(command.as_str()))
+                    }
                 });
                 draft.credential = credential.map(|credential| credential.id);
                 if let sync::Protocol::Telnet(telnet) = &data.protocol {

@@ -38,6 +38,7 @@ pub fn parse(text: &str) -> ImportScan {
                 port,
                 user: DEFAULT_USER.to_string(),
                 identity: None,
+                proxy_command: None,
             });
         }
     }
