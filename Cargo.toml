@@ -36,7 +36,7 @@ default-members = [".", "crates/shellrs-sync", "crates/shellrs-ssh", "crates/she
 resolver = "3"
 
 [dependencies]
-gpui-kit = { version = "0.6.1", features = [
+gpui-kit = { version = "0.10.0", features = [
     # The built-in editor's syntax highlighting, for what servers hold most:
     # `tree-sitter` itself brings JSON. Each grammar is compiled C, so the
     # list stays short.
@@ -184,7 +184,7 @@ winresource = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["process", "test-util"] }
-gpui-kit = { version = "0.6.1", features = ["test-support"] }
+gpui-kit = { version = "0.10.0", features = ["test-support"] }
 tempfile = "3"
 minisign = "0.7"
 # The portable installer's tests build and unpack zips on every platform.

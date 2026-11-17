@@ -729,15 +729,16 @@ fn scroll_preview(cx: &mut TestAppContext, handle: WindowHandle<Root>, by: f32, 
     in_frame(cx, handle, |window, cx| {
         let position = window.find("preview-image").bounds().center();
         window.dispatch_event(
-            gpui_kit::ScrollWheelEvent {
+            gpui_kit::ScrollEvent {
                 position,
                 delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(by))),
                 modifiers: if zoom {
-                    gpui_kit::Modifiers::secondary_key()
+                    gpui_kit::Modifiers::secondary_key(cx)
                 } else {
                     gpui_kit::Modifiers::default()
                 },
                 touch_phase: gpui_kit::TouchPhase::Moved,
+                source: gpui_kit::ScrollSource::Pointer,
             }
             .to_platform_input(),
             cx,

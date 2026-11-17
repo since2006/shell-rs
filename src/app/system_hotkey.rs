@@ -6,7 +6,7 @@
 
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-use gpui_kit::{App, Global, Keystroke};
+use gpui_kit::{App, Global};
 
 /// The system's hot keys, and the key taken from them now. Only the app
 /// has it: tests leave it out, as a key taken from every other app on the
@@ -82,7 +82,7 @@ pub fn take_system_hotkey_press() -> bool {
 /// The system's hot key for GPUI's `keys`. The keys are named alike
 /// (`space`, `f12`, `up`, `` ` ``), so the text carries over.
 fn hotkey(keys: &str) -> Option<HotKey> {
-    let keystroke = Keystroke::parse(keys).ok()?;
+    let keystroke = super::parse_keys(keys).ok()?;
     let modifiers = keystroke.modifiers;
     let mut text = String::new();
     for (held, name) in [

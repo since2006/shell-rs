@@ -97,13 +97,15 @@ Setup and examples: [references/usage.md](references/usage.md).
 
 ```rust
 use gpui_kit::*;
-use gpui_kit::component::Root;
 
 gpui_kit::application()
     .with_assets(gpui_kit::assets::Assets)
     .run(|cx| {
         gpui_kit::init(cx);                       // first, before anything else
-        // ... open_window(..., |window, cx| cx.new(|cx| Root::new(view, window, cx)))
+        gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| AppView::new(window, cx))
+        })
+        .expect("failed to open window");
     });
 ```
 
@@ -131,6 +133,7 @@ fetch the component's `.md` doc.
 | `Editor`      | `input::{Editor, EditorState}`                  | Stateful. Code editor, `tree-sitter` feature |
 | `NumberInput` | `input::{NumberInput, NumberInputEvent}`        | Stateful. Numeric with step                  |
 | `OtpInput`    | `input::OtpInput`                               | Stateful. One-time password                  |
+| `SpeechButton` | `speech::{SpeechButton, SpeechState}`          | Stateful. Dictation, `speech` feature        |
 | `Select`      | `select::{Select, SelectState}`                 | Stateful. Dropdown picker                    |
 | `Combobox`    | `combobox::{Combobox, ComboboxState}`           | Stateful. Searchable select                  |
 | `Checkbox`    | `checkbox::Checkbox`                            | Stateless. `on_click` receives `&bool`       |
@@ -142,6 +145,7 @@ fetch the component's `.md` doc.
 | `Stepper`     | `stepper::Stepper`                              | Stateless. Multi-step progress               |
 | `ColorPicker` | `color_picker::{ColorPicker, ColorPickerState}` | Stateful.                                    |
 | `DatePicker`  | `date_picker::{DatePicker, DatePickerState}`    | Stateful.                                    |
+| `TimeField`   | `time_field::{TimeField, TimeFieldState}`       | Stateful. Time of day, 24/12-hour            |
 | `Calendar`    | `calendar::{Calendar, CalendarState}`           | Stateful. Inline month view                  |
 | `Form`        | `form::{v_form, h_form, field}`                 | Layout container for form fields             |
 
@@ -196,6 +200,7 @@ fetch the component's `.md` doc.
 | `Collapsible`     | `collapsible::Collapsible`                                               | Single collapsible        |
 | `GroupBox`        | `group_box::GroupBox`                                                    | Labeled container         |
 | `Resizable`       | `resizable::{h_resizable, v_resizable, resizable_panel, ResizableState}` | Draggable split panes     |
+| `ResizeHandle`    | `resizable::{resize_handle, HandleEdge}`                                 | Standalone resize edge    |
 | `Scrollbar`       | `scroll::Scrollbar`                                                      | Custom scrollbar          |
 
 ### Data Display
@@ -203,6 +208,7 @@ fetch the component's `.md` doc.
 | Component         | Import                                          | Notes                         |
 | ----------------- | ----------------------------------------------- | ----------------------------- |
 | `DataTable`       | `table::{DataTable, TableState, TableDelegate}` | Stateful. Full-featured table |
+| `Diff`            | `diff::{Diff, DiffState, DiffFile}`           | Retained state, `RenderOnce` element. Readonly unified/Git diff display of one or more files, merge conflicts and source files; application supplies the patch |
 | `Table`           | `table::{Table, ...}`                           | Simpler table                 |
 | `VirtualList`     | `{v_virtual_list, h_virtual_list}`              | High-perf large lists         |
 | `List`            | `list::{List, ListState, ListDelegate}`         | Stateful. Searchable list     |

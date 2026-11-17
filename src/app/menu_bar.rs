@@ -171,10 +171,10 @@ fn in_front(cx: &mut App, act: fn(&Window)) {
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::{App, Keystroke, MenuItem, TestAppContext};
+    use gpui_kit::{App, MenuItem, TestAppContext};
 
     use super::menus;
-    use crate::app::{Shortcut, ShortcutOverrides, apply_shortcuts};
+    use crate::app::{Shortcut, ShortcutOverrides, apply_shortcuts, parse_keys, unparse_keys};
 
     /// A menu's name, with its items' names and the keys they show.
     type Shown = (String, Vec<(String, Option<String>)>);
@@ -195,7 +195,7 @@ mod tests {
                             let keys = keymap
                                 .bindings_for_action(action.as_ref())
                                 .find(|binding| binding.predicate().is_none())
-                                .map(|binding| binding.keystrokes()[0].inner().unparse());
+                                .map(|binding| unparse_keys(binding.keystrokes()[0].inner()));
                             Some((name.to_string(), keys))
                         }
                         MenuItem::Separator | MenuItem::Submenu(_) | MenuItem::SystemMenu(_) => {
@@ -210,7 +210,7 @@ mod tests {
 
     /// `keys` as the keymap writes them back.
     fn written(keys: &str) -> Option<String> {
-        Some(Keystroke::parse(keys).unwrap().unparse())
+        Some(unparse_keys(&parse_keys(keys).unwrap()))
     }
 
     #[gpui_kit::test]

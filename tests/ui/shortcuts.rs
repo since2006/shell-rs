@@ -1,7 +1,6 @@
 //! 设置 › 键盘快捷键, and the tab keys it lists.
 
-use gpui_kit::Keystroke;
-use shellrs::app::{CenterTab, Shortcut};
+use shellrs::app::{CenterTab, Shortcut, parse_keys, unparse_keys};
 use shellrs::terminal::RemoteTerminalId;
 
 use crate::support::*;
@@ -41,11 +40,12 @@ fn scroll_to_tab_shortcuts(cx: &mut TestAppContext, handle: WindowHandle<Root>) 
     in_frame(cx, handle, |window, cx| {
         let position = window.find("shortcut-keys-new-host").bounds().center();
         window.dispatch_event(
-            gpui_kit::ScrollWheelEvent {
+            gpui_kit::ScrollEvent {
                 position,
                 delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-600.))),
                 modifiers: gpui_kit::Modifiers::default(),
                 touch_phase: gpui_kit::TouchPhase::Moved,
+                source: gpui_kit::ScrollSource::Pointer,
             }
             .to_platform_input(),
             cx,
@@ -117,7 +117,7 @@ fn a_shortcut_takes_the_keys_pressed_for_it(cx: &mut TestAppContext) {
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find("shortcut-recorder-next-tab").is_none());
     });
-    let pressed = Keystroke::parse(&primary("j")).unwrap().unparse();
+    let pressed = unparse_keys(&parse_keys(&primary("j")).unwrap());
     assert_eq!(
         overrides(&workspace, cx),
         serde_json::json!({ "next-tab": pressed })

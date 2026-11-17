@@ -254,7 +254,7 @@ impl FileListing {
             Some(pane) => cell.on_mouse_down(MouseButton::Left, {
                 let name = name.to_string();
                 move |event, _, cx| {
-                    if !event.modifiers.secondary() && !event.modifiers.shift {
+                    if !event.modifiers.secondary(cx) && !event.modifiers.shift {
                         let _ = pane.update(cx, |pane, cx| {
                             pane.clear_menu_row(cx);
                             pane.select_pressed(&name, cx);
@@ -305,7 +305,7 @@ impl FileListing {
                 let modifiers = event.modifiers();
                 let mode = if modifiers.shift {
                     ClickMode::Extend
-                } else if modifiers.secondary() {
+                } else if modifiers.secondary(cx) {
                     ClickMode::Toggle
                 } else {
                     ClickMode::Replace

@@ -363,11 +363,12 @@ async fn a_host_behind_a_proxy_keeps_the_proxys_password_in_the_keychain(cx: &mu
         // The proxy's login is below the window's fold.
         let position = window.find("host-proxy-port").bounds().center();
         window.dispatch_event(
-            gpui_kit::ScrollWheelEvent {
+            gpui_kit::ScrollEvent {
                 position,
                 delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-300.))),
                 modifiers: gpui_kit::Modifiers::default(),
                 touch_phase: gpui_kit::TouchPhase::Moved,
+                source: gpui_kit::ScrollSource::Pointer,
             }
             .to_platform_input(),
             cx,
@@ -1176,11 +1177,12 @@ async fn a_dialogs_choices_are_equal_segments_of_one_track(cx: &mut TestAppConte
 fn scroll_dialog_down(window: &mut gpui_kit::Window, anchor: &'static str, cx: &mut App) {
     let position = window.find(anchor).bounds().center();
     window.dispatch_event(
-        gpui_kit::ScrollWheelEvent {
+        gpui_kit::ScrollEvent {
             position,
             delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-600.))),
             modifiers: gpui_kit::Modifiers::default(),
             touch_phase: gpui_kit::TouchPhase::Moved,
+            source: gpui_kit::ScrollSource::Pointer,
         }
         .to_platform_input(),
         cx,

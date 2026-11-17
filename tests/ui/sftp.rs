@@ -113,7 +113,7 @@ async fn sftp_sort_range_selection_and_dialog_focus_preserve_path_identity(
             window,
             ("local-pane", SFTP_TAB),
             "name:目录",
-            gpui_kit::Modifiers::secondary_key(),
+            gpui_kit::Modifiers::secondary_key(cx),
             cx,
         );
     })
@@ -379,13 +379,14 @@ async fn sftp_lists_show_color_icons_until_monochrome_is_chosen(cx: &mut TestApp
     });
     in_frame(cx, handle, |window, _| {
         // 传输 first, then 文件侧栏, then 文件列表 with the icons.
-        let icon_style = window
-            .within("settings")
-            .within("group-2")
-            .within("item-0")
-            .find("btn")
-            .label()
-            .map(str::to_string);
+        let icon_style = dropdown_value(
+            window
+                .within("settings")
+                .within("group-2")
+                .within("item-0")
+                .find("btn")
+                .label(),
+        );
         assert_eq!(icon_style.as_deref(), Some("彩色"));
         // The plain folder and file side by side first, then named ones.
         let origin = |window: &mut gpui_kit::Window, id: &str| {
@@ -849,7 +850,7 @@ async fn sftp_path_label_opens_ancestors_and_the_open_directory_dialog(cx: &mut 
             window,
             ("local-pane", SFTP_TAB),
             "name:目录",
-            gpui_kit::Modifiers::secondary_key(),
+            gpui_kit::Modifiers::secondary_key(cx),
             cx,
         );
         window.dispatch_action(
@@ -1806,7 +1807,7 @@ async fn sftp_clicking_outside_the_names_clears_the_selection(cx: &mut TestAppCo
                 window,
                 pane,
                 "name:文件 乙.txt",
-                gpui_kit::Modifiers::secondary_key(),
+                gpui_kit::Modifiers::secondary_key(cx),
                 cx,
             );
         })
@@ -1889,7 +1890,7 @@ async fn sftp_clicking_outside_the_names_clears_the_selection(cx: &mut TestAppCo
             window,
             pane,
             "size:链接目录",
-            gpui_kit::Modifiers::secondary_key(),
+            gpui_kit::Modifiers::secondary_key(cx),
             cx,
         );
         window.render_frame(cx);
@@ -2653,7 +2654,7 @@ async fn find_files_results_sort_select_several_and_delete(cx: &mut TestAppConte
         window.render_frame(cx);
         window.click(row(a), cx);
         let position = window.find(row(c)).bounds().center();
-        click_at(window, position, gpui_kit::Modifiers::secondary_key(), cx);
+        click_at(window, position, gpui_kit::Modifiers::secondary_key(cx), cx);
     })
     .unwrap();
     assert_eq!(selected(cx), [a, c]);
@@ -2697,7 +2698,7 @@ async fn find_files_results_sort_select_several_and_delete(cx: &mut TestAppConte
         window.render_frame(cx);
         window.click(row(a), cx);
         let position = window.find(row(b)).bounds().center();
-        click_at(window, position, gpui_kit::Modifiers::secondary_key(), cx);
+        click_at(window, position, gpui_kit::Modifiers::secondary_key(cx), cx);
         window.press("delete", cx);
     })
     .unwrap();

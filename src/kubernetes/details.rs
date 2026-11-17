@@ -2460,11 +2460,19 @@ impl Render for KubernetesDetails {
         };
         let resource = format!("{} · {name} · {}", self.resource.kind.label(), self.context);
         let full_scope = resource.clone();
+        let save = self.dispatch.clone();
         v_flex()
             .id("k8s-details")
             .test_support()
+            // The YAML's keys are bound here, in the dialog; the workspace
+            // that carries the command out is not on its path, so the
+            // command goes on to the panel, as its buttons send theirs.
             .when(self.editing, |body| {
-                body.key_context(super::YAML_KEY_CONTEXT)
+                body.key_context(super::YAML_KEY_CONTEXT).on_action(
+                    move |action: &KubernetesAction, window, cx| {
+                        defer_dispatch(&save, action, window, cx)
+                    },
+                )
             })
             .gap_3()
             .min_w_0()

@@ -95,6 +95,15 @@ fn enter(window: &mut gpui_kit::Window, id: &'static str, text: &str, cx: &mut A
     window.input(text, cx);
 }
 
+/// The password on the unlock screen, which a dialog left open under it
+/// may share a field id with.
+fn enter_unlock(window: &mut gpui_kit::Window, text: &str, cx: &mut App) {
+    window
+        .within("app-lock-screen")
+        .click("app-lock-password", cx);
+    window.input(text, cx);
+}
+
 fn wait_for_password(cx: &mut TestAppContext, lock: &Entity<AppLock>) {
     // Real Argon2 runs on the background executor. Drain until its UI result
     // has been handled, without real servers, timers or the system keychain.
@@ -281,7 +290,16 @@ fn app_lock_idle_timeout_tracks_input_and_restarts_after_unlock(cx: &mut TestApp
     in_frame(cx, handle, |window, cx| {
         assert!(window.find("app-lock-screen").visible());
         assert!(window.try_find("settings").is_none());
-        enter(window, "app-lock-password", "idle password", cx);
+        // The dialog left open is kept under the screen, out of reach: a
+        // click where its field is lands on the screen, and Tab stays on it.
+        let kept = window.find("app-lock-new-password").bounds().center();
+        click_at(window, kept, gpui_kit::Modifiers::default(), cx);
+        assert_eq!(window.find("app-lock-new-password").focused(), Some(false));
+        for _ in 0..6 {
+            window.press("tab", cx);
+            assert_eq!(window.find("app-lock-new-password").focused(), Some(false));
+        }
+        enter_unlock(window, "idle password", cx);
         window.click("app-lock-unlock", cx);
     });
     wait_for_password(cx, &lock);
@@ -293,7 +311,7 @@ fn app_lock_idle_timeout_tracks_input_and_restarts_after_unlock(cx: &mut TestApp
     advance(2, cx);
     assert!(locked(cx));
     in_frame(cx, handle, |window, cx| {
-        enter(window, "app-lock-password", "idle password", cx);
+        enter_unlock(window, "idle password", cx);
         window.click("app-lock-unlock", cx);
     });
     wait_for_password(cx, &lock);

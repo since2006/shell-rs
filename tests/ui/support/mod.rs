@@ -131,13 +131,25 @@ pub fn settings_store() -> SettingsStore {
 }
 
 pub fn appearance_dropdown(window: &mut gpui_kit::Window, item: usize) -> Option<String> {
-    window
-        .within("settings")
-        .within("group-0")
-        .within(format!("item-{item}"))
-        .find("btn")
-        .label()
-        .map(str::to_string)
+    dropdown_value(
+        window
+            .within("settings")
+            .within("group-0")
+            .within(format!("item-{item}"))
+            .find("btn")
+            .label(),
+    )
+}
+
+/// What a settings page dropdown shows, from its label: gpui-kit names it
+/// `标题: 值` for assistive technology.
+pub fn dropdown_value(label: Option<&str>) -> Option<String> {
+    label.map(|label| {
+        label
+            .split_once(": ")
+            .map_or(label, |(_, value)| value)
+            .to_string()
+    })
 }
 
 /// `TestWindowExt::click` sends no modifiers, and file lists need ⌘ and
@@ -205,6 +217,18 @@ pub fn button_click_at(
         .to_platform_input(),
         cx,
     );
+    // The keys are let go after the click, as a user does: the window
+    // keeps the last modifiers it saw, and gpui-kit's own clicks hold them.
+    if modifiers != gpui_kit::Modifiers::default() {
+        window.dispatch_event(
+            gpui_kit::ModifiersChangedEvent {
+                modifiers: gpui_kit::Modifiers::default(),
+                capslock: Default::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+    }
 }
 
 /// Whether a button accepts input. gpui-base does not report `disabled` for

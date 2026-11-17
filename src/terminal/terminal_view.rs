@@ -1957,7 +1957,7 @@ impl Element for TerminalElement {
 
         let hitbox = state.hitbox.clone();
         let view = self.view.clone();
-        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+        window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
             if !phase.bubble() || !hitbox.should_handle_scroll(window) {
                 return;
             }
@@ -2490,7 +2490,7 @@ mod tests {
     };
 
     fn key(source: &str) -> Keystroke {
-        Keystroke::parse(source).unwrap()
+        crate::app::parse_keys(source).unwrap()
     }
 
     #[test]

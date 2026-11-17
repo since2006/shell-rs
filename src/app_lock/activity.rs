@@ -15,7 +15,7 @@ pub fn activity_tracker(cx: &App) -> impl IntoElement {
             observe_mouse::<MouseDownEvent>(&lock, window);
             observe_mouse::<MouseUpEvent>(&lock, window);
             observe_mouse::<MouseMoveEvent>(&lock, window);
-            observe_mouse::<ScrollWheelEvent>(&lock, window);
+            observe_mouse::<ScrollEvent>(&lock, window);
         },
     )
     .absolute()

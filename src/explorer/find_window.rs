@@ -45,10 +45,6 @@ use std::{cell::RefCell, rc::Rc};
 /// remote pane's own, so the tab tells their answers apart.
 pub(super) const FIND_REQUESTS: u64 = 1 << 62;
 
-/// Notifications go above a dialog, as in the main window, without covering
-/// an open menu.
-const NOTIFICATION_PRIORITY: usize = gpui_kit::base::POPUP_PRIORITY - 1;
-
 /// An SFTP tab's 查找文件 window, while it is open.
 pub(super) struct FindWindow {
     window: WindowHandle<Root>,
@@ -669,7 +665,7 @@ impl MarqueeList for FindFiles {
 }
 
 impl Render for FindFiles {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let running = self.is_running();
         let targets = self.targets(cx);
         let single = match targets.as_slice() {
@@ -883,13 +879,6 @@ impl Render for FindFiles {
                                     ),
                             ),
                     ),
-            )
-            // 删除's question, and what went wrong, above it as in the main
-            // window.
-            .children(Root::render_dialog_layer(window, cx))
-            .children(
-                Root::render_notification_layer(window, cx)
-                    .map(|layer| deferred(layer).with_priority(NOTIFICATION_PRIORITY)),
             )
     }
 }
@@ -1221,7 +1210,7 @@ impl TableDelegate for FoundFiles {
                         let modifiers = event.modifiers();
                         let mode = if modifiers.shift {
                             ClickMode::Extend
-                        } else if modifiers.secondary() {
+                        } else if modifiers.secondary(cx) {
                             ClickMode::Toggle
                         } else {
                             ClickMode::Replace
