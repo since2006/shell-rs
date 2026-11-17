@@ -2,6 +2,7 @@
 //! stopping and reconnecting a forward.
 
 use crate::support::*;
+use gpui_kit::Focusable as _;
 
 /// A local forward through a seeded host: `port` on this machine to the
 /// database behind the server.
@@ -446,7 +447,7 @@ async fn a_forward_question_is_answered_in_a_dialog_and_declining_stops_the_forw
 async fn stopping_a_forward_takes_its_open_question_with_it(cx: &mut TestAppContext) {
     let (store, id) = store_with_forward();
     let provider = Arc::new(FakeForwardProvider::with_script(ForwardScript::AsksTrust));
-    let (handle, _) = open_workspace_with_forwards(cx, store, provider.clone());
+    let (handle, workspace) = open_workspace_with_forwards(cx, store, provider.clone());
     cx.run_until_parked();
     show_forwards(cx, handle).await;
     in_frame(cx, handle, |window, cx| {
@@ -456,9 +457,11 @@ async fn stopping_a_forward_takes_its_open_question_with_it(cx: &mut TestAppCont
         window.try_find("cancel").is_some()
     })
     .await;
-    // Stopped from elsewhere while the question is up.
+    // Stopped from elsewhere while the question is up: the question holds
+    // the focus, so the command goes to the workspace that owns it.
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(StopForward(id)), cx);
+        let owner = workspace.focus_handle(cx);
+        owner.dispatch_action(&StopForward(id), window, cx);
     });
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
         window.try_find("cancel").is_none()

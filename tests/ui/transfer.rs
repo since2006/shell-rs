@@ -588,7 +588,7 @@ async fn sftp_dragging_remote_rows_to_a_local_directory_asks_to_download(cx: &mu
             window,
             ("remote-pane", SFTP_TAB),
             "name:文件 甲.txt",
-            gpui_kit::Modifiers::secondary_key(),
+            gpui_kit::Modifiers::secondary_key(cx),
             cx,
         )
     })

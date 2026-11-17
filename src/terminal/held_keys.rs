@@ -89,6 +89,15 @@ impl<H: InputHandler> InputHandler for RepeatingKeys<H> {
         self.0.bounds_for_range(range_utf16, window, cx)
     }
 
+    fn selection_bounds_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<Bounds<Pixels>> {
+        self.0.selection_bounds_for_range(range_utf16, window, cx)
+    }
+
     fn character_index_for_point(
         &mut self,
         point: Point<Pixels>,

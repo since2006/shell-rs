@@ -4,6 +4,7 @@ mod actions;
 mod app_icon;
 mod assets;
 mod computer;
+mod keystrokes;
 #[cfg(target_os = "macos")]
 mod menu_bar;
 mod paths;
@@ -19,6 +20,7 @@ pub use actions::*;
 pub use app_icon::show_logo_when_unbundled;
 pub use assets::{AppAssets, CatalogIcon, DOCKER_ICON};
 pub use computer::computer_name;
+pub use keystrokes::{parse_keys, unparse_keys};
 #[cfg(target_os = "macos")]
 pub use menu_bar::show_menu_bar;
 pub use paths::{

@@ -1,5 +1,5 @@
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, TitleBar, WindowExt as _,
+    ActiveTheme as _, Disableable as _, FocusTrapElement as _, Icon, TitleBar, WindowExt as _,
     button::{Button, ButtonVariants as _},
     dialog::{DialogAction, DialogClose, DialogFooter},
     form::{Field, Form},
@@ -258,6 +258,9 @@ pub fn open_password_dialog(
 pub struct UnlockScreen {
     service: Entity<AppLock>,
     form: Entity<PasswordForm>,
+    /// Keeps Tab on the screen: dialogs left open when it locked are still
+    /// in the window under it, and their fields in the Tab order.
+    trap: FocusHandle,
     _subscription: Subscription,
 }
 
@@ -269,6 +272,7 @@ impl UnlockScreen {
         Self {
             service,
             form,
+            trap: cx.focus_handle(),
             _subscription: subscription,
         }
     }
@@ -286,7 +290,7 @@ impl Render for UnlockScreen {
             .read(cx)
             .load_error()
             .map(|error| t!("app_lock.load_failed", error = error));
-        v_flex()
+        let screen = v_flex()
             .id("app-lock-screen")
             .test_support()
             .size_full()
@@ -352,6 +356,10 @@ impl Render for UnlockScreen {
                                 (false, None) => view.child(self.form.clone()),
                             }),
                     ),
-            )
+            );
+        div()
+            .size_full()
+            .focus_trap("app-lock-trap", &self.trap)
+            .child(screen)
     }
 }

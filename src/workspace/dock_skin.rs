@@ -6,9 +6,10 @@ use std::{
 
 use crate::app::{CatalogIcon, ToggleTerminalBroadcast};
 use crate::i18n::t;
+use gpui_kit::base::ResizeHandleContext;
 use gpui_kit::component::dock::{
-    BasePanelView, DockArea, DockAreaRenderer, DockContext, DockSkin, DropIndicator, NodeId,
-    PanelState, PanelStyle, TabGroupContext, TabGroupRenderer, TilesRenderer,
+    BasePanelView, DockArea, DockAreaRenderer, DockContext, DockPlacement, DockSkin, DropIndicator,
+    NodeId, PanelState, PanelStyle, TabGroupContext, TabGroupRenderer,
 };
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Selectable as _, Sizable as _,
@@ -177,6 +178,19 @@ impl DockAreaRenderer for WorkspaceDockSkin {
         self.skin.split_frame(node, axis, window, cx)
     }
 
+    fn render_split_handle(
+        &self,
+        handle: &ResizeHandleContext,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        self.skin.render_split_handle(handle, window, cx)
+    }
+
+    fn closed_dock_extent(&self, placement: DockPlacement) -> Pixels {
+        self.skin.closed_dock_extent(placement)
+    }
+
     fn center_frame(&self, window: &mut Window, cx: &mut App) -> Stateful<Div> {
         self.skin
             .center_frame(window, cx)
@@ -218,10 +232,6 @@ impl DockAreaRenderer for WorkspaceDockSkin {
             target: self.target.clone(),
         })
     }
-
-    fn tiles_renderer(&self) -> Rc<dyn TilesRenderer> {
-        self.skin.tiles_renderer()
-    }
 }
 
 /// A center tab bar, in a column as base lays the bars out, that a mouse
@@ -234,7 +244,7 @@ impl DockAreaRenderer for WorkspaceDockSkin {
 /// trackpad swipes sideways itself.
 fn wheel_scrolls_tabs(tabs: AnyElement) -> Div {
     v_flex()
-        .on_scroll_wheel(|event, window, cx| {
+        .on_scroll(|event, window, cx| {
             let ScrollDelta::Lines(lines) = event.delta else {
                 return;
             };
@@ -242,7 +252,7 @@ fn wheel_scrolls_tabs(tabs: AnyElement) -> Div {
                 return;
             }
             cx.stop_propagation();
-            let sideways = ScrollWheelEvent {
+            let sideways = ScrollEvent {
                 delta: ScrollDelta::Lines(point(lines.y, 0.)),
                 ..event.clone()
             };

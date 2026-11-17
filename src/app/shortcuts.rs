@@ -430,7 +430,7 @@ impl Shortcut {
 
     /// Each keystroke it is bound to under `keys`: one, or one per digit.
     fn keystrokes(&self, keys: &str) -> Vec<(Keystroke, usize)> {
-        let Ok(keystroke) = Keystroke::parse(keys) else {
+        let Ok(keystroke) = parse_keys(keys) else {
             return Vec::new();
         };
         if !self.numbered {
@@ -445,7 +445,7 @@ impl Shortcut {
             .collect()
     }
 
-    fn bindings(&self, overrides: &ShortcutOverrides) -> Vec<KeyBinding> {
+    fn bindings(&self, overrides: &ShortcutOverrides, cx: &App) -> Vec<KeyBinding> {
         let Some(keys) = overrides.keys(self).filter(|_| !self.system_wide) else {
             return Vec::new();
         };
@@ -457,19 +457,12 @@ impl Shortcut {
         let mut bindings = Vec::new();
         for context in contexts {
             for (keystroke, digit) in self.keystrokes(&keys) {
-                let predicate = context
-                    .and_then(|context| KeyBindingContextPredicate::parse(context).ok())
-                    .map(Rc::new);
-                if let Ok(binding) = KeyBinding::load(
-                    &keystroke.unparse(),
+                bindings.extend(load_binding(
+                    &unparse_keys(&keystroke),
                     (self.action)(digit),
-                    predicate,
-                    false,
-                    None,
-                    &DummyKeyboardMapper,
-                ) {
-                    bindings.push(binding);
-                }
+                    context,
+                    cx,
+                ));
             }
         }
         bindings
@@ -491,7 +484,7 @@ impl<'de> Deserialize<'de> for ShortcutOverrides {
                 .into_iter()
                 .filter_map(|(id, value)| match value {
                     serde_json::Value::Null => Some((id, None)),
-                    serde_json::Value::String(keys) if Keystroke::parse(&keys).is_ok() => {
+                    serde_json::Value::String(keys) if parse_keys(&keys).is_ok() => {
                         Some((id, Some(keys)))
                     }
                     _ => None,
@@ -538,7 +531,7 @@ impl ShortcutOverrides {
 }
 
 fn same_keys(a: &str, b: &str) -> bool {
-    match (Keystroke::parse(a), Keystroke::parse(b)) {
+    match (parse_keys(a), parse_keys(b)) {
         (Ok(a), Ok(b)) => same_keystroke(&a, &b),
         _ => false,
     }
@@ -620,7 +613,7 @@ pub fn check(
     {
         return Err(Refusal::NeedsModifier);
     }
-    let keys = keystroke.unparse();
+    let keys = unparse_keys(&keystroke);
     let pressed = shortcut.keystrokes(&keys);
     for other in SHORTCUTS.iter() {
         if std::ptr::eq(other, shortcut) || !other.shares_scope(shortcut) {
@@ -678,7 +671,7 @@ fn is_editing_key(key: &str) -> bool {
 /// on macOS, Ctrl Alt Shift Win elsewhere. A numbered shortcut's key
 /// shows as 1…9.
 pub fn key_caps(keys: &str, numbered: bool) -> Vec<SharedString> {
-    let Ok(keystroke) = Keystroke::parse(keys) else {
+    let Ok(keystroke) = parse_keys(keys) else {
         return Vec::new();
     };
     let modifiers = keystroke.modifiers;
@@ -742,9 +735,10 @@ pub fn apply_shortcuts(overrides: &ShortcutOverrides, cx: &mut App) {
         .try_global::<KitBindings>()
         .map(|kit| kit.0.clone())
         .unwrap_or_default();
+    let ours = key_bindings(overrides, cx);
     cx.clear_key_bindings();
     cx.bind_keys(kit);
-    cx.bind_keys(key_bindings(overrides));
+    cx.bind_keys(ours);
     super::system_hotkey::take(overrides.keys(system_wide()).as_deref(), cx);
     cx.set_global(AppliedShortcuts(overrides.clone()));
 }
@@ -781,19 +775,19 @@ pub fn fixed_bindings(cx: &App) -> Vec<KeyBinding> {
 /// Ours: the shortcuts, then the keys that stay. The ones that work
 /// anywhere come first: for one key, a key context's binding added later
 /// wins there, as the terminal's ⌘K and the preview's ⌘= do.
-fn key_bindings(overrides: &ShortcutOverrides) -> Vec<KeyBinding> {
+fn key_bindings(overrides: &ShortcutOverrides, cx: &App) -> Vec<KeyBinding> {
     let mut bindings: Vec<KeyBinding> = SHORTCUTS
         .iter()
         .filter(|shortcut| shortcut.is_global())
-        .flat_map(|shortcut| shortcut.bindings(overrides))
+        .flat_map(|shortcut| shortcut.bindings(overrides, cx))
         .collect();
     bindings.extend(fixed_global_bindings());
-    bindings.extend(shell_keys_in_terminal(&bindings));
+    bindings.extend(shell_keys_in_terminal(&bindings, cx));
     bindings.extend(
         SHORTCUTS
             .iter()
             .filter(|shortcut| !shortcut.is_global())
-            .flat_map(|shortcut| shortcut.bindings(overrides)),
+            .flat_map(|shortcut| shortcut.bindings(overrides, cx)),
     );
     bindings.extend(fixed_context_bindings());
     bindings
@@ -802,7 +796,7 @@ fn key_bindings(overrides: &ShortcutOverrides) -> Vec<KeyBinding> {
 /// Ctrl with a letter is the shell's in a terminal (tmux's Ctrl+B,
 /// readline's Ctrl+W and Ctrl+K), so a shortcut that works anywhere leaves
 /// it there. The terminal's own shortcuts, bound after, still win in it.
-fn shell_keys_in_terminal(anywhere: &[KeyBinding]) -> Vec<KeyBinding> {
+fn shell_keys_in_terminal(anywhere: &[KeyBinding], cx: &App) -> Vec<KeyBinding> {
     anywhere
         .iter()
         .filter_map(|binding| {
@@ -813,20 +807,49 @@ fn shell_keys_in_terminal(anywhere: &[KeyBinding]) -> Vec<KeyBinding> {
             let modifiers = keystroke.modifiers;
             let letter = keystroke.key.len() == 1
                 && keystroke.key.bytes().all(|byte| byte.is_ascii_lowercase());
-            (letter
+            let shells = letter
                 && modifiers.control
                 && !modifiers.alt
                 && !modifiers.shift
-                && !modifiers.platform)
-                .then(|| {
-                    KeyBinding::new(
-                        &keystroke.unparse(),
-                        NoAction {},
-                        Some(TERMINAL_KEY_CONTEXT),
-                    )
-                })
+                && !modifiers.platform;
+            if !shells {
+                return None;
+            }
+            load_binding(
+                &unparse_keys(keystroke),
+                Box::new(NoAction {}),
+                Some(TERMINAL_KEY_CONTEXT),
+                cx,
+            )
         })
         .collect()
+}
+
+/// A binding for keys known only when it is made, as the user's.
+/// `KeyBinding::new` takes only literals since gpui-pre 0.3.12; `load`
+/// reads ⌘ for this system and maps the keys as the keyboard types them.
+fn load_binding(
+    keys: &str,
+    action: Box<dyn Action>,
+    context: Option<&str>,
+    cx: &App,
+) -> Option<KeyBinding> {
+    let predicate = context
+        .and_then(|context| KeyBindingContextPredicate::parse(context).ok())
+        .map(Rc::new);
+    KeyBinding::load(keys, action, predicate, false, None, cx).ok()
+}
+
+/// `cmd-` on macOS and `ctrl-` elsewhere, then `key`: a literal, as
+/// `KeyBinding::new` takes.
+macro_rules! primary {
+    ($key:literal) => {
+        if cfg!(target_os = "macos") {
+            concat!("cmd-", $key)
+        } else {
+            concat!("ctrl-", $key)
+        }
+    };
 }
 
 fn fixed_global_bindings() -> Vec<KeyBinding> {
@@ -843,28 +866,22 @@ fn fixed_global_bindings() -> Vec<KeyBinding> {
 }
 
 fn fixed_context_bindings() -> Vec<KeyBinding> {
-    #[cfg(target_os = "macos")]
-    const PRIMARY: &str = "cmd";
-    #[cfg(not(target_os = "macos"))]
-    const PRIMARY: &str = "ctrl";
-
-    let primary = |key: &str| format!("{PRIMARY}-{key}");
     let mut bindings = vec![
         KeyBinding::new(
-            &primary("s"),
+            primary!("s"),
             KubernetesAction(crate::kubernetes::KubernetesCommand::SaveYaml),
             Some(crate::kubernetes::YAML_KEY_CONTEXT),
         ),
         // Over a previewed image, the interface zoom keys zoom the image;
         // 0 and 9 as in macOS Preview.
-        KeyBinding::new(&primary("="), ZoomPreviewIn, Some(IMAGE_PREVIEW_CONTEXT)),
-        KeyBinding::new(&primary("-"), ZoomPreviewOut, Some(IMAGE_PREVIEW_CONTEXT)),
+        KeyBinding::new(primary!("="), ZoomPreviewIn, Some(IMAGE_PREVIEW_CONTEXT)),
+        KeyBinding::new(primary!("-"), ZoomPreviewOut, Some(IMAGE_PREVIEW_CONTEXT)),
         KeyBinding::new(
-            &primary("0"),
+            primary!("0"),
             ActualSizePreview,
             Some(IMAGE_PREVIEW_CONTEXT),
         ),
-        KeyBinding::new(&primary("9"), FitPreview, Some(IMAGE_PREVIEW_CONTEXT)),
+        KeyBinding::new(primary!("9"), FitPreview, Some(IMAGE_PREVIEW_CONTEXT)),
         KeyBinding::new("enter", ConnectSelected, Some(HOST_PANEL_CONTEXT)),
         KeyBinding::new("up", SelectPreviousHostRow, Some(HOST_TREE_CONTEXT)),
         KeyBinding::new("down", SelectNextHostRow, Some(HOST_TREE_CONTEXT)),
@@ -892,7 +909,7 @@ fn fixed_context_bindings() -> Vec<KeyBinding> {
         ),
         // The 查找文件 window closes as a dialog would, and as a window does.
         KeyBinding::new("escape", CloseFindFiles, Some(FIND_FILES_CONTEXT)),
-        KeyBinding::new(&primary("w"), CloseFindFiles, Some(FIND_FILES_CONTEXT)),
+        KeyBinding::new(primary!("w"), CloseFindFiles, Some(FIND_FILES_CONTEXT)),
     ];
     bindings.extend(terminal_key_bindings());
     bindings.extend(file_list_key_bindings());
@@ -904,15 +921,9 @@ fn fixed_context_bindings() -> Vec<KeyBinding> {
 /// moving and selecting, 定位 on Return, 编辑, 下载 and 删除. Bound at the
 /// table, a level below the window, so the fields keep Return and the rest.
 fn find_results_key_bindings() -> Vec<KeyBinding> {
-    use crate::explorer::CursorMotion;
-    #[cfg(target_os = "macos")]
-    const PRIMARY: &str = "cmd";
-    #[cfg(not(target_os = "macos"))]
-    const PRIMARY: &str = "ctrl";
-
     let table = format!("{FIND_FILES_CONTEXT} > DataTable");
     let remote = true;
-    let bind = |keys: &str, command: ExplorerCommand| {
+    let bind = |keys: &'static str, command: ExplorerCommand| {
         KeyBinding::new(keys, ExplorerShortcut(command), Some(table.as_str()))
     };
     let mut bindings = vec![
@@ -925,57 +936,54 @@ fn find_results_key_bindings() -> Vec<KeyBinding> {
         bind("cmd-backspace", ExplorerCommand::Delete { remote }),
         bind("space", ExplorerCommand::ToggleSelection { remote }),
         bind("insert", ExplorerCommand::ToggleSelection { remote }),
-        bind(
-            &format!("{PRIMARY}-a"),
-            ExplorerCommand::SelectAll { remote },
-        ),
+        bind(primary!("a"), ExplorerCommand::SelectAll { remote }),
         KeyBinding::new("left", NoAction {}, Some(table.as_str())),
         KeyBinding::new("right", NoAction {}, Some(table.as_str())),
     ];
-    for (key, motion) in [
-        ("up", CursorMotion::Up),
-        ("down", CursorMotion::Down),
-        ("pageup", CursorMotion::PageUp),
-        ("pagedown", CursorMotion::PageDown),
-        ("home", CursorMotion::Home),
-        ("end", CursorMotion::End),
-    ] {
-        for extend in [false, true] {
-            let keys = if extend {
-                format!("shift-{key}")
-            } else {
-                key.to_string()
-            };
-            bindings.push(bind(
-                &keys,
-                ExplorerCommand::MoveCursor {
-                    remote,
-                    motion,
-                    extend,
-                },
-            ));
-        }
+    for (keys, motion, extend) in cursor_motion_keys() {
+        bindings.push(bind(
+            keys,
+            ExplorerCommand::MoveCursor {
+                remote,
+                motion,
+                extend,
+            },
+        ));
     }
     bindings
+}
+
+/// The keys that move the cursor in a file list, each alone and with Shift
+/// to extend the selection.
+fn cursor_motion_keys() -> [(&'static str, crate::explorer::CursorMotion, bool); 12] {
+    use crate::explorer::CursorMotion;
+    [
+        ("up", CursorMotion::Up, false),
+        ("shift-up", CursorMotion::Up, true),
+        ("down", CursorMotion::Down, false),
+        ("shift-down", CursorMotion::Down, true),
+        ("pageup", CursorMotion::PageUp, false),
+        ("shift-pageup", CursorMotion::PageUp, true),
+        ("pagedown", CursorMotion::PageDown, false),
+        ("shift-pagedown", CursorMotion::PageDown, true),
+        ("home", CursorMotion::Home, false),
+        ("shift-home", CursorMotion::Home, true),
+        ("end", CursorMotion::End, false),
+        ("shift-end", CursorMotion::End, true),
+    ]
 }
 
 /// WinSCP's file-panel keys, bound once per pane with the side baked into the
 /// command. The movement keys are bound one level deeper, at the table, so
 /// they replace `DataTable`'s own single-row selection keys.
 fn file_list_key_bindings() -> Vec<KeyBinding> {
-    use crate::explorer::CursorMotion;
-    #[cfg(target_os = "macos")]
-    const PRIMARY: &str = "cmd";
-    #[cfg(not(target_os = "macos"))]
-    const PRIMARY: &str = "ctrl";
-
     let mut bindings = Vec::new();
     for (context, remote) in [
         (LOCAL_FILE_LIST_CONTEXT, false),
         (REMOTE_FILE_LIST_CONTEXT, true),
     ] {
         let table = format!("{context} > DataTable");
-        let bind = |keys: &str, command: ExplorerCommand, context: &str| {
+        let bind = |keys: &'static str, command: ExplorerCommand, context: &str| {
             KeyBinding::new(keys, ExplorerShortcut(command), Some(context))
         };
         // 显示隐藏文件: Finder's ⌘⇧. (macOS reports it as ⌘>), WinSCP's
@@ -1016,29 +1024,17 @@ fn file_list_key_bindings() -> Vec<KeyBinding> {
         // 查找文件, as ⌘F finds in a terminal; the remote side only, as in
         // WinSCP.
         if remote {
-            bindings.push(bind(
-                &format!("{PRIMARY}-f"),
-                ExplorerCommand::FindFiles,
-                context,
-            ));
+            bindings.push(bind(primary!("f"), ExplorerCommand::FindFiles, context));
         }
         bindings.extend([
             bind("backspace", ExplorerCommand::Up { remote }, context),
-            bind(
-                &format!("{PRIMARY}-\\"),
-                ExplorerCommand::Root { remote },
-                context,
-            ),
-            bind(
-                &format!("{PRIMARY}-r"),
-                ExplorerCommand::Refresh { remote },
-                context,
-            ),
+            bind(primary!("\\"), ExplorerCommand::Root { remote }, context),
+            bind(primary!("r"), ExplorerCommand::Refresh { remote }, context),
             bind("alt-left", ExplorerCommand::Back { remote }, context),
             bind("alt-right", ExplorerCommand::Forward { remote }, context),
             // WinSCP's Ctrl+B already toggles the host panel here.
             bind(
-                &format!("{PRIMARY}-d"),
+                primary!("d"),
                 ExplorerCommand::AddBookmark { remote, path: None },
                 context,
             ),
@@ -1068,13 +1064,13 @@ fn file_list_key_bindings() -> Vec<KeyBinding> {
                 context,
             ),
             bind(
-                &format!("{PRIMARY}-a"),
+                primary!("a"),
                 ExplorerCommand::SelectAll { remote },
                 context,
             ),
             // WinSCP's 打开目录/书签.
             bind(
-                &format!("{PRIMARY}-o"),
+                primary!("o"),
                 ExplorerCommand::OpenDirectory { remote },
                 context,
             ),
@@ -1094,30 +1090,16 @@ fn file_list_key_bindings() -> Vec<KeyBinding> {
             KeyBinding::new("left", NoAction {}, Some(&table)),
             KeyBinding::new("right", NoAction {}, Some(&table)),
         ]);
-        for (key, motion) in [
-            ("up", CursorMotion::Up),
-            ("down", CursorMotion::Down),
-            ("pageup", CursorMotion::PageUp),
-            ("pagedown", CursorMotion::PageDown),
-            ("home", CursorMotion::Home),
-            ("end", CursorMotion::End),
-        ] {
-            for extend in [false, true] {
-                let keys = if extend {
-                    format!("shift-{key}")
-                } else {
-                    key.to_string()
-                };
-                bindings.push(bind(
-                    &keys,
-                    ExplorerCommand::MoveCursor {
-                        remote,
-                        motion,
-                        extend,
-                    },
-                    &table,
-                ));
-            }
+        for (keys, motion, extend) in cursor_motion_keys() {
+            bindings.push(bind(
+                keys,
+                ExplorerCommand::MoveCursor {
+                    remote,
+                    motion,
+                    extend,
+                },
+                &table,
+            ));
         }
     }
     bindings
@@ -1125,20 +1107,27 @@ fn file_list_key_bindings() -> Vec<KeyBinding> {
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::{Action as _, KeyBinding, Keystroke, NoAction};
+    use gpui_kit::{Action as _, KeyBinding, Keystroke, NoAction, TestAppContext};
 
     use super::{
-        Refusal, SHORTCUTS, Shortcut, ShortcutOverrides, check, key_bindings, key_caps,
-        shell_keys_in_terminal,
+        Refusal, SHORTCUTS, Shortcut, ShortcutOverrides, check, key_caps, shell_keys_in_terminal,
     };
-    use crate::app::CloseActiveTab;
+    use crate::app::{CloseActiveTab, parse_keys, unparse_keys};
 
     fn shortcut(id: &str) -> &'static Shortcut {
         Shortcut::find(id).unwrap()
     }
 
     fn keys(text: &str) -> Keystroke {
-        Keystroke::parse(text).unwrap()
+        parse_keys(text).unwrap()
+    }
+
+    fn written(text: &str) -> String {
+        unparse_keys(&keys(text))
+    }
+
+    fn key_bindings(overrides: &ShortcutOverrides, cx: &mut TestAppContext) -> Vec<KeyBinding> {
+        cx.update(|cx| super::key_bindings(overrides, cx))
     }
 
     /// cmd on macOS, ctrl elsewhere, as the defaults are.
@@ -1157,7 +1146,7 @@ mod tests {
             .iter()
             .map(|binding| {
                 (
-                    binding.keystrokes()[0].inner().unparse(),
+                    unparse_keys(binding.keystrokes()[0].inner()),
                     binding.action().name().to_string(),
                     binding.predicate().map(|predicate| predicate.to_string()),
                 )
@@ -1185,14 +1174,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_defaults_bind_each_shortcut_once_and_a_context_wins_its_own_key() {
-        let bindings = described(&key_bindings(&ShortcutOverrides::default()));
-        assert!(bindings.contains(&(
-            keys(&primary("n")).unparse(),
-            "shellrs::NewHost".into(),
-            None
-        )));
+    #[gpui_kit::test]
+    fn the_defaults_bind_each_shortcut_once_and_a_context_wins_its_own_key(
+        cx: &mut TestAppContext,
+    ) {
+        let bindings = described(&key_bindings(&ShortcutOverrides::default(), cx));
+        assert!(bindings.contains(&(written(&primary("n")), "shellrs::NewHost".into(), None)));
         // 切换到标签 1…9: one binding a digit.
         assert_eq!(
             bindings
@@ -1223,19 +1210,19 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_change_rebinds_turns_off_or_goes_back() {
+    #[gpui_kit::test]
+    fn a_change_rebinds_turns_off_or_goes_back(cx: &mut TestAppContext) {
         let new_host = shortcut("new-host");
         let mut overrides = ShortcutOverrides::default();
         overrides.set(new_host, primary("j"));
-        let bindings = described(&key_bindings(&overrides));
+        let bindings = described(&key_bindings(&overrides, cx));
         assert_eq!(
             bindings[position(&bindings, "shellrs::NewHost")].0,
-            keys(&primary("j")).unparse()
+            written(&primary("j"))
         );
         overrides.disable(new_host);
         assert!(overrides.is_disabled(new_host));
-        let bindings = described(&key_bindings(&overrides));
+        let bindings = described(&key_bindings(&overrides, cx));
         assert!(
             !bindings
                 .iter()
@@ -1261,13 +1248,13 @@ mod tests {
         assert!(overrides.is_default(shortcut("close-tab")));
     }
 
-    #[test]
-    fn ctrl_with_a_letter_stays_the_shells_in_a_terminal() {
+    #[gpui_kit::test]
+    fn ctrl_with_a_letter_stays_the_shells_in_a_terminal(cx: &mut TestAppContext) {
         let mut overrides = ShortcutOverrides::default();
         overrides.set(shortcut("new-local-terminal"), "ctrl-t".into());
         overrides.set(shortcut("toggle-sidebar"), "ctrl-shift-b".into());
         overrides.set(shortcut("terminal-copy"), "ctrl-c".into());
-        let bindings = described(&key_bindings(&overrides));
+        let bindings = described(&key_bindings(&overrides, cx));
         let in_terminal = |keys: &str| {
             bindings.iter().position(|(bound, name, context)| {
                 bound == keys
@@ -1283,17 +1270,18 @@ mod tests {
         assert!(position(&bindings, "shellrs::CopyTerminal") > in_terminal("ctrl-t").unwrap());
     }
 
-    #[test]
-    fn a_tab_closes_from_a_terminal_with_the_default_keys_everywhere() {
+    #[gpui_kit::test]
+    fn a_tab_closes_from_a_terminal_with_the_default_keys_everywhere(cx: &mut TestAppContext) {
         let close = shortcut("close-tab");
         for keys in [close.mac, close.other] {
             let binding = KeyBinding::new(keys, CloseActiveTab, None);
-            assert!(shell_keys_in_terminal(&[binding]).is_empty(), "{keys}");
+            let shells = cx.update(|cx| shell_keys_in_terminal(&[binding], cx));
+            assert!(shells.is_empty(), "{keys}");
         }
     }
 
-    #[test]
-    fn the_system_wide_shortcut_has_no_key_until_one_is_chosen() {
+    #[gpui_kit::test]
+    fn the_system_wide_shortcut_has_no_key_until_one_is_chosen(cx: &mut TestAppContext) {
         let show = shortcut("show-hide-app");
         let mut overrides = ShortcutOverrides::default();
         assert_eq!(overrides.keys(show), None);
@@ -1302,7 +1290,7 @@ mod tests {
         assert_eq!(overrides.keys(show).as_deref(), Some("alt-space"));
         // The system hears it, not the keymap.
         assert!(
-            !described(&key_bindings(&overrides))
+            !described(&key_bindings(&overrides, cx))
                 .iter()
                 .any(|(_, name, _)| name == "shellrs::ShowOrHideApp")
         );
@@ -1324,7 +1312,7 @@ mod tests {
                 let default = window.default_keys();
                 assert_eq!(
                     check(window, &keys(default), &ShortcutOverrides::default(), &[]),
-                    Ok(keys(default).unparse())
+                    Ok(written(default))
                 );
             } else {
                 assert_eq!(ShortcutOverrides::default().keys(window), None);
@@ -1335,7 +1323,7 @@ mod tests {
     #[test]
     fn keys_need_a_modifier_and_must_be_free_where_they_work() {
         let overrides = ShortcutOverrides::default();
-        let fixed = [KeyBinding::new(&primary("z"), NoAction, Some("Input"))];
+        let fixed = [KeyBinding::new(primary!("z"), NoAction, Some("Input"))];
         let new_host = shortcut("new-host");
         let check = |shortcut, pressed: &str| check(shortcut, &keys(pressed), &overrides, &fixed);
 
@@ -1372,7 +1360,7 @@ mod tests {
         let find = shortcut("terminal-find");
         assert_eq!(
             check(new_host, find.default_keys()),
-            Ok(keys(find.default_keys()).unparse())
+            Ok(written(find.default_keys()))
         );
         // Two of the terminal's own cannot share one.
         let clear = shortcut("terminal-clear");

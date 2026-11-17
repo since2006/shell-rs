@@ -219,7 +219,7 @@ pub(super) fn select_area<T: MarqueeList>(
 pub(super) fn press_empty<T: MarqueeList>(list: &mut T, modifiers: Modifiers, cx: &mut Context<T>) {
     list.on_list_press(cx);
     if list.list_marquee().geometry.pressed.get() != Pressed::Empty
-        || modifiers.secondary()
+        || modifiers.secondary(cx)
         || modifiers.shift
     {
         return;
@@ -249,7 +249,7 @@ fn drag_marquee<T: MarqueeList>(
     if list.list_marquee().marquee.is_none() {
         let start = geometry.press.get().unwrap_or(pointer);
         list.on_list_press(cx);
-        let base = (modifiers.secondary() || modifiers.shift).then(|| list.selection(cx));
+        let base = (modifiers.secondary(cx) || modifiers.shift).then(|| list.selection(cx));
         list.list_marquee_mut().marquee = Some(Marquee {
             anchor: point(start.x, start.y - first_row),
             pointer,

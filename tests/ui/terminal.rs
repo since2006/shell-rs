@@ -553,7 +553,10 @@ async fn copy_on_select_puts_what_the_mouse_selects_on_the_clipboard(cx: &mut Te
         let mut settings = window.within("settings");
         let mut group = settings.within("group-1");
         assert_eq!(group.within("item-0").find("check").checked(), Some(false));
-        assert_eq!(group.within("item-1").find("btn").label(), Some("显示菜单"));
+        assert_eq!(
+            dropdown_value(group.within("item-1").find("btn").label()).as_deref(),
+            Some("显示菜单")
+        );
         group.within("item-0").click("check", cx);
     });
     cx.update(|cx| {
@@ -828,13 +831,14 @@ async fn the_terminal_font_setting_reaches_open_terminals_and_the_preview(cx: &m
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         let field = |window: &mut gpui_kit::Window, item: usize| {
-            window
-                .within("settings")
-                .within("group-0")
-                .within(format!("item-{item}"))
-                .find("btn")
-                .label()
-                .map(str::to_string)
+            dropdown_value(
+                window
+                    .within("settings")
+                    .within("group-0")
+                    .within(format!("item-{item}"))
+                    .find("btn")
+                    .label(),
+            )
         };
         assert_eq!(field(window, 0), Some(format!("{default_family}（默认）")));
         assert_eq!(field(window, 1).as_deref(), Some("16"));
@@ -1203,7 +1207,7 @@ async fn links_open_with_the_command_key_and_show_where_they_lead(cx: &mut TestA
             Some("https://example.com/docs")
         );
         let link = cell_center(window, &factory, 2, 1);
-        click_at(window, link, gpui_kit::Modifiers::secondary_key(), cx);
+        click_at(window, link, gpui_kit::Modifiers::secondary_key(cx), cx);
     });
     assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/docs"));
 }
@@ -1261,11 +1265,12 @@ async fn programs_that_ask_for_the_mouse_hear_clicks_and_the_wheel(cx: &mut Test
         click_at(window, cell, gpui_kit::Modifiers::shift(), cx);
         let position = cell_center(window, &factory, 4, 1);
         window.dispatch_event(
-            gpui_kit::ScrollWheelEvent {
+            gpui_kit::ScrollEvent {
                 position,
                 delta: gpui_kit::ScrollDelta::Lines(point(0., 1.)),
                 modifiers: gpui_kit::Modifiers::default(),
                 touch_phase: gpui_kit::TouchPhase::Moved,
+                source: gpui_kit::ScrollSource::Pointer,
             }
             .to_platform_input(),
             cx,
@@ -1298,7 +1303,9 @@ async fn the_scrollbar_scrolls_back_through_the_history(cx: &mut TestAppContext)
 /// turned while dragging does the same. It stops once let go.
 #[gpui_kit::test]
 async fn a_selection_dragged_past_the_edge_scrolls_on(cx: &mut TestAppContext) {
-    use gpui_kit::{MouseDownEvent, MouseUpEvent, ScrollDelta, ScrollWheelEvent, TouchPhase};
+    use gpui_kit::{
+        MouseDownEvent, MouseUpEvent, ScrollDelta, ScrollEvent, ScrollSource, TouchPhase,
+    };
 
     let text: String = (1..=200).map(|line| format!("line {line}\r\n")).collect();
     let (handle, workspace, _) = terminal_printing(cx, String::leak(text + "end"), "end").await;
@@ -1358,11 +1365,12 @@ async fn a_selection_dragged_past_the_edge_scrolls_on(cx: &mut TestAppContext) {
     // The wheel, still dragging, takes it further.
     in_frame(cx, handle, |window, cx| {
         window.dispatch_event(
-            ScrollWheelEvent {
+            ScrollEvent {
                 position: point(terminal.left() + px(40.), terminal.bottom() - px(4.)),
                 delta: ScrollDelta::Lines(point(0., -5.)),
                 modifiers: Default::default(),
                 touch_phase: TouchPhase::Moved,
+                source: ScrollSource::Pointer,
             }
             .to_platform_input(),
             cx,

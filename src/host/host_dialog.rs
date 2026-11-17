@@ -7,7 +7,7 @@ use gpui_kit::component::{
     checkbox::Checkbox,
     collapsible::Collapsible,
     combobox::{Combobox, ComboboxEvent, ComboboxState},
-    dialog::{Cancel, Confirm, DialogButtonProps, DialogFooter},
+    dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter},
     form::{Field, Form},
     h_flex,
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
@@ -788,6 +788,10 @@ impl HostForm {
     ) -> Self {
         let mut form = Self::new(None, false, None, store, tester, window, cx);
         form.temporary = true;
+        // Its password stays in memory, so it can be typed without a keychain.
+        for fields in [&form.fields, &form.telnet_fields] {
+            fields.update(cx, |fields, _| fields.keep_in_memory());
+        }
         form.name.update(cx, |input, cx| {
             input.set_placeholder(t!("host.dialog.temporary_name_placeholder"), window, cx)
         });
@@ -2664,25 +2668,18 @@ fn form_footer(form: &Entity<HostForm>, commit_label: SharedString, cx: &App) ->
                     }
                 }),
         )
+        // The dialog's own parts send 取消 and the commit from inside it,
+        // wherever the focus is: 测试连接 leaves none while it works.
         .child(
             h_flex()
                 .gap_2()
                 .child(
-                    Button::new("cancel")
-                        .label(t!("common.cancel"))
-                        .small()
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(Cancel), cx);
-                        }),
+                    DialogClose::new()
+                        .child(Button::new("cancel").label(t!("common.cancel")).small()),
                 )
                 .child(
-                    Button::new("commit")
-                        .primary()
-                        .label(commit_label)
-                        .small()
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(Confirm { secondary: false }), cx);
-                        }),
+                    DialogAction::new()
+                        .child(Button::new("commit").primary().label(commit_label).small()),
                 ),
         )
 }

@@ -14,7 +14,7 @@ use gpui_kit::*;
 
 use crate::app::{
     CatalogIcon, Refusal, Shortcut, ShortcutGroup, ShortcutOverrides, check, fixed_bindings,
-    key_caps, key_text, system_hotkey_available,
+    key_caps, key_text, system_hotkey_available, unparse_keys,
 };
 use crate::i18n::t;
 
@@ -120,7 +120,7 @@ impl ShortcutsEditor {
                     key: keystroke.key.clone(),
                     key_char: None,
                 };
-                let message = refusal.message(&key_text(&pressed.unparse(), false));
+                let message = refusal.message(&key_text(&unparse_keys(&pressed), false));
                 window.push_notification(Notification::warning(message), cx);
             }
         }

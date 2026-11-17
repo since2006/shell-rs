@@ -10,6 +10,7 @@ Use this page to predict a component's shape before reading its detailed API. Th
 | Change a boolean | `Checkbox::new("remember")`, `Switch::new("enabled")`, `Radio::new("choice")` | Application supplies `checked(bool)` | `on_change` receives the requested `&bool` |
 | Choose one radio option | `RadioGroup::new("delivery")` | Application supplies `selected_index(Option<usize>)` | `on_change` receives the requested `&usize` |
 | Edit retained text | `Input::new(&self.input)` | View retains `Entity<InputState>` | Retain the subscription; handle `InputEvent` |
+| Display a supplied patch | `Diff::new(&self.diff)` | View retains `Entity<DiffState>`; application parses supplied unified/Git diff with `DiffFile::parse`; one state shows all files | Readonly `RenderOnce` element; retain subscriptions to `DiffEvent` when needed |
 | Lay out fields | `Form::new()` | Children retain their own state | `child(Field)`, `columns`, `label_layout`, `footer` |
 | Supply a compound part | `Field::new()`, `Tab::new()` | Containing component owns placement/selection | Read the parent's accepted child type |
 
@@ -64,4 +65,4 @@ Use the [complete application recipe](recipes.md) for imports, retained ownershi
 
 When transferring a pattern to another family member, check that it compiles, receives the expected requested value, preserves controlled state after redraw, and behaves correctly when disabled. For Form, check label orientation independently of column count and keep footer geometry outside the field grid's individual cells.
 
-In this repository, `script/check-ai rust` compiles the external-style consumer and runs its interaction tests, control-family event and compatibility tests, and Form geometry tests. These are deterministic contract checks, not measured AI first-attempt success rates.
+In this repository, `cargo test -p gpui-kit-recipes` compiles the external-style consumer and runs its interaction tests, and `script/check-ai rust` runs the control-family event and compatibility tests and Form geometry tests. These are deterministic contract checks, not measured AI first-attempt success rates.

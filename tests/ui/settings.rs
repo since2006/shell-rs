@@ -479,20 +479,27 @@ fn a_background_image_is_chosen_for_one_appearance(cx: &mut TestAppContext) {
     in_frame(cx, handle, |window, cx| {
         window.within("settings").click("0-0", cx)
     });
-    // Below the themes, past the window's fold. Scrolled near the top, over
-    // the 界面 group rather than a list of themes, which would scroll on its
-    // own; the page lays out a group once it comes into view, so a step at
-    // a time.
-    for _ in 0..4 {
+    // Below the themes, past the window's fold. Scrolled at the page's right
+    // edge, never over a list of themes, which would take the whole wheel
+    // itself; the page lays out a group once it comes into view, so a step
+    // at a time until it is there.
+    for _ in 0..10 {
+        let shown = in_frame(cx, handle, |window, _| {
+            window.try_find("background-image-dark").is_some()
+        });
+        if shown {
+            break;
+        }
         in_frame(cx, handle, |window, cx| {
             let page = window.find("settings").bounds();
-            let position = point(page.center().x, page.top() + px(60.));
+            let position = point(page.right() - px(6.), page.top() + px(60.));
             window.dispatch_event(
-                gpui_kit::ScrollWheelEvent {
+                gpui_kit::ScrollEvent {
                     position,
                     delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-500.))),
                     modifiers: gpui_kit::Modifiers::default(),
                     touch_phase: gpui_kit::TouchPhase::Moved,
+                    source: gpui_kit::ScrollSource::Pointer,
                 }
                 .to_platform_input(),
                 cx,
@@ -681,11 +688,12 @@ fn terminal_cursor_settings_apply_to_open_and_restarted_terminals(cx: &mut TestA
     in_frame(cx, handle, |window, cx| {
         let position = window.find("terminal-font-preview").bounds().center();
         window.dispatch_event(
-            gpui_kit::ScrollWheelEvent {
+            gpui_kit::ScrollEvent {
                 position,
                 delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-450.))),
                 modifiers: gpui_kit::Modifiers::default(),
                 touch_phase: gpui_kit::TouchPhase::Moved,
+                source: gpui_kit::ScrollSource::Pointer,
             }
             .to_platform_input(),
             cx,
@@ -865,13 +873,14 @@ fn the_sftp_page_says_how_many_files_move_at_once(cx: &mut TestAppContext) {
         window.within("settings").click("0-2", cx)
     });
     let shown = |window: &mut gpui_kit::Window| {
-        window
-            .within("settings")
-            .within("group-0")
-            .within("item-0")
-            .find("btn")
-            .label()
-            .map(str::to_string)
+        dropdown_value(
+            window
+                .within("settings")
+                .within("group-0")
+                .within("item-0")
+                .find("btn")
+                .label(),
+        )
     };
     in_frame(cx, handle, |window, _| {
         assert_eq!(shown(window).as_deref(), Some("3（默认）"))
@@ -913,11 +922,12 @@ fn scroll_to_highlight_rules(cx: &mut TestAppContext, handle: WindowHandle<Root>
     in_frame(cx, handle, |window, cx| {
         let position = window.find("highlight-preview").bounds().center();
         window.dispatch_event(
-            gpui_kit::ScrollWheelEvent {
+            gpui_kit::ScrollEvent {
                 position,
                 delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-600.))),
                 modifiers: gpui_kit::Modifiers::default(),
                 touch_phase: gpui_kit::TouchPhase::Moved,
+                source: gpui_kit::ScrollSource::Pointer,
             }
             .to_platform_input(),
             cx,

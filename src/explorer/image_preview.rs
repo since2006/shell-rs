@@ -410,8 +410,8 @@ impl Render for ImagePreview {
                     .track_scroll(&self.scroll)
                     // ⌘ (Ctrl) with the wheel or trackpad zooms instead of
                     // scrolling.
-                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
-                        if !event.modifiers.secondary() {
+                    .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
+                        if !event.modifiers.secondary(cx) {
                             return;
                         }
                         cx.stop_propagation();

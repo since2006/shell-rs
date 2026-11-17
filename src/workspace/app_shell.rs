@@ -125,10 +125,29 @@ impl AppShell {
     }
 }
 
+/// Paint order of the unlock screen. Root draws the window's dialogs and
+/// notifications over its content (dialogs deferred at `10 + their layer`),
+/// and those left open when the app locked stay there, to be back once it is
+/// unlocked; the screen goes over all of them. Popups and tooltips stay
+/// above it for the screen's own; a dialog's open select closes as the
+/// screen takes the focus.
+const UNLOCK_SCREEN_PRIORITY: usize = gpui_kit::base::POPUP_PRIORITY - 1;
+
 impl Render for AppShell {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = if self.lock.read(cx).is_locked() {
-            self.unlock.clone().into_any_element()
+        let locked = self.lock.read(cx).is_locked();
+        let content = if locked {
+            // Covers the window so that nothing under it shows or takes a
+            // click.
+            deferred(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .occlude()
+                    .child(self.unlock.clone()),
+            )
+            .with_priority(UNLOCK_SCREEN_PRIORITY)
+            .into_any_element()
         } else {
             self.content
                 .clone()
@@ -136,6 +155,7 @@ impl Render for AppShell {
                 .into_any_element()
         };
         div()
+            .relative()
             .size_full()
             .child(crate::app_lock::activity_tracker(cx))
             .child(content)
