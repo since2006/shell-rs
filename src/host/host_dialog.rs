@@ -277,6 +277,8 @@ pub struct HostForm {
     saved_totp: Option<(SecretRef, bool)>,
     /// What the server's question for a code says; empty for the usual.
     totp_prompt: Entity<InputState>,
+    /// What an SSH host's terminal types once logged in, a line at a time.
+    login_commands: Entity<TextareaState>,
     /// A Telnet host's 自动登录: whether it is on, where it takes the
     /// user name and password from, and the prompts it waits for.
     telnet_auto_login: bool,
@@ -661,6 +663,12 @@ impl HostForm {
                         .unwrap_or_default(),
                 )
         });
+        let login_commands = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(2, 6)
+                .placeholder(t!("host.dialog.login_commands_placeholder"))
+                .default_value(draft.login_commands.clone())
+        });
 
         let subscriptions = vec![
             cx.observe_in(&credential, window, |this, _, window, cx| {
@@ -754,11 +762,12 @@ impl HostForm {
             proxy_user,
             proxy_secret,
             notes,
-            advanced_open: draft.totp.is_some(),
+            advanced_open: draft.totp.is_some() || !draft.login_commands.is_empty(),
             totp: draft.totp.is_some(),
             totp_secret,
             saved_totp,
             totp_prompt,
+            login_commands,
             device,
             baud,
             data_bits,
@@ -1460,7 +1469,17 @@ impl HostForm {
         // The proxy's password goes the same way, under the proxy's entry.
         let proxy_change = self.proxy_change(&route, cx);
         let notes = self.notes.read(cx).value().trim().to_string();
-        let draft = draft.with_route(route).with_notes(notes).with_totp(totp);
+        // A 临时连接 has no 高级设置.
+        let login_commands = if self.temporary {
+            SharedString::default()
+        } else {
+            self.login_commands.read(cx).value()
+        };
+        let draft = draft
+            .with_route(route)
+            .with_notes(notes)
+            .with_totp(totp)
+            .with_login_commands(&login_commands);
 
         let editing = self.editing;
         self.store.update(cx, |store, cx| {
@@ -2375,12 +2394,13 @@ impl HostForm {
                             })),
                     ),
                 )
-                .content(self.totp_box(cx)),
+                .content(self.advanced_box(cx)),
         )
     }
 
-    /// 启用动态验证码, and once on, the secret and the question it answers.
-    fn totp_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// What 「高级设置」 unfolds: 启用动态验证码 and, once on, the secret and
+    /// the question it answers; then what the terminal types once logged in.
+    fn advanced_box(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let body = v_flex()
             .id("host-advanced-box")
@@ -2406,23 +2426,36 @@ impl HostForm {
                             .child(t!("host.dialog.totp_note")),
                     ),
             );
-        if !self.totp {
-            return body;
-        }
-        body.child(
-            Form::new()
-                .columns(2)
-                .child(
-                    Field::new()
-                        .label(t!("host.dialog.totp_secret"))
-                        .required(true)
-                        .child(self.totp_secret.read(cx).password_input("host-totp-secret")),
-                )
-                .child(
-                    Field::new()
-                        .label(t!("host.dialog.totp_prompt"))
-                        .child(Input::new(&self.totp_prompt).id("host-totp-prompt").small()),
-                ),
+        body.when(self.totp, |body| {
+            body.child(
+                Form::new()
+                    .columns(2)
+                    .child(
+                        Field::new()
+                            .label(t!("host.dialog.totp_secret"))
+                            .required(true)
+                            .child(self.totp_secret.read(cx).password_input("host-totp-secret")),
+                    )
+                    .child(
+                        Field::new()
+                            .label(t!("host.dialog.totp_prompt"))
+                            .child(Input::new(&self.totp_prompt).id("host-totp-prompt").small()),
+                    ),
+            )
+        })
+        .child(
+            Form::new().child(
+                Field::new()
+                    .label(t!("host.dialog.login_commands"))
+                    .child(
+                        div()
+                            .id("host-login-commands")
+                            .test_support()
+                            .w_full()
+                            .child(Textarea::new(&self.login_commands).text_sm()),
+                    )
+                    .description(t!("host.dialog.login_commands_note")),
+            ),
         )
     }
 

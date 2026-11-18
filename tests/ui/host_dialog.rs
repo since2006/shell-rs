@@ -1345,3 +1345,71 @@ async fn only_an_ssh_host_has_one_time_codes(cx: &mut TestAppContext) {
         });
     }
 }
+
+#[gpui_kit::test]
+async fn login_commands_are_folded_under_advanced_and_come_back_when_edited(
+    cx: &mut TestAppContext,
+) {
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("host-login-commands").is_none());
+        window.click("host-address", cx);
+        window.input("10.0.0.9", cx);
+        scroll_dialog_down(window, "host-notes", cx);
+    });
+    in_frame(cx, handle, |window, cx| window.click("host-advanced", cx));
+    in_frame(cx, handle, |window, cx| {
+        scroll_dialog_down(window, "host-notes", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("host-login-commands").visible());
+        window.click("host-login-commands", cx);
+        // Enter starts a new line; it does not submit the dialog.
+        window.press("enter", cx);
+        window.input("sudo -i", cx);
+        window.press("enter", cx);
+        window.input("cd /srv/app", cx);
+        window.press("enter", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    let typed = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            let store = workspace.read(cx).store().read(cx);
+            store.hosts()[0].login_commands.to_string()
+        })
+    };
+    // Without the blank lines around them.
+    assert_eq!(typed(cx), "sudo -i\ncd /srv/app");
+    let id = cx.update(|cx| workspace.read(cx).store().read(cx).hosts()[0].id);
+    let edit = |cx: &mut TestAppContext| {
+        in_frame(cx, handle, |window, cx| {
+            window.click(("host-row", id.0), cx);
+            window.dispatch_action(Box::new(EditHost(id)), cx)
+        });
+        in_frame(cx, handle, |window, cx| {
+            scroll_dialog_down(window, "host-notes", cx)
+        });
+    };
+
+    // A host that types something opens with 「高级设置」 unfolded, and
+    // what it types in the field: saved untouched, it stays.
+    edit(cx);
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("host-login-commands").visible());
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    assert_eq!(typed(cx), "sudo -i\ncd /srv/app");
+
+    edit(cx);
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-login-commands", cx);
+        window.press("secondary-a", cx);
+        window.press("backspace", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    assert_eq!(typed(cx), "");
+}

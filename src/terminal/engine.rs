@@ -31,6 +31,9 @@ use super::highlight::{
     advance_watching, current,
 };
 use super::links::{LinkMarker, url_search, visible_links};
+use super::login_commands::LoginTyping;
+#[cfg(test)]
+use super::login_commands::QUIET;
 use super::notices::{NoticeScanner, ProgramNotice, TerminalNotice};
 use super::run::{BusyReason, RunFailure, RunHandle};
 use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
@@ -137,7 +140,7 @@ impl TerminalEngine {
         let runtime = TerminalRuntime::start(
             generation,
             size,
-            factory.create(),
+            Launch::of(&factory),
             event_sender.clone(),
             highlights.clone(),
             theme.clone(),
@@ -328,7 +331,7 @@ impl TerminalEngine {
         self.runtime = TerminalRuntime::start(
             self.generation,
             self.size,
-            self.factory.create(),
+            Launch::of(&self.factory),
             self.event_sender.clone(),
             self.highlights.clone(),
             self.theme.clone(),
@@ -888,11 +891,35 @@ struct TerminalRuntime {
     transferring: Arc<AtomicBool>,
 }
 
+/// One connection of a terminal: its transport, and what it types once
+/// logged in.
+struct Launch {
+    transport: Box<dyn super::TerminalTransport>,
+    login: LoginTyping,
+}
+
+impl Launch {
+    fn of(factory: &SharedTerminalTransportFactory) -> Self {
+        Self {
+            transport: factory.create(),
+            login: LoginTyping::new(factory.login_commands()),
+        }
+    }
+
+    #[cfg(test)]
+    fn typing_nothing(transport: Box<dyn super::TerminalTransport>) -> Self {
+        Self {
+            transport,
+            login: LoginTyping::default(),
+        }
+    }
+}
+
 impl TerminalRuntime {
     fn start(
         generation: u64,
         size: TerminalSize,
-        transport: Box<dyn super::TerminalTransport>,
+        launch: Launch,
         ui_events: mpsc::Sender<TerminalUiEvent>,
         highlights: SharedHighlights,
         theme: SharedTheme,
@@ -918,6 +945,7 @@ impl TerminalRuntime {
         let run: Arc<Mutex<Option<RunHandle>>> = Arc::default();
         let (zmodem, zmodem_controls) = async_channel::unbounded();
         let transferring = Arc::new(AtomicBool::new(false));
+        let Launch { transport, login } = launch;
         let mut parser = Parser {
             term: term.clone(),
             processor: Processor::new(),
@@ -928,11 +956,13 @@ impl TerminalRuntime {
             run: run.clone(),
             zmodem: Zmodem::default(),
             transferring: transferring.clone(),
+            login,
         };
         thread::Builder::new()
             .name("shellrs-terminal-parser".into())
             .spawn(move || {
                 loop {
+                    parser.type_login_commands(Instant::now());
                     // Output inside a synchronized update is held back until
                     // the program ends it. Alacritty's own event loop draws
                     // it anyway once the update's time is up, so a program
@@ -940,8 +970,11 @@ impl TerminalRuntime {
                     // lost) does not freeze the screen; this loop has to too.
                     // A transfer waits for the other end only so long, too.
                     let deadline = earliest(
-                        parser.processor.sync_timeout().sync_timeout(),
-                        parser.zmodem.deadline(),
+                        earliest(
+                            parser.processor.sync_timeout().sync_timeout(),
+                            parser.zmodem.deadline(),
+                        ),
+                        parser.login.deadline(),
                     );
                     let event = match receive(&transport_receiver, &zmodem_controls, deadline) {
                         Received::Event(event) => event,
@@ -966,9 +999,11 @@ impl TerminalRuntime {
                     };
                     match event {
                         TerminalTransportEvent::Started => {
+                            parser.login.started(Instant::now());
                             parser.proxy.send(TerminalUiEventKind::Started);
                         }
                         TerminalTransportEvent::Output(bytes) => {
+                            parser.login.output(Instant::now());
                             // Files dropped on the terminal come as a control
                             // sent before the `rz` typed for them, but its
                             // answer may be here with the control still
@@ -1367,9 +1402,24 @@ struct Parser {
     /// Takes the output first: `rz` and `sz`'s is not for the screen.
     zmodem: Zmodem,
     transferring: Arc<AtomicBool>,
+    /// What the connection types once logged in, as the output allows.
+    login: LoginTyping,
 }
 
 impl Parser {
+    /// Type the next of the login commands when it is due. Not into a
+    /// transfer, which they wait out.
+    fn type_login_commands(&mut self, now: Instant) {
+        if self.zmodem.active() {
+            self.login.hold(now);
+        } else if let Some(line) = self.login.due(now) {
+            let _ = self
+                .proxy
+                .commands
+                .send(TerminalTransportCommand::Write(line));
+        }
+    }
+
     /// Show what ZMODEM let through and wrote, in order, send what it
     /// answers, and ask what it asks.
     fn transfer(&mut self, fed: Fed) {
@@ -2262,7 +2312,7 @@ mod tests {
         TerminalRuntime::start(
             1,
             TerminalSize::new(40, 4, 8, 16),
-            Box::new(ScriptedTransport(script)),
+            Launch::typing_nothing(Box::new(ScriptedTransport(script))),
             ui_events,
             Arc::default(),
             Arc::new(Mutex::new(TerminalTheme::default_for(
@@ -2403,16 +2453,31 @@ mod tests {
         mpsc::Receiver<TerminalTransportCommand>,
         mpsc::Receiver<TerminalUiEvent>,
     ) {
+        piped_typing(&[])
+    }
+
+    /// [`piped`], for a connection that types `lines` once logged in.
+    fn piped_typing(
+        lines: &[String],
+    ) -> (
+        TerminalRuntime,
+        mpsc::Sender<TerminalTransportEvent>,
+        mpsc::Receiver<TerminalTransportCommand>,
+        mpsc::Receiver<TerminalUiEvent>,
+    ) {
         let (events, events_in) = mpsc::channel();
         let (commands_out, commands) = mpsc::channel();
         let (ui_events, ui) = mpsc::channel();
         let runtime = TerminalRuntime::start(
             1,
             TerminalSize::new(60, 6, 8, 16),
-            Box::new(PipedTransport {
-                events: events_in,
-                commands: commands_out,
-            }),
+            Launch {
+                transport: Box::new(PipedTransport {
+                    events: events_in,
+                    commands: commands_out,
+                }),
+                login: LoginTyping::new(lines),
+            },
             ui_events,
             Arc::default(),
             Arc::new(Mutex::new(TerminalTheme::default_for(
@@ -2464,6 +2529,42 @@ mod tests {
                 Err(_) => return None,
             }
         }
+    }
+
+    /// What the transport is told to write next, two seconds at most.
+    fn next_write(commands: &mpsc::Receiver<TerminalTransportCommand>) -> Option<Vec<u8>> {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
+            if let Ok(TerminalTransportCommand::Write(bytes)) =
+                commands.recv_timeout(Duration::from_millis(50))
+            {
+                return Some(bytes);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn login_commands_are_typed_a_line_at_a_time_once_the_output_pauses() {
+        let lines = ["cd /srv".to_string(), "ls".to_string()];
+        let (_runtime, events, commands, _ui) = piped_typing(&lines);
+        let motd = Instant::now();
+        events
+            .send(TerminalTransportEvent::Output(b"Welcome\r\n$ ".to_vec()))
+            .unwrap();
+        assert_eq!(
+            next_write(&commands).as_deref(),
+            Some(b"cd /srv\r".as_slice())
+        );
+        assert!(motd.elapsed() >= QUIET, "{:?}", motd.elapsed());
+        // The next waits for the echo, and what the line printed, to pause.
+        let echo = Instant::now();
+        events
+            .send(TerminalTransportEvent::Output(b"cd /srv\r\n$ ".to_vec()))
+            .unwrap();
+        assert_eq!(next_write(&commands).as_deref(), Some(b"ls\r".as_slice()));
+        assert!(echo.elapsed() >= QUIET, "{:?}", echo.elapsed());
+        assert_eq!(next_write(&commands), None);
     }
 
     const SZ_STARTS: &[u8] = b"rz\r**\x18B00000000000000\r\x8a\x11";

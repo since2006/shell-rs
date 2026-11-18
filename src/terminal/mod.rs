@@ -17,6 +17,7 @@ mod links;
 mod local_pty;
 mod local_shell;
 mod local_terminal_panel;
+mod login_commands;
 mod model;
 mod mouse;
 mod notices;
@@ -53,6 +54,7 @@ pub use kept_output::KEPT_LINES;
 pub use local_pty::LocalPtyTransportProvider;
 pub use local_shell::{LocalLaunch, LocalShell, default_shell_name, installed_shells, quote_word};
 pub use local_terminal_panel::{LocalTerminalPanel, LocalTerminalPanelEvent, SavedName};
+pub use login_commands::typing_on_login;
 pub use model::{
     LocalTerminalId, RemoteTerminalId, RightClick, TerminalCursorStyle, TerminalInteraction,
     TerminalLifecycle, TerminalSize, TerminalStatus,

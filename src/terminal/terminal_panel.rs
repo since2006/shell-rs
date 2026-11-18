@@ -23,6 +23,7 @@ use crate::shared::{ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, clos
 use super::{
     HostTerminalTransports, RemoteTerminalId, ReportedDirectory, TerminalEvent, TerminalLifecycle,
     TerminalMenuItems, TerminalNotice, TerminalStatus, TerminalView, ZmodemDirection, ZmodemReply,
+    typing_on_login,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -147,12 +148,23 @@ impl TerminalPanel {
         } = copy;
         let host_id = host.id;
         let protocol = host.kind();
+        // A copy's folder is restored after what the host types once logged
+        // in, which may well change it (`sudo -i`); without those, as soon
+        // as the shell is up.
+        let mut typed = host.login_lines();
+        let directory = match directory {
+            Some(directory) if !typed.is_empty() => {
+                typed.extend(directory.cd_command());
+                None
+            }
+            directory => directory,
+        };
         let terminal = cx.new(|cx| {
             let name = host.name.clone();
             let mut terminal = TerminalView::new(
                 ("terminal", id.0),
                 move |_| t!("terminal.remote.label", host = name),
-                transports.factory_for(&connection),
+                typing_on_login(transports.factory_for(&connection), typed),
                 window,
                 cx,
             );
@@ -329,9 +341,13 @@ impl TerminalPanel {
         self.terminal.read(cx).status(cx)
     }
 
-    /// Connect again as the tab first did.
+    /// Connect again as the tab first did, typing what the host types once
+    /// logged in again too.
     pub fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let factory = self.transports.factory_for(&self.connection);
+        let factory = typing_on_login(
+            self.transports.factory_for(&self.connection),
+            self.host.login_lines(),
+        );
         self.terminal.update(cx, |terminal, cx| {
             terminal.restart_with_factory(factory, cx)
         });

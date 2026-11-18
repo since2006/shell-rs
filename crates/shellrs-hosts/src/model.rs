@@ -368,6 +368,9 @@ pub struct Host {
     /// for every other. The secret they come from is in the keychain
     /// ([`Self::totp_secret`]).
     pub totp: Option<TotpSettings>,
+    /// What an SSH host's terminal types once logged in, a line at a time
+    /// (issue #138); empty for nothing, and always for every other host.
+    pub login_commands: SharedString,
     /// Order among hosts in the same group.
     pub sort_order: i64,
     /// Detected on every successful connection and persisted, so the tree can
@@ -409,6 +412,7 @@ impl Host {
             group: draft.group,
             notes: draft.notes,
             totp: draft.totp,
+            login_commands: draft.login_commands,
             sort_order: 0,
             os: None,
             sidebar_tool: None,
@@ -474,7 +478,17 @@ impl Host {
             group: self.group,
             notes: self.notes.clone(),
             totp: self.totp.clone(),
+            login_commands: self.login_commands.clone(),
         }
+    }
+
+    /// The lines its terminal types once logged in, in order; none for a
+    /// host that types nothing. A blank line between two is an Enter.
+    pub fn login_lines(&self) -> Vec<String> {
+        if !self.is_ssh() {
+            return Vec::new();
+        }
+        self.login_commands.lines().map(str::to_owned).collect()
     }
 }
 
@@ -556,6 +570,8 @@ pub struct HostDraft {
     pub group: Option<GroupId>,
     pub notes: SharedString,
     pub totp: Option<TotpSettings>,
+    /// See [`Host::login_commands`].
+    pub login_commands: SharedString,
 }
 
 impl HostDraft {
@@ -579,6 +595,7 @@ impl HostDraft {
             group,
             notes: SharedString::default(),
             totp: None,
+            login_commands: SharedString::default(),
         }
     }
 
@@ -634,6 +651,13 @@ impl HostDraft {
         self
     }
 
+    /// Type `commands` into the terminal once logged in, for an SSH host:
+    /// as typed in a form, without the blank lines around them.
+    pub fn with_login_commands(mut self, commands: &str) -> Self {
+        self.login_commands = tidy_commands(commands).into();
+        self
+    }
+
     /// The keychain entry this draft would log in with. Matches
     /// [`Host::password_secret`] once the draft is applied.
     pub fn password_secret(&self) -> SecretRef {
@@ -656,8 +680,10 @@ impl HostDraft {
         if let Protocol::Telnet(settings) = &mut self.protocol {
             settings.user_prompt = settings.user_prompt.trim().to_string().into();
             settings.password_prompt = settings.password_prompt.trim().to_string().into();
-            // The codes are asked in SSH's questions only.
+            // The codes are asked in SSH's questions only, and only an SSH
+            // host's terminal types what it is told to.
             self.totp = None;
+            self.login_commands = SharedString::default();
         }
         if let Some(totp) = &mut self.totp {
             let prompt = totp.prompt.as_deref().map(str::trim).unwrap_or_default();
@@ -698,6 +724,7 @@ impl HostDraft {
             }
         }
         self.notes = self.notes.trim().to_string().into();
+        self.login_commands = tidy_commands(&self.login_commands).into();
         Ok(self)
     }
 
@@ -717,6 +744,19 @@ impl HostDraft {
         };
         let notes = self.notes.trim().to_string();
         Ok(Self::serial(name, self.address, settings, self.group).with_notes(notes))
+    }
+}
+
+/// Commands to type as the form took them: one line end, and none of the
+/// blank lines around them. A line keeps its own spaces: one in front
+/// keeps a command out of the shell's history, as some set it to.
+fn tidy_commands(text: &str) -> String {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = text.split('\n').collect();
+    let typed = |line: &&str| !line.trim().is_empty();
+    match (lines.iter().position(typed), lines.iter().rposition(typed)) {
+        (Some(first), Some(last)) => lines[first..=last].join("\n"),
+        _ => String::new(),
     }
 }
 
@@ -804,6 +844,40 @@ mod tests {
             .validated()
             .unwrap_err();
         assert_eq!(error, HostDraftError::Baud);
+    }
+
+    #[test]
+    fn login_commands_lose_the_blank_lines_around_them_and_stay_with_ssh() {
+        let ssh = |commands: &str| {
+            HostDraft::new("web", "10.0.0.1", 22, "root", AuthKind::Password, None)
+                .with_login_commands(commands)
+                .validated()
+                .unwrap()
+                .login_commands
+        };
+        assert_eq!(
+            ssh("\r\n  \r\ncd /srv/app\r\n\r\n source .env  \r\n\n").as_ref(),
+            "cd /srv/app\n\n source .env  "
+        );
+        assert_eq!(ssh(" \n\t\n").as_ref(), "");
+        let host = Host::new(
+            HostId(1),
+            HostDraft::new("web", "10.0.0.1", 22, "root", AuthKind::Password, None)
+                .with_login_commands(&ssh("sudo -i\n\ncd /srv")),
+        );
+        assert_eq!(host.login_lines(), ["sudo -i", "", "cd /srv"]);
+
+        // Only an SSH host's terminal types them.
+        let telnet = HostDraft::telnet("switch", "10.0.0.5", 23, None)
+            .with_login_commands("enable")
+            .validated()
+            .unwrap();
+        assert_eq!(telnet.login_commands.as_ref(), "");
+        let serial = HostDraft::serial("console", "COM3", SerialSettings::default(), None)
+            .with_login_commands("ls")
+            .validated()
+            .unwrap();
+        assert_eq!(serial.login_commands.as_ref(), "");
     }
 
     #[test]

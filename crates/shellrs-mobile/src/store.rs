@@ -761,11 +761,16 @@ pub(crate) fn checked_host(
     {
         draft.user = Default::default();
     }
-    // Nor have they the one-time codes the desktop fills in: an edit keeps
-    // them as they were, while the host stays SSH.
+    // Nor have they the one-time codes the desktop fills in, or what its
+    // terminal types once logged in: an edit keeps them as they were,
+    // while the host stays SSH.
     draft.totp = old
         .filter(|_| draft.protocol.is_ssh())
         .and_then(|old| old.totp.clone());
+    draft.login_commands = old
+        .filter(|_| draft.protocol.is_ssh())
+        .map(|old| old.login_commands.clone())
+        .unwrap_or_default();
     if draft.group.is_some_and(|group| data.group(group).is_none()) {
         return Err(StoreError::GroupNotFound);
     }
@@ -1085,5 +1090,19 @@ mod tests {
         // A Telnet host has none.
         let telnet = HostDraft::telnet("web", "10.0.0.1", 23, None);
         assert_eq!(checked_host(&data, Some(web), telnet).unwrap().totp, None);
+    }
+
+    #[test]
+    fn an_edit_on_the_phone_keeps_what_the_desktop_types_once_logged_in() {
+        let mut data = HostData::empty();
+        let draft = || HostDraft::new("web", "10.0.0.1", 22, "root", AuthKind::Password, None);
+        let web = data.insert_unnotified(draft().with_login_commands("sudo -i"));
+        // The app's form says nothing of them.
+        let typed = |id, draft| checked_host(&data, id, draft).unwrap().login_commands;
+        assert_eq!(typed(Some(web), draft()).as_ref(), "sudo -i");
+        assert_eq!(typed(None, draft()).as_ref(), "");
+        // A Telnet host has none.
+        let telnet = HostDraft::telnet("web", "10.0.0.1", 23, None);
+        assert_eq!(typed(Some(web), telnet).as_ref(), "");
     }
 }

@@ -13,6 +13,9 @@ use crate::record::Map;
 use crate::secret::{self, EndpointSecret, Secret, endpoint_secret_id};
 use crate::{Kind, RecordKey, hex};
 
+// Most records are hosts, and a device holds a few thousand at most:
+// boxing the host would only make every use of it wordier.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordData {
     Group(GroupData),
@@ -87,6 +90,11 @@ pub struct HostData {
     /// after ShellRS 0.1.18: a copy an older version wrote has none, which
     /// reads as `None`, and an older version keeps it as it is.
     pub totp: Option<TotpData>,
+    /// What an SSH host types into its terminal once logged in, a line at a
+    /// time; empty for nothing. It came after ShellRS 0.1.19: a copy an
+    /// older version wrote has none, which reads as empty, and an older
+    /// version keeps it as it is.
+    pub login_commands: String,
 }
 
 /// What the question for a one-time code says; `None` for the usual.
@@ -387,6 +395,16 @@ fn parse_host(key: &RecordKey, r: &Reader) -> Result<HostData, String> {
             None,
         )?
         .filter(|_| protocol == Protocol::Ssh);
+    let login_commands = r.later(
+        |r| r.string("login_commands"),
+        "login_commands",
+        String::new(),
+    )?;
+    let login_commands = if protocol == Protocol::Ssh {
+        login_commands
+    } else {
+        String::new()
+    };
     let route = match r.string("route")?.as_str() {
         "direct" => Route::Direct,
         "jump" => {
@@ -431,6 +449,7 @@ fn parse_host(key: &RecordKey, r: &Reader) -> Result<HostData, String> {
         route,
         notes: r.string("notes")?,
         totp,
+        login_commands,
     })
 }
 
@@ -505,6 +524,7 @@ fn known_fields(kind: &Kind) -> &'static [&'static str] {
             "proxy",
             "notes",
             "totp",
+            "login_commands",
         ],
         Kind::Bookmark => &["host", "path", "sort_order"],
         Kind::Forward => &[
@@ -598,6 +618,7 @@ fn fields(data: &RecordData) -> Vec<(&'static str, Value)> {
                     None => Value::Null,
                 },
             ));
+            out.push(("login_commands", json!(host.login_commands)));
             out
         }
         RecordData::Bookmark(bookmark) => vec![
@@ -784,6 +805,7 @@ pub(crate) mod tests {
             route: Route::Direct,
             notes: String::new(),
             totp: None,
+            login_commands: String::new(),
         }
     }
 
@@ -998,7 +1020,7 @@ pub(crate) mod tests {
                 "name": "web", "address": "10.0.0.1", "port": 22, "group": null,
                 "sort_order": 0, "protocol": "ssh", "auth": "password",
                 "username": "root", "credential": null, "credential_username": null,
-                "route": "direct", "notes": "", "totp": null
+                "route": "direct", "notes": "", "totp": null, "login_commands": ""
             })
         );
     }
@@ -1195,6 +1217,42 @@ pub(crate) mod tests {
         assert!(!format!("{value:?}").contains("JBSWY3DP"));
         assert_eq!(Kind::parse("secret.totp"), Some(Kind::SecretTotp));
         assert!(Kind::SecretTotp.is_secret());
+    }
+
+    #[test]
+    fn a_host_types_its_login_commands() {
+        let key = RecordKey::new(Kind::Host, "h9");
+        let typing = HostData {
+            login_commands: "cd /srv/app\nsource .env".into(),
+            ..ssh_host("web")
+        };
+        let written = write_into(&RecordData::Host(typing.clone()), None);
+        assert_eq!(written["login_commands"], json!("cd /srv/app\nsource .env"));
+        assert_eq!(parse(&key, &written), Ok(RecordData::Host(typing)));
+
+        // A copy an older version wrote types nothing.
+        let mut old = written.clone();
+        old.remove("login_commands");
+        assert_eq!(parse(&key, &old), Ok(RecordData::Host(ssh_host("web"))));
+
+        // Only an SSH host types them.
+        let telnet = samples()
+            .into_iter()
+            .find(|(key, _)| key.id == "h2")
+            .unwrap()
+            .1;
+        let mut telnet = write_into(&telnet, None);
+        telnet.insert("login_commands".into(), json!("enable"));
+        let Ok(RecordData::Host(telnet)) = parse(&key, &telnet) else {
+            panic!("a Telnet host with login commands is damaged");
+        };
+        assert_eq!(telnet.login_commands, "");
+
+        for wrong in [json!(null), json!(7), json!(["ls"])] {
+            let mut fields = written.clone();
+            fields.insert("login_commands".into(), wrong.clone());
+            assert!(parse(&key, &fields).is_err(), "{wrong}");
+        }
     }
 
     #[test]

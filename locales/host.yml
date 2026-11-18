@@ -313,6 +313,15 @@ host.dialog.totp_secret_required:
 host.dialog.totp_secret_invalid:
   zh-CN: OTP 密钥不是有效的 Base32
   en: The OTP secret isn’t valid Base32
+host.dialog.login_commands:
+  zh-CN: 登录后执行的命令
+  en: Commands after login
+host.dialog.login_commands_placeholder:
+  zh-CN: 每行一条，例如 cd /srv/app
+  en: One per line, such as cd /srv/app
+host.dialog.login_commands_note:
+  zh-CN: 每次连上后逐行输入终端，每行等输出停下再发。不要在这里写密码。
+  en: Typed into the terminal a line at a time on every connection, each once the output pauses. Don’t put passwords here.
 host.dialog.optional:
   zh-CN: 可选
   en: Optional

@@ -158,6 +158,12 @@ pub trait TerminalTransport: Send + 'static {
 /// Creates a fresh one-shot transport for initial launch and restart.
 pub trait TerminalTransportFactory: Send + Sync + 'static {
     fn create(&self) -> Box<dyn TerminalTransport>;
+
+    /// What each connection types once its shell is up, a line at a time
+    /// (see [`super::typing_on_login`]); nothing for most.
+    fn login_commands(&self) -> &[String] {
+        &[]
+    }
 }
 
 /// Creates a fresh remote factory from the latest saved login of a host.

@@ -1881,3 +1881,114 @@ async fn duplicating_a_terminal_without_a_reported_directory_only_copies_its_nam
     .await;
     assert!(!factory.written_text().contains("cd --"));
 }
+
+/// What a host types once logged in: a line at a time after the shell's
+/// output, on every connection of its tab, and nothing in the other tabs.
+#[gpui_kit::test]
+async fn a_host_types_its_login_commands_on_every_connection(cx: &mut TestAppContext) {
+    let mut store = HostStore::seed();
+    let web = HostId(WEB_01);
+    let typing = store
+        .host(web)
+        .unwrap()
+        .draft()
+        .with_login_commands("sudo -i\ncd /srv/app");
+    store.update_unnotified(web, typing);
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
+    let terminal = RemoteTerminalId(INITIAL_WEB_TERMINAL);
+    // Each run's writes, as text: the web host's tab and the staging host's
+    // share the factory.
+    let runs = || {
+        let mut runs = std::collections::BTreeMap::<usize, Vec<String>>::new();
+        for (run, bytes) in factory.writes_by_run.lock().unwrap().iter() {
+            runs.entry(*run)
+                .or_default()
+                .push(String::from_utf8_lossy(bytes).into_owned());
+        }
+        runs
+    };
+    let typed = ["sudo -i\r".to_string(), "cd /srv/app\r".to_string()];
+    let typing_runs = |runs: &std::collections::BTreeMap<usize, Vec<String>>| {
+        runs.values().filter(|writes| **writes == typed).count()
+    };
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        typing_runs(&runs()) == 1
+    })
+    .await;
+    assert_eq!(factory.starts(), 2);
+    // The staging host's tab typed nothing.
+    assert_eq!(runs().len(), 1);
+
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ReconnectTerminal(terminal)), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        remote_lifecycle(&workspace, terminal, cx) == TerminalLifecycle::Running
+            && typing_runs(&runs()) == 2
+    })
+    .await;
+    assert_eq!(factory.starts(), 3);
+}
+
+/// A copy of a tab whose host types something once logged in restores the
+/// source's folder after those lines, which may change it (`sudo -i`).
+#[gpui_kit::test]
+async fn a_copy_restores_its_folder_after_the_login_commands(cx: &mut TestAppContext) {
+    let mut store = HostStore::seed();
+    let web = HostId(WEB_01);
+    let typing = store
+        .host(web)
+        .unwrap()
+        .draft()
+        .with_login_commands("sudo -i");
+    store.update_unnotified(web, typing);
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
+    let source = RemoteTerminalId(INITIAL_WEB_TERMINAL);
+    let copied = RemoteTerminalId(FIRST_NEW_TERMINAL);
+    let writes_of = |run: usize| -> Vec<String> {
+        factory
+            .writes_by_run
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(each, _)| *each == run)
+            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .collect()
+    };
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, _| {
+        writes_of(1) == ["sudo -i\r"]
+    })
+    .await;
+    cx.update(|cx| {
+        let panel = workspace.read(cx).remote_terminal(source).unwrap().clone();
+        let terminal = panel.read(cx).terminal().clone();
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            "\x1b]1337;CurrentDir=/srv/app\x07".into(),
+        ));
+        terminal.update(cx, |terminal, cx| terminal.paste_clipboard(cx));
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        workspace
+            .read(cx)
+            .remote_terminal(source)
+            .unwrap()
+            .read(cx)
+            .terminal()
+            .read(cx)
+            .directory(cx)
+            .is_some_and(|reported| reported.path == "/srv/app")
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-search", cx);
+        window.dispatch_action(Box::new(DuplicateTerminal(source)), cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        remote_lifecycle(&workspace, copied, cx) == TerminalLifecycle::Running
+            && writes_of(3).len() == 2
+    })
+    .await;
+    assert_eq!(writes_of(3), ["sudo -i\r", "cd -- '/srv/app'\r"]);
+}

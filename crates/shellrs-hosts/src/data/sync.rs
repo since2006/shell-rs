@@ -473,6 +473,11 @@ impl HostData {
                         .map(|totp| sync::TotpData {
                             prompt: totp.prompt.as_ref().map(ToString::to_string),
                         }),
+                    login_commands: if host.is_ssh() {
+                        host.login_commands.to_string()
+                    } else {
+                        String::new()
+                    },
                 }),
                 edited_ms: host.edited_ms,
             });
@@ -1132,6 +1137,9 @@ impl HostData {
                     .map(|totp| TotpSettings {
                         prompt: totp.prompt.clone().map(Into::into),
                     });
+                if !draft.protocol.is_telnet() {
+                    draft.login_commands = data.login_commands.as_str().into();
+                }
                 let mut fresh = Host::new(host_id, draft);
                 fresh.user_from_credential = follows;
                 fresh.public_id = PublicId::from_stored(id.to_owned());
@@ -1945,6 +1953,33 @@ mod tests {
     }
 
     #[test]
+    fn a_host_s_login_commands_sync() {
+        let (vault, keys) = vault();
+        let mut a = Device::new('a');
+        let mut b = Device::new('b');
+        let web = a.store.insert(
+            HostDraft::new("web", "10.0.0.1", 22, "root", AuthKind::Password, None)
+                .with_login_commands("sudo -i\ncd /srv/app"),
+        );
+        a.sync(&vault, &keys);
+        b.sync(&vault, &keys);
+        assert_eq!(b.held(), a.held());
+        let synced = &b.store.hosts()[0];
+        assert_eq!(synced.login_commands.as_ref(), "sudo -i\ncd /srv/app");
+        let id = synced.id;
+        assert_eq!(a.sync(&vault, &keys), 0);
+        assert_eq!(b.sync(&vault, &keys), 0);
+
+        // Cleared on one, cleared on both.
+        let cleared = b.store.host(id).unwrap().draft().with_login_commands("");
+        b.store.update(id, cleared);
+        b.sync(&vault, &keys);
+        a.sync(&vault, &keys);
+        assert_eq!(a.store.host(web).unwrap().login_commands.as_ref(), "");
+        assert_eq!(b.held(), a.held());
+    }
+
+    #[test]
     fn a_host_s_one_time_codes_sync_with_their_secret() {
         use crate::secrets::SecretStore as _;
 
@@ -2067,6 +2102,7 @@ mod tests {
                 route: sync::Route::Direct,
                 notes: String::new(),
                 totp: None,
+                login_commands: String::new(),
             }),
         };
         let export = store.sync_export();

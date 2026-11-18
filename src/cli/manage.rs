@@ -934,6 +934,33 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_keeps_what_the_host_types_once_logged_in() {
+        let (mut store, web, _) = store();
+        let typing = store
+            .host(web)
+            .unwrap()
+            .draft()
+            .with_login_commands("sudo -i");
+        store.update_unnotified(web, typing);
+        // The CLI has no field for them.
+        let plan = plan_host(
+            fields(serde_json::json!({ "name": "web-01", "port": 2222 })),
+            Some(web),
+            &store,
+        )
+        .unwrap();
+        assert_eq!(plan.draft.login_commands.as_ref(), "sudo -i");
+        // A host turned to Telnet types nothing.
+        let plan = plan_host(
+            fields(serde_json::json!({ "protocol": "telnet" })),
+            Some(web),
+            &store,
+        )
+        .unwrap();
+        assert_eq!(plan.draft.login_commands.as_ref(), "");
+    }
+
+    #[test]
     fn a_new_host_needs_an_address_and_takes_the_forms_defaults() {
         let (store, _, _) = store();
         let plan = plan_host(
