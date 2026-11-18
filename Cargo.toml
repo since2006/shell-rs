@@ -56,6 +56,12 @@ gpui-kit = { version = "0.10.0", features = [
     "tree-sitter-toml",
     "tree-sitter-yaml",
 ] }
+# Highlighters gpui-kit has none of, for servers' configuration files
+# (`src/editor/languages.rs`).
+tree-sitter-ini = "1.4"
+tree-sitter-nginx = "1.0"
+tree-sitter-properties = "0.3"
+tree-sitter-xml = "0.7"
 alacritty_terminal = "0.26"
 anyhow = "1"
 argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
@@ -241,13 +247,17 @@ tree-sitter-css = { opt-level = 3 }
 tree-sitter-diff = { opt-level = 3 }
 tree-sitter-go = { opt-level = 3 }
 tree-sitter-html = { opt-level = 3 }
+tree-sitter-ini = { opt-level = 3 }
 tree-sitter-javascript = { opt-level = 3 }
 tree-sitter-json = { opt-level = 3 }
 tree-sitter-lua = { opt-level = 3 }
 tree-sitter-make = { opt-level = 3 }
 tree-sitter-md = { opt-level = 3 }
+tree-sitter-nginx = { opt-level = 3 }
 tree-sitter-php = { opt-level = 3 }
+tree-sitter-properties = { opt-level = 3 }
 tree-sitter-python = { opt-level = 3 }
 tree-sitter-sequel = { opt-level = 3 }
 tree-sitter-toml-ng = { opt-level = 3 }
+tree-sitter-xml = { opt-level = 3 }
 tree-sitter-yaml = { opt-level = 3 }

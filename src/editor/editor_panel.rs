@@ -99,7 +99,7 @@ impl EditorPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let language = language_for(&location.name());
+        let language = language_for(&location.path());
         let (text, format, stamp) = file.into_parts();
         let tab = indentation(language, &text);
         let state = cx.new(|cx| {

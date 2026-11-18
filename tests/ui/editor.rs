@@ -876,3 +876,46 @@ async fn an_image_that_cannot_be_decoded_says_so(cx: &mut TestAppContext) {
         assert!(window.try_find("preview-picture").is_none())
     });
 }
+
+/// The highlighter goes by the whole path: nginx's `.conf` files are told
+/// apart by the folder they are in, and other `.conf` files stay text.
+#[gpui_kit::test]
+async fn an_nginx_file_is_highlighted_as_nginx_by_its_folder(cx: &mut TestAppContext) {
+    let (handle, workspace, _) = open_server(
+        cx,
+        &[
+            ("/etc/nginx/conf.d/site.conf", b"server { listen 80; }\n"),
+            ("/etc/redis/redis.conf", b"port 6379\n"),
+        ],
+    )
+    .await;
+    for (id, path, language) in [
+        (FIRST, "/etc/nginx/conf.d/site.conf", "nginx"),
+        (EditorId(2), "/etc/redis/redis.conf", "text"),
+    ] {
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_action(
+                Box::new(ExplorerAction::new(
+                    ExplorerId(SFTP_TAB),
+                    ExplorerCommand::Edit {
+                        remote: true,
+                        path: Some(path.into()),
+                    },
+                )),
+                cx,
+            );
+        });
+        wait_for_editor(cx, handle, id).await;
+        let chosen = cx.update(|cx| {
+            workspace
+                .read(cx)
+                .editor(id)
+                .expect("editor open")
+                .read(cx)
+                .state()
+                .read(cx)
+                .language_name()
+        });
+        assert_eq!(chosen.as_ref(), language, "{path}");
+    }
+}

@@ -538,7 +538,7 @@ bash 在 shell 退出时才把这次执行的命令写进历史文件，所以�
 文本文件可以直接在 ShellRS 里改，远程和本地的都行（与 WinSCP 的内置编辑器相同）：
 
 - 打开：双击文件、选中后回车或按 F4、右键「编辑」。「新建 › 文件…」建好后也直接打开。文件在中间区的「编辑器」标签里打开，和终端、SFTP 一样可以拖成分栏；同一个文件只开一个标签，再打开就切到它。
-- 编辑器有行号、查找替换（⌘F / Ctrl+F，替换 ⌘⇧F / Ctrl+H），按文件名为 Shell、YAML、TOML、JSON、Python、JavaScript、HTML、CSS、Markdown、SQL、PHP、Go、Lua、Makefile、Diff 着色，其他文件是纯文本。Makefile 和用 Tab 缩进的文件按 Tab 输入制表符。
+- 编辑器有行号、查找替换（⌘F / Ctrl+F，替换 ⌘⇧F / Ctrl+H），按文件名为 Shell、YAML、TOML、JSON、Python、JavaScript、HTML、CSS、Markdown、SQL、PHP、Go、Lua、Makefile、Diff、XML（含 `.xsd`、`.xsl`、`.svg`）、`.properties`、INI（含 `.cfg`、`.cnf`、systemd 单元文件、yum 的 `.repo`）和 nginx 配置着色，其他文件是纯文本。`.conf` 不是同一种格式：只有 `nginx.conf`、nginx 目录里的 `.conf` 和 `sites-available`、`sites-enabled` 里的站点按 nginx 着色，其余 `.conf` 是纯文本。Makefile 和用 Tab 缩进的文件按 Tab 输入制表符。
 - 保存：⌘S / Ctrl+S 或标签上方的「保存」。远程文件经打开它的 SFTP 标签的连接直接写回原文件（原地改写），所有者、权限和指向它的链接都不变。保存前会核对文件的大小和修改时间：打开后被别人改过或删掉了，会先问是否「覆盖」，不会悄悄覆盖。写到一半连接断开时，服务器上的文件可能只写了一部分，编辑器里的内容还在，重新连接后再保存一次即可。
 - 「重新加载」从服务器或磁盘重新读一遍；有没保存的修改时先确认。
 - 标签上的圆点表示有没保存的修改。关闭这样的标签会问「保存」「放弃修改」还是「取消」；一次关闭多个标签、关闭 SFTP 标签（它打开的远程文件会一起关掉）或退出 ShellRS 时，有没保存的文件会先问一次。macOS 上从程序坞退出和注销关机不会询问。

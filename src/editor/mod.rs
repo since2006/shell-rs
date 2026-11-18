@@ -2,7 +2,9 @@
 //! over the SFTP tab that opened it, or a local one.
 
 mod editor_panel;
+mod languages;
 mod model;
 
 pub use editor_panel::{EditorPanel, EditorPanelEvent, EditorSource};
+pub use languages::register_languages;
 pub use model::*;
