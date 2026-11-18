@@ -173,9 +173,7 @@ async fn run(
     let (handle, _) = connected.map_err(|error| login_failure(error, *lock(&seen), config))?;
 
     let result = run_on(&handle, command, output).await;
-    let _ = handle
-        .disconnect(russh::Disconnect::ByApplication, "command finished", "en")
-        .await;
+    super::hang_up(handle, "command finished").await;
     result
 }
 

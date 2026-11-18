@@ -97,9 +97,7 @@ impl SshConnectionTester {
         .and_then(|result| result);
         match connected {
             Ok((handle, _)) => {
-                let _ = handle
-                    .disconnect(russh::Disconnect::ByApplication, "connection test", "zh-CN")
-                    .await;
+                super::hang_up(handle, "connection test").await;
                 Ok(())
             }
             // The server wanted the password that was left empty: that, not

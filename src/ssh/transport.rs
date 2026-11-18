@@ -1,8 +1,11 @@
-use super::describe::{describe_channel_error, describe_error, describe_login_error};
+use super::describe::{
+    describe_channel_error, describe_error, describe_login_error, describe_lost,
+};
 use super::{
     ChannelError, ConnectError, HostOsProbe, LATENCY_INTERVAL, ProbeOutcome, PtySize,
-    SshConnectionConfig, SshConnector, SshHandle, SshPrompts, open_probe, open_sftp_channel,
-    open_shell, resize_pty, round_trip, run_exec, run_terminal_worker, write_shell,
+    SshConnectionConfig, SshConnector, SshHandle, SshPrompts, hang_up, open_probe,
+    open_sftp_channel, open_shell, resize_pty, round_trip, run_exec, run_terminal_worker, why_lost,
+    write_shell,
 };
 use crate::{
     connection::Latency,
@@ -27,6 +30,9 @@ use std::{
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::time::MissedTickBehavior;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+/// What the server is told when ShellRS ends a terminal's connection; it
+/// shows in the server's log.
+const GOODBYE: &str = "ShellRS closed the terminal";
 /// How long a command run beside the shell may take. Generous: a slow disk
 /// can hold `df` up for seconds.
 const EXEC_TIMEOUT: Duration = Duration::from_secs(10);
@@ -140,34 +146,29 @@ impl SshTerminalTransport {
         let mut side_queue: VecDeque<Side<'_>> = VecDeque::new();
         let mut side: Option<Side<'_>> = None;
 
-        let mut exit_code = 0;
+        // The exit status may come after the EOF, so the channel is read
+        // until it closes, as a command beside the shell is.
+        let mut exit_code = None;
         let mut exit_signal = None;
-        loop {
+        let ending = loop {
             if side.is_none() {
                 side = side_queue.pop_front();
             }
             tokio::select! {
                 command = io_rx.recv() => match command {
                     Some(TerminalTransportCommand::Write(bytes) | TerminalTransportCommand::WriteData(bytes)) => {
-                        write_shell(&channel, bytes).await.map_err(|error| anyhow!(describe_error(&error)))?;
+                        // Only a channel whose connection is gone fails:
+                        // that connection says why.
+                        if write_shell(&channel, bytes).await.is_err() {
+                            break Ending::Lost;
+                        }
                     }
                     Some(TerminalTransportCommand::Resize(size)) => {
-                        resize_pty(&channel, pty_size(size))
-                            .await
-                            .map_err(|error| anyhow!(describe_error(&error)))?;
+                        if resize_pty(&channel, pty_size(size)).await.is_err() {
+                            break Ending::Lost;
+                        }
                     }
-                    Some(TerminalTransportCommand::Shutdown) | None => {
-                        let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, async {
-                            let _ = channel.eof().await;
-                            let _ = channel.close().await;
-                            let _ = handle.disconnect(
-                                russh::Disconnect::ByApplication,
-                                "ShellRS closed the terminal",
-                                "zh-CN",
-                            ).await;
-                        }).await;
-                        return Ok(());
-                    }
+                    Some(TerminalTransportCommand::Shutdown) | None => break Ending::Closed,
                     Some(TerminalTransportCommand::Exec(request)) if shell_only => {
                         // The answer for a terminal that carries nothing
                         // beside the shell.
@@ -225,27 +226,68 @@ impl SshTerminalTransport {
                 },
                 message = channel.wait() => match message {
                     Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                        // The view is gone: as good as closed.
                         if events.send(TerminalTransportEvent::Output(data.to_vec())).await.is_err() {
-                            break;
+                            break Ending::Closed;
                         }
                     }
-                    Some(ChannelMsg::ExitStatus { exit_status }) => exit_code = exit_status,
+                    Some(ChannelMsg::ExitStatus { exit_status }) => exit_code = Some(exit_status),
                     Some(ChannelMsg::ExitSignal { signal_name, .. }) => {
                         exit_signal = Some(format!("{signal_name:?}"));
                     }
-                    Some(ChannelMsg::Eof | ChannelMsg::Close) | None => break,
+                    Some(ChannelMsg::Close) => break Ending::Exited,
+                    // The connection ended under the channel: once the shell
+                    // said it exited, that is how it ended; else the
+                    // connection was lost (issue #140), not a shell that
+                    // exited with 0.
+                    None if exit_code.is_some() || exit_signal.is_some() => break Ending::Exited,
+                    None => break Ending::Lost,
                     _ => {}
                 }
             }
+        };
+
+        // What borrowed the connection goes before it is let go of.
+        drop((ping, side, side_queue, probe_channel));
+        match ending {
+            Ending::Closed => {
+                // The channel first, as OpenSSH closes it, then the
+                // connection.
+                let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, async {
+                    let _ = channel.eof().await;
+                    let _ = channel.close().await;
+                    hang_up(handle, GOODBYE).await;
+                })
+                .await;
+            }
+            Ending::Exited => {
+                let _ = events
+                    .send(TerminalTransportEvent::Exited {
+                        code: exit_code.unwrap_or(0),
+                        signal: exit_signal,
+                    })
+                    .await;
+                hang_up(handle, GOODBYE).await;
+            }
+            Ending::Lost => {
+                let cause = why_lost(handle).await;
+                let _ = events
+                    .send(TerminalTransportEvent::Lost(describe_lost(cause.as_ref())))
+                    .await;
+            }
         }
-        let _ = events
-            .send(TerminalTransportEvent::Exited {
-                code: exit_code,
-                signal: exit_signal,
-            })
-            .await;
         Ok(())
     }
+}
+
+/// How a terminal's shell came to an end.
+enum Ending {
+    /// The tab closed it, or went away.
+    Closed,
+    /// The server closed the shell's channel: the shell exited.
+    Exited,
+    /// The connection went away under the shell.
+    Lost,
 }
 
 fn pty_size(size: TerminalSize) -> PtySize {
@@ -324,6 +366,9 @@ mod tests {
         input: Vec<u8>,
         /// Every command run through an exec channel, in order.
         execs: Vec<String>,
+        /// How each connection ended, in order: `Ok` for a client that said
+        /// goodbye, the server's error for one that went without a word.
+        endings: Vec<Result<(), String>>,
     }
 
     #[derive(Clone)]
@@ -662,6 +707,14 @@ mod tests {
                 session.exit_status_request(channel, 7)?;
                 session.eof(channel)?;
                 session.close(channel)?;
+            } else if data == b"exit late\n" {
+                // The status after the EOF, which servers are free to do.
+                session.eof(channel)?;
+                session.exit_status_request(channel, 5)?;
+                session.close(channel)?;
+            } else if data == b"drop\n" {
+                // The connection ends there, with nothing said.
+                return Err(russh::Error::Disconnect);
             } else {
                 session.data(channel, data.to_vec())?;
             }
@@ -672,13 +725,34 @@ mod tests {
     struct RunningTestServer {
         port: u16,
         state: Arc<Mutex<ServerState>>,
-        handle: server::RunningServerHandle,
+        stop: Option<tokio::sync::oneshot::Sender<()>>,
         thread: Option<thread::JoinHandle<()>>,
+    }
+
+    impl RunningTestServer {
+        /// How the connections ended, once `count` have.
+        fn endings(&self, count: usize) -> Vec<Result<(), String>> {
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                let endings = self
+                    .state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .endings
+                    .clone();
+                if endings.len() >= count || std::time::Instant::now() > deadline {
+                    return endings;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
     }
 
     impl Drop for RunningTestServer {
         fn drop(&mut self) {
-            self.handle.shutdown("test complete".into());
+            if let Some(stop) = self.stop.take() {
+                let _ = stop.send(());
+            }
             if let Some(thread) = self.thread.take() {
                 thread.join().unwrap();
             }
@@ -738,18 +812,41 @@ mod tests {
                     ..server::Config::default()
                 });
                 let mut server = TestServer {
-                    state: server_state,
+                    state: server_state.clone(),
                     auth,
                     probe_reply,
                     password_answered: false,
                     totp_stage: 0,
                 };
-                let running = server.run_on_socket(config, &listener);
-                ready_tx.send(Ok((port, running.handle()))).unwrap();
-                running.await.unwrap();
+                let (stop, mut stopped) = tokio::sync::oneshot::channel();
+                ready_tx.send(Ok((port, stop))).unwrap();
+                // Each connection on its own, so how it ended is seen.
+                loop {
+                    let socket = tokio::select! {
+                        _ = &mut stopped => break,
+                        accepted = listener.accept() => match accepted {
+                            Ok((socket, _)) => socket,
+                            Err(_) => break,
+                        },
+                    };
+                    let handler = server.new_client(None);
+                    let config = config.clone();
+                    let state = server_state.clone();
+                    tokio::spawn(async move {
+                        let ended = match server::run_stream(config, socket, handler).await {
+                            Ok(session) => session.await,
+                            Err(error) => Err(error),
+                        };
+                        state
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .endings
+                            .push(ended.map_err(|error| error.to_string()));
+                    });
+                }
             });
         });
-        let (port, handle) = match ready_rx.recv_timeout(Duration::from_secs(3)).unwrap() {
+        let (port, stop) = match ready_rx.recv_timeout(Duration::from_secs(3)).unwrap() {
             Ok(server) => server,
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
                 thread.join().unwrap();
@@ -760,7 +857,7 @@ mod tests {
         Some(RunningTestServer {
             port,
             state,
-            handle,
+            stop: Some(stop),
             thread: Some(thread),
         })
     }
@@ -862,6 +959,7 @@ mod tests {
                 }
                 TerminalTransportEvent::Started => break,
                 TerminalTransportEvent::Failed(error) => panic!("SSH failed: {error}"),
+                TerminalTransportEvent::Lost(reason) => panic!("connection lost: {reason}"),
                 TerminalTransportEvent::Exited { .. } => panic!("unexpected early exit"),
                 TerminalTransportEvent::HostOsDetected(_)
                 | TerminalTransportEvent::Latency(_)
@@ -985,6 +1083,7 @@ mod tests {
                     ready |= String::from_utf8_lossy(&bytes).contains("ready")
                 }
                 TerminalTransportEvent::Failed(error) => panic!("SSH failed: {error}"),
+                TerminalTransportEvent::Lost(reason) => panic!("connection lost: {reason}"),
                 TerminalTransportEvent::Exited { .. } => panic!("unexpected early exit"),
             }
         }
@@ -1066,6 +1165,120 @@ mod tests {
         assert_eq!(state.pty, Some(("xterm-256color".into(), 90, 30, 810, 540)));
         assert_eq!(state.resize, Some((120, 40, 1200, 800)));
         assert_eq!(state.input, b"hello\nexit\n");
+    }
+
+    /// A terminal logged in to `server`, its shell up: what it is sent,
+    /// what it tells, and the thread it runs on.
+    struct OpenTerminal {
+        commands: mpsc::Sender<TerminalTransportCommand>,
+        events: async_channel::Receiver<TerminalTransportEvent>,
+        worker: thread::JoinHandle<Result<()>>,
+        _directory: tempfile::TempDir,
+    }
+
+    fn open_terminal(server: &RunningTestServer) -> OpenTerminal {
+        let directory = tempfile::tempdir().unwrap();
+        let provider = SshTerminalTransportProvider::with_connector(SshConnector::new(
+            directory.path().join("known_hosts"),
+            Arc::new(NoSecretStore),
+        ));
+        let factory = provider.factory_for(&HostLogin::of(&password_host(server.port), None));
+        let (commands, command_rx) = mpsc::channel();
+        let (event_tx, events) = async_channel::unbounded();
+        let worker = thread::spawn(move || {
+            factory
+                .create()
+                .run(TerminalSize::DEFAULT, command_rx, event_tx)
+        });
+        loop {
+            match events.recv_blocking().unwrap() {
+                TerminalTransportEvent::Prompt(prompt) => commands
+                    .send(TerminalTransportCommand::PromptReply {
+                        request_id: prompt.request_id(),
+                        reply: trust_and_type_password(prompt.kind()),
+                    })
+                    .unwrap(),
+                TerminalTransportEvent::Started => break,
+                TerminalTransportEvent::Failed(error) => panic!("SSH failed: {error}"),
+                _ => {}
+            }
+        }
+        OpenTerminal {
+            commands,
+            events,
+            worker,
+            _directory: directory,
+        }
+    }
+
+    impl OpenTerminal {
+        /// Type `line`, then wait for how the shell ends.
+        fn end_with(self, line: &[u8]) -> TerminalTransportEvent {
+            self.commands
+                .send(TerminalTransportCommand::Write(line.to_vec()))
+                .unwrap();
+            let end = loop {
+                if let end @ (TerminalTransportEvent::Exited { .. }
+                | TerminalTransportEvent::Lost(_)
+                | TerminalTransportEvent::Failed(_)) = self.events.recv_blocking().unwrap()
+                {
+                    break end;
+                }
+            };
+            self.worker.join().unwrap().unwrap();
+            end
+        }
+    }
+
+    /// A connection that drops under the shell says why, rather than
+    /// passing for a shell that exited with 0 (issue #140).
+    #[test]
+    fn a_connection_lost_under_the_shell_says_why() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            return;
+        };
+        let end = open_terminal(&server).end_with(b"drop\n");
+        // Closed or reset, as the systems' sockets go.
+        assert!(
+            matches!(&end, TerminalTransportEvent::Lost(reason) if !reason.is_empty()),
+            "{end:?}"
+        );
+    }
+
+    #[test]
+    fn an_exit_status_after_the_eof_still_counts() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            return;
+        };
+        let end = open_terminal(&server).end_with(b"exit late\n");
+        assert!(
+            matches!(
+                end,
+                TerminalTransportEvent::Exited {
+                    code: 5,
+                    signal: None
+                }
+            ),
+            "{end:?}"
+        );
+        // And the connection then says goodbye.
+        assert_eq!(server.endings(1), [Ok(())]);
+    }
+
+    /// Closing the tab tells the server, which a runtime ending at once
+    /// would not let it (issue #140).
+    #[test]
+    fn closing_a_terminal_says_goodbye_to_the_server() {
+        let Some(server) = start_server(TestAuth::Password) else {
+            return;
+        };
+        let terminal = open_terminal(&server);
+        terminal
+            .commands
+            .send(TerminalTransportCommand::Shutdown)
+            .unwrap();
+        terminal.worker.join().unwrap().unwrap();
+        assert_eq!(server.endings(1), [Ok(())]);
     }
 
     /// Trust the host on first sight and answer the password prompt.

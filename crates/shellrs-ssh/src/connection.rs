@@ -40,6 +40,16 @@ use super::proxy::{ProxyAuth, handshake};
 use super::secret::{SecretRef, SharedSecretSource, read_secret};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+/// Keepalives unanswered before a connection is given up: with the
+/// interval, about two minutes without a word from the server.
+const KEEPALIVE_MAX: usize = 3;
+/// How long Windows goes on resending what the server has not acknowledged
+/// before it gives the connection up, in seconds. Its own default, five
+/// resends, is about 20 seconds: a VPN or Wi-Fi hiccup then ends a session
+/// the keepalives would have kept (issue #140). Longer than they wait, so
+/// they decide.
+#[cfg(windows)]
+const RESEND_TIMEOUT_SECONDS: u32 = 150;
 const AUTH_RETRIES: usize = 3;
 /// How long to wait for the agent to answer the door. A named pipe that
 /// stays busy would otherwise be retried forever.
@@ -418,7 +428,7 @@ fn ssh_config() -> Arc<client::Config> {
     let defaults = client::GexParams::default();
     Arc::new(client::Config {
         keepalive_interval: Some(KEEPALIVE_INTERVAL),
-        keepalive_max: 3,
+        keepalive_max: KEEPALIVE_MAX,
         nodelay: true,
         preferred: russh::Preferred {
             kex: KEX_ORDER.into(),
@@ -455,9 +465,31 @@ async fn tcp(host: &str, port: u16, nat64: bool) -> Result<TcpStream> {
             host: host.to_string(),
             port,
         })?;
+    tune(&socket);
+    Ok(socket)
+}
+
+/// Set up a socket an SSH connection runs on, directly or through a proxy.
+fn tune(socket: &TcpStream) {
     // As russh's own connect does: the terminal's keystrokes go out at once.
     let _ = socket.set_nodelay(true);
-    Ok(socket)
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket as _;
+        use windows_sys::Win32::Networking::WinSock::{IPPROTO_TCP, TCP_MAXRT, setsockopt};
+        let seconds = RESEND_TIMEOUT_SECONDS;
+        // SAFETY: the socket is open for the call, and the option is a
+        // DWORD, passed with its size. A failure leaves Windows' default.
+        unsafe {
+            setsockopt(
+                socket.as_raw_socket() as usize,
+                IPPROTO_TCP,
+                TCP_MAXRT,
+                (&raw const seconds).cast(),
+                size_of::<u32>() as i32,
+            );
+        }
+    }
 }
 
 /// A socket to `host:port`, which `nat64` resolves an IPv4 address for:
@@ -491,7 +523,7 @@ async fn through_proxy(
                 russh::Error::IO(error),
             )
         })?;
-    let _ = socket.set_nodelay(true);
+    tune(&socket);
     let password = match proxy.password() {
         Some(secret) => read_secret(secrets, &secret).await,
         None => None,
@@ -1632,5 +1664,37 @@ mod tests {
         let paths = key_paths(&login, Some(Path::new("/keys"))).unwrap();
         assert_eq!(paths.len(), DEFAULT_KEY_FILES.len());
         assert_eq!(paths[0], Path::new("/keys/id_ed25519"));
+    }
+
+    /// Windows gives a connection up only after the keepalives would
+    /// (issue #140).
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_resends_as_long_as_the_keepalives_wait() {
+        use std::os::windows::io::AsRawSocket as _;
+        use windows_sys::Win32::Networking::WinSock::{IPPROTO_TCP, TCP_MAXRT, getsockopt};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let socket = super::tcp("127.0.0.1", port, false).await.unwrap();
+        let mut seconds = 0u32;
+        let mut length = size_of::<u32>() as i32;
+        // SAFETY: the socket is open, and the buffer is a DWORD of that size.
+        let result = unsafe {
+            getsockopt(
+                socket.as_raw_socket() as usize,
+                IPPROTO_TCP,
+                TCP_MAXRT,
+                (&raw mut seconds).cast(),
+                &mut length,
+            )
+        };
+        assert_eq!(result, 0);
+        assert_eq!(seconds, super::RESEND_TIMEOUT_SECONDS);
+        let keepalives = super::KEEPALIVE_INTERVAL * (super::KEEPALIVE_MAX as u32 + 1);
+        assert!(u64::from(seconds) > keepalives.as_secs());
+        assert!(socket.nodelay().unwrap());
     }
 }

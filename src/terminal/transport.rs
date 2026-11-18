@@ -141,6 +141,9 @@ pub enum TerminalTransportEvent {
         code: u32,
         signal: Option<String>,
     },
+    /// The connection went away while the shell ran, and why, in words;
+    /// the last event.
+    Lost(String),
     Failed(String),
 }
 

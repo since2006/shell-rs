@@ -30,7 +30,7 @@ use crate::{
     i18n::{t, tn},
     ssh::{
         ForwardedTcpip, MissingCredential, SshConnectionConfig, SshConnector, SshHandle,
-        SshPrompts, describe_login_error, is_network_error,
+        SshPrompts, describe_login_error, hang_up, is_network_error,
     },
 };
 
@@ -339,11 +339,7 @@ impl SshForwardTransport {
                 .tcpip_forward(self.bind.bare_host(), self.bind.port.into())
                 .await
         {
-            let _ = tokio::time::timeout(
-                CLOSE_TIMEOUT,
-                handle.disconnect(russh::Disconnect::ByApplication, "", ""),
-            )
-            .await;
+            hang_up(handle, "").await;
             return Err(match error {
                 russh::Error::RequestDenied => StartError::RemoteListen,
                 error => StartError::Login(error.into()),
@@ -427,17 +423,22 @@ impl SshForwardTransport {
     /// Log out. Dropping the handle is not enough while a channel is open:
     /// each holds a sender that keeps the connection alive.
     async fn close(&self, connection: Connection) {
-        let logout = async {
+        let logout = async move {
             if self.kind == ForwardKind::Remote {
                 let _ = connection
                     .handle
                     .cancel_tcpip_forward(self.bind.bare_host(), self.bind.port.into())
                     .await;
             }
-            let _ = connection
-                .handle
-                .disconnect(russh::Disconnect::ByApplication, "", "")
-                .await;
+            // Its own by now: the connections carried on it have ended.
+            match Arc::try_unwrap(connection.handle) {
+                Ok(handle) => hang_up(handle, "").await,
+                Err(shared) => {
+                    let _ = shared
+                        .disconnect(russh::Disconnect::ByApplication, "", "en")
+                        .await;
+                }
+            }
         };
         let _ = tokio::time::timeout(CLOSE_TIMEOUT, logout).await;
     }

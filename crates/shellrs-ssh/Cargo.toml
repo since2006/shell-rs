@@ -41,6 +41,11 @@ testing = ["tokio/process"]
 # `F_FULLFSYNC` there.
 libc = "0.2"
 
+# How long Windows resends before giving a connection up (`TCP_MAXRT`, in
+# `connection.rs`): the version tokio builds already.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["process", "test-util"] }
 tempfile = "3"

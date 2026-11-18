@@ -158,6 +158,9 @@ Cargo workspace，`cargo` 命令默认覆盖前四个包：
 - 所有登录都走核心的 `SshConnector`；known_hosts 写在数据目录，不碰 `~/.ssh/known_hosts`。没人能回答的问答（测试连接、exec、重连）当场拒绝，不能挂住。
 - 算法按 OpenSSH 默认（另加了老堡垒机要的 ECDH nistp 和 ≥ 2048 位的 DH）。
 - 只有网络类错误才自动重连。
+- **关连接走核心的 `hang_up`**（issue #140）：先 ping 一次（服务器按顺序回答，回了就说明它之前发的都读过了；russh 自己关通道不等服务器回的 CLOSE，有没读的数据时关 socket 会发 RST，服务器就丢了 DISCONNECT），再发 DISCONNECT、等会话任务结束。只把 `disconnect` 放进队列不够：终端的单线程 runtime 随即被丢掉，消息根本发不出去。
+- **连接中途断开不是退出码 0**：`channel.wait()` 返回 `None` 且没收到退出码时，终端报 `Lost`，原因从会话任务的结束结果取（`why_lost`，`describe_lost` 翻译）；退出码可能在 EOF 之后才到，读到 `Close` 才算结束。
+- **Windows 上 SSH socket 设 `TCP_MAXRT` 150 秒**（`connection.rs` 的 `tune`）：系统默认重传 5 次、约 20 秒就中止连接，VPN 抖一下就断；由 keepalive（30 秒 × 3）决定何时放弃。
 - 外部连接只开一个通道：用户的堡垒机多开通道就断会话。
 - 右侧栏工具的命令写成一行 `sh -c '…'`，要经得过 bash、zsh、fish、csh；各工具都有用本机 `sh` 真跑脚本的测试。
 

@@ -255,6 +255,20 @@ ssh.key.too_many_attempts:
   zh-CN: 私钥口令错误次数过多
   en: Too many incorrect passphrases
 
+# Why a live connection was lost
+ssh.lost.closed_by_server:
+  zh-CN: 服务器关闭了连接
+  en: The server closed the connection
+ssh.lost.no_answer:
+  zh-CN: 服务器长时间没有响应
+  en: The server stopped responding
+ssh.lost.reset:
+  zh-CN: 连接被重置
+  en: The connection was reset
+ssh.lost.aborted:
+  zh-CN: 网络不通，本机中止了连接
+  en: The network stopped getting through, so this computer ended the connection
+
 # Why a login failed
 ssh.error.timeout:
   zh-CN: 连接超时

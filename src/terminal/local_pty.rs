@@ -308,6 +308,7 @@ mod tests {
                 Ok(
                     TerminalTransportEvent::Started
                     | TerminalTransportEvent::Failed(_)
+                    | TerminalTransportEvent::Lost(_)
                     | TerminalTransportEvent::Prompt(_)
                     | TerminalTransportEvent::HostOsDetected(_)
                     | TerminalTransportEvent::Latency(_)

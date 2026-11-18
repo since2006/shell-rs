@@ -1077,6 +1077,17 @@ impl TerminalRuntime {
                             parser.proxy.send(TerminalUiEventKind::Failed(error));
                             parser.proxy.wakeup();
                         }
+                        TerminalTransportEvent::Lost(reason) => {
+                            let fed = parser.zmodem.disconnected();
+                            parser.transfer(fed);
+                            append_message_with_processor(
+                                &parser.term,
+                                &mut parser.processor,
+                                &t!("terminal.notice.lost", reason = reason),
+                            );
+                            parser.proxy.send(TerminalUiEventKind::Failed(reason));
+                            parser.proxy.wakeup();
+                        }
                     }
                 }
                 if let Some(run) = lock_run(&parser.run).take() {
@@ -2642,6 +2653,25 @@ mod tests {
             || screen_text(&runtime).contains("传输中断：连接已断开")
         ));
         assert!(eventually(|| !runtime.transferring()));
+    }
+
+    /// A connection lost under the shell says why, where an exit code
+    /// would go (issue #140).
+    #[test]
+    fn a_lost_connection_is_said_with_its_reason() {
+        let (runtime, events, _commands, ui) = piped();
+        events.send(TerminalTransportEvent::Started).unwrap();
+        events
+            .send(TerminalTransportEvent::Lost("连接被重置".into()))
+            .unwrap();
+        assert!(ui.iter().any(|event| matches!(
+            &event.kind,
+            TerminalUiEventKind::Failed(reason) if reason == "连接被重置"
+        )));
+        assert!(eventually(
+            || screen_text(&runtime).contains("连接已断开：连接被重置")
+        ));
+        assert!(!screen_text(&runtime).contains("退出码"));
     }
 
     #[test]

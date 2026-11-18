@@ -456,6 +456,39 @@ fn proxy(error: &ProxyError) -> String {
     .into()
 }
 
+/// Why a live connection was lost, in words, from what its session ended
+/// with ([`super::why_lost`]): `None` when the server said goodbye.
+pub fn describe_lost(error: Option<&anyhow::Error>) -> String {
+    use std::io::ErrorKind;
+    let Some(error) = error else {
+        return t!("ssh.lost.closed_by_server").into();
+    };
+    for cause in error.chain() {
+        let io = match cause.downcast_ref::<russh::Error>() {
+            Some(russh::Error::KeepaliveTimeout | russh::Error::InactivityTimeout) => {
+                return t!("ssh.lost.no_answer").into();
+            }
+            // What russh says for a socket the server closed.
+            Some(russh::Error::Disconnect | russh::Error::HUP) => {
+                return t!("ssh.lost.closed_by_server").into();
+            }
+            // russh wraps the socket's own error rather than chaining it.
+            Some(russh::Error::IO(io)) => Some(io),
+            _ => cause.downcast_ref::<std::io::Error>(),
+        };
+        if let Some(io) = io {
+            return match io.kind() {
+                ErrorKind::UnexpectedEof => t!("ssh.lost.closed_by_server").into(),
+                ErrorKind::ConnectionReset => t!("ssh.lost.reset").into(),
+                ErrorKind::ConnectionAborted => t!("ssh.lost.aborted").into(),
+                ErrorKind::TimedOut => t!("ssh.error.timeout").into(),
+                _ => io_text(io),
+            };
+        }
+    }
+    describe_chain(error)
+}
+
 /// A channel on a live connection that failed, in words.
 pub fn describe_channel_error(error: &ChannelError) -> String {
     match error {
@@ -535,6 +568,39 @@ mod tests {
 
     fn reason(error: anyhow::Error) -> String {
         describe_login_error(&error)
+    }
+
+    #[test]
+    fn a_lost_connection_says_why_in_words() {
+        let lost = |error: anyhow::Error| describe_lost(Some(&error));
+        assert_eq!(describe_lost(None), "服务器关闭了连接");
+        assert_eq!(
+            lost(russh::Error::KeepaliveTimeout.into()),
+            "服务器长时间没有响应"
+        );
+        assert_eq!(lost(russh::Error::Disconnect.into()), "服务器关闭了连接");
+        assert_eq!(
+            lost(russh::Error::IO(Error::from(ErrorKind::UnexpectedEof)).into()),
+            "服务器关闭了连接"
+        );
+        assert_eq!(
+            lost(russh::Error::IO(Error::from(ErrorKind::ConnectionReset)).into()),
+            "连接被重置"
+        );
+        // How Windows says it gave the connection up.
+        assert_eq!(
+            lost(Error::from(ErrorKind::ConnectionAborted).into()),
+            "网络不通，本机中止了连接"
+        );
+        assert_eq!(
+            lost(russh::Error::IO(Error::from(ErrorKind::TimedOut)).into()),
+            "连接超时"
+        );
+        // Anything else in the system's own words.
+        assert_eq!(
+            lost(russh::Error::IO(Error::other("网卡没了")).into()),
+            "网卡没了"
+        );
     }
 
     #[test]

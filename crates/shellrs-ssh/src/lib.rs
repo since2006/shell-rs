@@ -10,6 +10,7 @@
 //! keychain.
 
 mod connection;
+mod ending;
 mod error;
 mod exec;
 mod latency;
@@ -30,6 +31,7 @@ pub use connection::{
     AgentLocation, ForwardedTcpip, SshConnectionConfig, SshConnector, SshHandle, SshPrompts,
     Tunnel, is_network_error, timeout_excluding_prompts,
 };
+pub use ending::{hang_up, why_lost};
 pub use error::{
     AgentProblem, AgentUnreachable, AuthError, ChannelError, ConnectError, ForwardProblem,
     KnownHostsError, MissingCredential, PasswordWanted, ProxyError, RouteFailure, WrapErr, Wrapped,

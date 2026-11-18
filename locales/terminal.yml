@@ -65,6 +65,9 @@ terminal.notice.exited:
 terminal.notice.error:
   zh-CN: 终端错误：%{error}
   en: "Terminal error: %{error}"
+terminal.notice.lost:
+  zh-CN: 连接已断开：%{reason}
+  en: "Connection lost: %{reason}"
 
 # A command put on the input line (history, snippets)
 terminal.command.not_connected:
