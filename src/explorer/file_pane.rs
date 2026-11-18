@@ -410,6 +410,14 @@ impl FilePane {
     pub fn child_path_of(&self, name: &str) -> String {
         child_path(&self.path, name, self.is_remote())
     }
+    /// Where opening `entry` goes: a Windows shortcut's target, else the
+    /// item itself.
+    pub fn open_path_of(&self, entry: &FileEntry) -> String {
+        entry.target_path.as_ref().map_or_else(
+            || self.child_path_of(&entry.name),
+            |target| target.to_string(),
+        )
+    }
     pub fn parent_path(&self) -> String {
         if self.side == PaneSide::Local {
             PathBuf::from(&self.path)
@@ -887,13 +895,13 @@ impl FilePane {
             remote: self.is_remote(),
             explorer: self.explorer,
             edits_file: match entries.as_slice() {
-                [entry] if !entry.is_dir() && !entry.is_parent() => {
-                    Some(self.child_path_of(&entry.name))
-                }
+                [entry] if !entry.is_dir() && !entry.is_parent() => Some(self.open_path_of(entry)),
                 _ => None,
             },
             preview_kind: match entries.as_slice() {
-                [entry] if !entry.is_dir() && !entry.is_parent() => PreviewKind::of(&entry.name),
+                [entry] if !entry.is_dir() && !entry.is_parent() => {
+                    PreviewKind::of(entry.opened_name())
+                }
                 _ => None,
             },
             targets,

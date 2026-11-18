@@ -761,21 +761,22 @@ impl ExplorerPanel {
                     let path = if entry.is_parent() {
                         pane.read(cx).parent_path()
                     } else {
-                        pane.read(cx).child_path_of(&entry.name)
+                        pane.read(cx).open_path_of(&entry)
                     };
                     self.navigate(*remote, path, LoadIntent::Visit, window, cx);
                 } else {
                     // A picture is previewed; any other file (an SVG too,
                     // being text) opens in the editor, through the workspace,
                     // which shows the tab when the file is open already.
-                    let path = Some(pane.read(cx).child_path_of(&entry.name));
+                    let path = Some(pane.read(cx).open_path_of(&entry));
                     let remote = *remote;
-                    let command =
-                        if PreviewKind::of(&entry.name).is_some_and(|kind| kind.preview_only()) {
-                            ExplorerCommand::Preview { remote, path }
-                        } else {
-                            ExplorerCommand::Edit { remote, path }
-                        };
+                    let command = if PreviewKind::of(entry.opened_name())
+                        .is_some_and(|kind| kind.preview_only())
+                    {
+                        ExplorerCommand::Preview { remote, path }
+                    } else {
+                        ExplorerCommand::Edit { remote, path }
+                    };
                     self.dispatch.dispatch_explorer_action(
                         &ExplorerAction::new(self.id, command),
                         window,

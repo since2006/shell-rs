@@ -447,6 +447,7 @@ The columns are the same as in WinSCP: Name, Size, Type and Modified on the loca
 - Permissions look like `rwxr-xr-x`.
 - The owner comes from the server’s `ls -l` line.
 - A symbolic link to a folder shows as a folder with an arrow, and you can double-click it to go in.
+- On this computer’s side, Windows shortcuts (`.lnk`) count as links, as in File Explorer: one to a folder shows as a folder with an arrow; double-clicking it goes into that folder (the path bar shows the folder’s real path), and files dropped on it go into that folder. One to a file shows as a file with an arrow, and double-clicking, editing and previewing open that file. When the folder a shortcut points to is gone, double-clicking it says it can’t be found. Deleting, renaming, uploading and Properties act on the shortcut file itself.
 
 ### Selection and context menus
 

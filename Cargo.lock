@@ -8297,6 +8297,7 @@ dependencies = [
  "unicode-width",
  "url",
  "uuid",
+ "windows 0.62.2",
  "windows-registry 0.6.1",
  "windows-sys 0.61.2",
  "winresource",

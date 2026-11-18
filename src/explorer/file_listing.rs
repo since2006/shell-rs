@@ -583,14 +583,19 @@ impl TableDelegate for FileListing {
         if entry.is_parent() || !entry.is_dir() {
             return row;
         }
-        // Dropping on a directory row puts the items in that directory.
+        // Dropping on a directory row puts the items in that directory, or
+        // in the one a shortcut points to.
+        let folder = entry
+            .target_path
+            .as_ref()
+            .map_or_else(|| self.child_path(&name), |target| target.to_string());
         accept_drops(
             row,
             self.side,
             context.transfer_enabled,
             dispatch,
             context.explorer,
-            self.child_path(&name),
+            folder,
         )
     }
 

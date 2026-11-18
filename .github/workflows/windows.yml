@@ -46,6 +46,7 @@ on:
       - "crates/shellrs-ssh/src/sftp/sync.rs"
       - "crates/shellrs-ssh/src/sftp/tests.rs"
       - "src/sftp/local.rs"
+      - "src/sftp/shortcut.rs"
       - "src/credential/credential_dialog.rs"
       - "src/settings/model.rs"
       - "src/settings/settings_panel.rs"
@@ -103,6 +104,8 @@ jobs:
       - run: "cargo test --lib app::paths"
       - run: "cargo test --locked -p shellrs-hosts private_key::"
       - run: "cargo test --lib sftp::local::tests::local_listing"
+      # Explorer's shortcuts, read by the shell (issue #144).
+      - run: "cargo test --lib sftp::shortcut"
       - run: "cargo test --lib terminal::local_shell"
       - run: "cargo test --lib serial::"
       - run: "cargo test --lib settings::model"

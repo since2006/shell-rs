@@ -4,6 +4,7 @@
 //! their events worded (`transport`).
 mod describe;
 mod local;
+mod shortcut;
 mod transport;
 pub use describe::*;
 pub use local::*;

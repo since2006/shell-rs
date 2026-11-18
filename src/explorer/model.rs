@@ -70,6 +70,9 @@ pub struct FileEntry {
     pub kind: FileKind,
     /// What a symbolic link points to; `None` for other rows and broken links.
     pub target: Option<FileKind>,
+    /// Where a Windows shortcut points, which opening it goes to; `None`
+    /// for every other row.
+    pub target_path: Option<SharedString>,
     pub size: u64,
     /// Seconds since the Unix epoch.
     pub modified: Option<i64>,
@@ -85,6 +88,7 @@ impl FileEntry {
             name: name.to_string().into(),
             kind,
             target: None,
+            target_path: None,
             size: 0,
             modified: None,
             permissions: None,
@@ -119,6 +123,7 @@ impl FileEntry {
             target: (kind == FileKind::Symlink)
                 .then(|| entry.target_kind().map(FileKind::from))
                 .flatten(),
+            target_path: entry.target_path().map(|path| path.to_string().into()),
             size: metadata.size(),
             modified: metadata.modified().map(i64::from),
             permissions: metadata.permissions(),
@@ -135,6 +140,21 @@ impl FileEntry {
 
     pub fn is_link(&self) -> bool {
         self.kind == FileKind::Symlink
+    }
+
+    /// The name of what opening the row opens: a Windows shortcut's target
+    /// (`说明.txt` for `说明.lnk`), which says how to show it; the row's own
+    /// name for every other.
+    pub fn opened_name(&self) -> &str {
+        self.target_path
+            .as_deref()
+            .and_then(|path| {
+                path.trim_end_matches(['\\', '/'])
+                    .rsplit(['\\', '/'])
+                    .next()
+            })
+            .filter(|name| !name.is_empty())
+            .unwrap_or(&self.name)
     }
 
     pub fn is_parent(&self) -> bool {
@@ -544,5 +564,21 @@ mod tests {
         };
         assert!(link.is_dir() && link.is_link());
         assert!(!FileEntry::new("broken", FileKind::Symlink).is_dir());
+    }
+
+    #[test]
+    fn a_shortcut_opens_as_what_it_points_to() {
+        let shortcut = |target: &str| FileEntry {
+            target: Some(FileKind::File),
+            target_path: Some(target.to_string().into()),
+            ..FileEntry::new("照片 - 快捷方式.lnk", FileKind::Symlink)
+        };
+        assert_eq!(shortcut(r"D:\相册\海边.JPG").opened_name(), "海边.JPG");
+        assert_eq!(
+            shortcut(r"\\nas\share\README.md").opened_name(),
+            "README.md"
+        );
+        assert_eq!(shortcut(r"E:\").opened_name(), "E:");
+        assert_eq!(FileEntry::dir("logs").opened_name(), "logs");
     }
 }

@@ -101,6 +101,7 @@ pub struct DirectoryEntry {
     owner: Option<String>,
     group: Option<String>,
     target_kind: Option<EntryKind>,
+    target_path: Option<String>,
 }
 impl DirectoryEntry {
     pub fn new(name: impl Into<String>, metadata: FileMetadata) -> Self {
@@ -110,6 +111,7 @@ impl DirectoryEntry {
             owner: None,
             group: None,
             target_kind: None,
+            target_path: None,
         }
     }
     pub fn with_owner(mut self, owner: Option<String>, group: Option<String>) -> Self {
@@ -120,6 +122,12 @@ impl DirectoryEntry {
     /// For a symbolic link: the kind of what it points to, `None` when broken.
     pub fn with_target_kind(mut self, kind: Option<EntryKind>) -> Self {
         self.target_kind = kind;
+        self
+    }
+    /// For a Windows shortcut (`.lnk`), listed as a link: where it points,
+    /// which opening it goes to, as a symbolic link is opened through.
+    pub fn with_target_path(mut self, path: Option<String>) -> Self {
+        self.target_path = path;
         self
     }
     pub fn name(&self) -> &str {
@@ -136,6 +144,9 @@ impl DirectoryEntry {
     }
     pub fn target_kind(&self) -> Option<EntryKind> {
         self.target_kind
+    }
+    pub fn target_path(&self) -> Option<&str> {
+        self.target_path.as_deref()
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

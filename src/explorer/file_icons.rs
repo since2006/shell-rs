@@ -88,7 +88,12 @@ impl FileIcon {
                 (FileKind::Symlink, _) => FileIconKind::FileLink,
             }
         };
-        Self::new(entry.name.clone(), kind)
+        // A shortcut looks like what it points to.
+        let name = match &entry.target_path {
+            Some(_) => entry.opened_name().to_string().into(),
+            None => entry.name.clone(),
+        };
+        Self::new(name, kind)
     }
 
     /// Lighter, for a hidden file.

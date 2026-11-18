@@ -2,9 +2,10 @@
 //! places, the trash, and the editor's local files. Its failures are worded
 //! here, as the local pane shows them.
 
+use super::shortcut::Shortcuts;
 use super::{
-    DirectoryEntry, DirectoryListing, FileBytes, FileStamp, PermissionEdit, ReadFailure,
-    SaveFailure, TextFile, local_metadata,
+    DirectoryEntry, DirectoryListing, EntryKind, FileBytes, FileMetadata, FileStamp,
+    PermissionEdit, ReadFailure, SaveFailure, TextFile, local_metadata,
 };
 use crate::i18n::t;
 use anyhow::{Result, bail};
@@ -56,6 +57,8 @@ impl Place {
 /// Local I/O is blocking and must be called on a background executor.
 pub trait LocalDirectoryProvider: Send + Sync + 'static {
     fn home(&self) -> PathBuf;
+    /// The folder at `path`, or the one a Windows shortcut there points to.
+    /// A shortcut in it is listed as a link, with where it points.
     fn list(&self, path: &Path) -> Result<DirectoryListing>;
     /// Well-known folders for the 目录列表 select, home first, then the
     /// drives on Windows. Read again with each listing, on the same
@@ -84,13 +87,14 @@ pub trait LocalDirectoryProvider: Send + Sync + 'static {
         recursive: bool,
         add_x_to_dirs: bool,
     ) -> Result<()>;
-    /// The bytes of a file to edit, following links, and its stamp. A
-    /// directory or a file larger than `limit` fails with a `ReadFailure`
-    /// before anything is read.
+    /// The bytes of a file to edit, following links and Windows shortcuts,
+    /// and its stamp. A directory or a file larger than `limit` fails with
+    /// a `ReadFailure` before anything is read.
     fn read_file(&self, path: &Path, limit: u64) -> Result<(Vec<u8>, FileStamp)>;
-    /// Write `bytes` over a file in place, following links and keeping its
-    /// permissions; created when missing. With `expected`, the file must
-    /// still match it, or this fails with `SaveFailure::Changed`.
+    /// Write `bytes` over a file in place, following links and Windows
+    /// shortcuts and keeping its permissions; created when missing. With
+    /// `expected`, the file must still match it, or this fails with
+    /// `SaveFailure::Changed`.
     fn write_file(
         &self,
         path: &Path,
@@ -156,6 +160,10 @@ impl LocalDirectoryProvider for SystemLocalDirectoryProvider {
         .collect()
     }
     fn list(&self, path: &Path) -> Result<DirectoryListing> {
+        // A Windows shortcut to a folder leads into the folder, as in
+        // Explorer; the pane then shows where it is.
+        let shortcuts = Shortcuts::default();
+        let path = shortcuts.follow(path, true);
         // std's canonical form on Windows is `\\?\C:\Users`; the pane shows
         // and bookmarks the `C:\Users` people type, wherever that means the
         // same.
@@ -168,14 +176,35 @@ impl LocalDirectoryProvider for SystemLocalDirectoryProvider {
                 .into_string()
                 .map_err(|_| anyhow::anyhow!(t!("sftp.error.file_name_not_utf8")))?;
             let metadata = std::fs::symlink_metadata(entry.path())?;
-            let mut row = DirectoryEntry::new(name, local_metadata(&metadata));
-            if metadata.is_symlink() {
-                row = row.with_target_kind(
+            let row = if metadata.is_symlink() {
+                DirectoryEntry::new(name, local_metadata(&metadata)).with_target_kind(
                     std::fs::metadata(entry.path())
                         .ok()
                         .map(|target| local_metadata(&target).kind()),
+                )
+            } else if let Some(target) = metadata
+                .is_file()
+                .then(|| shortcuts.target(&entry.path()))
+                .flatten()
+            {
+                // A shortcut is listed as the link it is to the user.
+                let own = local_metadata(&metadata);
+                let link = FileMetadata::new(
+                    EntryKind::Symlink,
+                    own.size(),
+                    own.modified(),
+                    own.permissions(),
                 );
-            }
+                DirectoryEntry::new(name, link)
+                    .with_target_kind(Some(if target.is_dir {
+                        EntryKind::Directory
+                    } else {
+                        EntryKind::File
+                    }))
+                    .with_target_path(target.path.to_str().map(str::to_owned))
+            } else {
+                DirectoryEntry::new(name, local_metadata(&metadata))
+            };
             entries.push(row);
         }
         Ok(DirectoryListing::new(
@@ -259,6 +288,8 @@ impl LocalDirectoryProvider for SystemLocalDirectoryProvider {
         bail!(t!("sftp.error.permissions_unsupported"))
     }
     fn read_file(&self, path: &Path, limit: u64) -> Result<(Vec<u8>, FileStamp)> {
+        // Through a Windows shortcut to a file, as through a link.
+        let path = &Shortcuts::default().follow(path, false);
         let metadata = std::fs::metadata(path).map_err(|error| describe_io(error, path))?;
         if !metadata.is_file() {
             return Err(ReadFailure::NotFile.into());
@@ -276,6 +307,7 @@ impl LocalDirectoryProvider for SystemLocalDirectoryProvider {
         expected: Option<FileStamp>,
     ) -> Result<FileStamp> {
         use std::io::Write as _;
+        let path = &Shortcuts::default().follow(path, false);
         if let Some(expected) = expected {
             let now = std::fs::metadata(path).ok().map(|m| FileStamp::local(&m));
             if now != Some(expected) {
@@ -404,6 +436,61 @@ mod tests {
             std::fs::canonicalize(listing.path()).unwrap(),
             std::fs::canonicalize(tmp.path()).unwrap()
         );
+    }
+
+    /// Explorer's shortcuts open what they point to (issue #144).
+    #[cfg(windows)]
+    #[test]
+    fn local_listing_takes_shortcuts_for_links_to_what_they_point_to() {
+        use super::super::shortcut::make_shortcut;
+        fn canonical(path: &Path) -> PathBuf {
+            std::fs::canonicalize(path).unwrap()
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("项目");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("说明.txt"), "旧").unwrap();
+        make_shortcut(&temp.path().join("项目.lnk"), &folder);
+        make_shortcut(&temp.path().join("说明.lnk"), &folder.join("说明.txt"));
+        let provider = SystemLocalDirectoryProvider;
+        let row = |name: &str| {
+            provider
+                .list(temp.path())
+                .unwrap()
+                .entries()
+                .iter()
+                .find(|entry| entry.name() == name)
+                .cloned()
+                .unwrap()
+        };
+
+        let to_folder = row("项目.lnk");
+        assert_eq!(to_folder.metadata().kind(), EntryKind::Symlink);
+        assert_eq!(to_folder.target_kind(), Some(EntryKind::Directory));
+        assert_eq!(
+            canonical(Path::new(to_folder.target_path().unwrap())),
+            canonical(&folder)
+        );
+        assert_eq!(row("说明.lnk").target_kind(), Some(EntryKind::File));
+        assert_eq!(row("项目").metadata().kind(), EntryKind::Directory);
+        assert_eq!(row("项目").target_path(), None);
+
+        // Into the folder a shortcut points to, which the pane then shows.
+        let inside = provider.list(&temp.path().join("项目.lnk")).unwrap();
+        assert_eq!(canonical(Path::new(inside.path())), canonical(&folder));
+        let names: Vec<_> = inside.entries().iter().map(|entry| entry.name()).collect();
+        assert_eq!(names, ["说明.txt"]);
+
+        // A shortcut to a file is edited through, as a link is.
+        let through = temp.path().join("说明.lnk");
+        let file = read_local_text(&provider, &through).unwrap();
+        assert_eq!(file.text(), "旧");
+        write_local_text(&provider, &through, "新".as_bytes(), Some(file.stamp())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(folder.join("说明.txt")).unwrap(),
+            "新"
+        );
+        assert_eq!(row("说明.lnk").target_kind(), Some(EntryKind::File));
     }
 
     #[cfg(target_os = "linux")]

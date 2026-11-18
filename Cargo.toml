@@ -174,6 +174,13 @@ windows-sys = { version = "0.61", features = [
 ] }
 # The window's handle, to restore it from maximized: GPUI only maximizes.
 raw-window-handle = "0.6"
+# Shortcuts in the local SFTP pane, read by the shell (`src/sftp/shortcut.rs`):
+# the version and features gpui-pre builds already.
+windows = { version = "0.62", features = [
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+] }
 # The Windows portable package updates itself from a zip. Deflate through
 # flate2, which keeps its default Rust backend: our own `flate2` asks for it.
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
