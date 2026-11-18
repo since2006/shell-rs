@@ -407,6 +407,69 @@ async fn sftp_native_picker_and_external_drop_share_confirmation(cx: &mut TestAp
     .unwrap();
 }
 
+/// Files copied in File Explorer, Finder or an IDE paste into the remote
+/// folder: they upload as if dropped there (issue #129).
+#[gpui_kit::test]
+async fn files_copied_elsewhere_paste_into_the_remote_folder(cx: &mut TestAppContext) {
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, _) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .click("name:文件 甲.txt", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Only text: nothing to upload, and the user is told so.
+    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("/tmp/甲".into())));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("secondary-v", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("upload-confirm").is_none());
+        assert_eq!(window.notifications(cx).len(), 1);
+    })
+    .unwrap();
+
+    cx.update(|cx| {
+        cx.write_to_clipboard(ClipboardItem::from(
+            gpui_kit::ClipboardEntry::ExternalPaths(gpui_kit::ExternalPaths(
+                vec![
+                    std::path::PathBuf::from("/tmp/甲"),
+                    std::path::PathBuf::from("/tmp/目录"),
+                ]
+                .into(),
+            )),
+        ))
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("secondary-v", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("upload-confirm").visible());
+        assert_eq!(window.find("upload-target").value(), Some("/home/tester"));
+        for path in ["/tmp/甲", "/tmp/目录"] {
+            assert!(
+                window
+                    .try_find(ElementId::Name(format!("source:{path}").into()))
+                    .is_some(),
+                "{path}"
+            );
+        }
+    })
+    .unwrap();
+}
+
 #[gpui_kit::test]
 async fn sftp_internal_drag_conflict_and_close_confirmation(cx: &mut TestAppContext) {
     use shellrs::sftp::{TransferQuestion, TransferQuestionKind};

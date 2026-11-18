@@ -519,7 +519,7 @@ Text files can be edited right in ShellRS, remote and local alike (like WinSCP�
 - “Reload” reads the file again from the server or the disk, asking first if there are unsaved changes.
 - A dot on the tab means unsaved changes. Closing such a tab asks whether to “Save”, “Discard changes” or “Cancel”; closing several tabs at once, closing an SFTP tab (which also closes the remote files it opened) or quitting ShellRS with unsaved files asks once first. On macOS, quitting from the Dock and logging out or shutting down don’t ask.
 - The bottom left of the window shows the SFTP connection the file goes through (“Local file” for local files), and the bottom right the cursor position, the encoding and the line endings (such as “UTF-8 · LF”).
-- Limits: only UTF-8 text files of 5 MB or less open (with or without a BOM; the BOM and CRLF line endings are kept on save). Larger files, binary files and files in other encodings such as GBK are refused with the reason; remote ones can be downloaded with “Download…” instead.
+- Limits: only UTF-8 text files of 5 MB or less open (with or without a BOM; the BOM and CRLF line endings are kept on save, and pasted text takes the file’s line endings, so CRLF from the Windows clipboard doesn’t end up in an LF script; a file whose line endings were mixed already is saved as it is). Larger files, binary files and files in other encodings such as GBK are refused with the reason; remote ones can be downloaded with “Download…” instead.
 
 ### Preview
 
@@ -535,7 +535,7 @@ Images (PNG, JPG, GIF, WebP, SVG, BMP, ICO, TIFF) and Markdown can be previewed,
 ### Uploading and downloading
 
 - Ways to start:
-  - Upload: “Upload…”, F5 in the local list, “Choose files to upload…”, dragging local items by their file names to the remote list, or dragging files from Finder to the remote list. The dialog of “Choose files to upload…” also takes folders on macOS; on Windows and Linux it takes only files.
+  - Upload: “Upload…”, F5 in the local list, “Choose files to upload…”, dragging local items by their file names to the remote list, or dragging files from Finder to the remote list. Files and folders copied in Finder, File Explorer or an IDE upload to the current folder too: press ⌘V in the remote list (Ctrl+V or Shift+Insert on Windows and Linux), or right-click empty space and choose “Paste”. The dialog of “Choose files to upload…” also takes folders on macOS; on Windows and Linux it takes only files.
   - Download: “Download…”, F5 in the remote list, or dragging remote items by their file names to the local list.
   - Dropping on a folder’s row puts the items in that folder; dropping anywhere else puts them in the current folder.
 - Every way shows a confirmation where you can change the destination folder; for downloads, “Browse…” chooses a folder on this computer. The confirmation says how many items of which kinds (such as “Upload 2 files to …”), shows the source folder once, and lists each item on its own line, with the full path on hover.

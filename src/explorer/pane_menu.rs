@@ -142,6 +142,20 @@ pub(super) fn directory_menu(
         );
     }
     let menu = menu.separator();
+    // Files copied elsewhere, uploaded here. The clipboard is read as the
+    // menu opens, not with the pane's state, which every frame reads.
+    let menu = if state.remote {
+        let pastes = !super::explorer_panel::clipboard_files(cx).is_empty();
+        menu.menu_with_icon_and_disabled(
+            t!("explorer.command.paste"),
+            Icon::new(CatalogIcon::ClipboardPaste),
+            state.action(ExplorerCommand::PasteFiles),
+            !pastes || !state.can_transfer,
+        )
+        .separator()
+    } else {
+        menu
+    };
     add_bookmark_item(menu, state).separator().submenu(
         t!("explorer.command.new"),
         window,

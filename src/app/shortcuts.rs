@@ -1025,6 +1025,11 @@ fn file_list_key_bindings() -> Vec<KeyBinding> {
         // WinSCP.
         if remote {
             bindings.push(bind(primary!("f"), ExplorerCommand::FindFiles, context));
+            // Files copied in File Explorer or Finder, uploaded (issue #129);
+            // WinSCP's Shift+Insert as well outside macOS.
+            #[cfg(not(target_os = "macos"))]
+            bindings.push(bind("shift-insert", ExplorerCommand::PasteFiles, context));
+            bindings.push(bind(primary!("v"), ExplorerCommand::PasteFiles, context));
         }
         bindings.extend([
             bind("backspace", ExplorerCommand::Up { remote }, context),

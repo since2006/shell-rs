@@ -257,6 +257,34 @@ async fn crlf_and_a_byte_order_mark_are_written_back_as_they_were(cx: &mut TestA
     );
 }
 
+/// Text pasted from the Windows clipboard comes with CRLF; an LF script
+/// keeps its LF, or a `\` at a line's end would no longer continue it
+/// (issue #129).
+#[gpui_kit::test]
+async fn crlf_pasted_into_an_lf_file_is_saved_as_lf(cx: &mut TestAppContext) {
+    let (handle, workspace, provider) = open_server(cx, &[(REMOTE_FILE, b"echo done\n")]).await;
+    open_file(cx, handle, "remote-pane", "文件 甲.txt");
+    wait_for_editor(cx, handle, FIRST).await;
+
+    cx.update(|cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(
+            "bash run.sh \\\r\n  --master local\r\n".into(),
+        ))
+    });
+    in_frame(cx, handle, |window, cx| window.press("secondary-v", cx));
+    // The editor holds what was pasted as it came.
+    assert_eq!(
+        text_of(&workspace, FIRST, cx),
+        "bash run.sh \\\r\n  --master local\r\necho done\n"
+    );
+    in_frame(cx, handle, |window, cx| window.press("secondary-s", cx));
+    wait_for_writes(cx, &provider, 1).await;
+    assert_eq!(
+        provider.writes.lock().unwrap()[0].1,
+        b"bash run.sh \\\n  --master local\necho done\n"
+    );
+}
+
 #[gpui_kit::test]
 async fn a_file_changed_on_the_server_is_overwritten_only_when_asked(cx: &mut TestAppContext) {
     let (handle, workspace, provider) = open_server(cx, &[(REMOTE_FILE, b"mine\n")]).await;

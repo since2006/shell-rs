@@ -855,6 +855,9 @@ pub enum ExplorerCommand {
         paths: Vec<std::path::PathBuf>,
         target: String,
     },
+    /// Upload what the system clipboard holds, as files copied in File
+    /// Explorer, Finder or an IDE, into the remote folder (issue #129).
+    PasteFiles,
     Answer {
         request_id: u64,
         answer: crate::sftp::TransferAnswer,

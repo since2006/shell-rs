@@ -62,11 +62,18 @@ impl FileStamp {
 pub struct TextFormat {
     bom: bool,
     crlf: bool,
+    /// Some lines end in CRLF and others in LF: written back exactly as
+    /// they are.
+    mixed: bool,
 }
 
 impl TextFormat {
     pub fn new(bom: bool, crlf: bool) -> Self {
-        Self { bom, crlf }
+        Self {
+            bom,
+            crlf,
+            mixed: false,
+        }
     }
     /// The file starts with a UTF-8 byte order mark.
     pub fn bom(&self) -> bool {
@@ -85,8 +92,13 @@ impl TextFormat {
         if self.crlf {
             // A CRLF pasted in stays one line break.
             bytes.extend_from_slice(text.replace("\r\n", "\n").replace('\n', "\r\n").as_bytes());
-        } else {
+        } else if self.mixed {
             bytes.extend_from_slice(text.as_bytes());
+        } else {
+            // A CRLF pasted in, as the Windows clipboard holds text, takes
+            // the file's LF: a shell script's `\` would not continue a line
+            // ending in CR (issue #129).
+            bytes.extend_from_slice(text.replace("\r\n", "\n").as_bytes());
         }
         bytes
     }
@@ -116,6 +128,7 @@ impl TextFile {
         let text = String::from_utf8(bytes).map_err(|_| ReadFailure::NotText)?;
         let crlf_count = text.matches("\r\n").count();
         let crlf = crlf_count > 0 && crlf_count == text.matches('\n').count();
+        let mixed = crlf_count > 0 && !crlf;
         let text = if crlf {
             text.replace("\r\n", "\n")
         } else {
@@ -123,7 +136,7 @@ impl TextFile {
         };
         Ok(Self {
             text,
-            format: TextFormat { bom, crlf },
+            format: TextFormat { bom, crlf, mixed },
             stamp,
         })
     }
@@ -463,6 +476,24 @@ mod tests {
         assert_eq!(file.text(), "a\r\nb\nc");
         assert!(!file.format().crlf());
         assert_eq!(file.format().encode(file.text()), b"a\r\nb\nc");
+        assert_eq!(file.format().encode("a\r\nb\nx\r\n"), b"a\r\nb\nx\r\n");
+    }
+
+    /// Text pasted from the Windows clipboard comes with CRLF; written into
+    /// a script as it is, its `\` would no longer continue the line
+    /// (issue #129).
+    #[test]
+    fn crlf_pasted_into_an_lf_file_takes_its_lf() {
+        let file = decode("ls \\\n  -l\n").unwrap();
+        assert_eq!(
+            file.format()
+                .encode("ls \\\n  -l\nbash run.sh \\\r\n  --master local\r\n"),
+            b"ls \\\n  -l\nbash run.sh \\\n  --master local\n"
+        );
+        // A lone CR is no line end, and stays.
+        assert_eq!(file.format().encode("a\rb\n"), b"a\rb\n");
+        // A new file is LF too.
+        assert_eq!(TextFormat::default().encode("a\r\nb"), b"a\nb");
     }
 
     #[test]

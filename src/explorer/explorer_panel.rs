@@ -921,6 +921,18 @@ impl ExplorerPanel {
             ExplorerCommand::UploadPaths { paths, target } => {
                 self.open_upload(paths.clone(), target.clone(), window, cx)
             }
+            ExplorerCommand::PasteFiles => {
+                if self.state != ConnectionState::Connected {
+                    return;
+                }
+                let paths = clipboard_files(cx);
+                if paths.is_empty() {
+                    window.push_notification(Notification::info(t!("explorer.paste.no_files")), cx);
+                    return;
+                }
+                let target = self.remote.read(cx).path();
+                self.open_upload(paths, target, window, cx);
+            }
             ExplorerCommand::Answer { request_id, answer } => {
                 if self
                     .question
@@ -1133,9 +1145,27 @@ fn needs_connection(command: &ExplorerCommand) -> bool {
         | C::DownloadPaths { .. }
         | C::ChooseFiles
         | C::UploadPaths { .. }
+        | C::PasteFiles
         | C::Enqueue(_) => true,
         _ => false,
     }
+}
+
+/// The files and folders the system clipboard holds, as File Explorer,
+/// Finder and IDEs copy them; none for text, a picture or nothing.
+pub(super) fn clipboard_files(cx: &App) -> Vec<std::path::PathBuf> {
+    cx.read_from_clipboard()
+        .map(|item| {
+            item.entries()
+                .iter()
+                .filter_map(|entry| match entry {
+                    ClipboardEntry::ExternalPaths(paths) => Some(paths.paths().to_vec()),
+                    _ => None,
+                })
+                .flatten()
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Sends an SFTP tab's commands from its dialogs. They go through the
@@ -1321,6 +1351,7 @@ mod tests {
             remote: false
         }));
         assert!(needs_connection(&ExplorerCommand::ChooseFiles));
+        assert!(needs_connection(&ExplorerCommand::PasteFiles));
         // Choosing, bookmarks and the queue do not.
         assert!(!needs_connection(&ExplorerCommand::SelectAll {
             remote: true

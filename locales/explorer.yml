@@ -158,6 +158,12 @@ explorer.toolbar.hide_hidden_files:
 explorer.command.upload:
   zh-CN: 上传…
   en: Upload…
+explorer.command.paste:
+  zh-CN: 粘贴
+  en: Paste
+explorer.paste.no_files:
+  zh-CN: 剪贴板里没有文件，先在文件管理器里复制要上传的文件或文件夹
+  en: The clipboard has no files. Copy the files or folders to upload in your file manager first
 explorer.toolbar.upload_tip:
   zh-CN: 上传所选项目
   en: Upload the selected items
