@@ -308,3 +308,52 @@ fn the_zoom_keys_size_a_terminals_text_and_the_interface_elsewhere(cx: &mut Test
     press(primary("-"), cx);
     assert_eq!(interface_size(cx), 13.);
 }
+
+/// The commands of a remote terminal's tab have keys, for the terminal in
+/// front (issue #137): 「文件」, 复制会话 and 打开 SFTP.
+#[gpui_kit::test]
+async fn a_remote_terminals_commands_have_keys(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let press = |id: &str, cx: &mut TestAppContext| {
+        let keys = default_keys(id);
+        in_frame(cx, handle, |window, cx| window.press(keys, cx));
+    };
+    let sidebar = |cx: &mut TestAppContext| {
+        in_frame(cx, handle, |window, _| {
+            window
+                .try_find(("tool-sidebar", INITIAL_WEB_TERMINAL))
+                .is_some()
+        })
+    };
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal-tab", INITIAL_WEB_TERMINAL), cx)
+    });
+    assert!(!sidebar(cx));
+
+    // 「文件」 beside it, and away again.
+    press("toggle-files", cx);
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(("tool-sidebar", INITIAL_WEB_TERMINAL))
+            .is_some_and(|sidebar| sidebar.visible())
+    })
+    .await;
+    in_frame(cx, handle, |window, _| {
+        let sidebar = window.within(("tool-sidebar", INITIAL_WEB_TERMINAL));
+        assert!(sidebar.try_find(("remote-pane", 1_u64)).is_some());
+    });
+    press("toggle-files", cx);
+    assert!(!sidebar(cx));
+
+    // A copy of the session, in a tab of its own.
+    press("duplicate-terminal", cx);
+    assert_eq!(active_tab(&workspace, cx), terminal(FIRST_NEW_TERMINAL));
+
+    // SFTP on its host.
+    press("open-sftp", cx);
+    assert!(matches!(
+        active_tab(&workspace, cx),
+        Some(CenterTab::Explorer(_))
+    ));
+}

@@ -28,16 +28,17 @@ use crate::app::{
     CenterTab, ClearTerminal, CloseActiveTab, CloseEditor, CloseExplorer, CloseLocalTerminal,
     CloseSettings, CloseTabs, CloseTerminal, CollapseAllGroups, ConnectGroup, ConnectHost,
     CopyAgentSkill, CopyHostAddress, CopyHostId, CopyTerminal, DeleteGroup, DeleteHost,
-    DisconnectTerminal, DismissTerminalFind, DuplicateHost, DuplicateTerminal, EditHost,
-    ExpandAllGroups, ExplorerAction, ExplorerCommand, ExplorerShortcut, FindInTerminal,
-    FindNextInTerminal, FindPreviousInTerminal, FocusSearch, InstallAgentSkill, InstallCliCommand,
-    MaximizeWindow, MoveHostNode, NewChildGroup, NewGroup, NewHost, NewHostInGroup,
-    NewLocalTerminal, NewTemporaryConnection, OpenExplorer, OpenSettings, PasteTerminal,
-    QuickConnect, ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand,
-    RenameExplorer, RenameGroup, RenameTerminal, RestartLocalTerminal, RestoreWindow,
-    SelectAllTerminal, SendBreak, SetFileSizeFormat, ShowOrHideApp, ToggleHiddenFiles,
-    ToggleHostDetails, ToggleHostPanel, ToggleTheme, ToolKind, ZoomIn, ZoomOut, ZoomReset,
-    ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
+    DisconnectTerminal, DismissTerminalFind, DuplicateFrontTerminal, DuplicateHost,
+    DuplicateTerminal, EditHost, ExpandAllGroups, ExplorerAction, ExplorerCommand,
+    ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch,
+    InstallAgentSkill, InstallCliCommand, MaximizeWindow, MoveHostNode, NewChildGroup, NewGroup,
+    NewHost, NewHostInGroup, NewLocalTerminal, NewTemporaryConnection, OpenExplorer,
+    OpenFrontTerminalSftp, OpenSettings, PasteTerminal, QuickConnect, ReconnectTerminal,
+    RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, RenameExplorer, RenameGroup,
+    RenameTerminal, RestartLocalTerminal, RestoreWindow, SelectAllTerminal, SendBreak,
+    SetFileSizeFormat, ShowOrHideApp, ToggleHiddenFiles, ToggleHostDetails, ToggleHostPanel,
+    ToggleTheme, ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut,
+    ZoomTerminalReset,
 };
 use crate::cli::{CliIntegration, CliServer, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -2277,6 +2278,31 @@ impl Workspace {
         }
     }
 
+    // The keys for the commands of a remote terminal's tab work on the one
+    // in front, as 撰写窗格 and the right sidebar do (issue #137).
+
+    fn on_duplicate_front_terminal(
+        &mut self,
+        _: &DuplicateFrontTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.tool_terminal(cx) {
+            self.on_duplicate_terminal(&DuplicateTerminal(terminal.id), window, cx);
+        }
+    }
+
+    fn on_open_front_terminal_sftp(
+        &mut self,
+        _: &OpenFrontTerminalSftp,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.tool_terminal(cx) {
+            self.open_explorer(terminal.host, window, cx);
+        }
+    }
+
     fn on_new_host(&mut self, _: &NewHost, window: &mut Window, cx: &mut Context<Self>) {
         open_host_dialog(
             None,
@@ -3072,6 +3098,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_connect_group))
             .on_action(cx.listener(Self::on_reconnect_terminal))
             .on_action(cx.listener(Self::on_disconnect_terminal))
+            .on_action(cx.listener(Self::on_duplicate_front_terminal))
+            .on_action(cx.listener(Self::on_open_front_terminal_sftp))
             .on_action(cx.listener(Self::on_send_break))
             .on_action(cx.listener(Self::on_open_explorer))
             .on_action(cx.listener(Self::on_explorer_action))

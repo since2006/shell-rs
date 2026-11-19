@@ -60,6 +60,9 @@ app.shortcut.toggle_sidebar:
 app.shortcut.toggle_tool_sidebar:
   zh-CN: 显示或隐藏右侧栏
   en: Show or hide right sidebar
+app.shortcut.toggle_files:
+  zh-CN: 显示或隐藏「文件」
+  en: Show or hide Files
 app.shortcut.toggle_compose_pane:
   zh-CN: 显示或隐藏撰写窗格
   en: Show or hide compose pane
@@ -90,6 +93,12 @@ app.shortcut.quit:
 app.shortcut.new_local_terminal:
   zh-CN: 新建本地终端
   en: New local terminal
+app.shortcut.duplicate_terminal:
+  zh-CN: 复制会话
+  en: Duplicate session
+app.shortcut.open_sftp:
+  zh-CN: 打开 SFTP
+  en: Open SFTP
 app.shortcut.close_tab:
   zh-CN: 关闭标签
   en: Close tab

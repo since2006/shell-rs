@@ -85,7 +85,7 @@ macro_rules! shortcut {
 }
 
 /// The shortcuts of 设置 › 键盘快捷键, in the order the page lists them.
-pub static SHORTCUTS: [Shortcut; 30] = [
+pub static SHORTCUTS: [Shortcut; 33] = [
     shortcut!(
         "new-host",
         "app.shortcut.new_host",
@@ -130,6 +130,18 @@ pub static SHORTCUTS: [Shortcut; 30] = [
         "cmd-alt-b",
         "ctrl-alt-b",
         ToggleToolSidebar
+    ),
+    // Xshell opens its file transfer on Ctrl+Alt+F; 文件 is that beside the
+    // terminal, on its own connection. ⌥ as for the right sidebar (issue
+    // #137).
+    shortcut!(
+        "toggle-files",
+        "app.shortcut.toggle_files",
+        General,
+        &[],
+        "cmd-alt-f",
+        "ctrl-alt-f",
+        ToggleTool(ToolKind::Files)
     ),
     shortcut!(
         "toggle-compose-pane",
@@ -227,6 +239,26 @@ pub static SHORTCUTS: [Shortcut; 30] = [
         "cmd-t",
         "ctrl-t",
         NewLocalTerminal
+    ),
+    // As Windows Terminal duplicates a tab (issue #137).
+    shortcut!(
+        "duplicate-terminal",
+        "app.shortcut.duplicate_terminal",
+        Tabs,
+        &[],
+        "cmd-shift-d",
+        "ctrl-shift-d",
+        DuplicateFrontTerminal
+    ),
+    // S for SFTP: Ctrl+Shift+F is 查找 in a terminal.
+    shortcut!(
+        "open-sftp",
+        "app.shortcut.open_sftp",
+        Tabs,
+        &[],
+        "cmd-shift-s",
+        "ctrl-shift-s",
+        OpenFrontTerminalSftp
     ),
     // Ctrl+Shift+W elsewhere, as Windows Terminal, GNOME Terminal and
     // Konsole close a tab: Ctrl+W is the shell's in a terminal (readline,
@@ -1181,6 +1213,25 @@ mod tests {
             .iter()
             .position(|(_, name, _)| name == action)
             .unwrap_or_else(|| panic!("{action} is not bound"))
+    }
+
+    /// No default would be refused if the user pressed it: none takes
+    /// another's key where both work, or one the app keeps.
+    #[test]
+    fn every_default_is_free_where_it_works() {
+        let overrides = ShortcutOverrides::default();
+        let fixed = super::fixed_global_bindings();
+        for shortcut in SHORTCUTS
+            .iter()
+            .filter(|shortcut| !shortcut.system_wide && !shortcut.default_keys().is_empty())
+        {
+            let pressed = keys(shortcut.default_keys());
+            assert!(
+                check(shortcut, &pressed, &overrides, &fixed).is_ok(),
+                "{}",
+                shortcut.id
+            );
+        }
     }
 
     #[test]

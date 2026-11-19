@@ -77,6 +77,10 @@ gpui_kit::actions!(
         /// Clear the active terminal's screen and scrollback, keeping the
         /// prompt line.
         ClearTerminal,
+        /// 复制会话 for the remote terminal in front, from the keyboard.
+        DuplicateFrontTerminal,
+        /// 打开 SFTP on the host of the SSH terminal in front.
+        OpenFrontTerminalSftp,
         /// Show or hide the left dock, whichever list it is showing.
         ToggleHostPanel,
         /// Show or hide the right sidebar, whichever tool it is showing.
