@@ -61,13 +61,26 @@ impl LocalShell {
 }
 
 /// How a local terminal starts: the shell, the folder it starts in (the
-/// home folder without one), and what it showed when it last closed, to
-/// draw again first.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// home folder without one), what it showed when it last closed, to
+/// draw again first, and whether to hand the desktop's proxy settings to
+/// the shell as its environment (跟随系统代理, on by default).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalLaunch {
     pub shell: LocalShell,
     pub directory: Option<PathBuf>,
     pub replay: Option<Vec<u8>>,
+    pub system_proxy: bool,
+}
+
+impl Default for LocalLaunch {
+    fn default() -> Self {
+        Self {
+            shell: LocalShell::default(),
+            directory: None,
+            replay: None,
+            system_proxy: true,
+        }
+    }
 }
 
 impl LocalLaunch {
