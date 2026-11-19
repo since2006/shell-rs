@@ -229,6 +229,64 @@ async fn ctrl_with_a_letter_is_the_shells_in_a_terminal(cx: &mut TestAppContext)
     }));
 }
 
+/// Midnight Commander's keys reach it (issue #145): Shift+F5 with its Shift,
+/// and F3 (查看), which the find keys take only while the find bar is
+/// open. Shift+Insert pastes, except on a Mac, whose keyboard has no
+/// Insert.
+#[gpui_kit::test]
+async fn function_keys_reach_the_program_unless_find_or_paste_take_them(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    // 查找下一个 as on Windows and Linux.
+    cx.update(|cx| {
+        let settings = workspace.read(cx).settings().clone();
+        settings.update(cx, |store, cx| {
+            store.update(
+                |settings| {
+                    settings
+                        .shortcuts
+                        .set(Shortcut::find("terminal-find-next").unwrap(), "f3".into())
+                },
+                cx,
+            )
+        });
+        cx.write_to_clipboard(ClipboardItem::new_string("pasted".into()));
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("local-terminal", 1_u64)).focused(), Some(true));
+        window.press("shift-f5", cx);
+        window.press("f3", cx);
+        window.press("shift-insert", cx);
+    })
+    .unwrap();
+    let insert = if cfg!(target_os = "macos") {
+        "\x1b[2;2~"
+    } else {
+        "pasted"
+    };
+    let sent = format!("\x1b[15;2~\x1bOR{insert}");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        factory.written_text() == sent
+    })
+    .await;
+
+    // With the bar open F3 finds, and the program gets nothing.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(FindInTerminal), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("terminal-find").focused(), Some(true));
+        window.press("f3", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(factory.written_text(), sent);
+}
+
 #[gpui_kit::test]
 async fn local_terminals_run_the_shell_the_settings_name(cx: &mut TestAppContext) {
     let local = fake_local_terminals();

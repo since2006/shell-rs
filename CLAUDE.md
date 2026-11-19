@@ -43,7 +43,7 @@ ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH �
 - **编辑器**：中间区 Dock 标签，不用系统程序；只认 UTF-8、上限 5 MB；远程文件原地改写，保存前核对是否被改过。保存时保留 BOM 和换行：全 CRLF 的照旧写 CRLF，纯 LF 的把粘贴进来的 CRLF 换成 LF（Windows 剪贴板的 CRLF 会让脚本的 `\` 续行失效，issue #129），本来就混着的原样写。语法高亮按文件路径选（`editor/model.rs` 的 `language_for`）：gpui-kit 没有的 XML、`.properties`、INI、nginx 由 `editor/languages.rs` 注册（issue #142）；`.conf` 只认 nginx 的（`nginx.conf`、nginx 目录里的 `.conf` 和站点），其余 `.conf` 保持纯文本（用户定的）。
 - **预览**：图片和 Markdown，快速查看式的大对话框，不是标签。
 - **窗口**：默认记住大小和位置。左右侧栏拖动后的宽度记在设置里、下次启动照旧（左默认 280 最窄 180，右默认 320 最窄 220），「设置 › 应用 › 窗口 › 侧栏宽度」恢复默认（用户定的）。macOS 菜单栏只有「ShellRS」和「窗口」两个菜单，同其他 Mac 应用（issue #88）；⌘H、⌥⌘H、⌘M 是固定键，不进快捷键设置，也不能设给别的功能；不做「编辑」菜单（终端的 ⌘C、⌘V 有自己的规则）。
-- **终端交互**：选中复制默认关；右键默认显示菜单。远程终端断开后按 Enter 在原标签重连，按 Space 关闭标签页。
+- **终端交互**：选中复制默认关；右键默认显示菜单。远程终端断开后按 Enter 在原标签重连，按 Space 关闭标签页。Windows / Linux 上终端里 Shift+Insert 固定是粘贴、不发给程序，别的终端快捷键不能占它（issue #145，用户定的）；Mac 键盘没有 Insert，照 xterm 发给程序。F3 / Shift+F3（其他平台的查找下一个 / 上一个）只在查找条开着时算查找，关着时交给程序（mc 的「查看」）。
 - **标签连接状态**：标签图标彩色就是在线，连接中、断开时变灰（不用小圆点）。只在标签上变灰。
 - **主机图标一律彩色**：没有品牌色的按地址从固定调色板取色，跨版本不变；绝不能是灰（灰留给离线）。
 - **ZMODEM（rz / sz）**：用 `zmodem2`（钉死版本），自动识别、不设开关；进度写在终端里；可以拖文件到终端上传。不做 XMODEM / YMODEM。
@@ -221,6 +221,7 @@ Cargo workspace，`cargo` 命令默认覆盖前四个包：
 ### 终端
 
 - ZMODEM 先于 alacritty 拿到输出；传输期间键只认 Ctrl+C。
+- 按键照 xterm 编码（`terminal_view.rs` 的 `encode_named_key`），同 `xterm-256color` 的 terminfo：方向键、Home、End、编辑键和 F1–F12 带修饰键时发 `CSI 1;m X` 或 `CSI n;m ~`，Alt 算在 m 里、不另加 ESC（issue #145）；kitty 键盘协议下带修饰键的 F3 发 `CSI 13;m ~`（`CSI 1;m R` 会被当成光标位置的回答）。
 - 查找条是终端 `div` 的兄弟，不是子元素，否则输入会发给 shell。
 - 程序的查询（光标位置、颜色等）在解析线程上按顺序回答，别交回 UI 线程。
 - 同步更新（DEC 2026）超时要解析线程自己收尾，否则屏幕会冻住。

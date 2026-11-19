@@ -59,6 +59,8 @@ on:
       - "src/serial/**"
       - "crates/shellrs-sync/**"
       - "src/app/shortcuts.rs"
+      - "src/terminal/terminal_view.rs"
+      - "tests/ui/terminal.rs"
       - "src/workspace/window_state.rs"
       - "src/testing.rs"
       - "tests/cli_bin.rs"
@@ -98,6 +100,8 @@ jobs:
       # Ctrl+Shift+W, the default there, closes a tab from a terminal.
       - run: "cargo test --locked --lib app::shortcuts::"
       - run: "cargo test --locked --test ui workspace::close_shortcut"
+      # Shift+Insert pastes there, and F3 reaches the program (issue #145).
+      - run: "cargo test --locked --test ui terminal::function_keys_reach_the_program"
       - run: "cargo test --locked --lib app::tray::"
       - run: "cargo test --lib cli::"
       - run: "cargo test --lib update::"

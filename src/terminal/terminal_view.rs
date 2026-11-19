@@ -142,11 +142,23 @@ struct FindBar {
 
 gpui_kit::actions!(shellrs_terminal, [SendTab, SendBackTab]);
 
-pub(crate) fn terminal_key_bindings() -> [KeyBinding; 2] {
-    [
+/// The terminal's keys that no setting changes.
+pub(crate) fn terminal_key_bindings() -> Vec<KeyBinding> {
+    let mut bindings = vec![
         KeyBinding::new("tab", SendTab, Some(TERMINAL_KEY_CONTEXT)),
         KeyBinding::new("shift-tab", SendBackTab, Some(TERMINAL_KEY_CONTEXT)),
-    ]
+    ];
+    // Shift+Insert pastes on Windows and Linux, as in Xshell, PuTTY and
+    // Windows Terminal, besides 粘贴's own key (issue #145). A Mac keyboard
+    // has no Insert: there it goes to the program.
+    if !cfg!(target_os = "macos") {
+        bindings.push(KeyBinding::new(
+            "shift-insert",
+            PasteTerminal,
+            Some(TERMINAL_KEY_CONTEXT),
+        ));
+    }
+    bindings
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -687,6 +699,11 @@ impl TerminalView {
             input.select_all(window, cx);
         });
         cx.notify();
+    }
+
+    /// Whether its find bar is open.
+    pub fn is_finding(&self) -> bool {
+        self.find.is_some()
     }
 
     /// Focus the next match up or down. A query still being typed is searched
@@ -2354,58 +2371,30 @@ pub(crate) fn encode_key(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8
     if keystroke.modifiers.platform {
         return None;
     }
-    if mode.intersects(
+    let kitty = mode.intersects(
         TermMode::DISAMBIGUATE_ESC_CODES
             | TermMode::REPORT_EVENT_TYPES
             | TermMode::REPORT_ALL_KEYS_AS_ESC,
-    ) && let Some(sequence) = encode_kitty_key(keystroke)
-    {
+    );
+    if kitty && let Some(sequence) = encode_kitty_key(keystroke) {
         return Some(sequence);
     }
     let modifiers = keystroke.modifiers;
     let key = keystroke.key.as_str();
-    let app_cursor = mode.contains(TermMode::APP_CURSOR);
     let modifier = 1
         + u8::from(modifiers.shift)
         + u8::from(modifiers.alt) * 2
         + u8::from(modifiers.control) * 4;
-    let modified_csi = |final_byte: char| format!("\x1b[1;{modifier}{final_byte}").into_bytes();
+    let app_cursor = mode.contains(TermMode::APP_CURSOR);
+    if let Some(sequence) = encode_named_key(key, modifier, app_cursor, kitty) {
+        return Some(sequence);
+    }
     let mut sequence = match key {
         "enter" => vec![b'\r'],
         "tab" if modifiers.shift => b"\x1b[Z".to_vec(),
         "tab" => vec![b'\t'],
         "backspace" => vec![0x7f],
         "escape" => vec![0x1b],
-        "up" if modifier > 1 => modified_csi('A'),
-        "down" if modifier > 1 => modified_csi('B'),
-        "right" if modifier > 1 => modified_csi('C'),
-        "left" if modifier > 1 => modified_csi('D'),
-        "up" => if app_cursor { b"\x1bOA" } else { b"\x1b[A" }.to_vec(),
-        "down" => if app_cursor { b"\x1bOB" } else { b"\x1b[B" }.to_vec(),
-        "right" => if app_cursor { b"\x1bOC" } else { b"\x1b[C" }.to_vec(),
-        "left" => if app_cursor { b"\x1bOD" } else { b"\x1b[D" }.to_vec(),
-        "home" if modifier > 1 => modified_csi('H'),
-        "end" if modifier > 1 => modified_csi('F'),
-        // As xterm: zsh with oh-my-zsh turns the mode on and binds only
-        // these, terminfo's khome and kend (#70).
-        "home" => if app_cursor { b"\x1bOH" } else { b"\x1b[H" }.to_vec(),
-        "end" => if app_cursor { b"\x1bOF" } else { b"\x1b[F" }.to_vec(),
-        "insert" => b"\x1b[2~".to_vec(),
-        "delete" => b"\x1b[3~".to_vec(),
-        "pageup" => b"\x1b[5~".to_vec(),
-        "pagedown" => b"\x1b[6~".to_vec(),
-        "f1" => b"\x1bOP".to_vec(),
-        "f2" => b"\x1bOQ".to_vec(),
-        "f3" => b"\x1bOR".to_vec(),
-        "f4" => b"\x1bOS".to_vec(),
-        "f5" => b"\x1b[15~".to_vec(),
-        "f6" => b"\x1b[17~".to_vec(),
-        "f7" => b"\x1b[18~".to_vec(),
-        "f8" => b"\x1b[19~".to_vec(),
-        "f9" => b"\x1b[20~".to_vec(),
-        "f10" => b"\x1b[21~".to_vec(),
-        "f11" => b"\x1b[23~".to_vec(),
-        "f12" => b"\x1b[24~".to_vec(),
         _ if modifiers.control => {
             let character = keystroke.key_char.as_deref().unwrap_or(key);
             let byte = character.as_bytes().first().copied()?;
@@ -2424,10 +2413,67 @@ pub(crate) fn encode_key(keystroke: &Keystroke, mode: TermMode) -> Option<Vec<u8
         _ if modifiers.alt => keystroke.key_char.as_ref()?.as_bytes().to_vec(),
         _ => return None,
     };
-    if modifiers.alt && !matches!(key, "up" | "down" | "right" | "left" | "home" | "end") {
+    if modifiers.alt {
         sequence.insert(0, 0x1b);
     }
     Some(sequence)
+}
+
+/// The arrows, Home and End, the editing keys and F1–F12, as xterm sends
+/// them and `xterm-256color`'s terminfo tells programs: with modifiers, one
+/// sequence carrying them as `modifier` (Shift 2, Alt 3, Ctrl 5, added up),
+/// so Shift+F5 is `CSI 15;2~`, Midnight Commander's copy under a new name
+/// (issue #145). Dropping them sent Ctrl+F5 as F5. `None` for other keys.
+fn encode_named_key(key: &str, modifier: u8, app_cursor: bool, kitty: bool) -> Option<Vec<u8>> {
+    let modified = modifier > 1;
+    // `CSI 1;m A`; alone `SS3 A` where `ss3`, else `CSI A`.
+    let letter = |final_byte: char, ss3: bool| {
+        if modified {
+            format!("\x1b[1;{modifier}{final_byte}")
+        } else if ss3 {
+            format!("\x1bO{final_byte}")
+        } else {
+            format!("\x1b[{final_byte}")
+        }
+    };
+    let tilde = |number: u8| {
+        if modified {
+            format!("\x1b[{number};{modifier}~")
+        } else {
+            format!("\x1b[{number}~")
+        }
+    };
+    let sequence = match key {
+        "up" => letter('A', app_cursor),
+        "down" => letter('B', app_cursor),
+        "right" => letter('C', app_cursor),
+        "left" => letter('D', app_cursor),
+        // As xterm: zsh with oh-my-zsh turns the mode on and binds only
+        // these, terminfo's khome and kend (#70).
+        "home" => letter('H', app_cursor),
+        "end" => letter('F', app_cursor),
+        "insert" => tilde(2),
+        "delete" => tilde(3),
+        "pageup" => tilde(5),
+        "pagedown" => tilde(6),
+        "f1" => letter('P', true),
+        "f2" => letter('Q', true),
+        // The kitty keyboard protocol numbers F3: its `CSI 1;m R` reads as
+        // the answer to a cursor position query.
+        "f3" if kitty && modified => tilde(13),
+        "f3" => letter('R', true),
+        "f4" => letter('S', true),
+        "f5" => tilde(15),
+        "f6" => tilde(17),
+        "f7" => tilde(18),
+        "f8" => tilde(19),
+        "f9" => tilde(20),
+        "f10" => tilde(21),
+        "f11" => tilde(23),
+        "f12" => tilde(24),
+        _ => return None,
+    };
+    Some(sequence.into_bytes())
 }
 
 /// A key as the kitty keyboard protocol tells it apart, once a program
@@ -2579,6 +2625,52 @@ mod tests {
             encode_key(&key("shift-home"), TermMode::APP_CURSOR),
             Some(b"\x1b[1;2H".to_vec())
         );
+    }
+
+    /// As `xterm-256color`'s terminfo has them (`infocmp -1`), which
+    /// programs such as Midnight Commander read (issue #145).
+    #[test]
+    fn function_and_editing_keys_carry_their_modifiers() {
+        for (name, sequence) in [
+            ("f1", "\x1bOP"),
+            ("f5", "\x1b[15~"),
+            ("insert", "\x1b[2~"),
+            ("shift-f1", "\x1b[1;2P"),        // kf13
+            ("shift-f3", "\x1b[1;2R"),        // kf15
+            ("shift-f4", "\x1b[1;2S"),        // kf16
+            ("shift-f5", "\x1b[15;2~"),       // kf17
+            ("shift-f6", "\x1b[17;2~"),       // kf18
+            ("ctrl-f5", "\x1b[15;5~"),        // kf29
+            ("alt-f5", "\x1b[15;3~"),         // kf53, no Esc before it
+            ("ctrl-shift-f12", "\x1b[24;6~"), // kf48
+            ("shift-insert", "\x1b[2;2~"),    // kIC
+            ("shift-delete", "\x1b[3;2~"),    // kDC
+            ("ctrl-delete", "\x1b[3;5~"),     // kDC5
+            ("shift-pageup", "\x1b[5;2~"),    // kPRV
+            ("shift-pagedown", "\x1b[6;2~"),  // kNXT
+            ("alt-up", "\x1b[1;3A"),          // kUP3
+        ] {
+            assert_eq!(
+                encode_key(&key(name), TermMode::default()),
+                Some(sequence.as_bytes().to_vec()),
+                "{name}"
+            );
+        }
+        // The kitty protocol numbers F3, whose letter form reads as a
+        // cursor position; the rest go as they do without it.
+        let kitty = TermMode::DISAMBIGUATE_ESC_CODES;
+        for (name, sequence) in [
+            ("shift-f3", "\x1b[13;2~"),
+            ("f3", "\x1bOR"),
+            ("shift-f5", "\x1b[15;2~"),
+            ("ctrl-f1", "\x1b[1;5P"),
+        ] {
+            assert_eq!(
+                encode_key(&key(name), kitty),
+                Some(sequence.as_bytes().to_vec()),
+                "{name}"
+            );
+        }
     }
 
     #[test]

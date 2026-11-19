@@ -646,6 +646,23 @@ pub fn check(
             return Err(Refusal::Reserved);
         }
     }
+    // The terminal's own keys, as Shift+Insert pasting outside macOS, are
+    // bound after the shortcuts and would win in a terminal.
+    if shortcut.contexts.contains(&TERMINAL_KEY_CONTEXT) {
+        let action = (shortcut.action)(0);
+        let reserved = terminal_key_bindings().iter().any(|binding| {
+            let [first] = binding.keystrokes() else {
+                return false;
+            };
+            !binding.action().partial_eq(action.as_ref())
+                && pressed
+                    .iter()
+                    .any(|(pressed, _)| same_keystroke(pressed, first.inner()))
+        });
+        if reserved {
+            return Err(Refusal::Reserved);
+        }
+    }
     Ok(keys)
 }
 
@@ -1341,6 +1358,17 @@ mod tests {
         // such a key has its own work, and Shift with an arrow selects.
         let paste = shortcut("terminal-paste");
         assert_eq!(check(paste, "shift-insert"), Ok("shift-insert".into()));
+        // Outside macOS the terminal pastes on it already, so another of its
+        // shortcuts cannot have it.
+        let clear = shortcut("terminal-clear");
+        assert_eq!(
+            check(clear, "shift-insert"),
+            if cfg!(target_os = "macos") {
+                Ok("shift-insert".into())
+            } else {
+                Err(Refusal::Reserved)
+            }
+        );
         assert_eq!(
             check(new_host, "shift-pagedown"),
             Ok("shift-pagedown".into())

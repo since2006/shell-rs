@@ -2189,11 +2189,7 @@ impl Workspace {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(terminal) = self.active_terminal(cx) {
-            terminal.update(cx, |terminal, cx| {
-                terminal.step_find(SearchDirection::Down, cx)
-            });
-        }
+        self.step_terminal_find(SearchDirection::Down, cx);
     }
 
     fn on_find_previous_in_terminal(
@@ -2202,11 +2198,20 @@ impl Workspace {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(terminal) = self.active_terminal(cx) {
-            terminal.update(cx, |terminal, cx| {
-                terminal.step_find(SearchDirection::Up, cx)
-            });
-        }
+        self.step_terminal_find(SearchDirection::Up, cx);
+    }
+
+    /// The next match in the terminal's find bar. With the bar closed the
+    /// key is the program's: F3 is Midnight Commander's 查看 (issue #145).
+    fn step_terminal_find(&mut self, direction: SearchDirection, cx: &mut Context<Self>) {
+        let Some(terminal) = self
+            .active_terminal(cx)
+            .filter(|terminal| terminal.read(cx).is_finding())
+        else {
+            cx.propagate();
+            return;
+        };
+        terminal.update(cx, |terminal, cx| terminal.step_find(direction, cx));
     }
 
     fn on_dismiss_terminal_find(
