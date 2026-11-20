@@ -35,10 +35,10 @@ use crate::app::{
     NewHost, NewHostInGroup, NewLocalTerminal, NewTemporaryConnection, OpenExplorer,
     OpenFrontTerminalSftp, OpenSettings, PasteTerminal, QuickConnect, ReconnectTerminal,
     RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, RenameExplorer, RenameGroup,
-    RenameTerminal, RestartLocalTerminal, RestoreWindow, SelectAllTerminal, SendBreak,
-    SetFileSizeFormat, ShowOrHideApp, ToggleHiddenFiles, ToggleHostDetails, ToggleHostPanel,
-    ToggleTheme, ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut,
-    ZoomTerminalReset,
+    RenameTerminal, RestartLocalTerminal, RestoreWindow, ScrollTerminalPageDown,
+    ScrollTerminalPageUp, SelectAllTerminal, SendBreak, SetFileSizeFormat, ShowOrHideApp,
+    ToggleHiddenFiles, ToggleHostDetails, ToggleHostPanel, ToggleTheme, ToolKind, ZoomIn, ZoomOut,
+    ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
 };
 use crate::cli::{CliIntegration, CliServer, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -2232,6 +2232,35 @@ impl Workspace {
         }
     }
 
+    fn on_scroll_terminal_page_up(
+        &mut self,
+        _: &ScrollTerminalPageUp,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.scroll_terminal_page(true, cx);
+    }
+
+    fn on_scroll_terminal_page_down(
+        &mut self,
+        _: &ScrollTerminalPageDown,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.scroll_terminal_page(false, cx);
+    }
+
+    /// A page of the terminal's scrollback (issue #148). A full-screen
+    /// program has none, so there the key is its, as less's Shift+PageUp.
+    fn scroll_terminal_page(&mut self, up: bool, cx: &mut Context<Self>) {
+        let scrolled = self.active_terminal(cx).is_some_and(|terminal| {
+            terminal.update(cx, |terminal, cx| terminal.scroll_page(up, cx))
+        });
+        if !scrolled {
+            cx.propagate();
+        }
+    }
+
     fn on_send_break(&mut self, action: &SendBreak, _: &mut Window, cx: &mut Context<Self>) {
         if let Some(terminal) = self.terminals.get(&action.0) {
             terminal.read(cx).send_break(cx);
@@ -3162,6 +3191,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_find_previous_in_terminal))
             .on_action(cx.listener(Self::on_dismiss_terminal_find))
             .on_action(cx.listener(Self::on_clear_terminal))
+            .on_action(cx.listener(Self::on_scroll_terminal_page_up))
+            .on_action(cx.listener(Self::on_scroll_terminal_page_down))
             .on_action(cx.listener(Self::on_toggle_host_panel))
             .on_action(cx.listener(Self::on_maximize_window))
             .on_action(cx.listener(Self::on_restore_window))

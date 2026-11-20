@@ -652,6 +652,19 @@ impl TerminalView {
             .update(cx, |engine, cx| engine.clear_keeping_prompt(cx));
     }
 
+    /// A page of the scrollback, as the wheel scrolls it (issue #148).
+    /// False in a full-screen program, which has none: the key is its.
+    pub fn scroll_page(&mut self, up: bool, cx: &mut Context<Self>) -> bool {
+        if self.engine.read(cx).mode().contains(TermMode::ALT_SCREEN) {
+            return false;
+        }
+        // The text under the pointer moves on.
+        self.hover_link(None, cx);
+        self.engine
+            .update(cx, |engine, cx| engine.scroll_page(up, cx));
+        true
+    }
+
     /// Open the find bar and put the cursor in it. An open bar selects its
     /// query again. A selection, when there is one, becomes the query.
     pub fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {

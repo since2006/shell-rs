@@ -129,6 +129,12 @@ app.shortcut.terminal_find_previous:
 app.shortcut.terminal_clear:
   zh-CN: 清屏
   en: Clear screen
+app.shortcut.terminal_page_up:
+  zh-CN: 向上翻页
+  en: Scroll up a page
+app.shortcut.terminal_page_down:
+  zh-CN: 向下翻页
+  en: Scroll down a page
 app.shortcut.terminal_zoom_in:
   zh-CN: 放大字号
   en: Bigger text

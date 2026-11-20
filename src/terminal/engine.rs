@@ -458,6 +458,13 @@ impl TerminalEngine {
         cx.notify();
     }
 
+    /// A page of the scrollback up or down.
+    pub fn scroll_page(&mut self, up: bool, cx: &mut gpui_kit::Context<Self>) {
+        let page = if up { Scroll::PageUp } else { Scroll::PageDown };
+        self.runtime.term.lock().scroll_display(page);
+        cx.notify();
+    }
+
     /// Scrolls the view without a context, for the scrollbar's drag.
     pub fn scrollback(&self) -> Scrollback {
         Scrollback(self.runtime.term.clone())

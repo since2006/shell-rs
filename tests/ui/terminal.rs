@@ -1356,6 +1356,46 @@ async fn the_scrollbar_scrolls_back_through_the_history(cx: &mut TestAppContext)
     assert!(!lines.contains("end"), "{lines}");
 }
 
+/// Shift+PageUp and Shift+PageDown page through the history, everywhere
+/// (issue #148); the program hears neither.
+#[gpui_kit::test]
+async fn shift_page_keys_page_through_the_history(cx: &mut TestAppContext) {
+    let text: String = (1..=200).map(|line| format!("line {line}\r\n")).collect();
+    let (handle, workspace, factory) =
+        terminal_printing(cx, String::leak(text + "end"), "end").await;
+    let screen = |cx: &mut TestAppContext| cx.read(|cx| local_screen(&workspace, cx));
+    let number = |line: &str| {
+        line.strip_prefix("line ")
+            .and_then(|number| number.parse::<usize>().ok())
+    };
+    let top = screen(cx).lines().find_map(number).unwrap();
+
+    // A page: the line above the top one is now at the bottom.
+    in_frame(cx, handle, |window, cx| window.press("shift-pageup", cx));
+    let lines = screen(cx);
+    assert_eq!(
+        lines.lines().rev().find_map(number),
+        Some(top - 1),
+        "{lines}"
+    );
+    in_frame(cx, handle, |window, cx| window.press("shift-pagedown", cx));
+    let lines = screen(cx);
+    assert!(lines.contains("end"), "{lines}");
+    assert_eq!(factory.written_text(), "");
+}
+
+/// A full-screen program has no history, so it gets the keys, as less's
+/// Shift+PageUp.
+#[gpui_kit::test]
+async fn a_full_screen_program_gets_the_shift_page_keys(cx: &mut TestAppContext) {
+    let (handle, _, factory) = terminal_printing(cx, "\x1b[?1049hfull screen", "full screen").await;
+    in_frame(cx, handle, |window, cx| {
+        window.press("shift-pageup", cx);
+        window.press("shift-pagedown", cx);
+    });
+    take_written(cx, handle, &factory, "\x1b[5;2~\x1b[6;2~").await;
+}
+
 /// A selection dragged past the bottom takes the view down with it, step
 /// by step while the pointer stays out there, as in every editor; the wheel
 /// turned while dragging does the same. It stops once let go.

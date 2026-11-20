@@ -77,6 +77,12 @@ gpui_kit::actions!(
         /// Clear the active terminal's screen and scrollback, keeping the
         /// prompt line.
         ClearTerminal,
+        /// A page up the active terminal's scrollback, or the key for the
+        /// program in a full-screen one.
+        ScrollTerminalPageUp,
+        /// A page down the active terminal's scrollback, as
+        /// `ScrollTerminalPageUp`.
+        ScrollTerminalPageDown,
         /// 复制会话 for the remote terminal in front, from the keyboard.
         DuplicateFrontTerminal,
         /// 打开 SFTP on the host of the SSH terminal in front.

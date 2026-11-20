@@ -85,7 +85,7 @@ macro_rules! shortcut {
 }
 
 /// The shortcuts of 设置 › 键盘快捷键, in the order the page lists them.
-pub static SHORTCUTS: [Shortcut; 33] = [
+pub static SHORTCUTS: [Shortcut; 35] = [
     shortcut!(
         "new-host",
         "app.shortcut.new_host",
@@ -364,6 +364,26 @@ pub static SHORTCUTS: [Shortcut; 33] = [
         "cmd-k",
         "ctrl-shift-k",
         ClearTerminal
+    ),
+    // Through the scrollback, as in xterm, GNOME Terminal and Alacritty;
+    // one key everywhere, fn+↑ on a Mac's laptop keyboard (issue #148).
+    shortcut!(
+        "terminal-page-up",
+        "app.shortcut.terminal_page_up",
+        Terminal,
+        TERMINAL,
+        "shift-pageup",
+        "shift-pageup",
+        ScrollTerminalPageUp
+    ),
+    shortcut!(
+        "terminal-page-down",
+        "app.shortcut.terminal_page_down",
+        Terminal,
+        TERMINAL,
+        "shift-pagedown",
+        "shift-pagedown",
+        ScrollTerminalPageDown
     ),
     // The interface zoom keys, which in a terminal size its text, as in
     // iTerm2 and Windows Terminal.
