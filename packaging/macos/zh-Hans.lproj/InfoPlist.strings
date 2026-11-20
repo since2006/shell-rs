@@ -1,2 +1,4 @@
 /* ShellRS 第一次访问本地网络时，macOS 显示的说明。 */
 NSLocalNetworkUsageDescription = "ShellRS 需要访问本地网络，才能连接局域网中的主机。";
+/* ShellRS 能打开的文稿类型：文件夹（在那里打开本地终端）。 */
+"Folder" = "文件夹";

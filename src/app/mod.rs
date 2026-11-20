@@ -7,6 +7,7 @@ mod computer;
 mod keystrokes;
 #[cfg(target_os = "macos")]
 mod menu_bar;
+mod opened_folders;
 mod paths;
 mod quit;
 mod rendering;
@@ -23,6 +24,7 @@ pub use computer::computer_name;
 pub use keystrokes::{parse_keys, unparse_keys};
 #[cfg(target_os = "macos")]
 pub use menu_bar::show_menu_bar;
+pub use opened_folders::{note_opened_urls, take_opened_folders};
 pub use paths::{
     PORTABLE_BIN, PORTABLE_DATA, SETUP_UNINSTALLER, analytics_path, cli_endpoint, cli_socket_path,
     compose_history_path, data_dir, database_path, keys_dir, portable_root, settings_path,

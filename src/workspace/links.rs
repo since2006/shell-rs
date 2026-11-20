@@ -2,10 +2,12 @@
 //! a bastion host runs `ShellRS ssh://user@host:port`, the way it runs
 //! Xshell, or `ShellRS sftp://…`, the way it runs WinSCP, and ShellRS
 //! connects without saving the host. The host goes with its last tab.
+//! And the folders it is opened with on macOS, from Finder.
 
 use gpui_kit::component::{WindowExt as _, dock::DockPlacement, notification::Notification};
 use gpui_kit::*;
 
+use crate::analytics::Counter;
 use crate::cli::OpenLink;
 use crate::host::{HostId, LinkKind, SshLink};
 use crate::i18n::t;
@@ -43,6 +45,23 @@ impl Workspace {
                 Notification::error(problem).title(t!("workspace.link.open_failed")),
                 cx,
             ),
+        }
+    }
+
+    /// A local terminal in each folder the system has asked ShellRS to open
+    /// since (issue #146), in front. While the app is locked they wait.
+    pub fn open_requested_folders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::app_lock::is_locked(cx) {
+            return;
+        }
+        let folders = crate::app::take_opened_folders();
+        if folders.is_empty() {
+            return;
+        }
+        crate::app::bring_forward(window, cx);
+        for folder in folders {
+            self.open_local_terminal_in(folder, window, cx);
+            self.count(Counter::LocalTerminal);
         }
     }
 

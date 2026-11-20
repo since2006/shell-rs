@@ -38,6 +38,9 @@ fn main() {
                 .ok();
         }
     });
+    // macOS: a folder opened with ShellRS, from Finder or the Dock icon,
+    // gets a local terminal there (issue #146). Told before the window is.
+    app.on_open_urls(shellrs::app::note_opened_urls);
     app.run(|cx| {
         // Read before anything is built: the settings choose the language
         // every text is in, and 应用 › 窗口 where the window opens.

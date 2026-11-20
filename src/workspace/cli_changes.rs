@@ -49,6 +49,7 @@ impl Workspace {
                     if crate::app::take_system_hotkey_press() {
                         this.on_show_or_hide_app(&ShowOrHideApp, window, cx);
                     }
+                    this.open_requested_folders(window, cx);
                     let server = this.cli_server.as_ref()?;
                     let links = server.take_activation();
                     let change = server.take_change();

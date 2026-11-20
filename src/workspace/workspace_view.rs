@@ -76,9 +76,9 @@ use crate::ssh::{
 };
 use crate::sync::{SyncEvent, SyncService};
 use crate::terminal::{
-    DEFAULT_FONT_SIZE, HostTerminalTransports, LocalPtyTransportProvider, LocalTerminalId,
-    LocalTerminalPanel, LocalTerminalPanelEvent, RemoteTerminalId, SavedName, SearchDirection,
-    SharedLocalTerminalTransportProvider, SharedRemoteTerminalTransportProvider,
+    DEFAULT_FONT_SIZE, HostTerminalTransports, LocalLaunch, LocalPtyTransportProvider,
+    LocalTerminalId, LocalTerminalPanel, LocalTerminalPanelEvent, RemoteTerminalId, SavedName,
+    SearchDirection, SharedLocalTerminalTransportProvider, SharedRemoteTerminalTransportProvider,
     SharedSerialTerminalTransportProvider, SharedTelnetTerminalTransportProvider,
     SharedTerminalTransportFactory, TerminalCopy, TerminalPanel, TerminalPanelEvent, TerminalView,
 };
@@ -1465,9 +1465,36 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> LocalTerminalId {
+        let factory = self.local_terminal_factory(saved, true, cx);
+        self.add_local_terminal(factory, saved, window, cx)
+    }
+
+    /// Open a local terminal tab that starts in `folder`, as ⌘T's starts
+    /// in the home folder.
+    pub(super) fn open_local_terminal_in(
+        &mut self,
+        folder: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> LocalTerminalId {
+        let settings = self.settings.read(cx).settings();
+        let launch = LocalLaunch {
+            directory: Some(folder),
+            ..super::projects::local_launch(&settings, None, None)
+        };
+        let factory = self.local_terminal_provider.factory_for(&launch);
+        self.add_local_terminal(factory, None, window, cx)
+    }
+
+    fn add_local_terminal(
+        &mut self,
+        factory: SharedTerminalTransportFactory,
+        saved: Option<&SavedTerminal>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> LocalTerminalId {
         let id = LocalTerminalId(self.next_local_terminal_id);
         self.next_local_terminal_id += 1;
-        let factory = self.local_terminal_factory(saved, true, cx);
         let name = saved.map(super::projects::saved_name);
         let (panel, subscription) = new_local_terminal_panel(id, factory, name, window, cx);
         self._subscriptions.push(subscription);

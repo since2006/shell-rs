@@ -1,2 +1,4 @@
 /* What macOS shows when ShellRS first reaches for the local network. */
 NSLocalNetworkUsageDescription = "ShellRS needs the local network to connect to hosts on your LAN.";
+/* The kind of document ShellRS opens: a folder, in a local terminal. */
+"Folder" = "Folder";

@@ -2090,3 +2090,41 @@ async fn a_copy_restores_its_folder_after_the_login_commands(cx: &mut TestAppCon
     .await;
     assert_eq!(writes_of(3), ["sudo -i\r", "cd -- '/srv/app'\r"]);
 }
+
+/// A folder opened with ShellRS, from Finder or the Dock icon, gets a local
+/// terminal there, in front; a file gets nothing (issue #146).
+#[gpui_kit::test]
+async fn a_folder_opened_with_shellrs_gets_a_local_terminal_there(cx: &mut TestAppContext) {
+    let local = Arc::new(FixedLocalTerminalTransportProvider::new(Arc::new(
+        FakeTerminalFactory::default(),
+    )));
+    let (handle, workspace) =
+        open_workspace_with_local_terminals(cx, local.clone(), size(px(1280.), px(800.)));
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("notes.txt");
+    std::fs::write(&file, "").unwrap();
+    shellrs::app::note_opened_urls(vec![
+        url::Url::from_file_path(&file).unwrap().to_string(),
+        url::Url::from_directory_path(dir.path())
+            .unwrap()
+            .to_string(),
+    ]);
+    cx.update_window(handle.into(), |_, window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.open_requested_folders(window, cx)
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    cx.update(|cx| {
+        assert_eq!(
+            workspace.read(cx).active_tab(),
+            Some(shellrs::app::CenterTab::LocalTerminal(LocalTerminalId(1)))
+        );
+    });
+    let launches = local.launches();
+    assert_eq!(launches.len(), 1);
+    assert_eq!(launches[0].directory.as_deref(), Some(dir.path()));
+    assert!(shellrs::app::take_opened_folders().is_empty());
+}

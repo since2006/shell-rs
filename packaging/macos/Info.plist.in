@@ -21,6 +21,27 @@
 	</array>
 	<key>CFBundleDisplayName</key>
 	<string>ShellRS</string>
+	<!--
+	  Folders, and nothing else, open in a local terminal (issue #146):
+	  Finder's 打开方式 and the tools that add to its menu, a folder dropped
+	  on the Dock icon. Alternate: never the app a folder opens in by
+	  default. Packages (an .app) are not folders here.
+	-->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Folder</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.folder</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>shellrs</string>
 	<key>CFBundleIconFile</key>
