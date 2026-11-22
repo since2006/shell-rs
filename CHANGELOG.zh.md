@@ -4,6 +4,30 @@
 
 每个版本一节，标题写成 `## [版本号]`，可以在后面加日期。每一节同时写中文（这里）和英文（[CHANGELOG.md](CHANGELOG.md)），在同一次提交里。发布流程（`.github/workflows/release.yml`）把英文版里与 tag 同版本的那一节原样作为 GitHub Release 的说明；官网的更新日志英文和日文页显示英文版，中文页显示这一份（ShellRS 的更新对话框用「查看更新内容」打开官网的更新日志）。用 Markdown 书写，面向使用者。
 
+## [0.1.20-beta.1]
+
+### 新增
+
+- 主机对话框的「高级设置」里新增「登录后执行的命令」：SSH 主机每次连上（断线后按 Enter 重连也算），把这些命令逐行输入终端，每行等上一行的输出停下再发。适合 `sudo -i`、`cd` 到常用目录，或在堡垒机菜单里选好目标机器。命令跟着云同步，不要在这里写密码。([#138](https://github.com/since2006/shell-rs/issues/138))
+- 云同步的配置码：在已开启同步的电脑上点「设置 › 云同步」里的「显示配置码…」，在另一台电脑上点「输入配置码…」、粘贴它，再输入同步密码就加入了同步，不用重填地址和密钥。配置码用同步密码加密；文件夹同步没有配置码。([#95](https://github.com/since2006/shell-rs/issues/95))
+- SFTP 远程一侧可以粘贴上传：在访达、资源管理器或 IDE 里复制的文件和文件夹，在远程列表里按 ⌘V（Windows、Linux 上是 Ctrl+V 或 Shift+Insert）或右键空白处选「粘贴」，就上传到当前目录。([#129](https://github.com/since2006/shell-rs/issues/129))
+- 新快捷键，作用于在前的远程终端：复制会话 ⌘⇧D（Windows、Linux 上 Ctrl+Shift+D）、打开 SFTP ⌘⇧S（Ctrl+Shift+S）、显示或隐藏右侧栏的「文件」⌘⌥F（Ctrl+Alt+F），都可以在「设置 › 键盘快捷键」里改。([#137](https://github.com/since2006/shell-rs/issues/137))
+- 终端里按 Shift+PageUp、Shift+PageDown 一次翻一屏回滚历史（Mac 笔记本的键盘上是 fn+Shift+↑、fn+Shift+↓）；vim、less 等全屏程序里照旧交给程序。([#148](https://github.com/since2006/shell-rs/issues/148))
+- macOS 上可以从访达打开文件夹：把文件夹拖到程序坞里的 ShellRS 图标上，或用访达右键增强工具里的「用 ShellRS 打开」，就在那个文件夹里新开一个本地终端。ShellRS 不会成为打开文件夹的默认程序，双击文件夹照旧在访达里打开。([#146](https://github.com/since2006/shell-rs/issues/146))
+- 编辑器为 XML、`.properties`、INI（含 systemd 单元文件、yum 的 `.repo`）和 nginx 配置着色；其他 `.conf` 仍是纯文本。([#142](https://github.com/since2006/shell-rs/issues/142))
+
+### 改进
+
+- SSH 终端连接中途断开时，终端里写明「连接已断开」和原因（如服务器长时间没有响应），不再提示「进程已退出，退出码 0」；关闭标签时先告诉服务器再断开。([#140](https://github.com/since2006/shell-rs/issues/140))
+
+### 修复
+
+- 修复 Windows 上网络（VPN、Wi-Fi）抖动约 20 秒 SSH 连接就断开的问题，现在和其他平台一样，等服务器约两分钟才放弃。([#140](https://github.com/since2006/shell-rs/issues/140))
+- 修复终端里 Shift+F5、Shift+F6 等带修饰键的功能键丢了 Shift、mc 的复制和改名用不了的问题，现在照 xterm 连同修饰键发给程序；F3、Shift+F3 只在查找条打开时用来查找，关着时发给程序。Windows、Linux 上 Shift+Insert 在终端里总是粘贴。([#145](https://github.com/since2006/shell-rs/issues/145))
+- 修复 SFTP 本机一侧打不开 Windows 快捷方式（`.lnk`）的问题：指向文件夹的双击进入那个文件夹，指向文件的双击、编辑、预览打开它指向的文件。([#144](https://github.com/since2006/shell-rs/issues/144))
+- 修复编辑器里把 Windows 剪贴板的文本粘贴进只用 LF 换行的脚本后，保存时混进 CRLF、让 `\` 续行失效的问题。([#129](https://github.com/since2006/shell-rs/issues/129))
+- 修复 SFTP 里拖动列标题后只换了列宽、标题和内容留在原处的问题，现在整列一起移动，刷新、换目录后保持。
+
 ## [0.1.19]
 
 ### 新增

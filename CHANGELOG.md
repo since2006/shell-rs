@@ -4,6 +4,30 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.20-beta.1]
+
+### Added
+
+- Commands after login, in the host dialog’s Advanced: on every connection of an SSH host (reconnecting with Enter too), ShellRS types them into the terminal a line at a time, each once the output of the one before has paused. Use it for `sudo -i`, a `cd` to the folder you work in, or picking the target machine in a bastion host’s menu. The commands sync with cloud sync, so don’t put passwords in them. ([#138](https://github.com/since2006/shell-rs/issues/138))
+- Setup codes for cloud sync: on a computer that syncs, click Show setup code… in Settings › Cloud sync; on another computer, click Enter setup code…, paste it and enter the sync password to join, without typing the address and keys again. The setup code is encrypted with the sync password. Folder sync has no setup code. ([#95](https://github.com/since2006/shell-rs/issues/95))
+- Paste to upload on the remote side of SFTP: files and folders you copied in the Finder, File Explorer or an IDE upload to the current folder when you press ⌘V in the remote list (Ctrl+V or Shift+Insert on Windows and Linux) or right-click empty space and choose Paste. ([#129](https://github.com/since2006/shell-rs/issues/129))
+- New shortcuts for the front remote terminal: Duplicate session ⌘⇧D (Ctrl+Shift+D on Windows and Linux), Open SFTP ⌘⇧S (Ctrl+Shift+S), and Show or hide Files in the right sidebar ⌘⌥F (Ctrl+Alt+F). You can change them in Settings › Keyboard shortcuts. ([#137](https://github.com/since2006/shell-rs/issues/137))
+- Shift+PageUp and Shift+PageDown scroll a terminal’s scrollback a screen at a time (fn+Shift+↑ and fn+Shift+↓ on a Mac laptop’s keyboard). Full-screen programs such as vim and less still get the keys. ([#148](https://github.com/since2006/shell-rs/issues/148))
+- On macOS, open a folder from the Finder: drop it on the ShellRS icon in the Dock, or open it with ShellRS from a tool that adds to the Finder’s menu, and a new local terminal opens in that folder. ShellRS never becomes the app folders open in, so double-clicking a folder still opens it in the Finder. ([#146](https://github.com/since2006/shell-rs/issues/146))
+- The editor colors XML, `.properties`, INI (systemd unit files and yum’s `.repo` too) and nginx configuration. Other `.conf` files stay plain text. ([#142](https://github.com/since2006/shell-rs/issues/142))
+
+### Improved
+
+- When an SSH terminal’s connection drops, the terminal says Connection lost and why, such as the server not answering for a long time, instead of “Process exited with code 0”. Closing a tab tells the server before disconnecting. ([#140](https://github.com/since2006/shell-rs/issues/140))
+
+### Fixed
+
+- On Windows, about 20 seconds of network trouble (VPN, Wi-Fi) ended SSH connections. They now wait about two minutes for the server, as on the other platforms. ([#140](https://github.com/since2006/shell-rs/issues/140))
+- In a terminal, function keys with modifiers lost their Shift, so mc’s Shift+F5 copy and Shift+F6 rename didn’t work. They now go to the program with their modifiers, as xterm sends them. F3 and Shift+F3 find only while the find bar is open, and otherwise go to the program. On Windows and Linux, Shift+Insert always pastes in a terminal. ([#145](https://github.com/since2006/shell-rs/issues/145))
+- The local side of SFTP couldn’t open Windows shortcuts (`.lnk`). Double-click one to a folder to go into that folder; one to a file opens that file, also for Edit and Preview. ([#144](https://github.com/since2006/shell-rs/issues/144))
+- Text pasted into the editor from the Windows clipboard put CRLF line endings into a script that uses LF, which broke its `\` line continuations. It’s now saved with LF. ([#129](https://github.com/since2006/shell-rs/issues/129))
+- Dragging an SFTP column header moved only the column widths, leaving the headers and contents where they were. The whole column moves now, and stays after refreshing or changing folders.
+
 ## [0.1.19]
 
 ### Added
