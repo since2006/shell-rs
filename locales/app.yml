@@ -99,6 +99,9 @@ app.shortcut.duplicate_terminal:
 app.shortcut.open_sftp:
   zh-CN: 打开 SFTP
   en: Open SFTP
+app.shortcut.reconnect_terminal:
+  zh-CN: 重新连接
+  en: Reconnect
 app.shortcut.close_tab:
   zh-CN: 关闭标签
   en: Close tab

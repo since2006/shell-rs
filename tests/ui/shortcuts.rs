@@ -357,3 +357,49 @@ async fn a_remote_terminals_commands_have_keys(cx: &mut TestAppContext) {
         Some(CenterTab::Explorer(_))
     ));
 }
+
+/// 重新连接 has a key too (issue #151): the remote terminal in front
+/// connects again, connected or not, and the key is not typed into it. A
+/// local terminal in front has nothing to reconnect.
+#[gpui_kit::test]
+async fn the_remote_terminal_in_front_reconnects_from_the_keyboard(cx: &mut TestAppContext) {
+    let (store, host) = one_host_store(AuthKind::Password);
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
+    let id = RemoteTerminalId(1);
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within("host-tree")
+            .double_click(("host-row", host.0), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        remote_lifecycle(&workspace, id, cx) == TerminalLifecycle::Running
+    })
+    .await;
+    assert_eq!(factory.starts(), 1);
+
+    // Pressed while typing in it, as after editing a profile there.
+    let keys = default_keys("reconnect-terminal");
+    in_frame(cx, handle, |window, cx| {
+        window.click(("terminal", id.0), cx);
+        window.press(keys, cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        factory.starts() == 2 && remote_lifecycle(&workspace, id, cx) == TerminalLifecycle::Running
+    })
+    .await;
+    assert_eq!(active_tab(&workspace, cx), terminal(id.0));
+    assert_eq!(factory.written_text(), "", "the key is not the shell's");
+
+    // A local terminal in front: nothing connects again.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(NewLocalTerminal), cx)
+    });
+    assert!(matches!(
+        active_tab(&workspace, cx),
+        Some(CenterTab::LocalTerminal(_))
+    ));
+    in_frame(cx, handle, |window, cx| window.press(keys, cx));
+    cx.run_until_parked();
+    assert_eq!(factory.starts(), 2);
+}

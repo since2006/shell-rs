@@ -33,9 +33,9 @@ use crate::app::{
     ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch,
     InstallAgentSkill, InstallCliCommand, MaximizeWindow, MoveHostNode, NewChildGroup, NewGroup,
     NewHost, NewHostInGroup, NewLocalTerminal, NewTemporaryConnection, OpenExplorer,
-    OpenFrontTerminalSftp, OpenSettings, PasteTerminal, QuickConnect, ReconnectTerminal,
-    RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, RenameExplorer, RenameGroup,
-    RenameTerminal, RestartLocalTerminal, RestoreWindow, ScrollTerminalPageDown,
+    OpenFrontTerminalSftp, OpenSettings, PasteTerminal, QuickConnect, ReconnectFrontTerminal,
+    ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, RenameExplorer,
+    RenameGroup, RenameTerminal, RestartLocalTerminal, RestoreWindow, ScrollTerminalPageDown,
     ScrollTerminalPageUp, SelectAllTerminal, SendBreak, SetFileSizeFormat, ShowOrHideApp,
     ToggleHiddenFiles, ToggleHostDetails, ToggleHostPanel, ToggleTheme, ToolKind, ZoomIn, ZoomOut,
     ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
@@ -2359,6 +2359,17 @@ impl Workspace {
         }
     }
 
+    fn on_reconnect_front_terminal(
+        &mut self,
+        _: &ReconnectFrontTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(terminal) = self.tool_terminal(cx) {
+            self.on_reconnect_terminal(&ReconnectTerminal(terminal.id), window, cx);
+        }
+    }
+
     fn on_new_host(&mut self, _: &NewHost, window: &mut Window, cx: &mut Context<Self>) {
         open_host_dialog(
             None,
@@ -3156,6 +3167,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_disconnect_terminal))
             .on_action(cx.listener(Self::on_duplicate_front_terminal))
             .on_action(cx.listener(Self::on_open_front_terminal_sftp))
+            .on_action(cx.listener(Self::on_reconnect_front_terminal))
             .on_action(cx.listener(Self::on_send_break))
             .on_action(cx.listener(Self::on_open_explorer))
             .on_action(cx.listener(Self::on_explorer_action))

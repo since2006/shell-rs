@@ -87,6 +87,8 @@ gpui_kit::actions!(
         DuplicateFrontTerminal,
         /// 打开 SFTP on the host of the SSH terminal in front.
         OpenFrontTerminalSftp,
+        /// 重新连接 the remote terminal in front, connected or not.
+        ReconnectFrontTerminal,
         /// Show or hide the left dock, whichever list it is showing.
         ToggleHostPanel,
         /// Show or hide the right sidebar, whichever tool it is showing.

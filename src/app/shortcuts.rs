@@ -85,7 +85,7 @@ macro_rules! shortcut {
 }
 
 /// The shortcuts of 设置 › 键盘快捷键, in the order the page lists them.
-pub static SHORTCUTS: [Shortcut; 35] = [
+pub static SHORTCUTS: [Shortcut; 36] = [
     shortcut!(
         "new-host",
         "app.shortcut.new_host",
@@ -259,6 +259,17 @@ pub static SHORTCUTS: [Shortcut; 35] = [
         "cmd-shift-s",
         "ctrl-shift-s",
         OpenFrontTerminalSftp
+    ),
+    // R as a browser reloads (issue #151). Not ⌘R or Ctrl+R: the file
+    // lists' 刷新, and in a terminal the shell's history search.
+    shortcut!(
+        "reconnect-terminal",
+        "app.shortcut.reconnect_terminal",
+        Tabs,
+        &[],
+        "cmd-shift-r",
+        "ctrl-shift-r",
+        ReconnectFrontTerminal
     ),
     // Ctrl+Shift+W elsewhere, as Windows Terminal, GNOME Terminal and
     // Konsole close a tab: Ctrl+W is the shell's in a terminal (readline,
