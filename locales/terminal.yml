@@ -122,6 +122,19 @@ terminal.menu.find:
 terminal.menu.clear:
   zh-CN: 清屏
   en: Clear screen
+terminal.menu.record:
+  zh-CN: 录制当前终端…
+  en: Start recording…
+terminal.menu.stop_recording:
+  zh-CN: 停止录制当前终端
+  en: Stop recording
+# The badge at the top right while a terminal is recorded, and where to.
+terminal.recording.badge:
+  zh-CN: 录制中
+  en: Recording
+terminal.recording.file:
+  zh-CN: 录制到 %{path}
+  en: Recording to %{path}
 terminal.menu.compose:
   zh-CN: 撰写窗格
   en: Compose pane

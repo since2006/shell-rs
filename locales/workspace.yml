@@ -175,6 +175,16 @@ workspace.copied:
 workspace.copied_id:
   zh-CN: 已复制 ID %{id}
   en: Copied ID %{id}
+# 录制当前终端: where the recording was saved, or why there is none.
+workspace.recording.saved:
+  zh-CN: 录制已保存到 %{path}
+  en: Recording saved to %{path}
+workspace.recording.not_started:
+  zh-CN: 无法录制到 %{path}：%{error}
+  en: "Couldn’t record to %{path}: %{error}"
+workspace.recording.stopped:
+  zh-CN: 录制已停止，写入 %{path} 失败：%{error}
+  en: "Recording stopped: couldn’t write %{path}: %{error}"
 workspace.link.open_failed:
   zh-CN: 无法打开链接
   en: Couldn’t open the link

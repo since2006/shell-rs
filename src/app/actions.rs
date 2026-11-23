@@ -83,6 +83,12 @@ gpui_kit::actions!(
         /// A page down the active terminal's scrollback, as
         /// `ScrollTerminalPageUp`.
         ScrollTerminalPageDown,
+        /// 录制当前终端…: choose the file for a recording of the active
+        /// terminal, and start it.
+        RecordTerminal,
+        /// 停止录制当前终端: the active terminal's recording ends, its file
+        /// whole.
+        StopRecordingTerminal,
         /// 复制会话 for the remote terminal in front, from the keyboard.
         DuplicateFrontTerminal,
         /// 打开 SFTP on the host of the SSH terminal in front.

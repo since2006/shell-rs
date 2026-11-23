@@ -21,6 +21,7 @@ mod login_commands;
 mod model;
 mod mouse;
 mod notices;
+mod recording;
 mod run;
 mod scrollbar;
 mod search;
@@ -60,6 +61,7 @@ pub use model::{
     TerminalLifecycle, TerminalSize, TerminalStatus,
 };
 pub use notices::TerminalNotice;
+pub use recording::{RecordingOutcome, recording_file_name};
 pub use run::{
     BusyReason, RunContext, RunEvent, RunFailure, RunHandle, RunProgress, RunShell, RunTiming,
     TerminalRun,

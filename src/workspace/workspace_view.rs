@@ -251,6 +251,9 @@ pub struct Workspace {
     /// UI tests hand in a temporary one, so nothing reads the home
     /// directory.
     pub(super) ssh_dir: Option<PathBuf>,
+    /// The folder the last recording went into, this run: the next one
+    /// is offered there.
+    pub(super) recording_folder: Option<PathBuf>,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -751,6 +754,7 @@ impl Workspace {
             sidebar_widths_save: None,
             switch_end: SwitchEnd::default(),
             ssh_dir: None,
+            recording_folder: None,
             _subscriptions: subscriptions,
         };
         if launch_settings.sidebar_collapsed {
@@ -2166,7 +2170,7 @@ impl Workspace {
     }
 
     /// The terminal of the center tab shown most recently, remote or local.
-    fn active_terminal(&self, cx: &App) -> Option<Entity<TerminalView>> {
+    pub(super) fn active_terminal(&self, cx: &App) -> Option<Entity<TerminalView>> {
         match self.active_tab? {
             CenterTab::Terminal(id) => Some(self.terminals.get(&id)?.read(cx).terminal().clone()),
             CenterTab::LocalTerminal(id) => {
@@ -3230,6 +3234,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_find_previous_in_terminal))
             .on_action(cx.listener(Self::on_dismiss_terminal_find))
             .on_action(cx.listener(Self::on_clear_terminal))
+            .on_action(cx.listener(Self::on_record_terminal))
+            .on_action(cx.listener(Self::on_stop_recording_terminal))
             .on_action(cx.listener(Self::on_scroll_terminal_page_up))
             .on_action(cx.listener(Self::on_scroll_terminal_page_down))
             .on_action(cx.listener(Self::on_toggle_host_panel))

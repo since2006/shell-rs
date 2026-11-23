@@ -20,6 +20,7 @@ mod links;
 mod notices;
 mod projects;
 mod recent_hosts;
+mod recording;
 mod sidebar;
 mod sidebar_widths;
 mod snippets;

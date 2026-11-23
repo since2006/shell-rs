@@ -558,7 +558,7 @@ fn line_end<T>(term: &Term<T>, line: Line) -> Line {
 }
 
 /// The text of the logical line the cursor is on.
-fn cursor_line<T>(term: &Term<T>) -> String {
+pub(super) fn cursor_line<T>(term: &Term<T>) -> String {
     let line = term.grid().cursor.point.line;
     LineText::read(term, line_start(term, line), line_end(term, line)).text
 }

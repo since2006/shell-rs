@@ -2,7 +2,10 @@
 //! the font and the size, links, the mouse for programs and their copies.
 
 use crate::support::*;
-use shellrs::app::{CopyTerminal, DuplicateTerminal, SelectAllTerminal, Shortcut};
+use shellrs::app::{
+    CopyTerminal, DuplicateTerminal, RecordTerminal, SelectAllTerminal, Shortcut,
+    StopRecordingTerminal,
+};
 use shellrs::terminal::RightClick;
 
 fn open_workspace_with_factory(
@@ -1378,6 +1381,158 @@ async fn turning_off_any_mouse_tracking_gives_the_mouse_back(cx: &mut TestAppCon
     terminal.update(cx, |terminal, cx| terminal.copy_selection(cx));
     let copied = cx.read_from_clipboard().and_then(|item| item.text());
     assert_eq!(copied.as_deref().map(str::trim_end), Some("detached"));
+}
+
+/// The terminal's recording badge, while there is one.
+fn recording_badge(cx: &mut TestAppContext, handle: WindowHandle<Root>) -> bool {
+    in_frame(cx, handle, |window, _| {
+        window.try_find("terminal-recording").is_some()
+    })
+}
+
+/// A recording's file, its lines ending as on any system.
+fn recorded(path: &std::path::Path) -> String {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .replace("\r\n", "\n")
+}
+
+/// 录制当前终端 (issue #121): the file is chosen in the save panel, in
+/// Downloads at first, then where the last one went. While it records, the
+/// badge says so; the file gets what the terminal shows from then on, as
+/// text, typing as echoed, the line the cursor is on last; nothing after.
+#[gpui_kit::test]
+async fn a_recording_keeps_what_the_terminal_shows_until_it_stops(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        local_screen(&workspace, cx).contains("会议纪要")
+    })
+    .await;
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("ShellRS-20261123-174322.log");
+
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1_u64), cx);
+        window.dispatch_action(Box::new(RecordTerminal), cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_new_path_selection(|offered| {
+        assert_eq!(offered, std::path::Path::new("/local/tester/Downloads"));
+        Some(path.clone())
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("terminal-recording").is_some()
+    })
+    .await;
+    assert!(path.exists());
+
+    // The fake shell echoes what is typed: Enter and Ctrl+J end a line.
+    in_frame(cx, handle, |window, cx| {
+        window.input("echo 你好", cx);
+        window.press("enter", cx);
+        window.press("ctrl-j", cx);
+        window.input("exit", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        local_screen(&workspace, cx).contains("exit")
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(StopRecordingTerminal), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.notifications(cx).len() == 1
+    })
+    .await;
+    assert!(!recording_badge(cx, handle));
+    assert_eq!(recorded(&path), "echo 你好\nexit\n");
+
+    // Typed after it stopped: not in it.
+    in_frame(cx, handle, |window, cx| {
+        window.press("enter", cx);
+        window.press("ctrl-j", cx);
+        window.input("later", cx);
+        window.press("enter", cx);
+        window.press("ctrl-j", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        local_screen(&workspace, cx).contains("later")
+    })
+    .await;
+    cx.run_until_parked();
+    assert_eq!(recorded(&path), "echo 你好\nexit\n");
+
+    // The next is offered where this one went; cancelled, none starts.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(RecordTerminal), cx)
+    });
+    cx.run_until_parked();
+    cx.simulate_new_path_selection(|offered| {
+        assert_eq!(offered, folder.path());
+        None
+    });
+    cx.run_until_parked();
+    assert!(!recording_badge(cx, handle));
+}
+
+/// Closing the tab of a terminal being recorded keeps the recording, the
+/// line the cursor was on last.
+#[gpui_kit::test]
+async fn closing_a_recorded_terminal_keeps_its_recording(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory).await;
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("closed.log");
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1_u64), cx);
+        window.dispatch_action(Box::new(RecordTerminal), cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_new_path_selection(|_| Some(path.clone()));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("terminal-recording").is_some()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.input("uptime", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        local_screen(&workspace, cx).contains("uptime")
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window.click(("close-local-terminal", 1_u64), cx)
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.notifications(cx).len() == 1
+    })
+    .await;
+    assert_eq!(recorded(&path), "uptime\n");
+}
+
+/// A file that cannot be written says why, and nothing records.
+#[gpui_kit::test]
+async fn a_recording_that_cannot_start_says_why(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, _) = open_running_local_terminal(cx, factory).await;
+    let folder = tempfile::tempdir().unwrap();
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1_u64), cx);
+        window.dispatch_action(Box::new(RecordTerminal), cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_new_path_selection(|_| Some(folder.path().join("gone").join("x.log")));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.notifications(cx).len() == 1
+    })
+    .await;
+    assert!(!recording_badge(cx, handle));
 }
 
 #[gpui_kit::test]

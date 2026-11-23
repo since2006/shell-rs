@@ -1,3 +1,5 @@
+use std::fs::File;
+use std::io;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -25,8 +27,8 @@ use unicode_width::UnicodeWidthChar as _;
 
 use crate::app::{
     CatalogIcon, ClearTerminal, CopyTerminal, DismissTerminalFind, FindInTerminal,
-    FindNextInTerminal, FindPreviousInTerminal, PasteTerminal, SelectAllTerminal,
-    ToggleComposePane,
+    FindNextInTerminal, FindPreviousInTerminal, PasteTerminal, RecordTerminal, SelectAllTerminal,
+    StopRecordingTerminal, ToggleComposePane,
 };
 use crate::connection::{ConnectionPromptReply, Latency};
 use crate::i18n::{UiLocale, t};
@@ -35,6 +37,7 @@ use super::box_drawing::{self, CellMetrics};
 use super::font;
 use super::held_keys::RepeatingKeys;
 use super::mouse::{self, MouseReport, ReportButton, ReportKind};
+use super::recording::RecordingOutcome;
 use super::scrollbar::ScrollbackHandle;
 use super::search::SearchMark;
 use super::{
@@ -317,6 +320,8 @@ pub struct TerminalView {
     reconnect_pending: bool,
     find: Option<FindBar>,
     cursor_visible: bool,
+    /// The recording badge's dot, lit or dimmed: it blinks.
+    recording_lit: bool,
     focused: bool,
     hovered_link: Option<HoveredLink>,
     /// The hovered link's address shows, the pointer having rested on it.
@@ -390,6 +395,16 @@ impl TerminalView {
                             this.cursor_visible = true;
                             cx.notify();
                         }
+                        // A recorder's light, focused or not; lit for good
+                        // where motion is to be reduced.
+                        let recording = this.engine.read(cx).recording().is_some();
+                        if recording && !cx.reduce_motion() {
+                            this.recording_lit = !this.recording_lit;
+                            cx.notify();
+                        } else if !this.recording_lit {
+                            this.recording_lit = true;
+                            cx.notify();
+                        }
                     })
                     .is_err()
                 {
@@ -421,6 +436,7 @@ impl TerminalView {
             reconnect_pending: false,
             find: None,
             cursor_visible: true,
+            recording_lit: true,
             focused: false,
             hovered_link: None,
             link_tooltip: false,
@@ -642,6 +658,36 @@ impl TerminalView {
         self.cursor_visible = true;
         cx.notify();
         Ok(())
+    }
+
+    /// Whether the terminal is being recorded (录制当前终端).
+    pub fn is_recording(&self, cx: &App) -> bool {
+        self.engine.read(cx).recording().is_some()
+    }
+
+    /// Record what the terminal shows from now on into `file`, at `path`:
+    /// see [`TerminalEngine::start_recording`].
+    pub fn start_recording(
+        &mut self,
+        path: PathBuf,
+        file: File,
+        cx: &mut Context<Self>,
+    ) -> io::Result<(u64, RecordingOutcome)> {
+        self.recording_lit = true;
+        self.engine
+            .update(cx, |engine, cx| engine.start_recording(path, file, cx))
+    }
+
+    pub fn stop_recording(&mut self, cx: &mut Context<Self>) {
+        self.engine
+            .update(cx, |engine, cx| engine.stop_recording(cx));
+    }
+
+    /// The recording numbered `id` could not go on: its file could not be
+    /// written.
+    pub fn recording_failed(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.engine
+            .update(cx, |engine, cx| engine.recording_failed(id, cx));
     }
 
     /// Clear the screen and the scrollback, keeping the prompt line.
@@ -1073,6 +1119,7 @@ impl TerminalView {
         let has_selection = engine.has_selection();
         let lifecycle = engine.lifecycle().clone();
         let can_clear = engine.accepts_clear();
+        let recording = engine.recording().is_some();
         let can_paste = lifecycle.accepts_input()
             && cx
                 .read_from_clipboard()
@@ -1120,6 +1167,28 @@ impl TerminalView {
                     Box::new(ClearTerminal),
                     !can_clear,
                 )
+                .map(|menu| {
+                    if recording {
+                        // In the red of the recording badge's dot: once it
+                        // records, stopping is what the user comes for.
+                        let red = cx.theme().danger;
+                        menu.menu_element_with_icon(
+                            Icon::new(CatalogIcon::CircleStop).text_color(red),
+                            Box::new(StopRecordingTerminal),
+                            move |_, _| {
+                                div()
+                                    .text_color(red)
+                                    .child(t!("terminal.menu.stop_recording"))
+                            },
+                        )
+                    } else {
+                        menu.menu_with_icon(
+                            t!("terminal.menu.record"),
+                            Icon::new(CatalogIcon::CircleDot),
+                            Box::new(RecordTerminal),
+                        )
+                    }
+                })
                 .menu_with_check(
                     t!("terminal.menu.compose"),
                     compose_shown,
@@ -1258,6 +1327,11 @@ impl EntityInputHandler for TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let snapshot = self.engine.read(cx).snapshot();
+        let recording = self
+            .engine
+            .read(cx)
+            .recording()
+            .map(|path| SharedString::from(path.display().to_string()));
         let font = TerminalFont::current(cx);
         let scrollback = ScrollbackHandle::new(
             self.engine.read(cx).scrollback(),
@@ -1366,8 +1440,23 @@ impl Render for TerminalView {
                     )
                     .child(Scrollbar::vertical(&scrollback).id("terminal-scrollbar")),
             )
-            .when_some(self.find.as_ref(), |container, find| {
-                container.child(self.render_find_bar(find, cx))
+            // The find bar and the recording's badge share the top right
+            // corner, the badge below the bar.
+            .when(self.find.is_some() || recording.is_some(), |container| {
+                container.child(
+                    v_flex()
+                        .absolute()
+                        .top_2()
+                        .right_4()
+                        .items_end()
+                        .gap_1()
+                        .when_some(self.find.as_ref(), |corner, find| {
+                            corner.child(self.render_find_bar(find, cx))
+                        })
+                        .when_some(recording, |corner, path| {
+                            corner.child(self.render_recording_badge(path, cx))
+                        }),
+                )
             })
     }
 }
@@ -1391,6 +1480,40 @@ fn link_tooltip(uri: SharedString, window: &mut Window, cx: &mut App) -> AnyView
 }
 
 impl TerminalView {
+    /// 录制中, while the terminal is recorded: a dot that blinks as a
+    /// recorder's light, and the file it goes into on hover.
+    fn render_recording_badge(&self, path: SharedString, cx: &App) -> impl IntoElement {
+        let label = t!("terminal.recording.badge");
+        h_flex()
+            .id("terminal-recording")
+            .test_support()
+            .aria_label(label.clone())
+            // Over the text, like the find bar: a click here selects
+            // nothing underneath.
+            .occlude()
+            .gap_1p5()
+            .px_2()
+            .py_0p5()
+            .bg(cx.theme().popover)
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded(cx.theme().radius)
+            .shadow_md()
+            .text_xs()
+            .text_color(cx.theme().popover_foreground)
+            .tooltip(move |window, cx| {
+                Tooltip::new(t!("terminal.recording.file", path = path.clone())).build(window, cx)
+            })
+            .child(
+                div()
+                    .size_2()
+                    .rounded_full()
+                    .bg(cx.theme().danger)
+                    .when(!self.recording_lit, |dot| dot.opacity(0.3)),
+            )
+            .child(label)
+    }
+
     fn render_find_bar(&self, find: &FindBar, cx: &App) -> impl IntoElement {
         let has_query = !find.input.read(cx).value().is_empty();
         let position = self
@@ -1404,9 +1527,6 @@ impl TerminalView {
             // Keep the terminal underneath from taking clicks on the bar,
             // which would move focus and start a selection there.
             .occlude()
-            .absolute()
-            .top_2()
-            .right_4()
             .w_80()
             .gap_1()
             .p_1()

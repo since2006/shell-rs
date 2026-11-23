@@ -1,5 +1,7 @@
 use std::cell::RefCell;
-use std::path::PathBuf;
+use std::fs::File;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -36,6 +38,7 @@ use super::login_commands::LoginTyping;
 use super::login_commands::QUIET;
 use super::mouse::TrackingOff;
 use super::notices::{NoticeScanner, ProgramNotice, TerminalNotice};
+use super::recording::{Recorded, RecordingLines, RecordingOutcome, record};
 use super::run::{BusyReason, RunFailure, RunHandle};
 use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
 use super::zmodem::{Fed, Shown, Zmodem, ZmodemControl, ZmodemDirection, ZmodemReply};
@@ -122,10 +125,23 @@ pub struct TerminalEngine {
     /// The folder the shell last reported on this connection.
     directory: Option<ReportedDirectory>,
     reconnect_on_enter: bool,
+    /// The recording going on (录制当前终端), if any.
+    recording: Option<ActiveRecording>,
+    /// Where the parser thread, this connection's and the next one's, hands
+    /// the recording its lines: reconnecting goes on recording.
+    recording_lines: RecordingLines,
+    /// The recordings started so far, to number the next.
+    recordings: u64,
     generation: u64,
     size: TerminalSize,
     event_sender: mpsc::Sender<TerminalUiEvent>,
     event_task: Option<gpui_kit::Task<()>>,
+}
+
+/// A recording going on: which one, and the file it goes into.
+struct ActiveRecording {
+    id: u64,
+    path: PathBuf,
 }
 
 impl TerminalEngine {
@@ -138,13 +154,17 @@ impl TerminalEngine {
         let (event_sender, event_receiver) = mpsc::channel();
         let highlights = Arc::new(Mutex::new(TerminalHighlights::current(cx)));
         let theme = Arc::new(Mutex::new(TerminalColors::current(cx)));
+        let recording_lines = RecordingLines::default();
         let runtime = TerminalRuntime::start(
             generation,
             size,
             Launch::of(&factory),
             event_sender.clone(),
-            highlights.clone(),
-            theme.clone(),
+            ParserShared {
+                highlights: highlights.clone(),
+                theme: theme.clone(),
+                recording: recording_lines.clone(),
+            },
             TerminalInteraction::current(cx),
         );
         let channels = TerminalChannels::default();
@@ -183,6 +203,9 @@ impl TerminalEngine {
             channels,
             directory: None,
             reconnect_on_enter: false,
+            recording: None,
+            recording_lines,
+            recordings: 0,
             generation,
             size,
             event_sender,
@@ -334,8 +357,11 @@ impl TerminalEngine {
             self.size,
             Launch::of(&self.factory),
             self.event_sender.clone(),
-            self.highlights.clone(),
-            self.theme.clone(),
+            ParserShared {
+                highlights: self.highlights.clone(),
+                theme: self.theme.clone(),
+                recording: self.recording_lines.clone(),
+            },
             TerminalInteraction::current(cx),
         );
         self.channels.attach(self.runtime.commands.clone());
@@ -594,6 +620,69 @@ impl TerminalEngine {
 
     pub fn has_selection(&self) -> bool {
         self.selection_text().is_some_and(|text| !text.is_empty())
+    }
+
+    /// The file the recording going on goes into, if there is one.
+    pub fn recording(&self) -> Option<&Path> {
+        self.recording
+            .as_ref()
+            .map(|recording| recording.path.as_path())
+    }
+
+    /// Record what the terminal shows from now on into `file`, which is at
+    /// `path`, until [`Self::stop_recording`] or the terminal closes; the
+    /// one going on stops first. Its number, for [`Self::recording_failed`],
+    /// and how it ends.
+    pub fn start_recording(
+        &mut self,
+        path: PathBuf,
+        file: File,
+        cx: &mut gpui_kit::Context<Self>,
+    ) -> io::Result<(u64, RecordingOutcome)> {
+        self.stop_recording(cx);
+        let (lines, outcome) = record(file)?;
+        *lock_recording(&self.recording_lines) = Some(lines);
+        self.recordings += 1;
+        self.recording = Some(ActiveRecording {
+            id: self.recordings,
+            path,
+        });
+        cx.notify();
+        Ok((self.recordings, outcome))
+    }
+
+    /// End the recording going on, the line the cursor is on last: its
+    /// outcome tells once the file has all of it.
+    pub fn stop_recording(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        if self.recording.take().is_some() {
+            self.end_recording();
+            cx.notify();
+        }
+    }
+
+    /// The recording numbered `id` stopped by itself: its file could not
+    /// be written.
+    pub fn recording_failed(&mut self, id: u64, cx: &mut gpui_kit::Context<Self>) {
+        if self
+            .recording
+            .as_ref()
+            .is_some_and(|recording| recording.id == id)
+        {
+            self.recording = None;
+            lock_recording(&self.recording_lines).take();
+            cx.notify();
+        }
+    }
+
+    fn end_recording(&self) {
+        let Some(lines) = lock_recording(&self.recording_lines).take() else {
+            return;
+        };
+        let term = self.runtime.term.lock();
+        let open = (!term.mode().contains(TermMode::ALT_SCREEN))
+            .then(|| super::highlight::cursor_line(&term))
+            .filter(|line| !line.trim().is_empty());
+        let _ = lines.send(Recorded::End(open));
     }
 
     pub fn mode(&self) -> TermMode {
@@ -855,8 +944,16 @@ impl gpui_kit::EventEmitter<TerminalEvent> for TerminalEngine {}
 
 impl Drop for TerminalEngine {
     fn drop(&mut self) {
+        // Closing the tab keeps what it recorded.
+        self.end_recording();
         self.runtime.shutdown();
     }
+}
+
+fn lock_recording(
+    lines: &RecordingLines,
+) -> std::sync::MutexGuard<'_, Option<mpsc::Sender<Recorded>>> {
+    lines.lock().unwrap_or_else(|error| error.into_inner())
 }
 
 #[derive(Clone, Debug)]
@@ -923,16 +1020,29 @@ impl Launch {
     }
 }
 
+/// What a terminal shares with the parser thread of each of its
+/// connections.
+#[derive(Clone)]
+struct ParserShared {
+    highlights: SharedHighlights,
+    theme: SharedTheme,
+    recording: RecordingLines,
+}
+
 impl TerminalRuntime {
     fn start(
         generation: u64,
         size: TerminalSize,
         launch: Launch,
         ui_events: mpsc::Sender<TerminalUiEvent>,
-        highlights: SharedHighlights,
-        theme: SharedTheme,
+        shared: ParserShared,
         interaction: TerminalInteraction,
     ) -> Self {
+        let ParserShared {
+            highlights,
+            theme,
+            recording,
+        } = shared;
         let (commands, command_receiver) = mpsc::channel();
         let (transport_events, transport_receiver) = async_channel::unbounded();
         let shared_size = Arc::new(Mutex::new(size));
@@ -959,6 +1069,7 @@ impl TerminalRuntime {
             processor: Processor::new(),
             notices: NoticeScanner::default(),
             mouse: TrackingOff::default(),
+            recording,
             watcher: LineWatcher::new(current(&highlights)),
             highlights,
             proxy: parser_proxy,
@@ -1418,6 +1529,8 @@ struct Parser {
     /// Alacritty turns mouse tracking off one mode at a time, xterm all of
     /// it at once.
     mouse: TrackingOff,
+    /// Where the lines go while the terminal is recorded.
+    recording: RecordingLines,
     watcher: LineWatcher,
     highlights: SharedHighlights,
     proxy: TerminalEventProxy,
@@ -1475,6 +1588,7 @@ impl Parser {
     /// the programs' notifications and folders, an `exec --terminal` run.
     fn output(&mut self, bytes: &[u8]) {
         self.watcher.sync(current(&self.highlights));
+        let recording = lock_recording(&self.recording).clone();
         // The lines are only read under the lock; the rules match them
         // once it is let go.
         let lines = {
@@ -1482,7 +1596,7 @@ impl Parser {
             // Output that never pauses gives the wait no chance to see the
             // time is up.
             end_overdue_sync(&mut self.processor, &mut term);
-            let watching = self.watcher.is_watching();
+            let watching = self.watcher.is_watching() || recording.is_some();
             let mut lines = Vec::new();
             self.mouse.feed(bytes, |piece| {
                 lines.extend(advance_watching(
@@ -1495,6 +1609,11 @@ impl Parser {
             self.proxy.answer(&term);
             lines
         };
+        if let Some(recording) = recording
+            && !lines.is_empty()
+        {
+            let _ = recording.send(Recorded::Lines(lines.clone()));
+        }
         if let Some(hit) = self.watcher.check(lines, Instant::now()) {
             self.proxy.send(TerminalUiEventKind::Keyword(hit));
         }
@@ -2335,18 +2454,72 @@ mod tests {
 
     /// A terminal whose transport plays `script`.
     fn run_script(script: Vec<TerminalTransportEvent>) -> TerminalRuntime {
+        run_script_recording(script, Arc::default())
+    }
+
+    /// The same, recorded into `recording` from the start.
+    fn run_script_recording(
+        script: Vec<TerminalTransportEvent>,
+        recording: RecordingLines,
+    ) -> TerminalRuntime {
         let (ui_events, _) = mpsc::channel();
         TerminalRuntime::start(
             1,
             TerminalSize::new(40, 4, 8, 16),
             Launch::typing_nothing(Box::new(ScriptedTransport(script))),
             ui_events,
-            Arc::default(),
-            Arc::new(Mutex::new(TerminalTheme::default_for(
-                gpui_kit::component::ThemeMode::Light,
-            ))),
+            ParserShared {
+                highlights: Arc::default(),
+                theme: Arc::new(Mutex::new(TerminalTheme::default_for(
+                    gpui_kit::component::ThemeMode::Light,
+                ))),
+                recording,
+            },
             TerminalInteraction::default(),
         )
+    }
+
+    /// 录制当前终端 (issue #121) keeps the text the screen shows: no colors
+    /// or controls, a line as a carriage return left it, a wrapped line
+    /// whole, nothing of a full-screen program.
+    #[test]
+    fn a_recording_gets_the_lines_as_the_screen_shows_them() {
+        let (lines, recorded) = mpsc::channel();
+        let _runtime = run_script_recording(
+            vec![
+                TerminalTransportEvent::Started,
+                TerminalTransportEvent::Output(
+                    "\x1b[01;32mroot@web1\x1b[00m:~# ls\r\nalpha.txt  会议纪要.md\r\n"
+                        .as_bytes()
+                        .to_vec(),
+                ),
+                TerminalTransportEvent::Output(b"10%\r100% done\r\n".to_vec()),
+                TerminalTransportEvent::Output(format!("{}\r\n", "x".repeat(50)).into_bytes()),
+                TerminalTransportEvent::Output(
+                    b"\x1b[?1049hvim's screen\r\n~\r\n\x1b[?1049lroot@web1:~# ".to_vec(),
+                ),
+            ],
+            Arc::new(Mutex::new(Some(lines))),
+        );
+        let mut got = Vec::new();
+        while got.len() < 4 {
+            match recorded.recv_timeout(Duration::from_secs(2)) {
+                Ok(Recorded::Lines(lines)) => got.extend(lines),
+                Ok(Recorded::End(_)) => panic!("only the engine ends it"),
+                Err(error) => panic!("{error}: {got:?}"),
+            }
+        }
+        assert_eq!(
+            got,
+            [
+                "root@web1:~# ls".to_string(),
+                "alpha.txt  会议纪要.md".into(),
+                "100% done".into(),
+                "x".repeat(50),
+            ]
+        );
+        // The prompt has no line feed yet, and vim's lines never go in.
+        assert!(recorded.recv_timeout(Duration::from_millis(200)).is_err());
     }
 
     /// The screen's text once it holds `text`, or what it holds after two
@@ -2506,10 +2679,13 @@ mod tests {
                 login: LoginTyping::new(lines),
             },
             ui_events,
-            Arc::default(),
-            Arc::new(Mutex::new(TerminalTheme::default_for(
-                gpui_kit::component::ThemeMode::Light,
-            ))),
+            ParserShared {
+                highlights: Arc::default(),
+                theme: Arc::new(Mutex::new(TerminalTheme::default_for(
+                    gpui_kit::component::ThemeMode::Light,
+                ))),
+                recording: Arc::default(),
+            },
             TerminalInteraction::default(),
         );
         events.send(TerminalTransportEvent::Started).unwrap();
