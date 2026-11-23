@@ -484,6 +484,13 @@ id_actions! {
     DeleteCredential(CredentialId);
 }
 
+/// Open what a promotion on the start page links to, in the browser.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct OpenPromotion {
+    pub url: SharedString,
+}
+
 /// Move a host-tree row by dropping it beside a peer or into a group.
 #[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = shellrs, no_json)]

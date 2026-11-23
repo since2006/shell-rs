@@ -61,6 +61,7 @@ use crate::host::{
     open_quick_connect_dialog, open_temporary_connection_dialog,
 };
 use crate::i18n::t;
+use crate::promotion::{PromotionServices, Promotions};
 use crate::settings::{
     Appearance, DEFAULT_INTERFACE_FONT_SIZE, SettingsPanel, SettingsPanelEvent, SettingsStore,
     SettingsStoreEvent, WindowSettings,
@@ -199,6 +200,8 @@ pub struct Workspace {
     /// in UI tests, so it never reaches the network unless a test hands it
     /// fakes.
     pub(super) updater: Entity<Updater>,
+    /// 开始页的推广, read while the start page shows.
+    pub(super) promotions: Entity<Promotions>,
     /// 同步. Without services in UI tests, so it never reaches a folder
     /// unless a test hands it a store.
     pub(super) sync: Entity<SyncService>,
@@ -347,6 +350,7 @@ impl Workspace {
         this.sync.update(cx, |sync, cx| {
             sync.set_services(crate::sync::system_services(), cx)
         });
+        this.set_promotion_services(PromotionServices::system(), cx);
         if let Some(services) = AnalyticsServices::system() {
             let enabled = this.settings.read(cx).settings().analytics.enabled;
             this.set_analytics(Analytics::start(services, enabled), window, cx);
@@ -398,7 +402,10 @@ impl Workspace {
             telnet: telnet_terminal_provider,
             serial: serial_terminal_provider,
         };
-        let recent = cx.new(|cx| RecentHosts::new(store.clone(), focus_handle.clone(), cx));
+        let promotions = cx.new(|_| Promotions::new());
+        let recent = cx.new(|cx| {
+            RecentHosts::new(store.clone(), promotions.clone(), focus_handle.clone(), cx)
+        });
         let compose =
             cx.new(|cx| ComposePane::new(store.clone(), focus_handle.clone(), window, cx));
         let (dock_area, skin) = WorkspaceDockSkin::dock_area(
@@ -727,6 +734,7 @@ impl Workspace {
             cli_server: None,
             locked_links: Vec::new(),
             updater,
+            promotions,
             sync,
             analytics: None,
             local_terminal_provider,
@@ -990,6 +998,8 @@ impl Workspace {
         if empty && !was_empty {
             self.recent
                 .update(cx, |recent, cx| recent.clear_selection(cx));
+            self.promotions
+                .update(cx, |promotions, cx| promotions.page_shown(cx));
             let page = self.recent.read(cx).focus_handle(cx);
             window.focus(&page, cx);
         }
@@ -3202,6 +3212,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_open_download_page))
             .on_action(cx.listener(Self::on_open_changelog))
             .on_action(cx.listener(Self::on_open_website))
+            .on_action(cx.listener(Self::on_open_promotion))
             .on_action(cx.listener(Self::on_set_up_sync))
             .on_action(cx.listener(Self::on_set_up_sync_in))
             .on_action(cx.listener(Self::on_set_up_webdav_sync))

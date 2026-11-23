@@ -27,6 +27,7 @@ mod monitor;
 mod netstat;
 mod processes;
 mod projects;
+mod promotion;
 mod serial;
 mod services;
 mod settings;

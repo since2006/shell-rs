@@ -19,6 +19,7 @@ mod imports;
 mod links;
 mod notices;
 mod projects;
+mod promotions;
 mod recent_hosts;
 mod recording;
 mod sidebar;

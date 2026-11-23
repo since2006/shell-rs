@@ -94,7 +94,13 @@ icon_assets!(
         FileSearch,
         SquareDashedText,
         CopyPlus,
-        CloudSync
+        CloudSync,
+        // Icons a promotion's text link may start with (`promotion::ICONS`).
+        Smartphone,
+        TabletSmartphone,
+        Gift,
+        Sparkles,
+        Rocket
     ]
 );
 

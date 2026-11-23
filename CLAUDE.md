@@ -30,7 +30,7 @@ ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH �
 - **外部 CLI**（给 AI Agent 用）：`hosts` / `credentials` 的增删改查，加 `exec`、`upload`、`download`、`sync`；对象叫 host；不做交互式 shell、不做 MCP。秘密只写不读。删除不确认、不关已打开的标签。`exec --terminal` 把命令打进已打开的终端（给只许登录一次的堡垒机），先发 ^C，不做忙碌检测（用户定的）。
 - **本地终端**：Shell 设置是输入框加常用 shell 下拉；留空自动检测（Windows 优先 PowerShell 7）。
 - **从访达打开文件夹**（issue #146，用户定的）：macOS 上 `Info.plist.in` 声明能打开文件夹（`public.folder`，`LSHandlerRank` 为 Alternate，绝不当打开文件夹的默认程序），系统交来的文件夹（`app/opened_folders.rs`，GPUI 的 `on_open_urls`）由工作区按时取走，各开一个本地终端（同 ⌘T，不进「项目」）；只认文件夹，文件不理；应用锁着时等解锁。Windows 资源管理器右键先不做。
-- **开始页**：没有标签时显示「最近连接」和「快速连接」。
+- **开始页**：没有标签时显示「最近连接」和「快速连接」；只有列表滚动，标题和按钮固定。底部有一小块官网推荐（`promotion/`，用户定的）：有内容才显示，服务端 `enabled` 可整体关掉，客户端不设开关，最多每 3 小时读一次，单独一项靠左；格式、上限见模块文档和网站 README。
 - **右侧栏**：只跟着终端出现，工作区级一份；开没开、开哪个工具按主机记（存在主机表里，切标签也跟着变，issue #46），没开过的主机收起，本地终端共用一份（存设置里）；分屏时跟最近在前的终端，本地远程都算（用户定的）。本地终端旁只有「项目」和「命令片段」（「项目」在前；片段打进本地终端，Windows 上不清行，同 Windows 主机）；远程终端旁十一个工具：命令片段、历史命令、文件、tmux、Docker、Kubernetes、系统服务、进程管理、网络连接、系统监控、GPU/NPU；在「设置 › 终端 › 侧栏功能」里切换显示（GPU/NPU、Kubernetes 默认不显示），只在设置里改。按主机系统过滤工具。工具在终端自己的连接上执行命令；危险操作先确认，非 root 用 `sudo -n`；列表默认不自动刷新，定时读的只在显示时读。「文件」开在终端自己的连接上、随终端走；目录跟随靠 OSC 7，经用户同意才往服务器写配置；「目录跟随」开关同右侧栏按主机记（主机表的 `directory_follow`，没切换过的照设置），只管之后打开的「文件」（用户定的）。
 - **命令片段**：分类像主机分组一样任意嵌套、拖动排序（片段拖到片段旁或分类上，分类拖到中间成为子分类，拖到空白处回最外层），没有分类的片段在最外层、分类后面，不再有「未分类」；每行只显示名称，悬停在行左边显示命令；同一层级的分类不能重名（同主机分组）；顺序和嵌套跟着同步（用户定的）。
 - **项目**（本地终端）：右侧栏「项目」像主机一样保存本地终端，可以不分组；分组只有名字、不嵌套，和磁盘目录无关，分组和终端都能拖动排序，新建按钮在标题栏；删除终端连标签一起关，开着的才确认（用户试过「项目=目录+启动命令」和「目录列表」两版，都不要）。分组的「+」直接开一个终端、不填东西；关掉标签终端还在（变灰），点一下重开。每个终端自动记住 shell 最后所在的文件夹（Windows 读不到就回主目录），退出时开着的（顺序、在前的）随时写库，下次启动在原文件夹重开；「保留终端内容」（默认开）关标签和退出时记下最后 1000 行输出，重开时先显示。列表和标签上的名字跟 shell 和程序设的标题走（关标签、重启后记着最后一个），手动改过名的固定用那个名字（用户定的）。⌘T 的本地终端和分屏不恢复。
@@ -100,7 +100,7 @@ Cargo workspace，`cargo` 命令默认覆盖前四个包：
 - `sftp/`：重新导出核心的传输引擎（批次、并行、断点续传、重连），加上本机侧（目录、废纸篓）、引擎事件的文案和接到 SSH 的胶水。`explorer/`：SFTP 标签和右侧栏「文件」的界面、查找文件、预览。`editor/`：编辑器标签。
 - `forward/`：端口转发的运行和界面。`credential/`：凭据界面。`project/`：「项目」的树和对话框（模型在主机核心，打开、保存和恢复终端在 `workspace/projects.rs`）。
 - `monitor/`、`gpu/`、`netstat/`、`processes/`、`services/`、`docker/`、`kubernetes/`、`tmux/`、`history/`、`snippets/`：右侧栏工具，各自是「命令 + 纯解析模型 + 面板」。
-- `secrets/`：系统钥匙串（`KeychainSecretStore`），接口和其余实现在主机核心。`settings/`：设置与设置页（「云同步」页在 `sync_page.rs`）。`cli/`：外部 CLI。`update/`：在线升级。`analytics/`：匿名统计。
+- `secrets/`：系统钥匙串（`KeychainSecretStore`），接口和其余实现在主机核心。`settings/`：设置与设置页（「云同步」页在 `sync_page.rs`）。`cli/`：外部 CLI。`update/`：在线升级。`promotion/`：开始页底部的官网推荐。`analytics/`：匿名统计。
 - `sync/`：重新导出主机核心的同步，加上应用自己的：`SyncService`（什么时候同步，以及创建、加入、改密码、移除设备、关闭这些任务）、对话框和错误的文案（`describe.rs`）；一轮怎么走在核心的 `sync/round.rs`，导出、应用记录在核心的 `data/sync.rs`，处理器在 `workspace/sync.rs`。
 - `workspace/`：窗口壳，持有 store、`DockArea` 和**全部动作处理器**，按领域拆文件。`shared/`：多个功能共用的展示片段。
 
@@ -113,7 +113,7 @@ Cargo workspace，`cargo` 命令默认覆盖前四个包：
 - **登录快照在 UI 线程解析**：工作线程拿到的是查好凭据和跳板的 `HostLogin`，不读 store。
 - **对外只给 `PublicId`**，不给内部 id。
 - **改表**：升 `SCHEMA_VERSION`、加一步迁移和「旧库升级后与新库比对」的测试；表都是 `STRICT`；库只往前升，迁移前先备份。
-- **发布后不能改的标识**：更新清单地址和平台 key、统计计数的键和安装类型、凭据的 `keychain_id`、同步密钥和同步位置登录密钥（WebDAV 密码、S3 Secret Key）的钥匙串账户 `sync:keyring`、`sync:login`、`Shortcut` 的 `id`、`ToolKind::key`、主题 key、`panel_name()`、目录跟随的标记文本；同步的一切（`crates/shellrs-sync/FORMAT.md`：远程目录和文件名、`SRSY` 信封、`vault.json` 字段、记录的 kind 和字段名、配置码的 `shellrs-sync:` 前缀和 `SRSC` 信封及其载荷的字段名）。
+- **发布后不能改的标识**：更新清单地址和平台 key、开始页推荐的清单地址和字段名、统计计数的键和安装类型、凭据的 `keychain_id`、同步密钥和同步位置登录密钥（WebDAV 密码、S3 Secret Key）的钥匙串账户 `sync:keyring`、`sync:login`、`Shortcut` 的 `id`、`ToolKind::key`、主题 key、`panel_name()`、目录跟随的标记文本；同步的一切（`crates/shellrs-sync/FORMAT.md`：远程目录和文件名、`SRSY` 信封、`vault.json` 字段、记录的 kind 和字段名、配置码的 `shellrs-sync:` 前缀和 `SRSC` 信封及其载荷的字段名）。
 - **一个数据目录只跑一个 ShellRS**：启动时先连外部 CLI 的套接字，连得上就交给已在运行的那个。CLI 协议只加变体，不升版本。
 
 ### 多语言
@@ -184,7 +184,7 @@ Cargo workspace，`cargo` 命令默认覆盖前四个包：
 - 外部 CLI 经正在运行的应用执行，命令本身不读钥匙串、不开数据库；改动在 UI 线程逐条做。Unix 套接字 0600 并核对 uid，Windows 用带 DACL 的命名管道。exec 和传输都不许挂住。
 - `exec --terminal` 的细节在 `terminal/run.rs`；真实 shell 的测试在 Docker 里（CI：`shells.yml`）。
 - **Windows** 只在 CI 上编译和测试：`windows.yml` 按路径触发，新加 `cfg(windows)` 代码的文件要加进那个列表。发布版是 GUI 子系统，命令行由 `shellrs-cli.exe` 承担。C 运行库静态链接（`.cargo/config.toml` 的 `+crt-static`）：动态链接要 `VCRUNTIME140.dll`，LTSC 版和没装 VC++ 运行库的系统启动不了；`scripts/windows-runtime.ps1` 在 CI 里查两个 exe 的导入表。
-- 在线升级和统计在 UI 测试里都没有真实服务，测试从不联网；统计新加计数要同步两份手册「隐私」一节的清单。
+- 在线升级、统计和开始页推荐在 UI 测试里都没有真实服务，测试从不联网；统计新加计数要同步两份手册「隐私」一节的清单。
 - **发布走 tag**（需人工批准）。更新日志由改版本号的提交写，中英两份（`CHANGELOG.zh.md`、`CHANGELOG.md`）都要有，功能提交不改。
 - macOS 上关窗口是隐藏，⌘Q 才退出。
 
