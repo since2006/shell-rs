@@ -1337,6 +1337,49 @@ async fn programs_that_ask_for_the_mouse_hear_clicks_and_the_wheel(cx: &mut Test
     take_written(cx, handle, &factory, "\x1b[<64;5;2M").await;
 }
 
+/// A program that turned on every motion (1003) and turns it off as 1000
+/// and 1002, as tmux 2.4 to 3.1 do on detaching, gives the mouse back, as
+/// in xterm (issue #150): moving it tells the shell nothing, and a drag
+/// selects.
+#[gpui_kit::test]
+async fn turning_off_any_mouse_tracking_gives_the_mouse_back(cx: &mut TestAppContext) {
+    let (handle, workspace, factory) = terminal_printing(
+        cx,
+        "\x1b[?1006h\x1b[?1003h\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1005ldetached",
+        "detached",
+    )
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        let bounds = window.find(("local-terminal", 1_u64)).bounds();
+        let row = cell_center(window, &factory, 0, 1).y;
+        let to = cell_center(window, &factory, 8, 1);
+        window.dispatch_event(
+            MouseMoveEvent {
+                position: to,
+                pressed_button: None,
+                modifiers: gpui_kit::Modifiers::none(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.drag(point(bounds.left() + px(1.), row), to, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(factory.written_text(), "", "the shell hears of no mouse");
+    let terminal = cx.update(|cx| {
+        workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(1))
+            .expect("local terminal exists")
+            .read(cx)
+            .terminal()
+            .clone()
+    });
+    terminal.update(cx, |terminal, cx| terminal.copy_selection(cx));
+    let copied = cx.read_from_clipboard().and_then(|item| item.text());
+    assert_eq!(copied.as_deref().map(str::trim_end), Some("detached"));
+}
+
 #[gpui_kit::test]
 async fn the_scrollbar_scrolls_back_through_the_history(cx: &mut TestAppContext) {
     let text: String = (1..=200).map(|line| format!("line {line}\r\n")).collect();

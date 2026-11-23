@@ -1,8 +1,9 @@
 //! Mouse reporting: what a program that asked for the mouse (vim with
 //! `mouse=a`, htop, tmux) is told of a click, a drag or the wheel, in the
-//! encodings xterm defines.
+//! encodings xterm defines, and when it stops asking.
 
 use alacritty_terminal::term::TermMode;
+use alacritty_terminal::vte::{Params, Parser, Perform};
 
 /// The button a report names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,9 +96,159 @@ pub fn encode(report: MouseReport, mode: TermMode) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// What has Alacritty turn off every mode of mouse tracking.
+pub(super) const TRACKING_OFF: &[u8] = b"\x1b[?1000;1002;1003l";
+
+/// Turns all of mouse tracking off whenever a program turns off any of it,
+/// as xterm and Windows Terminal do: 1000, 1002 and 1003 are one setting
+/// there. Alacritty turns off only the mode named, so 1003 turned on and
+/// then off as 1000 and 1002, as tmux 2.4 to 3.1 do on detaching, left
+/// every motion reported: junk typed at the shell, and a drag selecting
+/// nothing (issue #150).
+///
+/// It reads the output beside Alacritty, with the parser Alacritty reads it
+/// with, and cuts it after each such sequence for `TRACKING_OFF` to go in:
+/// in the output, so a synchronized update holds it back with the rest.
+#[derive(Default)]
+pub(super) struct TrackingOff {
+    parser: Parser,
+}
+
+impl TrackingOff {
+    /// `bytes` for `advance` to hand Alacritty, in pieces, with
+    /// `TRACKING_OFF` after each that turns some tracking off.
+    pub fn feed(&mut self, bytes: &[u8], mut advance: impl FnMut(&[u8])) {
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let mut seen = SeenOff(false);
+            let read = self.parser.advance_until_terminated(&mut seen, rest);
+            advance(&rest[..read]);
+            if seen.0 {
+                advance(TRACKING_OFF);
+            }
+            rest = &rest[read..];
+        }
+    }
+}
+
+/// Whether the sequence just read turned some mouse tracking off.
+struct SeenOff(bool);
+
+impl Perform for SeenOff {
+    /// `CSI ? Pm l`, read as Alacritty reads it: each parameter a mode, a
+    /// sequence with too many intermediates nothing.
+    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char) {
+        self.0 = action == 'l'
+            && intermediates == b"?"
+            && !ignore
+            && params
+                .iter()
+                .any(|param| matches!(param[0], 1000 | 1002 | 1003));
+    }
+
+    fn terminated(&self) -> bool {
+        self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use alacritty_terminal::Term;
+    use alacritty_terminal::event::VoidListener;
+    use alacritty_terminal::term::Config;
+    use alacritty_terminal::term::test::TermSize;
+    use alacritty_terminal::vte::ansi::Processor;
+
     use super::*;
+
+    /// What `TrackingOff` hands on, chunk by chunk.
+    fn pieces(chunks: &[&[u8]]) -> Vec<Vec<u8>> {
+        let mut off = TrackingOff::default();
+        let mut pieces = Vec::new();
+        for chunk in chunks {
+            off.feed(chunk, |piece| pieces.push(piece.to_vec()));
+        }
+        pieces
+    }
+
+    fn bytes(pieces: &[&[u8]]) -> Vec<Vec<u8>> {
+        pieces.iter().map(|piece| piece.to_vec()).collect()
+    }
+
+    /// The tracking modes on after `chunks`, through `TrackingOff` into
+    /// Alacritty as the parser thread feeds it.
+    fn tracking_after(chunks: &[&[u8]]) -> TermMode {
+        let mut term = Term::new(Config::default(), &TermSize::new(80, 24), VoidListener);
+        let mut processor: Processor = Processor::new();
+        let mut off = TrackingOff::default();
+        for chunk in chunks {
+            off.feed(chunk, |piece| processor.advance(&mut term, piece));
+        }
+        *term.mode() & TermMode::MOUSE_MODE
+    }
+
+    #[test]
+    fn turning_off_any_tracking_turns_off_all_of_it() {
+        // What tmux 3.0a sends on detaching, with 1003 on.
+        let detach: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1006l\x1b[?1005l\x1b[?1049l$ ";
+        assert_eq!(
+            pieces(&[detach]),
+            bytes(&[
+                b"\x1b[?1000l",
+                TRACKING_OFF,
+                b"\x1b[?1002l",
+                TRACKING_OFF,
+                b"\x1b[?1006l\x1b[?1005l\x1b[?1049l$ ",
+            ])
+        );
+        // Several modes in one, split between chunks.
+        assert_eq!(
+            pieces(&[b"a\x1b[?10", b"06;1003lb"]),
+            bytes(&[b"a\x1b[?10", b"06;1003l", TRACKING_OFF, b"b"])
+        );
+
+        assert_eq!(
+            tracking_after(&[b"\x1b[?1006h\x1b[?1003h", detach]),
+            TermMode::empty()
+        );
+        assert_eq!(
+            tracking_after(&[b"\x1b[?1002h\x1b[?1000l"]),
+            TermMode::empty()
+        );
+    }
+
+    #[test]
+    fn tracking_turned_on_again_stays_on() {
+        // Off and on again in one chunk: on, in that order.
+        assert_eq!(
+            tracking_after(&[b"\x1b[?1003h\x1b[?1000l\x1b[?1003h"]),
+            TermMode::MOUSE_MOTION
+        );
+        // In a synchronized update the off waits with the rest of it.
+        let update: &[u8] = b"\x1b[?2026h\x1b[?1000l\x1b[?1002h";
+        assert_eq!(
+            tracking_after(&[b"\x1b[?1003h", update]),
+            TermMode::MOUSE_MOTION
+        );
+        assert_eq!(
+            tracking_after(&[b"\x1b[?1003h", update, b"\x1b[?2026l"]),
+            TermMode::MOUSE_DRAG
+        );
+    }
+
+    #[test]
+    fn other_sequences_pass_as_they_are() {
+        for sequence in [
+            &b"\x1b[?1003h"[..],
+            b"\x1b[?1004l\x1b[?1006l\x1b[?2004l",
+            b"\x1b[1000l",
+            // A title with the text in it.
+            b"\x1b]0;[?1000l\x07",
+            b"[?1000l",
+        ] {
+            assert_eq!(pieces(&[sequence]), bytes(&[sequence]));
+        }
+    }
 
     fn report(button: ReportButton, kind: ReportKind, column: usize, row: usize) -> MouseReport {
         MouseReport {

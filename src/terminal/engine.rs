@@ -34,6 +34,7 @@ use super::links::{LinkMarker, url_search, visible_links};
 use super::login_commands::LoginTyping;
 #[cfg(test)]
 use super::login_commands::QUIET;
+use super::mouse::TrackingOff;
 use super::notices::{NoticeScanner, ProgramNotice, TerminalNotice};
 use super::run::{BusyReason, RunFailure, RunHandle};
 use super::search::{MatchMarker, SearchDirection, SearchMark, SearchPosition, TerminalSearch};
@@ -957,6 +958,7 @@ impl TerminalRuntime {
             term: term.clone(),
             processor: Processor::new(),
             notices: NoticeScanner::default(),
+            mouse: TrackingOff::default(),
             watcher: LineWatcher::new(current(&highlights)),
             highlights,
             proxy: parser_proxy,
@@ -1413,6 +1415,9 @@ struct Parser {
     processor: Processor,
     /// Alacritty drops the notifications programs ask for.
     notices: NoticeScanner,
+    /// Alacritty turns mouse tracking off one mode at a time, xterm all of
+    /// it at once.
+    mouse: TrackingOff,
     watcher: LineWatcher,
     highlights: SharedHighlights,
     proxy: TerminalEventProxy,
@@ -1477,12 +1482,16 @@ impl Parser {
             // Output that never pauses gives the wait no chance to see the
             // time is up.
             end_overdue_sync(&mut self.processor, &mut term);
-            let lines = advance_watching(
-                &mut self.processor,
-                &mut term,
-                bytes,
-                self.watcher.is_watching(),
-            );
+            let watching = self.watcher.is_watching();
+            let mut lines = Vec::new();
+            self.mouse.feed(bytes, |piece| {
+                lines.extend(advance_watching(
+                    &mut self.processor,
+                    &mut term,
+                    piece,
+                    watching,
+                ));
+            });
             self.proxy.answer(&term);
             lines
         };

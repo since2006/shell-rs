@@ -224,6 +224,7 @@ Cargo workspace，`cargo` 命令默认覆盖前四个包：
 - ZMODEM 先于 alacritty 拿到输出；传输期间键只认 Ctrl+C。
 - 按键照 xterm 编码（`terminal_view.rs` 的 `encode_named_key`），同 `xterm-256color` 的 terminfo：方向键、Home、End、编辑键和 F1–F12 带修饰键时发 `CSI 1;m X` 或 `CSI n;m ~`，Alt 算在 m 里、不另加 ESC（issue #145）；kitty 键盘协议下带修饰键的 F3 发 `CSI 13;m ~`（`CSI 1;m R` 会被当成光标位置的回答）。
 - 查找条是终端 `div` 的兄弟，不是子元素，否则输入会发给 shell。
+- **鼠标上报照 xterm 是一个状态**（issue #150）：Alacritty 关 1000 / 1002 / 1003 只清各自那一位，旧 tmux（2.4–3.1）detach 时漏发 `?1003l`，shell 里一动鼠标就打出乱码。`mouse.rs` 的 `TrackingOff` 用同一个 vte 解析器在旁边读输出，在任何一个关闭序列后切开，交给 Alacritty `TRACKING_OFF` 三个一起关；放在输出里（不直接改 `Term`），同步更新时才跟着一起缓住。
 - 程序的查询（光标位置、颜色等）在解析线程上按顺序回答，别交回 UI 线程。
 - 同步更新（DEC 2026）超时要解析线程自己收尾，否则屏幕会冻住。
 - 终端字体、颜色、背景图、高亮规则走全局量（终端模块不依赖 settings）。
