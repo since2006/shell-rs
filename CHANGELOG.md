@@ -4,6 +4,21 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.20-beta.2]
+
+### Added
+
+- Terminal recording: right-click a terminal, choose Start recording… and pick where to save it (named like `ShellRS-20261123-174322.log`), and what the terminal shows goes into that file as plain text, line by line, until you choose Stop recording or close the tab. Colors and control characters are left out, so any text editor opens it; what you type is there as the shell echoes it, so passwords that aren’t echoed aren’t. While it records, the terminal’s top right says Recording. ([#121](https://github.com/since2006/shell-rs/issues/121))
+- A shortcut for Reconnect: ⌘⇧R (Ctrl+Shift+R on Windows and Linux) reconnects the remote terminal in front, connected or not, for example for a change to your profile on the server to take effect. You can change it in Settings › Keyboard shortcuts. ([#151](https://github.com/since2006/shell-rs/issues/151))
+
+### Improved
+
+- On the start page, only the list of hosts scrolls; the title and the Find a host and New host… buttons above it stay put. The bottom of the page may show recommendations from the ShellRS website.
+
+### Fixed
+
+- In tmux 2.4 to 3.1 (such as the 3.0a in Ubuntu 20.04), detaching from a program that wants every mouse motion, such as Claude Code, left the shell typing junk when the mouse moved, and a drag selected nothing. Now a program turning off any kind of mouse reporting turns off all three, as in xterm. ([#150](https://github.com/since2006/shell-rs/issues/150))
+
 ## [0.1.20-beta.1]
 
 ### Added
