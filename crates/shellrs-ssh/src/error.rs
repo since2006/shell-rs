@@ -394,6 +394,16 @@ pub enum RouteFailure {
     Proxy,
     /// The proxy command could not be started.
     ProxyCommand,
+    /// The proxy command ended while the connection over it was being made:
+    /// its exit code (none when a signal ended it) and the last lines it
+    /// wrote to stderr, as it wrote them.
+    ProxyCommandExited { code: Option<i32>, output: String },
+    /// The host or user that the token `token` (`h`, `n` or `r`) stands for
+    /// would not be one word to the shell, so the command is not run.
+    ProxyCommandUnsafe { token: char },
+    /// This platform runs no proxy commands (phones), or this connection
+    /// does not take one (Telnet).
+    ProxyCommandUnsupported,
 }
 
 /// Why a jump host could not open the way onward.
@@ -432,6 +442,20 @@ impl fmt::Display for RouteFailure {
             }
             Self::Proxy => f.write_str("the proxy"),
             Self::ProxyCommand => f.write_str("the proxy command"),
+            Self::ProxyCommandExited { code, output } => {
+                match code {
+                    Some(code) => write!(f, "the proxy command exited with code {code}")?,
+                    None => f.write_str("the proxy command was ended")?,
+                }
+                if !output.is_empty() {
+                    write!(f, ": {output}")?;
+                }
+                Ok(())
+            }
+            Self::ProxyCommandUnsafe { token } => {
+                write!(f, "%{token} in the proxy command isn't a plain name")
+            }
+            Self::ProxyCommandUnsupported => f.write_str("proxy commands aren't supported here"),
         }
     }
 }

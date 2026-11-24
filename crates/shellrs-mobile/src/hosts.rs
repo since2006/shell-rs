@@ -308,6 +308,8 @@ pub enum HostProblem {
     ProxyPort,
     /// Its proxy command is empty.
     ProxyCommand,
+    /// It has a proxy command but is no SSH host.
+    ProxyCommandNeedsSsh,
 }
 
 /// What is wrong with a credential as typed.
@@ -364,6 +366,7 @@ impl From<hosts::HostDraftError> for HostProblem {
             hosts::HostDraftError::ProxyAddress => Self::ProxyAddress,
             hosts::HostDraftError::ProxyPort => Self::ProxyPort,
             hosts::HostDraftError::ProxyCommand => Self::ProxyCommand,
+            hosts::HostDraftError::ProxyCommandNeedsSsh => Self::ProxyCommandNeedsSsh,
         }
     }
 }

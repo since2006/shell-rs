@@ -351,13 +351,25 @@ fn route(failure: &RouteFailure, rest: &[Cause<'_>]) -> String {
                 [] => String::new(),
             };
         }
-        // What the command could not start with, or wrote, says it all.
         RouteFailure::ProxyCommand => {
-            return match rest {
+            let reason = match rest {
                 [answer, under @ ..] => link(*answer, under),
-                [] => t!("ssh.proxy.command_failed").into(),
+                [] => String::new(),
             };
+            t!("ssh.proxy_command.start_failed", reason = reason)
         }
+        // What the command said is the reason; what the SSH login made of
+        // its going away is not.
+        RouteFailure::ProxyCommandExited { code, output } => match (code, output.is_empty()) {
+            (Some(code), false) => t!("ssh.proxy_command.exited", code = code, output = output),
+            (Some(code), true) => t!("ssh.proxy_command.exited_silently", code = code),
+            (None, false) => t!("ssh.proxy_command.ended", output = output),
+            (None, true) => t!("ssh.proxy_command.ended_silently"),
+        },
+        RouteFailure::ProxyCommandUnsafe { token } => {
+            t!("ssh.proxy_command.unsafe", token = format!("%{token}"))
+        }
+        RouteFailure::ProxyCommandUnsupported => t!("ssh.proxy_command.unsupported"),
     }
     .into()
 }

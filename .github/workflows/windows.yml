@@ -34,6 +34,7 @@ on:
       - "src/bin/**"
       - "crates/shellrs-ssh/Cargo.toml"
       - "crates/shellrs-ssh/src/connection.rs"
+      - "crates/shellrs-ssh/src/proxy_command.rs"
       - "crates/shellrs-ssh/src/probe.rs"
       - "src/ssh/transport.rs"
       - "tests/ui/connection.rs"

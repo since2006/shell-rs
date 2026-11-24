@@ -436,7 +436,10 @@ fn parse_host(key: &RecordKey, r: &Reader) -> Result<HostData, String> {
                 username: proxy.optional_string("username")?,
             })
         }
-        "proxy-command" => Route::ProxyCommand(r.string("command")?),
+        "proxy-command" if protocol != Protocol::Ssh => {
+            return Err("a proxy command is an SSH host's".into());
+        }
+        "proxy-command" => Route::ProxyCommand(r.name("command")?),
         other => return Err(format!("unknown route {other}")),
     };
     Ok(HostData {
@@ -1163,6 +1166,37 @@ pub(crate) mod tests {
         let mut wrong = written;
         wrong.insert("credential_username".into(), json!(7));
         assert!(parse(&key, &wrong).is_err());
+    }
+
+    #[test]
+    fn a_host_reached_through_a_proxy_command_keeps_it_whole() {
+        let key = RecordKey::new(Kind::Host, "h9");
+        let relayed = HostData {
+            route: Route::ProxyCommand("cloudflared access ssh --hostname %h".into()),
+            ..ssh_host("web")
+        };
+        let written = write_into(&RecordData::Host(relayed.clone()), None);
+        assert_eq!(written["route"], json!("proxy-command"));
+        assert_eq!(
+            written["command"],
+            json!("cloudflared access ssh --hostname %h")
+        );
+        assert_eq!(parse(&key, &written), Ok(RecordData::Host(relayed)));
+
+        let mut empty = written.clone();
+        empty.insert("command".into(), json!(""));
+        assert!(parse(&key, &empty).is_err());
+        let mut missing = written.clone();
+        missing.remove("command");
+        assert!(parse(&key, &missing).is_err());
+        // Only an SSH host has one: a Telnet host with one is parked.
+        let mut telnet = written;
+        telnet.insert("protocol".into(), json!("telnet"));
+        telnet.insert(
+            "telnet".into(),
+            json!({"user_prompt": null, "pass_prompt": null}),
+        );
+        assert!(parse(&key, &telnet).is_err());
     }
 
     #[test]

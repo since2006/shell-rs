@@ -116,7 +116,10 @@ Task {
 `core.store()` holds the hosts, groups and credentials, the same as the
 desktop's and synced with it. Serial hosts stay on the computer they were
 made on and never show here; Telnet hosts do, but connect only on the
-desktop for now (`connectHost` fails with `notSsh`).
+desktop for now (`connectHost` fails with `notSsh`). So do hosts whose route
+is a proxy command (`HostRoute.proxyCommand`, OpenSSH's `ProxyCommand`): a
+phone runs no other programs, so connecting fails with the route failure
+`proxyCommandUnsupported`; editing such a host keeps its command.
 
 - **Memory first.** Reads are quick and never fail. Each change is in the
   store at once and written to the database there and then; what could not

@@ -24,6 +24,9 @@ use crate::{
 /// How long a test may take, not counting the time a person spends deciding
 /// whether to trust the host key.
 const TEST_TIMEOUT: Duration = Duration::from_secs(20);
+/// [`TEST_TIMEOUT`] through a proxy command, which may first have the user
+/// sign in in the browser: a little longer than the SSH core gives it.
+const PROXY_COMMAND_TEST_TIMEOUT: Duration = Duration::from_secs(130);
 
 /// Tests a login through the same connector as terminals and SFTP, so host
 /// trust goes through the same file and lock.
@@ -87,11 +90,15 @@ impl SshConnectionTester {
             Arc::new(FormSecrets::new(&request, self.connector.secrets().clone()));
         let (broker, host_trust, _shutdown) = test_broker(trust);
 
+        let timeout = match login.route {
+            LoginRoute::ProxyCommand(_) => PROXY_COMMAND_TEST_TIMEOUT,
+            _ => TEST_TIMEOUT,
+        };
         let connected = timeout_excluding_prompts(
             self.connector
                 .connect_with(&config, broker.clone(), &secrets),
             broker.prompt_activity_receiver(),
-            TEST_TIMEOUT,
+            timeout,
         )
         .await
         .and_then(|result| result);
@@ -130,7 +137,6 @@ impl SshConnectionTester {
                 request.route(),
                 request.host(),
                 request.port(),
-                "",
                 &broker,
                 &secrets,
             ),

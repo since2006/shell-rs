@@ -683,9 +683,9 @@ pub enum RouteFields {
         )]
         password: Option<Option<Secret>>,
     },
-    ProxyCommand {
-        command: String,
-    },
+    // No proxy command: what it says runs on this computer, and the CLI is
+    // for agents (as with one-time codes). `hosts update` without a route
+    // keeps it.
 }
 
 /// Deleted, with what went with it.

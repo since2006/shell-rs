@@ -4,7 +4,8 @@ use super::error::{
     MissingCredential, PasswordWanted, RouteFailure, WrapErr, find_cause, wrap,
 };
 use super::login::{
-    DEFAULT_KEY_FILES, HostLogin, JumpLogin, LoginMethod, LoginRoute, ProxyLogin, TotpLogin,
+    DEFAULT_KEY_FILES, HostLogin, JumpLogin, LoginMethod, LoginRoute, ProxyCommandLogin,
+    ProxyLogin, TotpLogin,
 };
 use super::prompt::{
     AuthenticationRequest, ConnectionPrompt, ConnectionPromptField, ConnectionPromptKind,
@@ -39,6 +40,13 @@ use zeroize::Zeroizing;
 use super::proxy::{ProxyAuth, handshake};
 use super::secret::{SecretRef, SharedSecretSource, read_secret};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long the SSH handshake over a proxy command may take: such a
+/// command may first have the user sign in in the browser (`cloudflared
+/// access`, AWS SSM).
+const PROXY_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long a failed connection over a proxy command waits to see whether
+/// the command ended, which then is what to tell.
+const PROXY_COMMAND_END_WAIT: Duration = Duration::from_millis(300);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// Keepalives unanswered before a connection is given up: with the
 /// interval, about two minutes without a word from the server.
@@ -191,18 +199,47 @@ impl SshConnector {
         forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
     ) -> Result<(client::Handle<SshClientHandler>, String)> {
         let login = &config.login;
+        if let LoginRoute::ProxyCommand(proxy) = &login.route {
+            return self
+                .through_proxy_command(proxy, login, &broker, secrets, forwarded)
+                .await;
+        }
         let tunnel = self
-            .open_route(
-                &login.route,
-                &login.host,
-                login.port,
-                &login.user,
-                &broker,
-                secrets,
-            )
+            .open_route(&login.route, &login.host, login.port, &broker, secrets)
             .await?;
-        self.log_in(tunnel, login, None, &broker, secrets, forwarded)
+        let leg = Leg::Host {
+            handshake: CONNECT_TIMEOUT,
+        };
+        self.log_in(tunnel, login, leg, &broker, secrets, forwarded)
             .await
+    }
+
+    /// Log in to `login`'s host over its proxy command. A failure the
+    /// command ended with is told as the command's end and what it said.
+    async fn through_proxy_command(
+        &self,
+        proxy: &ProxyCommandLogin,
+        login: &HostLogin,
+        broker: &Arc<SshPrompts>,
+        secrets: &SharedSecretSource,
+        forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
+    ) -> Result<(client::Handle<SshClientHandler>, String)> {
+        let command =
+            super::proxy_command::expand(&proxy.command, &login.host, login.port, &login.user)?;
+        let (stream, watch) = super::proxy_command::spawn(&command)?;
+        let leg = Leg::Host {
+            handshake: PROXY_COMMAND_TIMEOUT,
+        };
+        let logged_in = self
+            .log_in(Box::new(stream), login, leg, broker, secrets, forwarded)
+            .await;
+        match logged_in {
+            Ok(done) => Ok(done),
+            Err(error) => Err(match watch.ended_within(PROXY_COMMAND_END_WAIT).await {
+                Some(ended) => wrap(ended, error),
+                None => error,
+            }),
+        }
     }
 
     /// A stream to `host:port` by `route`: a socket, through the proxy, or a
@@ -216,7 +253,6 @@ impl SshConnector {
         route: &LoginRoute,
         host: &str,
         port: u16,
-        user: &str,
         broker: &Arc<SshPrompts>,
         secrets: &SharedSecretSource,
     ) -> Result<Tunnel> {
@@ -226,12 +262,8 @@ impl SshConnector {
                 let proxied = through_proxy(proxy, (host, port), secrets, self.nat64);
                 Box::new(step(broker, proxied).await?)
             }
-            LoginRoute::ProxyCommand(proxy) => {
-                let command = super::proxy_command::expand(&proxy.command, host, port, user);
-                let stream =
-                    super::proxy_command::spawn(&command).wrap_err(RouteFailure::ProxyCommand)?;
-                Box::new(stream)
-            }
+            // Only SSH logins take one (`through_proxy_command`).
+            LoginRoute::ProxyCommand(_) => bail!(RouteFailure::ProxyCommandUnsupported),
             LoginRoute::Jump(hops) => {
                 self.through_jumps(hops, (host, port), broker, secrets)
                     .await?
@@ -239,17 +271,21 @@ impl SshConnector {
         })
     }
 
-    /// Open the SSH connection to `login`'s host over `tunnel` and log in.
-    /// `jump_host` names a jump host, for its questions.
+    /// Open the SSH connection to `login`'s host over `tunnel` and log in,
+    /// as the `leg` it is.
     async fn log_in(
         &self,
         tunnel: Tunnel,
         login: &HostLogin,
-        jump_host: Option<&str>,
+        leg: Leg<'_>,
         broker: &Arc<SshPrompts>,
         secrets: &SharedSecretSource,
         forwarded: Option<mpsc::UnboundedSender<ForwardedTcpip>>,
     ) -> Result<(SshHandle, String)> {
+        let (jump_host, handshake) = match leg {
+            Leg::Host { handshake } => (None, handshake),
+            Leg::Jump { name } => (Some(name), CONNECT_TIMEOUT),
+        };
         let fingerprint = Arc::new(Mutex::new(String::new()));
         let handler = SshClientHandler {
             host: login.host.clone(),
@@ -266,7 +302,7 @@ impl SshConnector {
                 .await
                 .wrap_err(ConnectError::Handshake)
         };
-        let mut handle = step(broker, connect).await?;
+        let mut handle = step_within(broker, handshake, connect).await?;
         let prompts = Asker {
             prompts: broker,
             jump_host,
@@ -349,7 +385,7 @@ impl SshConnector {
             None => Box::new(step(broker, tcp(&hop.host, hop.port, self.nat64)).await?),
         };
         let (handle, _) = self
-            .log_in(tunnel, hop, Some(name), broker, secrets, None)
+            .log_in(tunnel, hop, Leg::Jump { name }, broker, secrets, None)
             .await?;
         let (next_host, next_port) = next;
         let open = async {
@@ -410,6 +446,14 @@ fn forward_failure(name: &str, (host, port): (&str, u16), problem: ForwardProble
 /// jump host.
 pub type Tunnel = Box<dyn ChannelStream>;
 
+/// Which login of a connection [`SshConnector::log_in`] makes: the host's
+/// own, whose handshake is given up after `handshake`, or the jump host
+/// `name`'s, which its questions name.
+enum Leg<'a> {
+    Host { handshake: Duration },
+    Jump { name: &'a str },
+}
+
 /// The key exchanges ShellRS offers, in OpenSSH's order: russh's own list
 /// leaves out the NIST curves, which servers without curve25519 (Apache
 /// SSHD, as many bastion hosts run) settle on with OpenSSH.
@@ -462,9 +506,18 @@ fn ssh_config() -> Arc<client::Config> {
 /// counting time a person spends answering, or when the connection is
 /// cancelled.
 async fn step<T>(broker: &SshPrompts, future: impl Future<Output = Result<T>>) -> Result<T> {
+    step_within(broker, CONNECT_TIMEOUT, future).await
+}
+
+/// [`step`], given up after `timeout`.
+async fn step_within<T>(
+    broker: &SshPrompts,
+    timeout: Duration,
+    future: impl Future<Output = Result<T>>,
+) -> Result<T> {
     let mut shutdown = broker.shutdown_receiver();
     tokio::select! {
-        result = timeout_excluding_prompts(future, broker.prompt_activity_receiver(), CONNECT_TIMEOUT) => result?,
+        result = timeout_excluding_prompts(future, broker.prompt_activity_receiver(), timeout) => result?,
         _ = shutdown.changed() => bail!(ConnectError::Cancelled),
     }
 }

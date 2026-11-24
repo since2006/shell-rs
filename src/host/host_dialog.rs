@@ -156,6 +156,14 @@ impl RouteChoice {
         RouteChoice::ProxyCommand,
     ];
 
+    /// The ways a host of `protocol` can take: a proxy command is SSH's.
+    fn offered(protocol: ProtocolKind) -> &'static [RouteChoice] {
+        match protocol {
+            ProtocolKind::Ssh => &Self::ALL,
+            _ => &Self::ALL[..3],
+        }
+    }
+
     fn label(self) -> SharedString {
         match self {
             RouteChoice::Direct => t!("host.route.direct"),
@@ -862,6 +870,9 @@ impl HostForm {
         }
         if protocol == ProtocolKind::Serial && self.ports.is_none() {
             self.look_for_ports(window, cx);
+        }
+        if !RouteChoice::offered(protocol).contains(&self.route) {
+            self.route = RouteChoice::Direct;
         }
         cx.notify();
     }
@@ -1919,14 +1930,15 @@ impl HostForm {
     /// 「连接方式」: the choice, and below it what the choice needs.
     fn route_field(&self, cx: &mut Context<Self>) -> Field {
         let route = self.route;
+        let offered = RouteChoice::offered(self.protocol);
         let choice = SegmentedControl::new("host-route")
-            .selected_index(RouteChoice::ALL.iter().position(|each| *each == route))
-            .on_change(cx.listener(|this, ix: &usize, _, cx| {
-                if let Some(route) = RouteChoice::ALL.get(*ix) {
+            .selected_index(offered.iter().position(|each| *each == route))
+            .on_change(cx.listener(move |this, ix: &usize, _, cx| {
+                if let Some(route) = offered.get(*ix) {
                     this.set_route(*route, cx);
                 }
             }))
-            .segments(RouteChoice::ALL.map(|each| Segment::new(each.label())));
+            .segments(offered.iter().map(|each| Segment::new(each.label())));
         let details = match route {
             RouteChoice::Direct => None,
             RouteChoice::Jump => Some(self.jump_box(cx).into_any_element()),
@@ -2913,7 +2925,7 @@ mod tests {
             describe_host_delete(dependents).as_deref(),
             Some(
                 "2 port forwards through this host will also be deleted. \
-                 1 host uses it as a jump host and will need another to connect."
+                 1 host uses it as a jump host and will need another one to connect."
             )
         );
     }

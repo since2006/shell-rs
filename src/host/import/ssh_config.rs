@@ -161,7 +161,7 @@ fn parse_items(text: &str, includes: Option<&Includes>) -> Vec<Item> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut items = Vec::new();
     for line in text.lines() {
-        let Some((keyword, args)) = split_line(line) else {
+        let Some((keyword, rest, args)) = split_line(line) else {
             continue;
         };
         match keyword.to_ascii_lowercase().as_str() {
@@ -176,10 +176,11 @@ fn parse_items(text: &str, includes: Option<&Includes>) -> Vec<Item> {
             }
             _ => {
                 if let Some(setting) = Setting::parse(&keyword) {
-                    // A ProxyCommand is the whole rest of the line; every
-                    // other setting takes its first argument.
+                    // A ProxyCommand is the rest of the line as written,
+                    // quotes and all, as OpenSSH reads it; every other
+                    // setting takes its first argument.
                     let value = if setting == Setting::ProxyCommand {
-                        args.join(" ")
+                        rest.trim_end().to_string()
                     } else if let Some(value) = args.first() {
                         value.clone()
                     } else {
@@ -260,7 +261,8 @@ fn expand_glob(pattern: &Path) -> Vec<PathBuf> {
 /// A line's keyword and arguments, or `None` for a blank line or a
 /// comment. The keyword may be followed by `=`; arguments may be quoted;
 /// an argument starting with `#` ends the line.
-fn split_line(line: &str) -> Option<(String, Vec<String>)> {
+/// A line's keyword, the rest of it as written, and that rest in words.
+fn split_line(line: &str) -> Option<(String, &str, Vec<String>)> {
     let line = line.trim();
     if line.is_empty() || line.starts_with('#') {
         return None;
@@ -270,8 +272,8 @@ fn split_line(line: &str) -> Option<(String, Vec<String>)> {
         .unwrap_or(line.len());
     let keyword = line[..end].to_string();
     let rest = line[end..].trim_start();
-    let rest = rest.strip_prefix('=').unwrap_or(rest);
-    Some((keyword, split_args(rest)))
+    let rest = rest.strip_prefix('=').unwrap_or(rest).trim_start();
+    Some((keyword, rest, split_args(rest)))
 }
 
 fn split_args(text: &str) -> Vec<String> {
@@ -610,6 +612,15 @@ Host web-root
         // `none` means no command, not a command that is the word `none`.
         let none = hosts("Host plain\n  ProxyCommand none\n");
         assert_eq!(none[0].proxy_command, None);
+        // The rest of the line as written: AWS's own example quotes.
+        let ssm = hosts(
+            "Host i-*\n  ProxyCommand=sh -c \"aws ssm start-session --target %h \
+             --parameters 'portNumber=%p'\"  \nHost i-0abc\n",
+        );
+        assert_eq!(
+            ssm[0].proxy_command.as_deref(),
+            Some("sh -c \"aws ssm start-session --target %h --parameters 'portNumber=%p'\"")
+        );
     }
 
     #[test]

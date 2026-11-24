@@ -10,8 +10,8 @@ use gpui_kit::SharedString;
 use crate::host::{
     AuthKind, Credential, CredentialDraft, CredentialId, CredentialKind, DataBits,
     ErrorMessage as _, FlowControl, GroupId, GroupPathError, GroupPlan, Host, HostConnection,
-    HostDraft, HostId, HostStore, Parity, PastedKey, Protocol, ProxyCommandSettings, ProxyKind,
-    ProxySettings, Route, SSH_PORT, SerialSettings, StopBits, TELNET_PORT,
+    HostDraft, HostId, HostStore, Parity, PastedKey, Protocol, ProxyKind, ProxySettings, Route,
+    SSH_PORT, SerialSettings, StopBits, TELNET_PORT,
 };
 use crate::i18n::{t, tn};
 use crate::secrets::SecretRef;
@@ -550,9 +550,6 @@ pub fn plan_host(
                 };
                 Route::Proxy(ProxySettings::new(kind, host, port).with_user(user))
             }
-            RouteFields::ProxyCommand { command } => {
-                Route::ProxyCommand(ProxyCommandSettings::new(command))
-            }
         };
     }
     let draft = draft.validated().map_err(|error| bad(error.message()))?;
@@ -937,6 +934,44 @@ mod tests {
 
     fn bad(message: &str) -> (ErrorCode, String) {
         (ErrorCode::BadRequest, message.to_string())
+    }
+
+    /// What a proxy command runs is this computer's business: the CLI can't
+    /// set one, and an edit leaves it as it was.
+    #[test]
+    fn a_proxy_command_is_kept_and_never_set() {
+        let (mut store, web, _) = store();
+        let route = Route::ProxyCommand(crate::host::ProxyCommandSettings::new("nc %h %p"));
+        let relayed = store.host(web).unwrap().draft().with_route(route.clone());
+        store.update_unnotified(web, relayed);
+        let plan = plan_host(
+            fields(serde_json::json!({ "name": "web-01", "port": 2222 })),
+            Some(web),
+            &store,
+        )
+        .unwrap();
+        assert_eq!(plan.draft.route, route);
+        // Another route given is taken.
+        let plan = plan_host(
+            fields(serde_json::json!({ "route": { "type": "direct" } })),
+            Some(web),
+            &store,
+        )
+        .unwrap();
+        assert_eq!(plan.draft.route, Route::Direct);
+
+        let error = host_fields(serde_json::json!({
+            "route": { "type": "proxy_command", "command": "touch /tmp/owned" }
+        }))
+        .unwrap_err();
+        assert!(error.contains("proxy_command"), "{error}");
+        // Telnet takes none.
+        let (code, _) = refused(plan_host(
+            fields(serde_json::json!({ "protocol": "telnet" })),
+            Some(web),
+            &store,
+        ));
+        assert_eq!(code, ErrorCode::BadRequest);
     }
 
     #[test]

@@ -678,8 +678,18 @@ pub enum RouteFailure {
     ProxyUnreachable { host: String, port: u16 },
     /// The proxy answered other than with a tunnel.
     Proxy,
-    /// The proxy command failed to start or stay running.
+    /// The proxy command could not be started.
     ProxyCommand,
+    /// The proxy command ended while the connection was being made: its
+    /// exit code (none when a signal ended it) and the last lines it wrote
+    /// to stderr.
+    ProxyCommandExited { code: Option<i32>, output: String },
+    /// The host or user that `%token` stands for is not one word to the
+    /// shell, so the command is not run.
+    ProxyCommandUnsafe { token: String },
+    /// A phone runs no proxy commands: a host that connects through one
+    /// connects from a computer only.
+    ProxyCommandUnsupported,
 }
 
 impl From<&ssh::RouteFailure> for RouteFailure {
@@ -706,6 +716,14 @@ impl From<&ssh::RouteFailure> for RouteFailure {
             },
             ssh::RouteFailure::Proxy => Self::Proxy,
             ssh::RouteFailure::ProxyCommand => Self::ProxyCommand,
+            ssh::RouteFailure::ProxyCommandExited { code, output } => Self::ProxyCommandExited {
+                code: *code,
+                output: output.clone(),
+            },
+            ssh::RouteFailure::ProxyCommandUnsafe { token } => Self::ProxyCommandUnsafe {
+                token: token.to_string(),
+            },
+            ssh::RouteFailure::ProxyCommandUnsupported => Self::ProxyCommandUnsupported,
         }
     }
 }

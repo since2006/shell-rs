@@ -744,6 +744,10 @@ impl HostDraft {
                 let user = proxy.user.as_deref().map(str::trim).unwrap_or_default();
                 proxy.user = (!user.is_empty()).then(|| user.to_string().into());
             }
+            // An SSH login's, as in OpenSSH.
+            Route::ProxyCommand(_) if self.protocol.is_telnet() => {
+                return Err(HostDraftError::ProxyCommandNeedsSsh);
+            }
             Route::ProxyCommand(proxy) => {
                 proxy.command = proxy.command.trim().to_string().into();
                 if proxy.command.is_empty() {
@@ -807,6 +811,8 @@ pub enum HostDraftError {
     ProxyAddress,
     ProxyPort,
     ProxyCommand,
+    /// A proxy command is an SSH host's way only.
+    ProxyCommandNeedsSsh,
 }
 
 #[cfg(test)]
@@ -907,6 +913,28 @@ mod tests {
             .validated()
             .unwrap();
         assert_eq!(serial.login_commands.as_ref(), "");
+    }
+
+    #[test]
+    fn a_proxy_command_is_trimmed_and_only_an_ssh_hosts() {
+        let route = |command: &str| Route::ProxyCommand(ProxyCommandSettings::new(command));
+        let ssh = HostDraft::new("app", "10.0.0.5", 22, "deploy", AuthKind::NoPassword, None)
+            .with_route(route("  nc %h %p \n"))
+            .validated()
+            .unwrap();
+        assert_eq!(ssh.route, route("nc %h %p"));
+        assert_eq!(
+            HostDraft::new("app", "10.0.0.5", 22, "deploy", AuthKind::NoPassword, None)
+                .with_route(route("  "))
+                .validated(),
+            Err(HostDraftError::ProxyCommand)
+        );
+        assert_eq!(
+            HostDraft::telnet("switch", "10.0.0.5", 23, None)
+                .with_route(route("nc %h %p"))
+                .validated(),
+            Err(HostDraftError::ProxyCommandNeedsSsh)
+        );
     }
 
     #[test]

@@ -24,7 +24,7 @@ mod proxy_command;
 mod secret;
 mod session;
 pub mod sftp;
-#[cfg(feature = "testing")]
+#[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod totp;
 

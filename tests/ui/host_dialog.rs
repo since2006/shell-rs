@@ -327,6 +327,66 @@ async fn deleting_a_jump_host_leaves_the_connection_behind_it_alone(cx: &mut Tes
 }
 
 #[gpui_kit::test]
+async fn a_host_reached_through_a_proxy_command_keeps_the_command(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-name", cx);
+        window.input("app", cx);
+        window.click("host-address", cx);
+        window.input("app.example.com", cx);
+        window.within("host-route").click(3usize, cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(
+            window.find("host-route-note").label(),
+            Some(
+                "ShellRS 运行这条命令，经它的标准输入输出连到主机，同 OpenSSH 的 \
+                 ProxyCommand。%h、%p、%r 换成地址、端口和用户名。"
+            )
+        );
+        window.click("commit", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("form-error").label(), Some("请填写代理命令"));
+        window.click("host-proxy-command", cx);
+        window.input("cloudflared access ssh --hostname %h", cx);
+        window.click("commit", cx);
+    });
+    wait_for_dialog_to_close(cx, handle).await;
+    cx.update(|cx| {
+        let store = workspace.read(cx).store().read(cx);
+        assert_eq!(
+            store.hosts()[0].route,
+            Route::ProxyCommand(shellrs::host::ProxyCommandSettings::new(
+                "cloudflared access ssh --hostname %h"
+            ))
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn a_telnet_host_is_offered_no_proxy_command(cx: &mut TestAppContext) {
+    let (handle, _) = open_workspace_with_store(cx, HostStore::empty());
+    in_frame(cx, handle, |window, cx| window.click("new-host-panel", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.within("host-route").try_find(3usize).is_some());
+        window.within("host-route").click(3usize, cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find("host-proxy-command").visible());
+        window.within("host-protocol").click(1usize, cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        // Back to direct: what a Telnet host can take.
+        let routes = window.within("host-route");
+        assert!(routes.try_find(3usize).is_none());
+        assert_eq!(routes.find(0usize).selected(), Some(true));
+        assert!(window.try_find("host-proxy-command").is_none());
+    });
+}
+
+#[gpui_kit::test]
 async fn a_host_behind_a_proxy_keeps_the_proxys_password_in_the_keychain(cx: &mut TestAppContext) {
     let secrets = Arc::new(InMemorySecretStore::default());
     let tester = Arc::new(FakeConnectionTester::default());

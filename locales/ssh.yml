@@ -101,9 +101,29 @@ ssh.proxy.socks.no_connect:
 ssh.proxy.socks.address_type:
   zh-CN: 代理服务器不支持这种地址类型
   en: The proxy doesn’t support this type of address
-ssh.proxy.command_failed:
-  zh-CN: 无法启动代理命令，请检查命令和 %h、%p、%r 占位符
-  en: Couldn't start the proxy command. Check it and its %h, %p, %r placeholders
+
+# A host reached through its proxy command (OpenSSH's ProxyCommand)
+ssh.proxy_command.start_failed:
+  zh-CN: 无法启动代理命令：%{reason}
+  en: "Couldn’t start the proxy command: %{reason}"
+ssh.proxy_command.exited:
+  zh-CN: 代理命令已退出（退出码 %{code}）：%{output}
+  en: "The proxy command exited with code %{code}: %{output}"
+ssh.proxy_command.exited_silently:
+  zh-CN: 代理命令已退出（退出码 %{code}），没有输出
+  en: The proxy command exited with code %{code} and printed nothing
+ssh.proxy_command.ended:
+  zh-CN: 代理命令被结束：%{output}
+  en: "The proxy command was stopped: %{output}"
+ssh.proxy_command.ended_silently:
+  zh-CN: 代理命令被结束，没有输出
+  en: The proxy command was stopped and printed nothing
+ssh.proxy_command.unsafe:
+  zh-CN: 地址或用户名里有空格或特殊字符，不能代入代理命令里的 %{token}
+  en: The address or username has spaces or special characters, so it can’t go into %{token} in the proxy command
+ssh.proxy_command.unsupported:
+  zh-CN: 这台主机经代理命令连接，这里不能运行代理命令
+  en: This host connects through a proxy command, which can’t run here
 
 # A credential a connection without anyone to ask needed
 ssh.missing.password_rejected:

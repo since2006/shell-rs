@@ -87,6 +87,7 @@ impl ErrorMessage for HostDraftError {
             HostDraftError::ProxyAddress => t!("host.draft.proxy_address"),
             HostDraftError::ProxyPort => t!("host.draft.proxy_port"),
             HostDraftError::ProxyCommand => t!("host.draft.proxy_command"),
+            HostDraftError::ProxyCommandNeedsSsh => t!("host.draft.proxy_command_needs_ssh"),
         }
     }
 }
