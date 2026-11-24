@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目是什么
 
-ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH 主机管理工具，基于 `gpui-kit` 0.10.0（GPUI + gpui-base + gpui-component）。界面有简体中文和英文（中文是源语言），标识符用英文。功能说明见使用手册 `docs/manual.zh.md` / `docs/manual.md`；开源首页 `README.md`（英文）/ `README.zh-CN.md`；截图在 `docs/screenshots/`。
+ShellRS（crate 与二进制都叫 `shellrs`）是 Xshell / WinSCP 式的 SSH 主机管理工具，基于 `gpui-kit` 0.11.0（GPUI + gpui-base + gpui-component）。界面有简体中文和英文（中文是源语言），标识符用英文。功能说明见使用手册 `docs/manual.zh.md` / `docs/manual.md`；开源首页 `README.md`（英文）/ `README.zh-CN.md`；截图在 `docs/screenshots/`。
 
 - **术语**：保存的一项叫「主机」（量词「台」），代码里叫 host（`Host`、`HostStore`、`hosts` 表）；以前叫「会话」/ `Session`，别再用。IP / 域名字段叫「地址」。SSH 协议层的 session 照旧叫 session。
 - **两种不保存的连接**：「外部连接」是堡垒机用 `ssh://` / `-url` / `sftp://` 拉起 ShellRS，只开一个标签；「临时连接」从标题栏打开，功能齐全。代码里统称 temporary。
 - **全是真的**：SQLite（默认在系统数据目录，`SHELLRS_DATA_DIR` 可覆盖，Windows 便携版在 exe 旁的 `data`）、本地终端、SSH（`russh`）、Telnet（自己写）、串口（`serial2`）、SFTP、端口转发、凭据、右侧栏工具、编辑器、外部 CLI、在线升级、匿名统计。密码和口令只进系统钥匙串，**数据库里永远不出现秘密**。
 
-做 UI 之前先读 `gpui-kit` 与 `gpui-kit-design-guides` 两个技能，里面的 Coding Guides 和 Design Guides 在本仓库是规范。不要凭记忆臆造 gpui-kit API，以 `~/.cargo/registry/src/*/gpui-component-0.10.0/`、`gpui-base-0.10.0/` 的源码为准。
+做 UI 之前先读 `gpui-kit` 与 `gpui-kit-design-guides` 两个技能，里面的 Coding Guides 和 Design Guides 在本仓库是规范。不要凭记忆臆造 gpui-kit API，以 `~/.cargo/registry/src/*/gpui-component-0.11.0/`、`gpui-base-0.11.0/` 的源码为准。
 
 ## 已定的产品决定
 

@@ -1618,14 +1618,6 @@ struct PreeditPaintCell {
     background: PaintQuad,
 }
 
-impl IntoElement for TerminalElement {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 impl Element for TerminalElement {
     type RequestLayoutState = ();
     type PrepaintState = TerminalPaintState;
