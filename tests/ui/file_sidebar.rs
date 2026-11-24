@@ -164,7 +164,10 @@ async fn files_open_on_the_terminals_own_connection(cx: &mut TestAppContext) {
         assert!(panel.is_sidebar());
         assert_eq!(panel.remote().read(cx).column_names(cx), ["名称", "大小"]);
         // Downloads go to Downloads, and the folder is never listed.
-        assert_eq!(panel.local().read(cx).path(), "/local/tester/Downloads");
+        assert_eq!(
+            panel.local().read(cx).path(),
+            fixture.local.downloads().to_string_lossy()
+        );
     });
     assert!(fixture.local.listed.lock().unwrap().is_empty());
 
@@ -261,7 +264,7 @@ async fn closing_a_terminal_whose_files_download_asks_first(cx: &mut TestAppCont
     in_frame(cx, fixture.handle, |window, cx| {
         assert_eq!(
             window.find("download-target").value(),
-            Some("/local/tester/Downloads")
+            fixture.local.downloads().to_str()
         );
         window.click("download-confirm", cx);
     });

@@ -12,7 +12,6 @@ use gpui_kit::*;
 
 use crate::app::{CatalogIcon, NewSavedTerminal, NewTerminalGroup, ToggleTool, ToolKind};
 use crate::docker::{Container, DockerObject, DockerPanel, ObjectSummary};
-use crate::explorer::ExplorerPanel;
 use crate::gpu::GpuPanel;
 use crate::history::HistoryPanel;
 use crate::host::{HostId, HostOs, HostStore, SavedTerminalId, SnippetCategoryId, SnippetNode};
@@ -35,9 +34,8 @@ impl ToolKind {
         !matches!(self, ToolKind::Snippets | ToolKind::Projects)
     }
 
-    /// The tools beside a local terminal, in the switch's order: 项目, its
-    /// own, first; then 命令片段, which types into any terminal.
-    pub const LOCAL: [ToolKind; 2] = [ToolKind::Projects, ToolKind::Snippets];
+    /// Tools shown for a local terminal, in switch order.
+    pub const LOCAL: [ToolKind; 3] = [ToolKind::Projects, ToolKind::Files, ToolKind::Snippets];
 
     /// Whether the tool goes with local terminals alone, none beside a
     /// remote one.
@@ -100,7 +98,7 @@ pub struct ToolTerminal {
 }
 
 /// The terminal the right sidebar goes with: an SSH terminal, whose tools
-/// work on its host, or a local terminal, which has 项目 and 命令片段.
+/// work on its host, or a local terminal.
 #[derive(Clone, PartialEq)]
 pub enum SidebarTarget {
     Remote(ToolTerminal),
@@ -131,7 +129,7 @@ pub struct ToolSidebar {
     history: Entity<HistoryPanel>,
     /// The terminal in front's 文件, which the workspace owns: one per
     /// terminal, made the first time it is shown.
-    files: Option<Entity<ExplorerPanel>>,
+    files: Option<AnyView>,
     tmux: Entity<TmuxPanel>,
     docker: Entity<DockerPanel>,
     /// Created only when Kubernetes is first selected; unused terminals
@@ -435,7 +433,7 @@ impl ToolSidebar {
     /// away moves to the sidebar itself, as on `show`.
     pub fn set_files(
         &mut self,
-        files: Option<Entity<ExplorerPanel>>,
+        files: Option<AnyView>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {

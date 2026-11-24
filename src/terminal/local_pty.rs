@@ -71,6 +71,8 @@ impl TerminalTransport for LocalPtyTransport {
             .context(t!("terminal.pty.open_failed"))?;
 
         let mut command = shell_command(&shell)?;
+        #[cfg(windows)]
+        let prompt_directory = powershell_directory_report(&mut command);
         // A folder gone since leaves the home folder, as with none.
         if let Some(directory) = directory.filter(|directory| directory.is_dir()) {
             command.cwd(directory);
@@ -186,7 +188,17 @@ impl TerminalTransport for LocalPtyTransport {
                 && wrote.swap(false, Ordering::Relaxed)
             {
                 looked = Some(Instant::now());
-                if let Some(now) = working_directory(pid)
+                #[cfg(windows)]
+                let now = match &prompt_directory {
+                    Some(report) => std::fs::read_to_string(report)
+                        .ok()
+                        .and_then(|s| s.strip_suffix('\n').map(PathBuf::from))
+                        .filter(|path| path.is_absolute()),
+                    None => working_directory(pid),
+                };
+                #[cfg(not(windows))]
+                let now = working_directory(pid);
+                if let Some(now) = now
                     && folder.as_ref() != Some(&now)
                 {
                     folder = Some(now.clone());
@@ -267,9 +279,61 @@ fn working_directory(pid: u32) -> Option<PathBuf> {
     (!path.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(path.to_bytes())))
 }
 
-/// Windows has no way to read another process's folder: its terminals
-/// open in the home folder again.
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+/// PowerShell maintains its own location independent of the process cwd.
+/// Wrap the interactive prompt after profiles have loaded. The report file
+/// belongs to this PTY and is removed when its transport exits.
+#[cfg(windows)]
+fn powershell_directory_report(command: &mut CommandBuilder) -> Option<tempfile::TempPath> {
+    let args = command.get_argv();
+    let program = std::path::Path::new(args.first()?).file_stem()?.to_str()?;
+    if !["pwsh", "powershell"]
+        .iter()
+        .any(|name| program.eq_ignore_ascii_case(name))
+        || !args[1..].iter().all(|arg| {
+            ["-nologo", "-noprofile", "-noexit"].iter().any(|allowed| {
+                arg.to_str()
+                    .is_some_and(|arg| arg.eq_ignore_ascii_case(allowed))
+            })
+        })
+    {
+        return None;
+    }
+    let report = tempfile::NamedTempFile::new().ok()?.into_temp_path();
+    let path = report.to_str()?.replace("'", "''");
+    let script = format!(
+        r#"$global:__ShellRSPrompt = $function:prompt
+function global:prompt {{
+    $text = & $global:__ShellRSPrompt
+    if ($PWD.Provider.Name -eq 'FileSystem') {{
+        try {{ [IO.File]::WriteAllText('{path}', $PWD.ProviderPath + [char]10) }} catch {{}}
+    }}
+    $text
+}}"#
+    );
+    if !args.iter().any(|arg| {
+        arg.to_str()
+            .is_some_and(|a| a.eq_ignore_ascii_case("-noexit"))
+    }) {
+        command.arg("-NoExit");
+    }
+    command.args(["-Command", &script]);
+    Some(report)
+}
+
+/// Native shells such as cmd change the process working directory.
+#[cfg(windows)]
+fn working_directory(pid: u32) -> Option<PathBuf> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        ProcessRefreshKind::new().with_cwd(UpdateKind::Always),
+    );
+    system.process(pid)?.cwd().map(PathBuf::from)
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn working_directory(_: u32) -> Option<PathBuf> {
     None
 }
@@ -585,5 +649,65 @@ fn to_pty_size(size: TerminalSize) -> PtySize {
         cols,
         pixel_width: size.cell_width().saturating_mul(cols),
         pixel_height: size.cell_height().saturating_mul(rows),
+    }
+}
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn local_shells_report_directory_after_cd() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("folder with spaces");
+        std::fs::create_dir(&target).unwrap();
+        for (shell, cd) in [
+            ("powershell.exe -NoProfile", "Set-Location -LiteralPath"),
+            ("cmd.exe", "cd /d"),
+        ] {
+            let mut launch = LocalLaunch::new(LocalShell::new(shell));
+            launch.directory = Some(root.path().to_owned());
+            let transport = LocalPtyTransportProvider.factory_for(&launch).create();
+            let (commands, receiver) = mpsc::channel();
+            let (events, output) = async_channel::unbounded();
+            let worker =
+                thread::spawn(move || transport.run(TerminalSize::DEFAULT, receiver, events));
+            let until = Instant::now() + Duration::from_secs(15);
+            let mut sent = false;
+            let mut followed = false;
+            let mut transcript = Vec::new();
+            while Instant::now() < until && !followed {
+                match output.try_recv() {
+                    Ok(TerminalTransportEvent::Output(bytes)) => {
+                        transcript.extend_from_slice(&bytes);
+                        // ConPTY asks the terminal for its cursor position during startup.
+                        if transcript.ends_with(b"\x1b[6n") {
+                            commands
+                                .send(TerminalTransportCommand::Write(b"\x1b[1;1R".to_vec()))
+                                .unwrap();
+                        }
+                    }
+                    Ok(TerminalTransportEvent::WorkingDirectory(folder)) => {
+                        followed = folder == target;
+                        if !sent {
+                            commands
+                                .send(TerminalTransportCommand::Write(
+                                    format!("{cd} \"folder with spaces\"\r").into_bytes(),
+                                ))
+                                .unwrap();
+                            sent = true;
+                        }
+                    }
+                    Err(async_channel::TryRecvError::Closed) => break,
+                    _ => thread::sleep(Duration::from_millis(10)),
+                }
+            }
+            drop(commands);
+            worker.join().unwrap().unwrap();
+            assert!(
+                followed,
+                "{shell}: {}",
+                String::from_utf8_lossy(&transcript)
+            );
+        }
     }
 }

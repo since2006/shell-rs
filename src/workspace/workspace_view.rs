@@ -175,6 +175,7 @@ pub struct Workspace {
     pub(super) explorers: HashMap<ExplorerId, Entity<ExplorerPanel>>,
     /// Each remote terminal's 文件, once shown: on the terminal's own
     /// connection, and gone with the terminal.
+    pub(super) local_files: HashMap<LocalTerminalId, Entity<super::local_files::LocalFiles>>,
     pub(super) file_sidebars: HashMap<RemoteTerminalId, ExplorerId>,
     /// 目录跟随: what each terminal's current connection was found to be.
     pub(super) directory_follow: HashMap<RemoteTerminalId, super::follow::FollowState>,
@@ -724,6 +725,7 @@ impl Workspace {
             terminals,
             explorers: HashMap::new(),
             file_sidebars: HashMap::new(),
+            local_files: HashMap::new(),
             directory_follow: HashMap::new(),
             local_terminals,
             saved_terminals,
@@ -3049,6 +3051,7 @@ fn new_local_terminal_panel(
             }
             LocalTerminalPanelEvent::Closed(id) => {
                 this.keep_what_it_shows(*id, panel, cx);
+                this.local_files.remove(id);
                 this.local_terminals.remove(id);
                 this.saved_terminals.remove(id);
                 if this.front_saved_terminal == Some(*id) {
@@ -3070,6 +3073,9 @@ fn new_local_terminal_panel(
             }
             LocalTerminalPanelEvent::WorkingDirectory(id, folder) => {
                 this.on_local_terminal_moved(*id, folder, cx);
+                if let Some(files) = this.local_files.get(id) {
+                    files.update(cx, |files, cx| files.terminal_moved(folder, window, cx));
+                }
             }
             LocalTerminalPanelEvent::Notice(id, notice) => {
                 this.on_terminal_notice(CenterTab::LocalTerminal(*id), notice, window, cx)

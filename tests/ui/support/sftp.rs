@@ -322,7 +322,11 @@ impl LocalDirectoryProvider for FakeLocalDirectory {
         "/local/tester".into()
     }
     fn downloads(&self) -> std::path::PathBuf {
-        "/local/tester/Downloads".into()
+        if cfg!(windows) {
+            r"C:\local\tester\Downloads".into()
+        } else {
+            "/local/tester/Downloads".into()
+        }
     }
     fn list(&self, path: &std::path::Path) -> anyhow::Result<DirectoryListing> {
         self.listed.lock().unwrap().push(path.to_path_buf());

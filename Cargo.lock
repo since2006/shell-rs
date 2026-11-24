@@ -8332,6 +8332,7 @@ dependencies = [
  "shellrs-sync",
  "subtle",
  "sys-locale",
+ "sysinfo",
  "tempfile",
  "tokio",
  "trash",

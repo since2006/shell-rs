@@ -164,6 +164,8 @@ objc2-foundation = { version = "0.3", default-features = false, features = [
 ] }
 
 [target.'cfg(windows)'.dependencies]
+tempfile = "3"
+sysinfo = { version = "0.31.4", default-features = false, features = ["system"] }
 windows-registry = "0.6"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",

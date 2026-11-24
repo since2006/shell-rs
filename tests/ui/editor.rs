@@ -947,3 +947,59 @@ async fn an_nginx_file_is_highlighted_as_nginx_by_its_folder(cx: &mut TestAppCon
         assert_eq!(chosen.as_ref(), language, "{path}");
     }
 }
+
+#[gpui_kit::test]
+async fn local_terminal_sidebar_opens_and_saves_a_file(cx: &mut TestAppContext) {
+    let local = FakeLocalDirectory::default();
+    use shellrs::terminal::{LocalTerminalId, TerminalEvent};
+    let followed = std::path::PathBuf::from("/local/followed");
+    let path = followed.join("文件 甲.txt");
+    local
+        .files
+        .lock()
+        .unwrap()
+        .insert(path.clone(), b"local".to_vec());
+    let sftp = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_services(cx, sftp.clone(), local.clone());
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(shellrs::app::NewLocalTerminal), cx)
+    });
+    wait_for(cx, handle, "tool-files").await;
+    in_frame(cx, handle, |window, cx| window.click("tool-files", cx));
+    wait_for(cx, handle, "local-file:目录").await;
+    in_frame(cx, handle, |window, cx| window.click("local-file:目录", cx));
+    wait_for(cx, handle, "local-file:文件 甲.txt").await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("local-files-follow", cx)
+    });
+    cx.update(|cx| {
+        let terminal = workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(1))
+            .unwrap()
+            .read(cx)
+            .terminal()
+            .clone();
+        terminal.update(cx, |_, cx| {
+            cx.emit(TerminalEvent::WorkingDirectory(followed.clone()))
+        });
+    });
+    cx.run_until_parked();
+    assert!(!local.listed.lock().unwrap().contains(&followed));
+    in_frame(cx, handle, |window, cx| {
+        window.click("local-files-follow", cx)
+    });
+    wait_for(cx, handle, "local-file:文件 甲.txt").await;
+    in_frame(cx, handle, |window, cx| {
+        window.click("local-file:文件 甲.txt", cx)
+    });
+    wait_for_editor(cx, handle, FIRST).await;
+    assert_eq!(text_of(&workspace, FIRST, cx), "local");
+    type_text(cx, handle, "edited ");
+    in_frame(cx, handle, |window, cx| window.press("secondary-s", cx));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        local.files.lock().unwrap()[&path] == b"edited local"
+    })
+    .await;
+    assert_eq!(*sftp.on_terminal.lock().unwrap(), 0);
+}
