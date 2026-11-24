@@ -1,12 +1,13 @@
 use std::{cell::Cell, collections::HashSet, rc::Rc};
 
+use crate::shared::RightClickMenu as _;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     list::ListItem,
-    menu::{ContextMenuExt as _, PopupMenu},
+    menu::PopupMenu,
     scroll::ScrollableElement as _,
     spinner::Spinner,
     v_flex,

@@ -4,6 +4,7 @@ use std::{
     rc::Rc,
 };
 
+use crate::shared::RightClickMenu as _;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, VirtualListScrollHandle,
     button::{Button, ButtonVariants as _},
@@ -11,7 +12,7 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     list::ListItem,
-    menu::{ContextMenuExt as _, PopupMenu},
+    menu::PopupMenu,
     scroll::ScrollableElement as _,
     tree::TreeItem,
     v_flex, v_virtual_list,

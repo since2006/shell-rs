@@ -2,6 +2,7 @@
 
 mod closable_tab;
 mod command_line;
+mod context_menu;
 mod detail_row;
 mod dialog;
 mod format;
@@ -16,6 +17,7 @@ mod tint;
 
 pub use closable_tab::ClosableTabTitle;
 pub use command_line::{command_tooltip, one_line};
+pub use context_menu::RightClickMenu;
 pub use detail_row::detail_row;
 pub use dialog::{
     DeleteHandler, commit_footer, confirm_danger, confirm_danger_with_cancel, confirm_delete,

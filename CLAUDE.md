@@ -150,6 +150,7 @@ Cargo workspace，`cargo` 命令默认覆盖前四个包：
 - **渲染回调不读取实体**（树行、表格单元），只传快照。窗口还没挂上 `Root` 时不能弹通知（用 `notify_once_open`）。
 - **对话框**：都要 `.overlay_closable(false)`；表单错误用 `form_error_notification`。底部的取消、确定用 `DialogClose`、`DialogAction` 包着（它们从对话框里面发 `Cancel`、`Confirm`，焦点在哪都行），不自己 `window.dispatch_action`。应用锁的锁屏用 `deferred` 画在所有覆盖层之上并自带焦点约束，上锁时开着的对话框留在下面，解锁后还在（用户定的）。
 - **右键菜单挂在容器上，不挂在行上**；滚动条挂在不滚动的外层上；`Select` 要放进有尺寸的容器；`uniform_list` 的行必须等高。
+- **右键菜单一律用 `shared::RightClickMenu`**，不直接用 gpui-kit 的 `ContextMenuExt`（守卫测试查，issue #154）：gpui-kit 0.10 起菜单打开时先拿焦点、空菜单不画，焦点就卡在看不见的菜单上，经焦点派发的按钮和快捷键都不响应；它让空菜单把焦点交还。嵌套的菜单里最内层的接住右键并停止冒泡，`DataTable` 自带一个（我们不填，是空的），所以带表格的列表把菜单放在表格之后的一层（`explorer/marquee.rs` 的 `menu_layer`），行和列标题在捕获阶段记下按在哪。
 - **按上一帧的尺寸重排**：render 拿不到布局尺寸，用 `canvas` 在 prepaint 记下、变了再重画。
 - **颜色**：用主题 token 和 rem，`px` 只用在 API 要 `Pixels` 的地方；要彩色图标就不能用 `Icon`（它是单色遮罩）。
 - **快捷键改了要重建整个 keymap**（GPUI 删不了单条绑定），见 `app/shortcuts.rs`。键的文字（设置里存的 `cmd-shift-n`）用 `app::parse_keys` / `unparse_keys` 读写；`KeyBinding::new` 只收字面量（平台主键用 `primary!`），运行时拼的键用 `KeyBinding::load(…, cx)`。

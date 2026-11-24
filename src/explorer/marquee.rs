@@ -9,8 +9,10 @@ use super::{
     Selection,
     selection::{row_at, swept_rows},
 };
+use crate::shared::RightClickMenu as _;
 use gpui_kit::component::{
     ActiveTheme as _,
+    menu::PopupMenu,
     table::{TableDelegate, TableState},
 };
 use gpui_kit::*;
@@ -212,6 +214,34 @@ pub(super) fn select_area<T: MarqueeList>(
             MouseButton::Left,
             cx.listener(|list, _, _, cx| end(list, cx)),
         )
+}
+
+/// The list's one menu, for rows, column titles and empty space alike: a
+/// layer over the table, put after it.
+///
+/// The table has a menu of its own, which nothing here fills, and of nested
+/// menus the innermost takes the right-click and stops it there, so a menu
+/// on the list around the table would never open (issue #154). Painted
+/// after the table, the layer is the innermost. It stops the press before
+/// the rows and titles under it hear it bubble up, so they say what was
+/// pressed in the capture phase, and the layer, last to capture, clears the
+/// selection on a right-click in empty space.
+pub(super) fn menu_layer<T: MarqueeList>(
+    cx: &mut Context<T>,
+    build: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+) -> impl IntoElement {
+    div()
+        .id("list-menu")
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .capture_any_mouse_down(cx.listener(|list, event: &MouseDownEvent, _, cx| {
+            if event.button == MouseButton::Right {
+                press_empty(list, event.modifiers, cx)
+            }
+        }))
+        .context_menu(build)
 }
 
 /// A click or right-click on empty space clears the selection, as in

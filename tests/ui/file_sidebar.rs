@@ -135,6 +135,23 @@ async fn wait_for(cx: &mut TestAppContext, handle: WindowHandle<Root>, id: &'sta
     .await;
 }
 
+/// A right-click on a file opens its menu here too (issue #154).
+#[gpui_kit::test]
+async fn a_right_click_in_files_opens_the_menu(cx: &mut TestAppContext) {
+    let fixture = open(cx, FakeSftpProvider::default());
+    show_files(cx, &fixture, INITIAL_WEB_TERMINAL, FILES).await;
+    in_frame(cx, fixture.handle, |window, cx| {
+        window
+            .within(("remote-pane", FILES))
+            .right_click("name:文件 甲.txt", cx)
+    });
+    in_frame(cx, fixture.handle, |window, _| {
+        let popup = window.within("popup-menu");
+        let first = popup.find(0_usize);
+        assert!(first.label().is_some());
+    });
+}
+
 #[gpui_kit::test]
 async fn files_open_on_the_terminals_own_connection(cx: &mut TestAppContext) {
     let fixture = open(cx, FakeSftpProvider::default());

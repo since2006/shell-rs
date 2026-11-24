@@ -1,10 +1,11 @@
 use std::rc::Rc;
 
+use super::RightClickMenu as _;
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    menu::{ContextMenuExt as _, PopupMenu},
+    menu::PopupMenu,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;

@@ -292,10 +292,11 @@ impl FileListing {
 
     /// A name cell's clicks: select (⌘ adds or removes, Shift extends), open
     /// on a double click, and select before the context menu so it acts on
-    /// what is highlighted.
+    /// what is highlighted. Presses are noted as they go down to the cell:
+    /// the list's menu stops a right-click before it bubbles back up.
     fn name_events(&self, cell: Stateful<Div>, name: &str) -> Stateful<Div> {
         let geometry = self.context.geometry.clone();
-        let cell = cell.on_any_mouse_down(move |_, _, _| geometry.pressed.set(Pressed::Name));
+        let cell = cell.capture_any_mouse_down(move |_, _, _| geometry.pressed.set(Pressed::Name));
         let (Some(dispatch), Some(pane)) =
             (self.context.dispatch.clone(), self.context.pane.clone())
         else {
@@ -328,10 +329,13 @@ impl FileListing {
                 }
             }
         })
-        .on_mouse_down(MouseButton::Right, {
+        .capture_any_mouse_down({
             let hit = (name != "..").then(|| name.to_string());
             let menu_hit = self.context.menu_hit.clone();
-            move |_, _, cx| {
+            move |event, _, cx| {
+                if event.button != MouseButton::Right {
+                    return;
+                }
                 if let Some(hit) = &hit {
                     let _ = pane.update(cx, |pane, cx| pane.select_pressed(hit, cx));
                 }
@@ -429,10 +433,13 @@ impl TableDelegate for FileListing {
             .size_full()
             .when(key.as_ref() == "size", |this| this.justify_end())
             .when(key.as_ref() == "name", |this| this.px_1p5())
-            .on_mouse_down(MouseButton::Right, move |_, _, _| {
-                *menu_hit.borrow_mut() = Some(MenuHit::Column(key.clone()));
+            // Noted as the press goes down, as on names.
+            .capture_any_mouse_down(move |event, _, _| {
+                geometry.pressed.set(Pressed::Title);
+                if event.button == MouseButton::Right {
+                    *menu_hit.borrow_mut() = Some(MenuHit::Column(key.clone()));
+                }
             })
-            .on_any_mouse_down(move |_, _, _| geometry.pressed.set(Pressed::Title))
             // The table keeps the arrows in its columns, which only a
             // `refresh` gives it again.
             .on_click(cx.listener(move |table, _, _, cx| {

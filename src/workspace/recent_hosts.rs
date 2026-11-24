@@ -1,11 +1,11 @@
 use std::{cell::Cell, rc::Rc};
 
+use crate::shared::RightClickMenu as _;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     list::ListItem,
-    menu::ContextMenuExt as _,
     scroll::ScrollableElement as _,
     tooltip::Tooltip,
     v_flex,

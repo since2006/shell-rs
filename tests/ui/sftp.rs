@@ -2929,3 +2929,122 @@ async fn find_files_results_select_by_name_and_by_rectangle(cx: &mut TestAppCont
     })
     .await;
 }
+
+/// The words of the open menu's items, top to bottom; none while no menu
+/// is open.
+fn menu_items(window: &mut gpui_kit::Window) -> Vec<String> {
+    if window.try_find("popup-menu").is_none() {
+        return Vec::new();
+    }
+    let popup = window.within("popup-menu");
+    (0..40_usize)
+        .filter_map(|ix| popup.try_find(ix)?.label().map(str::to_string))
+        .collect()
+}
+
+fn right_click_at(
+    window: &mut gpui_kit::Window,
+    at: gpui_kit::Point<gpui_kit::Pixels>,
+    cx: &mut App,
+) {
+    button_click_at(
+        window,
+        at,
+        MouseButton::Right,
+        gpui_kit::Modifiers::default(),
+        cx,
+    );
+}
+
+/// A right-click anywhere in a list opens its menu (issue #154): the
+/// table's own, empty menu used to take the right-click, and focus with
+/// it, so that 设置 and the tabs' buttons stopped answering. A menu with
+/// nothing in it hands focus back.
+#[gpui_kit::test]
+async fn sftp_right_clicks_open_the_lists_menu(cx: &mut TestAppContext) {
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let pane = ("remote-pane", SFTP_TAB);
+    let dismiss = |cx: &mut TestAppContext| {
+        in_frame(cx, handle, |window, cx| window.press("escape", cx));
+        in_frame(cx, handle, |window, _| {
+            assert!(menu_items(window).is_empty())
+        });
+    };
+
+    // A file: its menu, for it alone.
+    in_frame(cx, handle, |window, cx| {
+        window.within(pane).right_click("name:文件 乙.txt", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(menu_items(window).contains(&"编辑".to_string()));
+    });
+    cx.update(|cx| assert_eq!(pane_selection(&workspace, true, cx), ["文件 乙.txt"]));
+    dismiss(cx);
+
+    // Empty space below the rows: the folder's menu, and no selection.
+    in_frame(cx, handle, |window, cx| {
+        let last = window.within(pane).find("file:文件 甲.txt").bounds();
+        let status = window.within(pane).find("pane-status").bounds();
+        let below = point(
+            last.center().x,
+            last.bottom() + (status.top() - last.bottom()) / 2.,
+        );
+        right_click_at(window, below, cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(menu_items(window).contains(&"刷新".to_string()));
+    });
+    cx.update(|cx| assert!(pane_selection(&workspace, true, cx).is_empty()));
+    dismiss(cx);
+
+    // 大小's title: the size formats.
+    in_frame(cx, handle, |window, cx| {
+        window.within(pane).right_click("column:size", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(!menu_items(window).is_empty())
+    });
+    dismiss(cx);
+
+    // 名称's has nothing to offer: no menu, and the buttons still answer.
+    in_frame(cx, handle, |window, cx| {
+        window.within(pane).right_click("column:name", cx)
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(menu_items(window).is_empty());
+        window.click("open-settings", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("settings").visible())
+    });
+}
+
+/// 查找文件's results have the same menu over their table.
+#[gpui_kit::test]
+async fn find_files_results_open_their_menu_on_a_right_click(cx: &mut TestAppContext) {
+    let provider = Arc::new(FakeSftpProvider::with_files(&[(
+        "/srv/app/app.log",
+        b"started",
+    )]));
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let find = find(cx, handle, &workspace, "*.log", "/srv");
+    cx.wait_for(find, Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("found:/srv/app/app.log").is_some()
+    })
+    .await;
+    cx.update_window(find, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click("found:/srv/app/app.log", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(find, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(menu_items(window).contains(&"定位".to_string()));
+    })
+    .unwrap();
+}

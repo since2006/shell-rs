@@ -3,12 +3,13 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
+use crate::shared::RightClickMenu as _;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     group_box::{GroupBox, GroupBoxVariants as _},
     h_flex,
-    menu::{ContextMenuExt as _, PopupMenu},
+    menu::PopupMenu,
     progress::Progress,
     scroll::ScrollableElement as _,
     spinner::Spinner,

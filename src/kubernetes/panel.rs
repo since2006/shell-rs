@@ -2,12 +2,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
+use crate::shared::RightClickMenu as _;
 use gpui_kit::component::{
     ActiveTheme as _, IconName, IndexPath, Selectable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
-    menu::{ContextMenuExt as _, DropdownMenu as _},
+    menu::DropdownMenu as _,
     notification::Notification,
     scroll::ScrollableElement as _,
     select::{SearchableVec, Select, SelectEvent, SelectState},

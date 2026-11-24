@@ -22,7 +22,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     h_flex,
-    menu::{ContextMenuExt as _, DropdownMenu as _},
+    menu::DropdownMenu as _,
     searchable_list::{SearchableGroup, SearchableListItem, SearchableVec},
     select::{Select, SelectEvent, SelectState},
     separator::Separator,
@@ -1259,10 +1259,10 @@ impl Render for FilePane {
             .child(frame(operations))
             .child(self.render_path_label(window, cx))
             .child(
-                // Names and titles say so as a press bubbles up; what is
-                // left is empty space, as in WinSCP. A drag from there draws
-                // a selection rectangle, from where the press was; a click
-                // there, or a right-click, clears the selection.
+                // Names and titles say so as a press goes down to them; what
+                // is left is empty space, as in WinSCP. A drag from there
+                // draws a selection rectangle, from where the press was; a
+                // click there, or a right-click, clears the selection.
                 marquee::select_area(
                     div()
                         .id(("file-list", u64::from(remote)))
@@ -1283,12 +1283,6 @@ impl Render for FilePane {
                         }
                     }
                 })
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(|pane, event: &MouseDownEvent, _, cx| {
-                        marquee::press_empty(pane, event.modifiers, cx)
-                    }),
-                )
                 // Files dropped on the list itself go to its directory.
                 .when(remote, |this| {
                     this.drag_over::<ExternalPaths>(|style, _, _, cx| style.bg(cx.theme().muted))
@@ -1310,11 +1304,17 @@ impl Render for FilePane {
                         self.path.clone(),
                     )
                 })
-                // One menu for rows, column titles and empty space, on the
-                // container: see `HostPanel` for why menus stay off
-                // virtual rows. Two menus would also both open, since a
-                // menu does not stop the click reaching the one around it.
-                .context_menu(move |menu, window, cx| {
+                .child(
+                    DataTable::new(&self.table)
+                        .stripe(false)
+                        .bordered(false)
+                        .small(),
+                )
+                // One menu for rows, column titles and empty space, over
+                // the table, not on its rows: see `HostPanel` for why menus
+                // stay off virtual rows, and `menu_layer` for why it is not
+                // on the list.
+                .child(marquee::menu_layer(cx, move |menu, window, cx| {
                     let Some(state) = pane.upgrade().map(|pane| pane.read(cx).menu_state(cx))
                     else {
                         return menu;
@@ -1331,13 +1331,7 @@ impl Render for FilePane {
                         Some(MenuHit::Column(_)) => menu,
                         None => directory_menu(menu, &state, window, cx),
                     }
-                })
-                .child(
-                    DataTable::new(&self.table)
-                        .stripe(false)
-                        .bordered(false)
-                        .small(),
-                )
+                }))
                 .child(self.marquee.canvas())
                 .children(self.marquee.rectangle(cx)),
             )

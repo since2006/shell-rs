@@ -5,7 +5,8 @@
 
 use super::{FilePane, PaneSide, pane_menu::path_menu, path_ancestors};
 use crate::app::ExplorerCommand;
-use gpui_kit::component::{ActiveTheme as _, h_flex, menu::ContextMenuExt as _};
+use crate::shared::RightClickMenu as _;
+use gpui_kit::component::{ActiveTheme as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use std::ops::Range;

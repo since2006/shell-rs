@@ -32,7 +32,7 @@ use gpui_kit::component::{
     form::{Field, Form},
     h_flex,
     input::{Input, InputEvent, InputState},
-    menu::{ContextMenuExt as _, PopupMenu},
+    menu::PopupMenu,
     notification::Notification,
     table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState},
     v_flex,
@@ -701,15 +701,15 @@ impl Render for FindFiles {
                 }
             }
         })
-        .on_mouse_down(
-            MouseButton::Right,
-            cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                marquee::press_empty(this, event.modifiers, cx)
-            }),
+        .child(
+            DataTable::new(&self.table)
+                .stripe(false)
+                .bordered(false)
+                .small(),
         )
-        // One menu for results and empty space, on the list, not on its
+        // One menu for results and empty space, over the table, not on its
         // rows: see `FilePane`.
-        .context_menu({
+        .child(marquee::menu_layer(cx, {
             let (view, menu_hit) = (cx.weak_entity(), self.menu_hit.clone());
             move |menu, _, cx| {
                 let Some(view) = view.upgrade() else {
@@ -722,13 +722,7 @@ impl Render for FindFiles {
                     state.empty_menu(menu)
                 }
             }
-        })
-        .child(
-            DataTable::new(&self.table)
-                .stripe(false)
-                .bordered(false)
-                .small(),
-        )
+        }))
         .child(self.marquee.canvas())
         .children(self.marquee.rectangle(cx));
         let theme = cx.theme();
@@ -1095,7 +1089,7 @@ impl TableDelegate for FoundFiles {
             .size_full()
             .when(column.key.as_ref() == "size", |this| this.justify_end())
             .when(column.key.as_ref() == "name", |this| this.px_1p5())
-            .on_any_mouse_down(move |_, _, _| geometry.pressed.set(Pressed::Title))
+            .capture_any_mouse_down(move |_, _, _| geometry.pressed.set(Pressed::Title))
             // The table keeps the arrows in its columns, which only a
             // `refresh` gives it again.
             .on_click(cx.listener(move |table, _, _, cx| {
@@ -1164,7 +1158,10 @@ impl TableDelegate for FoundFiles {
                 let geometry = self.geometry.clone();
                 let right_click = {
                     let (path, menu_hit) = (path.clone(), self.menu_hit.clone());
-                    cx.listener(move |table, _: &MouseDownEvent, window, cx| {
+                    cx.listener(move |table, event: &MouseDownEvent, window, cx| {
+                        if event.button != MouseButton::Right {
+                            return;
+                        }
                         table.delegate_mut().select_pressed(&path);
                         *menu_hit.borrow_mut() = Some(path.clone());
                         window.focus(&table.focus_handle(cx), cx);
@@ -1199,8 +1196,10 @@ impl TableDelegate for FoundFiles {
                         }
                     })
                     .child(label)
-                    .on_any_mouse_down(move |_, _, _| geometry.pressed.set(Pressed::Name))
-                    .on_mouse_down(MouseButton::Right, right_click)
+                    // Noted as the press goes down: the list's menu stops a
+                    // right-click before it bubbles back up.
+                    .capture_any_mouse_down(move |_, _, _| geometry.pressed.set(Pressed::Name))
+                    .capture_any_mouse_down(right_click)
                     // Select (⌘ adds or removes, Shift extends); a
                     // double-click goes to the result, as WinSCP's does.
                     .on_click(cx.listener(move |table, event: &ClickEvent, window, cx| {
