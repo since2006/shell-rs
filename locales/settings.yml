@@ -425,6 +425,12 @@ settings.window.sidebar_widths_description:
 settings.window.sidebar_widths_reset:
   zh-CN: 恢复默认
   en: Restore defaults
+settings.window.confirm_quit:
+  zh-CN: 退出前确认
+  en: Confirm before quitting
+settings.window.confirm_quit_description:
+  zh-CN: 有打开的标签时，退出前先确认。没保存的文件总会询问。
+  en: Ask before quitting while any tab is open. Unsaved files are always asked about.
 settings.window.close_to_tray:
   zh-CN: 关闭窗口时最小化到托盘
   en: Minimize to tray on close

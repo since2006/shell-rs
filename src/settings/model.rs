@@ -262,6 +262,9 @@ pub struct WindowSettings {
     /// Windows only: hide the window in the notification area instead of
     /// quitting when its close button is clicked. Off until enabled.
     pub close_to_tray: bool,
+    /// 退出前确认: ask before quitting while any tab is open (issue #152).
+    /// Unsaved files are asked about either way.
+    pub confirm_quit: bool,
 }
 
 impl Default for WindowSettings {
@@ -270,6 +273,7 @@ impl Default for WindowSettings {
             remember_size: true,
             remember_position: true,
             close_to_tray: false,
+            confirm_quit: true,
         }
     }
 }
@@ -1236,6 +1240,7 @@ mod tests {
         for json in ["{}", r#"{"window":{"remember_position":false}}"#] {
             let settings: AppSettings = serde_json::from_str(json).unwrap();
             assert!(!settings.window.close_to_tray);
+            assert!(settings.window.confirm_quit, "asks unless turned off");
         }
         let settings: AppSettings =
             serde_json::from_str(r#"{"window":{"close_to_tray":true}}"#).unwrap();

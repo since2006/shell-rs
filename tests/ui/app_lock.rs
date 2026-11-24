@@ -90,6 +90,25 @@ fn app_settings(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     });
 }
 
+/// Scroll 设置 › 应用 down to 应用锁, below the 窗口 group in a window this
+/// size.
+fn scroll_settings_down(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+    in_frame(cx, handle, |window, cx| {
+        let position = window.find("settings").bounds().center();
+        window.dispatch_event(
+            gpui_kit::ScrollEvent {
+                position,
+                delta: gpui_kit::ScrollDelta::Pixels(point(px(0.), px(-600.))),
+                modifiers: gpui_kit::Modifiers::default(),
+                touch_phase: gpui_kit::TouchPhase::Moved,
+                source: gpui_kit::ScrollSource::Pointer,
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+}
+
 fn enter(window: &mut gpui_kit::Window, id: &'static str, text: &str, cx: &mut App) {
     window.click(id, cx);
     window.input(text, cx);
@@ -198,6 +217,7 @@ fn app_lock_settings_and_startup_gate(cx: &mut TestAppContext) {
     wait_for_password(cx, &fresh_lock);
     assert_eq!(fresh_created.get(), 1);
     app_settings(cx, reopened);
+    scroll_settings_down(cx, reopened);
     in_frame(cx, reopened, |window, cx| {
         window.click("app-lock-disable", cx)
     });

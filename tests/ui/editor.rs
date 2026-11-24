@@ -523,6 +523,16 @@ async fn quitting_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
     let (handle, workspace, _) = open_server(cx, &[(REMOTE_FILE, b"text\n")]).await;
     open_file(cx, handle, "remote-pane", "文件 甲.txt");
     wait_for_editor(cx, handle, FIRST).await;
+    // 退出前确认 off: the open SFTP tab asks nothing, unsaved changes do.
+    cx.update(|cx| {
+        workspace
+            .read(cx)
+            .settings()
+            .clone()
+            .update(cx, |store, cx| {
+                store.update(|settings| settings.window.confirm_quit = false, cx);
+            });
+    });
 
     // Nothing unsaved: nothing asked.
     cx.update(|cx| cx.dispatch_action(&Quit));
@@ -548,7 +558,10 @@ async fn quitting_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
         cx.dispatch_action(&Quit);
     });
     wait_for(cx, handle, "ok").await;
-    in_frame(cx, handle, |window, cx| window.click("cancel", cx));
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("ok").label(), Some("放弃修改并退出"));
+        window.click("cancel", cx)
+    });
     assert!(is_open(&workspace, FIRST, cx));
 }
 

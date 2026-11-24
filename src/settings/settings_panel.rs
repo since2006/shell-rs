@@ -926,6 +926,15 @@ fn application_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
             )
             .description(t!("settings.window.remember_position_description")),
             sidebar_widths_item(store),
+            SettingItem::new(
+                t!("settings.window.confirm_quit"),
+                switch(
+                    |window| window.confirm_quit,
+                    |window, on| window.confirm_quit = on,
+                    true,
+                ),
+            )
+            .description(t!("settings.window.confirm_quit_description")),
         ]);
     let window_group = if cfg!(windows) {
         window_group.item(

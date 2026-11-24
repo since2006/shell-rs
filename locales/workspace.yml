@@ -256,6 +256,13 @@ workspace.unsaved.quit:
 workspace.unsaved.discard_and_quit:
   zh-CN: 放弃修改并退出
   en: Discard changes and quit
+# The quit confirmation with tabs open and nothing unsaved (退出前确认).
+workspace.quit_note:
+  zh-CN: 打开的会话和标签都会关闭。
+  en: All open sessions and tabs will close.
+workspace.quit:
+  zh-CN: 退出
+  en: Quit
 workspace.unsaved.close_tabs_title.one:
   en: Close 1 tab?
 workspace.unsaved.close_tabs_title.other:

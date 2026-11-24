@@ -247,30 +247,6 @@ impl Workspace {
         self.unsaved_files(&ids, cx)
     }
 
-    /// The quit guard: with changes not saved, ask before quitting and hold
-    /// the quit back (true) until the user agrees; then, with something not
-    /// synced yet, hold it back for a last round.
-    pub(super) fn ask_before_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let unsaved = self.all_unsaved_files(cx);
-        if unsaved.is_empty() {
-            return self.sync_before_quit(cx);
-        }
-        // A hidden window (closed on macOS) would ask where nobody sees it.
-        crate::app::bring_forward(window, cx);
-        confirm_danger(
-            t!("workspace.unsaved.quit_title"),
-            Some(t!(
-                "workspace.unsaved.quit",
-                files = describe_files(&unsaved)
-            )),
-            t!("workspace.unsaved.discard_and_quit"),
-            Rc::new(|_, cx| cx.quit()),
-            window,
-            cx,
-        );
-        true
-    }
-
     /// Close several center tabs of one batch (关闭其他, 关闭全部…). Editors
     /// with changes, theirs or those of SFTP tabs and terminals' 文件 in the
     /// batch, are asked about once for all, not one dialog each.
