@@ -4,6 +4,17 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.20-beta.4]
+
+### Added
+
+- A new “Connection” for hosts, “Proxy command”, like OpenSSH’s `ProxyCommand`: reach servers with no port 22 open through cloudflared (Cloudflare Access), AWS SSM, Google Cloud IAP, tailcat, ncat and the like. In the command, `%h`, `%p` and `%r` become the address, port and username. SSH hosts only. If the command exits (it isn’t installed, say, or you aren’t signed in), the error shows its exit code and the last lines it printed. Importing hosts from `~/.ssh/config` brings their `ProxyCommand` along. ([#103](https://github.com/since2006/shell-rs/issues/103), [#134](https://github.com/since2006/shell-rs/pull/134))
+- Confirm before quitting: quitting with tabs open (⌘Q / Ctrl+Q, the tray’s “Quit”, or closing the window on Windows and Linux) first asks “Quit ShellRS?”, so a stray click doesn’t close every open session. To skip the question, turn off “Confirm before quitting” under Settings › General › Window; unsaved files are always asked about. ([#152](https://github.com/since2006/shell-rs/issues/152))
+
+### Fixed
+
+- Confirming “Discard changes and quit” no longer skips the last sync before quitting.
+
 ## [0.1.20-beta.3]
 
 ### Fixed

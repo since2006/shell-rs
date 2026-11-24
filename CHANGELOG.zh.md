@@ -4,6 +4,17 @@
 
 每个版本一节，标题写成 `## [版本号]`，可以在后面加日期。每一节同时写中文（这里）和英文（[CHANGELOG.md](CHANGELOG.md)），在同一次提交里。发布流程（`.github/workflows/release.yml`）把英文版里与 tag 同版本的那一节原样作为 GitHub Release 的说明；官网的更新日志英文和日文页显示英文版，中文页显示这一份（ShellRS 的更新对话框用「查看更新内容」打开官网的更新日志）。用 Markdown 书写，面向使用者。
 
+## [0.1.20-beta.4]
+
+### 新增
+
+- 主机的「连接方式」新增「代理命令」，同 OpenSSH 的 `ProxyCommand`：经 cloudflared（Cloudflare Access）、AWS SSM、Google Cloud IAP、tailcat、ncat 这类程序连到不开 22 端口的服务器，命令里的 `%h`、`%p`、`%r` 换成地址、端口和用户名。只有 SSH 主机能用；命令没装、没登录而退出时，错误里写出它的退出码和最后几行输出。从 `~/.ssh/config` 导入主机时，`ProxyCommand` 也会导入。([#103](https://github.com/since2006/shell-rs/issues/103)、[#134](https://github.com/since2006/shell-rs/pull/134))
+- 退出前确认：开着标签时退出（⌘Q / Ctrl+Q、托盘的「退出」、Windows 和 Linux 上关闭窗口），先问一句「退出 ShellRS？」，免得误点后打开的会话全部断开。不想被问，在「设置 › 应用 › 窗口」关掉「退出前确认」；有没保存的文件时总会先问。([#152](https://github.com/since2006/shell-rs/issues/152))
+
+### 修复
+
+- 修复确认「放弃修改并退出」后，跳过退出前最后一次云同步的问题。
+
 ## [0.1.20-beta.3]
 
 ### 修复
