@@ -4,6 +4,12 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.20-beta.5]
+
+### Fixed
+
+- Right-clicking in the file lists of SFTP tabs, the Files sidebar and Find files opens the menu again. After a right-click there, or on empty space in other panels, buttons such as Settings and a tab’s close button no longer stop responding. Earlier betas had both problems. ([#154](https://github.com/since2006/shell-rs/issues/154))
+
 ## [0.1.20-beta.4]
 
 ### Added
