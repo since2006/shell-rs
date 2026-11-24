@@ -37,7 +37,7 @@ pub use forward::*;
 pub use gpui_shared_string::SharedString;
 pub use login::{
     DEFAULT_KEY_FILES, HostConnection, HostLogin, HostLoginExt, JumpLogin, LoginMethod, LoginRoute,
-    ProxyLogin, SerialLine, TelnetAutoLogin, TelnetLogin, TotpLogin,
+    ProxyCommandLogin, ProxyLogin, SerialLine, TelnetAutoLogin, TelnetLogin, TotpLogin,
 };
 pub use mark::mark_color;
 pub use model::*;

@@ -80,6 +80,11 @@ pub enum HostRoute {
     Proxy {
         proxy: HostProxy,
     },
+    /// Through an external command whose stdin and stdout carry the stream
+    /// (OpenSSH's `ProxyCommand`).
+    ProxyCommand {
+        command: String,
+    },
 }
 
 /// An HTTP or SOCKS5 proxy. One with a user has its password saved, as
@@ -301,6 +306,8 @@ pub enum HostProblem {
     ProxyAddress,
     /// Its proxy's port is 0.
     ProxyPort,
+    /// Its proxy command is empty.
+    ProxyCommand,
 }
 
 /// What is wrong with a credential as typed.
@@ -356,6 +363,7 @@ impl From<hosts::HostDraftError> for HostProblem {
             hosts::HostDraftError::DeletedJumpHost => Self::DeletedJumpHost,
             hosts::HostDraftError::ProxyAddress => Self::ProxyAddress,
             hosts::HostDraftError::ProxyPort => Self::ProxyPort,
+            hosts::HostDraftError::ProxyCommand => Self::ProxyCommand,
         }
     }
 }
@@ -403,6 +411,9 @@ impl Host {
                         user: proxy.user.as_ref().map(ToString::to_string),
                     },
                 },
+                hosts::Route::ProxyCommand(proxy) => HostRoute::ProxyCommand {
+                    command: proxy.command.to_string(),
+                },
             },
             group: host.group.map(|id| id.0),
             notes: host.notes.to_string(),
@@ -449,6 +460,9 @@ impl HostDraft {
                 hosts::ProxySettings::new(proxy.kind.into(), proxy.host, proxy.port)
                     .with_user(proxy.user.unwrap_or_default()),
             ),
+            HostRoute::ProxyCommand { command } => {
+                hosts::Route::ProxyCommand(hosts::ProxyCommandSettings::new(command))
+            }
         };
         draft.with_route(route).with_notes(self.notes)
     }

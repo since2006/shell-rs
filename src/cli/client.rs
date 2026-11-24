@@ -564,6 +564,9 @@ fn route_text(host: &HostDetails) -> String {
             };
             proxy.to_string()
         }
+        Some(RouteDetails::ProxyCommand { command }) => {
+            t!("cli.route.proxy_command", command = command).to_string()
+        }
     }
 }
 

@@ -20,6 +20,7 @@ mod nat64;
 mod probe;
 mod prompt;
 mod proxy;
+mod proxy_command;
 mod secret;
 mod session;
 pub mod sftp;
@@ -40,8 +41,8 @@ pub use error::{
 pub use exec::{ExecError, ExecErrorKind, ExecExit, ExecFailure, ExecStream, run_command};
 pub use latency::{LATENCY_INTERVAL, Latency, LatencyLevel, round_trip};
 pub use login::{
-    DEFAULT_KEY_FILES, HostLogin, JumpLogin, LoginMethod, LoginRoute, ProxyKind, ProxyLogin,
-    TotpLogin,
+    DEFAULT_KEY_FILES, HostLogin, JumpLogin, LoginMethod, LoginRoute, ProxyCommandLogin, ProxyKind,
+    ProxyLogin, TotpLogin,
 };
 pub use probe::{HOST_OS_KEYS, HostOsProbe, PROBE_COMMAND, ProbeOutcome, WINDOWS_PROBE_COMMAND};
 pub use prompt::{
