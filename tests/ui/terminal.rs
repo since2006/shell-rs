@@ -2178,6 +2178,130 @@ async fn duplicating_a_terminal_without_a_reported_directory_only_copies_its_nam
     assert!(!factory.written_text().contains("cd --"));
 }
 
+/// Duplicating a terminal in another split pane opens the new tab in that
+/// pane rather than the first tab group, leaving the first pane's displayed
+/// tab untouched (issue #105).
+#[gpui_kit::test]
+async fn duplicating_a_terminal_in_a_split_opens_the_copy_in_the_same_pane(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::component::Placement;
+    use gpui_kit::component::dock::{DockPlacement, InsertTarget, PanelId};
+
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, HostStore::seed(), factory);
+    // Split staging-api out into a second pane on the right, then add db-01
+    // to the first pane and switch back to web-01 so the first pane is not on
+    // its last tab.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let staging_panel = PanelId::from(
+            workspace
+                .read(cx)
+                .remote_terminal(RemoteTerminalId(INITIAL_STAGING_TERMINAL))
+                .expect("seeded staging terminal")
+                .entity_id(),
+        );
+        let area = workspace.read(cx).dock_area().clone();
+        area.update(cx, |area, cx| {
+            let node = area
+                .layout(DockPlacement::Center)
+                .and_then(|tree| tree.find_panel_node(staging_panel))
+                .expect("in the center");
+            area.move_panel(
+                staging_panel,
+                InsertTarget::Split {
+                    node,
+                    placement: Placement::Right,
+                    size: None,
+                },
+                window,
+                cx,
+            );
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within("host-tree")
+            .double_click(("host-row", DB_01), cx);
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        let web_panel = PanelId::from(
+            workspace
+                .read(cx)
+                .remote_terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))
+                .expect("seeded web terminal")
+                .entity_id(),
+        );
+        let area = workspace.read(cx).dock_area().clone();
+        area.update(cx, |area, cx| area.select_panel(web_panel, window, cx));
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.find(("terminal", INITIAL_WEB_TERMINAL)).visible());
+        assert!(
+            window
+                .find(("terminal", INITIAL_STAGING_TERMINAL))
+                .visible()
+        );
+        window.dispatch_action(
+            Box::new(DuplicateTerminal(RemoteTerminalId(
+                INITIAL_STAGING_TERMINAL,
+            ))),
+            cx,
+        );
+    });
+
+    let copied = RemoteTerminalId(FIRST_NEW_TERMINAL + 1);
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        remote_lifecycle(&workspace, copied, cx) == TerminalLifecycle::Running
+    })
+    .await;
+
+    in_frame(cx, handle, |window, _| {
+        // The first pane still displays web-01, while the right pane displays
+        // the duplicated staging-api tab.
+        assert!(window.find(("terminal", INITIAL_WEB_TERMINAL)).visible());
+        assert!(window.find(("terminal", copied.0)).visible());
+        assert!(
+            window
+                .try_find(("terminal", INITIAL_STAGING_TERMINAL))
+                .is_none()
+        );
+    });
+
+    cx.update(|cx| {
+        let ws = workspace.read(cx);
+        assert_eq!(
+            ws.active_tab(),
+            Some(shellrs::app::CenterTab::Terminal(copied))
+        );
+        let staging_panel = PanelId::from(
+            ws.remote_terminal(RemoteTerminalId(INITIAL_STAGING_TERMINAL))
+                .unwrap()
+                .entity_id(),
+        );
+        let copied_panel = PanelId::from(ws.remote_terminal(copied).unwrap().entity_id());
+        let web_panel = PanelId::from(
+            ws.remote_terminal(RemoteTerminalId(INITIAL_WEB_TERMINAL))
+                .unwrap()
+                .entity_id(),
+        );
+        let area = ws.dock_area().read(cx);
+        let tree = area.layout(DockPlacement::Center).expect("center layout");
+        let staging_group = tree.find_panel_node(staging_panel).expect("staging group");
+        let copied_group = tree.find_panel_node(copied_panel).expect("copied group");
+        let web_group = tree.find_panel_node(web_panel).expect("web group");
+        assert_eq!(copied_group, staging_group);
+        assert_ne!(copied_group, web_group);
+    });
+}
+
 /// What a host types once logged in: a line at a time after the shell's
 /// output, on every connection of its tab, and nothing in the other tabs.
 #[gpui_kit::test]
