@@ -280,6 +280,24 @@ impl HostPanel {
         self.select_node(node, cx);
     }
 
+    /// Follow the center tab in front: select its saved host and scroll it
+    /// into view while its row shows, or clear the selection when no shown
+    /// host row matches.
+    pub fn set_active_host(&mut self, host_id: Option<HostId>, cx: &mut Context<Self>) {
+        let next = host_id
+            .map(HostNode::Host)
+            .filter(|node| self.row_index(*node).is_some());
+        if self.selected == next {
+            return;
+        }
+        self.selected = next;
+        if let Some(ix) = next.and_then(|node| self.row_index(node)) {
+            self.scroll_handle
+                .scroll_to_item(ix, ScrollStrategy::Nearest);
+        }
+        cx.notify();
+    }
+
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search.update(cx, |input, cx| input.focus(window, cx));
     }
