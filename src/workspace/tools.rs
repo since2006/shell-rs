@@ -207,8 +207,7 @@ impl Workspace {
             .then(|| self.tools.read(cx).tool())
     }
 
-    /// Record the center tab in front, and bring the right sidebar in line
-    /// with it.
+    /// Record the center tab in front, and bring the sidebars in line with it.
     pub(super) fn set_active_tab(
         &mut self,
         tab: Option<CenterTab>,
@@ -226,6 +225,24 @@ impl Workspace {
         }
         self.sync_tool_sidebar(window, cx);
         self.sync_saved_terminals(cx);
+        self.sync_host_panel(cx);
+    }
+
+    /// Select the host of the center tab in front in the host tree.
+    pub(super) fn sync_host_panel(&mut self, cx: &mut Context<Self>) {
+        let host_id = self.active_host_id(cx);
+        self.host_panel
+            .update(cx, |panel, cx| panel.set_active_host(host_id, cx));
+    }
+
+    fn active_host_id(&self, cx: &App) -> Option<HostId> {
+        let id = match self.active_tab? {
+            CenterTab::Terminal(id) => self.terminals.get(&id)?.read(cx).host_id(),
+            CenterTab::Explorer(id) => self.explorers.get(&id)?.read(cx).host_id(),
+            CenterTab::Editor(id) => self.editors.get(&id)?.read(cx).host_id()?,
+            CenterTab::LocalTerminal(_) | CenterTab::Settings => return None,
+        };
+        self.store.read(cx).saved_host(id).map(|host| host.id)
     }
 
     /// The switch's buttons: show that tool, or hide the sidebar when it is

@@ -1048,3 +1048,67 @@ fn the_arrow_keys_move_through_the_host_tree(cx: &mut TestAppContext) {
         assert!(window.find(("host-row", DEV_BOX)).selected() == Some(true));
     });
 }
+
+/// Switching center tabs or focusing back into an open remote tab selects its
+/// host in the sidebar; non-host tabs clear the selection (issue #135).
+#[gpui_kit::test]
+fn the_host_tree_selection_follows_the_active_tab(cx: &mut TestAppContext) {
+    use shellrs::app::{OpenExplorer, SwitchToTab};
+
+    let (handle, _) = open_workspace(cx);
+    let selected = |window: &mut gpui_kit::Window, id: u64| {
+        window.find(("host-row", id)).selected() == Some(true)
+    };
+
+    // The seeded workspace displays its first tab (web-01) once deferred tab
+    // activation runs; an active window is required for `on_focus_in` to fire.
+    in_frame(cx, handle, |window, _| window.activate_window());
+    in_frame(cx, handle, |window, _| {
+        assert!(selected(window, WEB_01));
+        assert!(!selected(window, STAGING_API));
+    });
+
+    // Switching to the second tab (staging-api) moves the sidebar selection
+    // with it.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(SwitchToTab(2)), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(selected(window, STAGING_API));
+        assert!(!selected(window, WEB_01));
+    });
+
+    // Clicking another row in the tree selects that row, and clicking back
+    // into the already-active terminal restores the active tab's host.
+    in_frame(cx, handle, |window, cx| {
+        window.click(("host-row", DEV_BOX), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(selected(window, DEV_BOX));
+        assert!(!selected(window, STAGING_API));
+        window.click(("terminal", INITIAL_STAGING_TERMINAL), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(selected(window, STAGING_API));
+        assert!(!selected(window, DEV_BOX));
+    });
+
+    // Opening an SFTP tab selects its host too.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert!(selected(window, DB_01));
+        assert!(!selected(window, STAGING_API));
+    });
+
+    // A local terminal belongs to no saved host, so the host selection clears.
+    in_frame(cx, handle, |window, cx| {
+        window.click("new-local-terminal", cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        for id in [WEB_01, WEB_02, DB_01, STAGING_API, DEV_BOX] {
+            assert!(!selected(window, id), "host {id} should not stay selected");
+        }
+    });
+}
