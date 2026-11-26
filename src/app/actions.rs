@@ -366,6 +366,9 @@ id_actions! {
     OpenExplorer(HostId);
     /// Open the edit-host dialog for a host.
     EditHost(HostId);
+    /// 在主机列表中定位: show the host list with a host's row selected,
+    /// the groups above it unfolded (issue #135).
+    RevealHost(HostId);
     /// Duplicate a host in the same group.
     DuplicateHost(HostId);
     /// Ask for confirmation, then delete a host.

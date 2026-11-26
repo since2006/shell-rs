@@ -37,6 +37,9 @@ terminal.remote.restore_directory_failed:
 terminal.remote.edit_host:
   zh-CN: 编辑主机…
   en: Edit host…
+terminal.remote.reveal_host:
+  zh-CN: 在主机列表中定位
+  en: Show in host list
 terminal.remote.send_break:
   zh-CN: 发送 Break
   en: Send break

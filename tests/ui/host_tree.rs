@@ -1112,3 +1112,77 @@ fn the_host_tree_selection_follows_the_active_tab(cx: &mut TestAppContext) {
         }
     });
 }
+
+/// 在主机列表中定位 (issue #135) finds a host three groups down with every
+/// one of them folded, the list showing something else: the host list
+/// comes up with the groups unfolded for now, not saved so, and the row
+/// selected. A search that leaves the host out is cleared; the sidebar
+/// opens when hidden.
+#[gpui_kit::test]
+fn show_in_host_list_unfolds_the_groups_above_the_host(cx: &mut TestAppContext) {
+    use shellrs::app::{CollapseAllGroups, RevealHost, ToggleHostPanel};
+
+    let mut store = HostStore::seed();
+    let child =
+        store.insert_group_unnotified(GroupDraft::new("内部服务", Some(GroupId(PRODUCTION))));
+    let grandchild = store.insert_group_unnotified(GroupDraft::new("后端", Some(child)));
+    let nested = store.insert_unnotified(HostDraft::new(
+        "backend-01",
+        "10.0.3.8",
+        22,
+        "deploy",
+        AuthKind::Password,
+        Some(grandchild),
+    ));
+    let (handle, workspace) = open_workspace_with_store(cx, store);
+    let folded = |cx: &mut TestAppContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            let store = workspace.store().read(cx);
+            [GroupId(PRODUCTION), child, grandchild]
+                .map(|group| !store.group(group).unwrap().expanded)
+        })
+    };
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(CollapseAllGroups), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find(("host-row", DEV_BOX)).is_none());
+        window.click("show-forwards", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("host-tree").is_none());
+        window.dispatch_action(Box::new(RevealHost(nested)), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("show-hosts").checked(), Some(true));
+        let tree = window.within("host-tree");
+        assert_eq!(tree.find(("host-row", nested.0)).selected(), Some(true));
+        assert!(tree.find(("host-row", nested.0)).visible());
+        // Only the way down to it unfolds.
+        assert!(tree.try_find(("group-row", DEVELOPMENT)).is_some());
+        assert!(tree.try_find(("host-row", DEV_BOX)).is_none());
+    });
+    assert_eq!(folded(cx), [true; 3], "unfolded for now, not saved");
+
+    // A search that leaves it out goes; the hidden sidebar opens.
+    in_frame(cx, handle, |window, cx| {
+        window.click("host-search", cx);
+        window.input("web", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find(("host-row", nested.0)).is_none());
+        window.dispatch_action(Box::new(ToggleHostPanel), cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("host-tree").is_none());
+        // From a tab's menu, as the keyboard would be there.
+        window.click(("terminal", INITIAL_WEB_TERMINAL), cx);
+        window.dispatch_action(Box::new(RevealHost(nested)), cx);
+    });
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("host-search").value(), Some(""));
+        let tree = window.within("host-tree");
+        assert_eq!(tree.find(("host-row", nested.0)).selected(), Some(true));
+        assert!(tree.try_find(("host-row", DEV_BOX)).is_none(), "folded");
+    });
+}

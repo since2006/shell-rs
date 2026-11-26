@@ -468,6 +468,9 @@ explorer.tab.copy_ip:
 explorer.tab.copy_host_name:
   zh-CN: 复制主机名
   en: Copy hostname
+explorer.tab.reveal_host:
+  zh-CN: 在主机列表中定位
+  en: Show in host list
 
 explorer.name.empty:
   zh-CN: 名称不能为空

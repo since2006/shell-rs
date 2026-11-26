@@ -298,6 +298,28 @@ impl HostPanel {
         cx.notify();
     }
 
+    /// 在主机列表中定位 (issue #135): show `host` wherever it sits, the
+    /// groups above it unfolded, for this run only as for a moved row. A
+    /// search that leaves it out is cleared; one it is among keeps going,
+    /// with the groups it folded above it unfolded.
+    pub fn reveal_host(&mut self, host: HostId, window: &mut Window, cx: &mut Context<Self>) {
+        let node = HostNode::Host(host);
+        if self.searching() {
+            for group in groups_above(self.store.read(cx), node) {
+                self.folded_in_search.remove(&group);
+            }
+            self.rebuild_tree(cx);
+            if self.row_index(node).is_none() {
+                // Setting the field says nothing of it: the tree is told here.
+                self.search
+                    .update(cx, |search, cx| search.set_value("", window, cx));
+                self.query.clear();
+                self.folded_in_search.clear();
+            }
+        }
+        self.reveal_node(node, cx);
+    }
+
     pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search.update(cx, |input, cx| input.focus(window, cx));
     }

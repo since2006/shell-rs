@@ -10,7 +10,7 @@ use crate::app::ExplorerDispatch as _;
 use crate::{
     app::{
         CatalogIcon, CenterTab, CloseExplorer, CopyHostAddress, ExplorerAction, ExplorerCommand,
-        OpenExplorer, RenameExplorer,
+        OpenExplorer, RenameExplorer, RevealHost,
     },
     connection::{ConnectionPrompt, ConnectionPromptReply, Latency},
     host::{BookmarkSide, ConnectionState, Host, HostId, HostLogin, HostStore},
@@ -1205,6 +1205,8 @@ struct TabMenu {
     host_is_ip: bool,
     /// The host is still there to open SFTP on and copy the address of.
     host_exists: bool,
+    /// A saved host, in the host list to show it in; a temporary one is not.
+    saved: bool,
     can_reconnect: bool,
     group: Option<WeakEntity<TabGroup>>,
     panel: EntityId,
@@ -1217,6 +1219,7 @@ impl ExplorerPanel {
             host_id: self.host_id,
             host_is_ip: self.host.address_is_ip(),
             host_exists: self.store.read(cx).host(self.host_id).is_some(),
+            saved: self.store.read(cx).saved_host(self.host_id).is_some(),
             can_reconnect: self.can_reconnect(),
             group: self.tab_group.clone(),
             panel: cx.entity_id(),
@@ -1249,6 +1252,13 @@ impl TabMenu {
                     copy_host,
                     Icon::new(IconName::Copy),
                     Box::new(CopyHostAddress(host_id)),
+                )
+            })
+            .when(self.saved, |menu| {
+                menu.menu_with_icon(
+                    t!("explorer.tab.reveal_host"),
+                    Icon::new(CatalogIcon::LocateFixed),
+                    Box::new(RevealHost(host_id)),
                 )
             })
             .menu_with_icon_and_disabled(
