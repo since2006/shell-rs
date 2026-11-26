@@ -108,9 +108,13 @@ pub fn cursor_label(line: u32, character: u32) -> String {
     .to_string()
 }
 
-/// 「UTF-8 · LF」, 「UTF-8 BOM · CRLF」.
+/// 「UTF-8 · LF」, 「UTF-8 BOM · CRLF」, 「GBK · CRLF」.
 pub fn format_label(format: TextFormat) -> String {
-    let encoding = if format.bom() { "UTF-8 BOM" } else { "UTF-8" };
+    let encoding = if format.bom() {
+        "UTF-8 BOM"
+    } else {
+        format.encoding_name()
+    };
     let lines = if format.crlf() { "CRLF" } else { "LF" };
     format!("{encoding} · {lines}")
 }
@@ -274,5 +278,12 @@ mod tests {
             format_label(TextFormat::new(true, true)),
             "UTF-8 BOM · CRLF"
         );
+        // 「中文」 in GBK (issue #159).
+        let gbk = crate::sftp::TextFile::decode::<()>(
+            b"\xD6\xD0\xCE\xC4\r\n".to_vec(),
+            crate::sftp::FileStamp::new(0, None),
+        )
+        .unwrap();
+        assert_eq!(format_label(gbk.format()), "GBK · CRLF");
     }
 }

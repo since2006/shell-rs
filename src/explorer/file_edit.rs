@@ -3,7 +3,8 @@
 //! again.
 //!
 //! A file is read before any editor tab or preview exists: one that cannot
-//! be shown (too large, binary, not UTF-8) is explained here and never
+//! be shown (too large, binary, an encoding that cannot be told) is
+//! explained here and never
 //! flashes a tab.
 
 use super::preview::{IMAGE_LIMIT, Preview, PreviewContent, PreviewKind, open_preview_dialog};
@@ -388,8 +389,8 @@ impl ExplorerPanel {
         }
     }
 
-    /// Why a file was not opened. Too large, binary or not UTF-8 is a
-    /// decision to make (a remote file can still be downloaded); anything
+    /// Why a file was not opened. Too large, binary or an encoding that
+    /// cannot be told is a decision to make (a remote file can still be downloaded); anything
     /// else is an error.
     fn refuse_open(
         &mut self,

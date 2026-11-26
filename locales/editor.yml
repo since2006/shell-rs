@@ -59,6 +59,9 @@ editor.save.interrupted_title:
 editor.save.failed:
   zh-CN: 无法保存“%{name}”
   en: Couldn’t save “%{name}”
+editor.save.unencodable:
+  zh-CN: 这个文件是 %{encoding} 编码，存不下“%{character}”，文件没有改动。删掉或换掉它再保存。
+  en: This file is in %{encoding}, which can’t hold “%{character}”, so nothing was written. Delete or replace it, then save again.
 
 editor.close.title:
   zh-CN: 保存对“%{name}”的修改？

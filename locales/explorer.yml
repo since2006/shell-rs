@@ -536,8 +536,8 @@ explorer.file.too_large_for_preview:
   zh-CN: 文件有 %{size}，预览只打开 %{limit} 以内的文件。
   en: The file is %{size}. Preview opens files up to %{limit}.
 explorer.file.not_text:
-  zh-CN: 它不是 UTF-8 编码的文本文件：可能是二进制文件，或用了 GBK 等其他编码。
-  en: "It isn’t a UTF-8 text file: it may be binary, or in another encoding such as GBK."
+  zh-CN: 它不是文本文件，可能是二进制文件，或者认不出它用的编码。
+  en: It isn’t a text file. It may be binary, or in an encoding ShellRS can’t tell.
 explorer.file.not_file:
   zh-CN: 它不是普通文件。
   en: It isn’t a regular file.

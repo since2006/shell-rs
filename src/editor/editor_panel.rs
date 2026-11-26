@@ -263,7 +263,23 @@ impl EditorPanel {
         }
         // Typing goes on while the file is written; what is saved is this.
         let snapshot = self.state.read(cx).text().clone();
-        let bytes = self.format.encode(&snapshot.to_string());
+        let bytes = match self.format.encode(&snapshot.to_string()) {
+            Ok(bytes) => bytes,
+            // An emoji typed into a GBK file: nothing is written.
+            Err(unencodable) => {
+                self.close_after_save = false;
+                window.push_notification(
+                    Notification::error(t!(
+                        "editor.save.unencodable",
+                        encoding = unencodable.encoding_name(),
+                        character = unencodable.character()
+                    ))
+                    .title(t!("editor.save.failed", name = self.name())),
+                    cx,
+                );
+                return;
+            }
+        };
         let expected = if overwrite { None } else { self.stamp };
         let write = match &self.source {
             EditorSource::Remote { explorer, .. } => {

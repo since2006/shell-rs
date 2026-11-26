@@ -25,7 +25,7 @@ pub use client::{TerminalNotConnected, is_network_error};
 pub use control::Cancelled;
 pub use edit::{
     EDIT_LIMIT, FileBytes, FileStamp, FileStart, ReadFailure, SaveFailure, TextFile, TextFormat,
-    read_file_start,
+    Unencodable, read_file_start,
 };
 pub use engine::{
     Disconnect, EngineEvent, EventSink, EventsClosed, RemoteOperation, SftpChannelOpener,

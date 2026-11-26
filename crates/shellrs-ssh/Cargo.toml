@@ -12,10 +12,15 @@ anyhow = "1"
 async-channel = "2"
 # HTTP proxies' Basic authentication.
 base64 = "0.22"
+# The editor's files in an encoding other than UTF-8, as GBK (issue #159):
+# Firefox's detector guesses which, and encoding_rs reads and writes it.
+chardetng = "1"
 # Where the default private keys are looked for, unless told otherwise.
 dirs = "6"
 # Canonical local paths without the `\\?\` prefix std adds on Windows.
 dunce = "1"
+# Built for reqwest already; see chardetng.
+encoding_rs = "0.8"
 futures = "0.3"
 # One-time codes (RFC 6238) are HMAC-SHA1; russh builds both already.
 hmac = "0.13"

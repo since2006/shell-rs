@@ -285,6 +285,47 @@ async fn crlf_pasted_into_an_lf_file_is_saved_as_lf(cx: &mut TestAppContext) {
     );
 }
 
+/// An old project's XML in GBK opens, says so, and is saved in GBK
+/// (issue #159). What GBK cannot hold is not written.
+#[gpui_kit::test]
+async fn a_gbk_file_is_edited_and_saved_in_gbk(cx: &mut TestAppContext) {
+    // 「<!-- 数据库配置 -->」「<name>订单系统</name>」 in GBK.
+    let gbk: &[u8] = b"<!-- \xCA\xFD\xBE\xDD\xBF\xE2\xC5\xE4\xD6\xC3 -->\r\n\
+                       <name>\xB6\xA9\xB5\xA5\xCF\xB5\xCD\xB3</name>\r\n";
+    let (handle, workspace, provider) = open_server(cx, &[(REMOTE_FILE, gbk)]).await;
+    open_file(cx, handle, "remote-pane", "文件 甲.txt");
+    wait_for_editor(cx, handle, FIRST).await;
+    assert_eq!(
+        text_of(&workspace, FIRST, cx),
+        "<!-- 数据库配置 -->\n<name>订单系统</name>\n"
+    );
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(
+            window.find("status-editor-format").label(),
+            Some("GBK · CRLF")
+        );
+    });
+
+    type_text(cx, handle, "<!-- 改 -->\n");
+    in_frame(cx, handle, |window, cx| window.press("secondary-s", cx));
+    wait_for_writes(cx, &provider, 1).await;
+    let mut expected = b"<!-- \xB8\xC4 -->\r\n".to_vec();
+    expected.extend_from_slice(gbk);
+    assert_eq!(provider.writes.lock().unwrap()[0].1, expected);
+
+    // GBK has no emoji: it says so, and writes nothing.
+    type_text(cx, handle, "😀");
+    in_frame(cx, handle, |window, cx| window.press("secondary-s", cx));
+    for _ in 0..5 {
+        cx.executor().advance_clock(Duration::from_millis(20));
+        cx.run_until_parked();
+    }
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.notifications(cx).len(), 1);
+    });
+    assert_eq!(provider.writes.lock().unwrap().len(), 1);
+}
+
 #[gpui_kit::test]
 async fn a_file_changed_on_the_server_is_overwritten_only_when_asked(cx: &mut TestAppContext) {
     let (handle, workspace, provider) = open_server(cx, &[(REMOTE_FILE, b"mine\n")]).await;

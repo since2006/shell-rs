@@ -290,8 +290,8 @@ sftp.edit.too_large.other:
   zh-CN: 文件太大（%{count} 字节）
   en: File too large (%{count} bytes)
 sftp.edit.not_text:
-  zh-CN: 不是 UTF-8 文本文件
-  en: Not a UTF-8 text file
+  zh-CN: 不是文本文件，或认不出编码
+  en: Not a text file, or in an encoding ShellRS can’t tell
 sftp.edit.changed:
   zh-CN: 文件在打开后已被修改
   en: The file changed after it was opened

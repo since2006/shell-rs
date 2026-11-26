@@ -2193,7 +2193,7 @@ fn openssh_protocol_edits_in_place_through_links_keeping_mode_and_hard_links() {
         let file = read_text(&client, &link).await.unwrap();
         assert_eq!(file.text(), "line one\nline two\n");
         assert!(file.format().crlf());
-        let bytes = file.format().encode("short\n");
+        let bytes = file.format().encode("short\n").unwrap();
         let stamp = write_in_place(&client, &link, bytes, Some(file.stamp()))
             .await
             .unwrap();
