@@ -10,7 +10,10 @@ use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, TitleBar, WindowExt as _,
     button::ButtonVariant,
     dialog::DialogButtonProps,
-    dock::{DockArea, DockEvent, DockLayout, DockPlacement, PanelId, TabGroup, panel_handle},
+    dock::{
+        DockArea, DockEvent, DockLayout, DockPlacement, InsertTarget, NodeId, PaneRef, PanelId,
+        TabGroup, panel_handle,
+    },
     form::{Field, Form},
     h_flex,
     input::{Input, InputContentType, InputState},
@@ -1405,7 +1408,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.open_remote_terminal(host_id, None, window, cx);
+        self.open_remote_terminal(host_id, None, None, window, cx);
     }
 
     fn on_duplicate_terminal(
@@ -1417,15 +1420,22 @@ impl Workspace {
         let Some(source) = self.terminals.get(&action.0) else {
             return;
         };
+        let source_panel = PanelId::from(source.entity_id());
+        let group = self
+            .dock_area
+            .read(cx)
+            .layout(DockPlacement::Center)
+            .and_then(|tree| tree.find_panel_node(source_panel));
         let source = source.read(cx);
         let (host_id, copy) = (source.host_id(), source.copy_for_new_tab(cx));
-        self.open_remote_terminal(host_id, Some(copy), window, cx);
+        self.open_remote_terminal(host_id, Some(copy), group, window, cx);
     }
 
     fn open_remote_terminal(
         &mut self,
         host_id: HostId,
         copy: Option<TerminalCopy>,
+        in_group: Option<NodeId>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1452,8 +1462,48 @@ impl Workspace {
             cx,
         ));
         self.terminals.insert(terminal_id, panel.clone());
+        let panel_id = PanelId::from(panel.entity_id());
         self.dock_area.update(cx, |area, cx| {
+            // `add_panel_view` merges into the first tab group and activates
+            // the new tab there; remember what that group was showing when
+            // the new tab is bound for another split pane.
+            let first_active = in_group.and_then(|target| {
+                let tree = area.layout(DockPlacement::Center)?;
+                let mut first = None;
+                tree.root().walk(&mut |node| {
+                    if first.is_none()
+                        && let PaneRef::Tabs { panels, active_ix } = node.kind()
+                    {
+                        first = Some((
+                            node.id(),
+                            panels.get(active_ix).or_else(|| panels.last()).copied(),
+                        ));
+                    }
+                });
+                let (first_node, active) = first?;
+                (first_node != target).then_some(active).flatten()
+            });
             area.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+            if let Some(node) = in_group
+                && area
+                    .layout(DockPlacement::Center)
+                    .and_then(|tree| tree.find_panel_node(panel_id))
+                    != Some(node)
+            {
+                area.move_panel(
+                    panel_id,
+                    InsertTarget::Tabs {
+                        node,
+                        ix: None,
+                        activate: true,
+                    },
+                    window,
+                    cx,
+                );
+                if let Some(active) = first_active {
+                    area.select_panel(active, window, cx);
+                }
+            }
         });
     }
 
