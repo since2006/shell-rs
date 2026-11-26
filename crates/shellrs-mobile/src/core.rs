@@ -81,11 +81,14 @@ impl From<OpenError> for CoreError {
 #[derive(uniffi::Object)]
 pub struct Core {
     runtime: Option<Runtime>,
-    handle: Handle,
+    pub(crate) handle: Handle,
     connector: SshConnector,
-    data_dir: PathBuf,
-    store: Arc<Shared>,
+    pub(crate) data_dir: PathBuf,
+    pub(crate) store: Arc<Shared>,
     sync: Arc<sync::Inner>,
+    /// AI 助手's conversations and how it reaches model services, made the
+    /// first time they are asked for.
+    pub(crate) assistant: crate::assistant::AssistantParts,
 }
 
 /// The data folders a core runs on now: two would both write the database,
@@ -336,6 +339,10 @@ impl Core {
             handle,
             runtime: Some(runtime),
             connector,
+            assistant: crate::assistant::AssistantParts::new(format!(
+                "ShellRS/{}",
+                config.app_version
+            )),
             data_dir,
             store,
             sync,

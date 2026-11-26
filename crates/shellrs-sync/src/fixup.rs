@@ -132,6 +132,7 @@ pub(crate) fn repairs(set: &RecordSet) -> Vec<(RecordKey, Body)> {
             | RecordData::Passphrase(_)
             | RecordData::PrivateKey(_) => delete = deleted(Kind::Credential, &record.key.id),
             RecordData::Totp(_) => delete = deleted(Kind::Host, &record.key.id),
+            RecordData::AiKey(_) => delete = deleted(Kind::AiProvider, &record.key.id),
             RecordData::SnippetCategory(category) => {
                 let gone = category.parent.as_deref().is_some_and(|parent| {
                     deleted(Kind::SnippetCategory, parent)
@@ -142,7 +143,10 @@ pub(crate) fn repairs(set: &RecordSet) -> Vec<(RecordKey, Body)> {
                     changed = true;
                 }
             }
-            RecordData::Credential(_) | RecordData::Password(_) | RecordData::ProxyPassword(_) => {}
+            RecordData::Credential(_)
+            | RecordData::Password(_)
+            | RecordData::ProxyPassword(_)
+            | RecordData::AiProvider(_) => {}
         }
         if delete {
             out.push((record.key.clone(), Body::Deleted));

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use russh::keys::{Algorithm, PrivateKey};
 use russh::server::{self, Server as _};
-use russh::{ChannelId, MethodKind, MethodSet};
+use russh::{ChannelId, MethodKind, MethodSet, Sig};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::task::JoinHandle;
 
@@ -44,8 +44,27 @@ pub struct TestServer {
     task: JoinHandle<()>,
 }
 
-/// What a command prints, when not itself.
-type Replies = Arc<Mutex<HashMap<String, String>>>;
+/// How commands answer, when not by printing themselves.
+type Replies = Arc<Mutex<HashMap<String, ExecReply>>>;
+
+/// How a command answers instead of printing itself and succeeding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecReply {
+    pub stdout: String,
+    pub stderr: String,
+    pub end: ReplyEnd,
+}
+
+/// How a command given an [`ExecReply`] ends.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReplyEnd {
+    /// It exits with this status.
+    Status(u32),
+    /// It prints, then runs until it is sent a signal, which ends it.
+    Runs,
+    /// The server refuses to run it.
+    Refused,
+}
 
 /// What the server was told.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -54,6 +73,8 @@ pub struct Seen {
     /// last window change.
     pub size: Option<(u32, u32)>,
     pub commands: Vec<String>,
+    /// The signals sent to commands, by name.
+    pub signals: Vec<String>,
 }
 
 impl TestServer {
@@ -94,7 +115,19 @@ impl TestServer {
 
     /// From now on `command` prints `output` rather than itself.
     pub fn reply(&self, command: &str, output: &str) {
-        lock(&self.replies).insert(command.into(), output.into());
+        self.reply_with(
+            command,
+            ExecReply {
+                stdout: output.into(),
+                stderr: String::new(),
+                end: ReplyEnd::Status(0),
+            },
+        );
+    }
+
+    /// From now on `command` answers as `reply` says.
+    pub fn reply_with(&self, command: &str, reply: ExecReply) {
+        lock(&self.replies).insert(command.into(), reply);
     }
 }
 
@@ -120,6 +153,7 @@ impl server::Server for Listener {
             replies: self.replies.clone(),
             channels: HashMap::new(),
             shells: HashSet::new(),
+            running: HashSet::new(),
         }
     }
 }
@@ -132,6 +166,8 @@ struct Handler {
     /// The channels running the shell: russh hands every channel's data to
     /// `data`, SFTP's too.
     shells: HashSet<ChannelId>,
+    /// The channels of commands that run until signalled.
+    running: HashSet<ChannelId>,
 }
 
 impl server::Handler for Handler {
@@ -220,7 +256,7 @@ impl server::Handler for Handler {
         Ok(())
     }
 
-    /// A command prints itself, or its reply, and succeeds.
+    /// A command prints itself and succeeds, or answers as its reply says.
     async fn exec_request(
         &mut self,
         channel: ChannelId,
@@ -229,15 +265,52 @@ impl server::Handler for Handler {
     ) -> anyhow::Result<()> {
         let command = String::from_utf8_lossy(command).into_owned();
         lock(&self.seen).commands.push(command.clone());
-        let output = lock(&self.replies)
+        let reply = lock(&self.replies)
             .get(&command)
             .cloned()
-            .unwrap_or_else(|| format!("{command}\n"));
+            .unwrap_or_else(|| ExecReply {
+                stdout: format!("{command}\n"),
+                stderr: String::new(),
+                end: ReplyEnd::Status(0),
+            });
+        if reply.end == ReplyEnd::Refused {
+            session.channel_failure(channel)?;
+            return Ok(());
+        }
         session.channel_success(channel)?;
-        session.data(channel, output.into_bytes())?;
-        session.exit_status_request(channel, 0)?;
-        session.eof(channel)?;
-        session.close(channel)?;
+        if !reply.stdout.is_empty() {
+            session.data(channel, reply.stdout.into_bytes())?;
+        }
+        if !reply.stderr.is_empty() {
+            session.extended_data(channel, 1, reply.stderr.into_bytes())?;
+        }
+        match reply.end {
+            ReplyEnd::Status(status) => {
+                session.exit_status_request(channel, status)?;
+                session.eof(channel)?;
+                session.close(channel)?;
+            }
+            ReplyEnd::Runs => {
+                self.running.insert(channel);
+            }
+            ReplyEnd::Refused => unreachable!("answered above"),
+        }
+        Ok(())
+    }
+
+    /// A signal ends a command that runs until signalled, as killed by it.
+    async fn signal(
+        &mut self,
+        channel: ChannelId,
+        signal: Sig,
+        session: &mut server::Session,
+    ) -> anyhow::Result<()> {
+        lock(&self.seen).signals.push(format!("{signal:?}"));
+        if self.running.remove(&channel) {
+            session.exit_signal_request(channel, signal, false, "", "")?;
+            session.eof(channel)?;
+            session.close(channel)?;
+        }
         Ok(())
     }
 

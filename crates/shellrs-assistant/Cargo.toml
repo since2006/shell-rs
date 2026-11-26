@@ -1,0 +1,33 @@
+[package]
+name = "shellrs-assistant"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "ShellRS assistant core: the AI assistant's model protocols, its loop, the rules of its tools and its conversations"
+license = "MIT"
+repository = "https://github.com/since2006/shell-rs"
+
+[dependencies]
+futures = "0.3"
+# The jitter of retries and the ids of conversations, through `Env` only.
+rand = "0.9"
+# What a command is, for the danger marks, and the secrets taken out of
+# what is sent.
+regex = "1"
+# The model services: rustls with the system's certificates and the system
+# proxy, as the app's other requests; on Android the verifier the app set up.
+reqwest = "0.13"
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+zeroize = "1"
+
+[features]
+# A model that answers from a script and a transport that records what was
+# sent, for the tests of what builds on this crate.
+testing = []
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "sync", "test-util", "time"] }

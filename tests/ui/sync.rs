@@ -152,7 +152,7 @@ fn host_names(store: &Entity<HostStore>, cx: &mut TestAppContext) -> Vec<String>
 fn open_sync_settings(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-6", cx)
+        window.within("settings").click("0-7", cx)
     });
 }
 

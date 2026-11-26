@@ -572,7 +572,7 @@ fn the_window_settings_are_on_until_turned_off(cx: &mut TestAppContext) {
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     // 应用 comes right before 关于.
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-7", cx)
+        window.within("settings").click("0-8", cx)
     });
     let switch = |item: usize| {
         move |window: &mut gpui_kit::Window| {
@@ -604,7 +604,7 @@ fn closing_to_the_tray_is_off_and_offered_only_on_windows(cx: &mut TestAppContex
     let (handle, workspace) = open_workspace(cx);
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-7", cx);
+        window.within("settings").click("0-8", cx);
     });
     in_frame(cx, handle, |window, _| {
         let offered = gpui_kit::base::test_support::snapshots(window)

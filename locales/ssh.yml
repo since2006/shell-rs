@@ -386,6 +386,9 @@ ssh.exec.refused:
 ssh.exec.timeout:
   zh-CN: 命令超时
   en: The command timed out
+ssh.exec.lost:
+  zh-CN: 命令结束前连接断开了
+  en: The connection closed before the command finished
 ssh.exec.runtime_failed:
   zh-CN: 无法启动连接：%{error}
   en: "Couldn’t start the connection: %{error}"

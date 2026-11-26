@@ -2393,3 +2393,41 @@ fn a_sync_with_delete_removes_what_is_not_here_and_nothing_it_cannot_see() {
         assert_eq!(progress.total(), total + 1);
     });
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_start_of_a_text_file_is_read_with_its_size() {
+    let served = tempfile::tempdir().unwrap();
+    std::fs::write(served.path().join("notes.txt"), "line one\nline two\n").unwrap();
+    std::fs::write(served.path().join("binary.bin"), b"\x7fELF\x00\x01").unwrap();
+    let Ok((client, mut process)) =
+        super::client::SftpClient::local_test_server(served.path()).await
+    else {
+        eprintln!("skipped: no sftp-server here");
+        return;
+    };
+    let start = super::edit::read_start(&client, "notes.txt", 8)
+        .await
+        .unwrap();
+    assert_eq!(start.bytes, b"line one");
+    assert_eq!(start.size, 18);
+    let whole = super::edit::read_start(&client, "~/notes.txt", 1024)
+        .await
+        .unwrap();
+    assert_eq!(whole.bytes.len(), 18);
+    let binary = super::edit::read_start(&client, "binary.bin", 1024)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        super::ReadFailure::<super::Reason>::from_error(binary, |why| why),
+        super::ReadFailure::NotText
+    ));
+    let folder = super::edit::read_start(&client, "~", 1024)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        super::ReadFailure::<super::Reason>::from_error(folder, |why| why),
+        super::ReadFailure::NotFile
+    ));
+    let _ = process.kill().await;
+}

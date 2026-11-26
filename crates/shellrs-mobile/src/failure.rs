@@ -791,6 +791,8 @@ pub enum ChannelError {
     ExecSendFailed,
     ExecRefused,
     ExecTimeout,
+    /// The connection went away before the command said how it ended.
+    ExecLost,
     SftpRefused,
     SftpTimeout,
     /// A bastion host's link carries the shell and nothing else.
@@ -810,6 +812,7 @@ impl From<&ssh::ChannelError> for ChannelError {
             ssh::ChannelError::ExecSendFailed => Self::ExecSendFailed,
             ssh::ChannelError::ExecRefused => Self::ExecRefused,
             ssh::ChannelError::ExecTimeout => Self::ExecTimeout,
+            ssh::ChannelError::ExecLost => Self::ExecLost,
             ssh::ChannelError::SftpRefused => Self::SftpRefused,
             ssh::ChannelError::SftpTimeout => Self::SftpTimeout,
             ssh::ChannelError::ShellOnly => Self::ShellOnly,

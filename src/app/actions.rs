@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use gpui_kit::component::{Icon, IconName};
+use gpui_kit::component::Icon;
 use gpui_kit::*;
 use shellrs_sync::DeviceId;
 
@@ -15,14 +15,15 @@ use crate::{
     editor::EditorId,
     explorer::{ExplorerId, FileSizeFormat, PaneSide},
     host::{
-        CredentialId, ForwardId, GroupId, HostId, HostNode, NodeDrop, SavedTerminalId,
-        SnippetCategoryId, SnippetDrop, SnippetId, SnippetNode, TerminalDrop, TerminalGroupId,
-        TerminalNode,
+        AiProviderId, CredentialId, ForwardId, GroupId, HostId, HostNode, NodeDrop,
+        SavedTerminalId, SnippetCategoryId, SnippetDrop, SnippetId, SnippetNode, TerminalDrop,
+        TerminalGroupId, TerminalNode,
     },
     kubernetes::KubernetesCommand,
     monitor::MonitorDetail,
     processes::ProcessSort,
     services::ServiceCommand,
+    settings::{AssistantApproval, AssistantRunIn},
     terminal::{LocalTerminalId, RemoteTerminalId},
 };
 
@@ -137,6 +138,20 @@ gpui_kit::actions!(
         /// Read the GPUs and NPUs of the SSH terminal's host again, and go
         /// on reading them after a failure stopped it.
         RefreshGpu,
+        /// AI 助手: open 新建模型服务.
+        NewAiProvider,
+        /// AI 助手: open 设置 › AI 助手, where it is set up and turned on.
+        OpenAssistantSettings,
+        /// AI 助手: send what the panel's composer holds.
+        SendAssistantMessage,
+        /// AI 助手: stop the turn going on and the commands it runs.
+        StopAssistant,
+        /// AI 助手: go on after a limit stopped the turn.
+        ContinueAssistant,
+        /// AI 助手: start a new conversation beside the terminal in front.
+        NewAssistantConversation,
+        /// Ask first, then delete every conversation of AI 助手.
+        DeleteAllAssistantConversations,
         /// 全部展开 in GPU/NPU, or 全部收起 when every device is unfolded.
         ToggleAllGpuDevices,
         /// Read the tmux sessions of the SSH terminal's host again.
@@ -299,6 +314,14 @@ gpui_kit::actions!(
     ]
 );
 
+/// One model of a model service: the service by its public id, and the
+/// model by its name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AiModelChoice {
+    pub provider: String,
+    pub model: String,
+}
+
 /// Commands that carry the id of what they act on.
 macro_rules! id_actions {
     ($($(#[$doc:meta])* $name:ident($id:ty);)*) => {
@@ -312,6 +335,31 @@ macro_rules! id_actions {
 }
 
 id_actions! {
+    /// Open the edit dialog of a model service.
+    EditAiProvider(AiProviderId);
+    /// Ask first, then delete a model service and its key.
+    DeleteAiProvider(AiProviderId);
+    /// Make a model the one new conversations use.
+    SetDefaultAiModel(AiModelChoice);
+    /// Use a model in the conversation in front.
+    UseAiModel(AiModelChoice);
+    /// 批准方式 in the settings; asks first before full access.
+    SetAssistantApproval(AssistantApproval);
+    /// 批准方式 of the conversation in front; asks first before full access.
+    SetConversationApproval(AssistantApproval);
+    /// 执行方式 of the conversation in front.
+    SetConversationRunIn(AssistantRunIn);
+    /// Open a saved conversation, by its public id, beside the terminal in
+    /// front.
+    OpenAssistantConversation(String);
+    /// Turn a call down.
+    DenyAssistantCall(String);
+    /// Put a command the assistant asks to run into the terminal instead.
+    InsertAssistantCall(String);
+    /// Show or hide what a call read or printed.
+    ToggleAssistantCallDetails(String);
+    /// Ask first, then open a link of the assistant's answer.
+    OpenAssistantLink(String);
     /// Open a new terminal connection for a host.
     ConnectHost(HostId);
     /// Open a new SFTP tab for a host, like a new terminal connection.
@@ -526,6 +574,15 @@ pub struct EndProcess {
     pub force: bool,
 }
 
+/// Run a call the assistant asks about; with `remember`, the same call is
+/// not asked about again in the conversation.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = shellrs, no_json)]
+pub struct RunAssistantCall {
+    pub id: String,
+    pub remember: bool,
+}
+
 /// Start, stop or restart a service of the host of the SSH terminal in
 /// front, or enable or disable it at boot; asks first before stopping or
 /// restarting it.
@@ -620,6 +677,8 @@ pub enum ToolKind {
     Snippets,
     History,
     Files,
+    /// AI 助手, beside SSH terminals.
+    Assistant,
     Tmux,
     Docker,
     Kubernetes,
@@ -633,10 +692,11 @@ pub enum ToolKind {
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 12] = [
+    pub const ALL: [ToolKind; 13] = [
         ToolKind::Snippets,
         ToolKind::History,
         ToolKind::Files,
+        ToolKind::Assistant,
         ToolKind::Tmux,
         ToolKind::Docker,
         ToolKind::Kubernetes,
@@ -656,6 +716,7 @@ impl ToolKind {
             ToolKind::Snippets => "snippets",
             ToolKind::History => "history",
             ToolKind::Files => "files",
+            ToolKind::Assistant => "assistant",
             ToolKind::Tmux => "tmux",
             ToolKind::Docker => "docker",
             ToolKind::Kubernetes => "kubernetes",
@@ -685,6 +746,7 @@ impl ToolKind {
             ToolKind::Snippets => t!("tools.kind.snippets"),
             ToolKind::History => t!("tools.kind.history"),
             ToolKind::Files => t!("tools.kind.files"),
+            ToolKind::Assistant => t!("tools.kind.assistant"),
             ToolKind::Tmux => "tmux".into(),
             ToolKind::Docker => "Docker".into(),
             ToolKind::Kubernetes => "Kubernetes".into(),
@@ -700,13 +762,19 @@ impl ToolKind {
     /// Lucide glyphs, but for Docker, which goes by its whale: a box said
     /// nothing about Docker.
     pub fn icon(self) -> Icon {
-        Icon::new(match self {
+        Icon::default().path(self.icon_path())
+    }
+
+    /// Where [`Self::icon`] is in the app's assets.
+    pub fn icon_path(self) -> SharedString {
+        match self {
             ToolKind::Snippets => CatalogIcon::CodeXml,
             ToolKind::History => CatalogIcon::RotateCcwClock,
             // Not the SFTP button's folder tree, which opens a tab.
-            ToolKind::Files => return Icon::new(IconName::Folder),
+            ToolKind::Files => CatalogIcon::Folder,
+            ToolKind::Assistant => CatalogIcon::BotMessageSquare,
             ToolKind::Tmux => CatalogIcon::Layers,
-            ToolKind::Docker => return Icon::default().path(DOCKER_ICON),
+            ToolKind::Docker => return DOCKER_ICON.into(),
             ToolKind::Kubernetes => CatalogIcon::ShipWheel,
             ToolKind::Services => CatalogIcon::ServerCog,
             ToolKind::Processes => CatalogIcon::ListFilter,
@@ -714,7 +782,8 @@ impl ToolKind {
             ToolKind::Monitor => CatalogIcon::Activity,
             ToolKind::Gpu => CatalogIcon::Gpu,
             ToolKind::Projects => CatalogIcon::FolderCode,
-        })
+        }
+        .path()
     }
 }
 

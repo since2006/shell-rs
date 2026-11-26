@@ -124,12 +124,14 @@ References are other records' ids. `null` means none.
 | `forward` | `host`, `name`, `kind` (`local`, `remote`, `dynamic`), `bind_host`, `bind_port`, `target_host` and `target_port` (null exactly when dynamic), `sort_order` |
 | `snippet_category` | `name` (not empty), `parent` (snippet category or null)¹, `sort_order`¹ |
 | `snippet` | `category` (or null), `name`, `command` (not empty), `scope` (`all`, `group`, `host`), `scope_id` (null exactly when `all`), `run_on_click`, `sort_order`¹ |
+| `ai_provider`⁵ | a model service of the AI assistant: `name` (not empty), `protocol` (`anthropic`: Anthropic's Messages, `openai`: OpenAI's Chat Completions, `openai_responses`: OpenAI's Responses), `base_url` (not empty: the address the protocol's path goes after, `/v1/messages`, `/v1/chat/completions` or `/v1/responses`; after an address whose path already names a version, such as `…/v1` or `…/api/paas/v4`, the path without its `/v1`), `models` [model names, at least one, none empty; the first is used when none is picked], `sort_order` |
 | `secret.password` | `user` (may be empty), `host` (not empty), `port`, `value`: the password saved for signing in as `user` at `host:port`, shared by every host that does; its id is the first 16 bytes, hex, of SHA-256(`user` ‖ 0x00 ‖ `host` ‖ 0x00 ‖ `port` in decimal) |
 | `secret.proxy` | as `secret.password`, for a proxy |
 | `secret.credential` | `value`: the password of the password credential with this id |
 | `secret.passphrase` | `value`: the passphrase of the key credential with this id |
 | `secret.private_key` | `value`: the private key file, as text, of the key credential with this id |
 | `secret.totp` | `value`: the base32 secret of the one-time codes of the host with this id² |
+| `secret.ai_key` | `value`: the API key of the model service with this id⁵ |
 
 A secret's `value` is not empty and at most 64 KiB. A credential's secret is
 used only while the credential is of the kind that has it, a host's
@@ -159,10 +161,18 @@ The route marked ⁴ was added after ShellRS 0.1.20-beta.3, for SSH hosts
 only. An older version does not know it and parks such a host: it keeps the
 record and passes it on unchanged, but does not use it.
 
+The kinds marked ⁵ were added after ShellRS 0.1.20-beta.5. An older version
+keeps `ai_provider` as a kind it does not know and `secret.ai_key` as a
+secret of a kind it does not know, and passes both on unchanged. A model
+service's key, like other secrets, is not empty: a service that takes none
+has no `secret.ai_key`.
+
 Not synced, each device's own: serial hosts (their port is this computer's);
 a host's detected system, last connection and sidebar tool; a group's expanded
 state; a key credential's file path; a forward's automatic start; local SFTP
-bookmarks; 项目 (local terminals); the app's settings; known hosts.
+bookmarks; 项目 (local terminals); the AI assistant's conversations and
+which model each device uses by default; the app's settings; known
+hosts.
 
 ### After a merge
 
@@ -179,6 +189,7 @@ A copy pointing at a deleted record is repaired, as the device's own edit:
 | a snippet's category | to the top level |
 | a credential | its `secret.credential`, `secret.passphrase` and `secret.private_key` are deleted |
 | a host | its `secret.totp` is deleted |
+| a model service (`ai_provider`) | its `secret.ai_key` is deleted |
 
 A record that is only missing (not deleted) is never repaired.
 

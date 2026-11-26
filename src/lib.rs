@@ -11,6 +11,7 @@
 pub mod analytics;
 pub mod app;
 pub mod app_lock;
+pub mod assistant;
 pub mod cli;
 pub mod connection;
 pub mod credential;

@@ -10,6 +10,7 @@
 //! own language and run off the UI thread. The desktop app wraps it in a
 //! GPUI entity; the mobile apps will reach it through their bindings.
 
+mod ai_provider;
 mod credential;
 mod data;
 mod database;
@@ -26,6 +27,7 @@ mod serial_settings;
 mod snippet;
 pub mod sync;
 
+pub use ai_provider::*;
 pub use credential::*;
 pub use data::{
     ApplyError, BookmarkMeta, Change, Failure, HostData, HostEvent, KeyFileError, SecretEndpoint,

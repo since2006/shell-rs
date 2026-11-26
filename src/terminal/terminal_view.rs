@@ -581,6 +581,12 @@ impl TerminalView {
         self.engine.read(cx).snapshot().visible_text()
     }
 
+    /// The last `lines` rows of output, as plain text, for the AI
+    /// assistant: history and screen, not just what is in view.
+    pub fn recent_text(&self, lines: usize, cx: &App) -> crate::terminal::TerminalText {
+        self.engine.read(cx).recent_text(lines)
+    }
+
     pub fn copy_selection(&self, cx: &mut App) {
         if let Some(text) = self
             .engine

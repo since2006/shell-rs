@@ -618,6 +618,12 @@ impl TerminalEngine {
         super::kept_output::kept_output(&self.runtime.term.lock(), super::KEPT_LINES)
     }
 
+    /// The last `lines` rows of output with anything in them, as plain
+    /// text; on a full-screen program's screen, its picture.
+    pub fn recent_text(&self, lines: usize) -> super::TerminalText {
+        super::plain_text::recent_text(&self.runtime.term.lock(), lines)
+    }
+
     pub fn has_selection(&self) -> bool {
         self.selection_text().is_some_and(|text| !text.is_empty())
     }

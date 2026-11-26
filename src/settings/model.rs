@@ -86,6 +86,126 @@ pub struct AppSettings {
     pub app_lock_allow_cli: bool,
     /// 键盘快捷键: what the user changed of them.
     pub shortcuts: ShortcutOverrides,
+    /// AI 助手: this device's own choices; the model services sync, these
+    /// do not.
+    pub assistant: AssistantSettings,
+}
+
+/// AI 助手's settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AssistantSettings {
+    /// 启用 AI 助手: off until the user turns it on. Off, the panel beside
+    /// an SSH terminal only says where to set it up and turn it on.
+    pub enabled: bool,
+    /// The model service a new conversation uses, by its public id; the
+    /// first in the list when it is `None` or names one that is gone.
+    pub provider: Option<String>,
+    /// Which of that service's models, by name; its first when it is
+    /// `None` or names one the service no longer lists.
+    pub model: Option<String>,
+    /// 批准方式, for a conversation that has none of its own.
+    pub approval: AssistantApproval,
+    /// 执行方式, for a conversation that has none of its own.
+    pub run_in: AssistantRunIn,
+}
+
+/// 批准方式: how commands and file reads are approved.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantApproval {
+    /// 请求批准: every call is asked about.
+    Ask,
+    /// 帮我批准: only those marked dangerous are asked about.
+    #[default]
+    ApproveForMe,
+    /// 完全访问权限: nothing is asked about.
+    FullAccess,
+}
+
+impl AssistantApproval {
+    pub fn core(self) -> shellrs_assistant::Approval {
+        match self {
+            Self::Ask => shellrs_assistant::Approval::Ask,
+            Self::ApproveForMe => shellrs_assistant::Approval::ApproveForMe,
+            Self::FullAccess => shellrs_assistant::Approval::FullAccess,
+        }
+    }
+
+    pub fn of(approval: shellrs_assistant::Approval) -> Self {
+        match approval {
+            shellrs_assistant::Approval::Ask => Self::Ask,
+            shellrs_assistant::Approval::ApproveForMe => Self::ApproveForMe,
+            shellrs_assistant::Approval::FullAccess => Self::FullAccess,
+        }
+    }
+
+    /// What the choice does, under its name.
+    pub fn description(self) -> SharedString {
+        match self {
+            Self::Ask => t!("settings.assistant.approval.ask_description"),
+            Self::ApproveForMe => t!("settings.assistant.approval.approve_for_me_description"),
+            Self::FullAccess => t!("settings.assistant.approval.full_access_description"),
+        }
+    }
+}
+
+impl Choice for AssistantApproval {
+    const ALL: &'static [Self] = &[Self::Ask, Self::ApproveForMe, Self::FullAccess];
+
+    fn key(self) -> &'static str {
+        self.core().key()
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Ask => t!("settings.assistant.approval.ask"),
+            Self::ApproveForMe => t!("settings.assistant.approval.approve_for_me"),
+            Self::FullAccess => t!("settings.assistant.approval.full_access"),
+        }
+    }
+}
+
+/// 执行方式: where the assistant's commands run.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantRunIn {
+    /// 后台执行: on a channel of its own beside the terminal.
+    #[default]
+    Background,
+    /// 在终端中执行: typed into the terminal.
+    Terminal,
+}
+
+impl AssistantRunIn {
+    pub fn core(self) -> shellrs_assistant::RunIn {
+        match self {
+            Self::Background => shellrs_assistant::RunIn::Background,
+            Self::Terminal => shellrs_assistant::RunIn::Terminal,
+        }
+    }
+
+    pub fn of(run_in: shellrs_assistant::RunIn) -> Self {
+        match run_in {
+            shellrs_assistant::RunIn::Background => Self::Background,
+            shellrs_assistant::RunIn::Terminal => Self::Terminal,
+        }
+    }
+}
+
+impl Choice for AssistantRunIn {
+    const ALL: &'static [Self] = &[Self::Background, Self::Terminal];
+
+    fn key(self) -> &'static str {
+        self.core().key()
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::Background => t!("settings.assistant.run_in.background"),
+            Self::Terminal => t!("settings.assistant.run_in.terminal"),
+        }
+    }
 }
 
 /// What 界面字号 offers, in pixels.
@@ -113,11 +233,14 @@ impl Default for InterfaceSettings {
 
 /// The left and right sidebars' widths in pixels as the user dragged
 /// them: `None` for one at its default width, which the workspace knows.
+/// The right sidebar has two: AI 助手 is wider, for a conversation, and
+/// keeps its own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SidebarWidths {
     pub left: Option<f32>,
     pub right: Option<f32>,
+    pub assistant: Option<f32>,
 }
 
 impl SidebarWidths {
@@ -135,6 +258,7 @@ impl SidebarWidths {
         Self {
             left: width(self.left),
             right: width(self.right),
+            assistant: width(self.assistant),
         }
     }
 }

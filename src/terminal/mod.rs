@@ -21,6 +21,7 @@ mod login_commands;
 mod model;
 mod mouse;
 mod notices;
+mod plain_text;
 mod recording;
 mod run;
 mod scrollbar;
@@ -61,6 +62,7 @@ pub use model::{
     TerminalLifecycle, TerminalSize, TerminalStatus,
 };
 pub use notices::TerminalNotice;
+pub use plain_text::TerminalText;
 pub use recording::{RecordingOutcome, recording_file_name};
 pub use run::{
     BusyReason, RunContext, RunEvent, RunFailure, RunHandle, RunProgress, RunShell, RunTiming,
@@ -77,14 +79,15 @@ pub use terminal_view::{
 pub use theme::{TerminalColors, TerminalTheme};
 pub(crate) use transport::send_event;
 pub use transport::{
-    ChannelStream, ExecRequest, ExecResult, FixedLocalTerminalTransportProvider,
+    BackgroundCommand, ChannelStream, ExecChannelRequest, ExecEnd, ExecLimits, ExecOutcome,
+    ExecRequest, ExecResult, FixedLocalTerminalTransportProvider,
     FixedRemoteTerminalTransportProvider, FixedSerialTerminalTransportProvider,
-    FixedTelnetTerminalTransportProvider, HostTerminalTransports, LocalTerminalTransportProvider,
-    RemoteTerminalTransportProvider, SerialTerminalTransportProvider, SftpChannel,
-    SftpChannelRequest, SharedLocalTerminalTransportProvider,
-    SharedRemoteTerminalTransportProvider, SharedSerialTerminalTransportProvider,
-    SharedTelnetTerminalTransportProvider, SharedTerminalTransportFactory,
-    TelnetTerminalTransportProvider, TerminalChannels, TerminalTransport, TerminalTransportCommand,
-    TerminalTransportEvent, TerminalTransportFactory,
+    FixedTelnetTerminalTransportProvider, HostTerminalTransports, KeptBytes,
+    LocalTerminalTransportProvider, RemoteTerminalTransportProvider,
+    SerialTerminalTransportProvider, SftpChannel, SftpChannelRequest,
+    SharedLocalTerminalTransportProvider, SharedRemoteTerminalTransportProvider,
+    SharedSerialTerminalTransportProvider, SharedTelnetTerminalTransportProvider,
+    SharedTerminalTransportFactory, TelnetTerminalTransportProvider, TerminalChannels,
+    TerminalTransport, TerminalTransportCommand, TerminalTransportEvent, TerminalTransportFactory,
 };
 pub use zmodem::{ZmodemDirection, ZmodemReply};

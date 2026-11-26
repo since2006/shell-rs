@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, mpsc};
 
 use anyhow::Result;
 use async_channel::Sender;
+use futures::future::BoxFuture;
 use tokio::sync::oneshot;
 
 use super::{LocalLaunch, LocalShell, TerminalSize};
@@ -27,6 +28,11 @@ pub enum TerminalTransportCommand {
     /// Open an SFTP channel beside the shell, for the right sidebar's
     /// 文件. Dropped like `Exec` by a transport without a connection.
     OpenSftp(SftpChannelRequest),
+    /// Start a command beside the shell and hand back its channel, for the
+    /// AI assistant: a command that runs for minutes is read where the
+    /// asker reads it, not in the line the sidebar's tools wait in. Dropped
+    /// like `Exec` by a transport without a connection.
+    OpenExec(ExecChannelRequest),
     /// 发送 Break: a serial transport holds its line in the break condition
     /// for a moment, a Telnet one sends Telnet's break (which a console
     /// server passes on to its line). SSH has none and drops it.
@@ -49,7 +55,60 @@ pub struct ExecRequest {
     pub reply: mpsc::Sender<ExecResult>,
 }
 
-pub use crate::ssh::{ChannelStream, SftpChannel};
+pub use crate::ssh::{ChannelStream, ExecEnd, ExecLimits, ExecOutcome, KeptBytes, SftpChannel};
+
+/// How a [`BackgroundCommand`] is read: until it ends, or until the future
+/// it is given completes, which stops it.
+type FinishCommand = Box<
+    dyn FnOnce(
+            ExecLimits,
+            BoxFuture<'static, ()>,
+        ) -> BoxFuture<'static, Result<ExecOutcome, String>>
+        + Send,
+>;
+
+/// A command started beside the shell, its output not read yet. Its
+/// standard output and error come apart, with how it ended; why it failed
+/// is in words.
+pub struct BackgroundCommand(FinishCommand);
+
+impl BackgroundCommand {
+    /// A command whose output and end `finish` gives: an SSH channel's, or
+    /// a test's.
+    pub fn new(
+        finish: impl FnOnce(
+            ExecLimits,
+            BoxFuture<'static, ()>,
+        ) -> BoxFuture<'static, Result<ExecOutcome, String>>
+        + Send
+        + 'static,
+    ) -> Self {
+        Self(Box::new(finish))
+    }
+
+    /// Read the command's output until it ends, or until `stop` completes,
+    /// which stops it. On any runtime.
+    pub async fn finish(
+        self,
+        limits: ExecLimits,
+        stop: impl Future<Output = ()> + Send + 'static,
+    ) -> Result<ExecOutcome, String> {
+        (self.0)(limits, Box::pin(stop)).await
+    }
+}
+
+impl std::fmt::Debug for BackgroundCommand {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("BackgroundCommand")
+    }
+}
+
+/// Answered once on `reply` with the started command, or with why it could
+/// not start; dropped, which closes the answer, as an SFTP request is.
+pub struct ExecChannelRequest {
+    pub command: String,
+    pub reply: oneshot::Sender<Result<BackgroundCommand, String>>,
+}
 
 /// Answered once on `reply` with the channel, or with why the server or the
 /// terminal would not open it. A request sent while the terminal logs in
@@ -91,6 +150,27 @@ impl TerminalChannels {
         }
         answer
     }
+
+    /// Start `command` beside the shell. The answer closes without a value
+    /// when there is no connection to start it on.
+    pub fn open_exec(
+        &self,
+        command: String,
+    ) -> oneshot::Receiver<Result<BackgroundCommand, String>> {
+        let (reply, answer) = oneshot::channel();
+        if let Some(commands) = self
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            let _ = commands.send(TerminalTransportCommand::OpenExec(ExecChannelRequest {
+                command,
+                reply,
+            }));
+        }
+        answer
+    }
 }
 
 impl std::fmt::Debug for TerminalTransportCommand {
@@ -112,6 +192,10 @@ impl std::fmt::Debug for TerminalTransportCommand {
                 .field(&request.command.len())
                 .finish(),
             Self::OpenSftp(_) => formatter.write_str("OpenSftp"),
+            Self::OpenExec(request) => formatter
+                .debug_tuple("OpenExec")
+                .field(&request.command.len())
+                .finish(),
             Self::SendBreak => formatter.write_str("SendBreak"),
             Self::Shutdown => formatter.write_str("Shutdown"),
         }

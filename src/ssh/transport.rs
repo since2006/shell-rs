@@ -3,7 +3,7 @@ use super::describe::{
 };
 use super::{
     ChannelError, ConnectError, HostOsProbe, LATENCY_INTERVAL, ProbeOutcome, PtySize,
-    SshConnectionConfig, SshConnector, SshHandle, SshPrompts, hang_up, open_probe,
+    SshConnectionConfig, SshConnector, SshHandle, SshPrompts, hang_up, open_exec, open_probe,
     open_sftp_channel, open_shell, resize_pty, round_trip, run_exec, run_terminal_worker, why_lost,
     write_shell,
 };
@@ -12,9 +12,10 @@ use crate::{
     host::{HostLogin, HostOs},
     i18n::t,
     terminal::{
-        ExecRequest, RemoteTerminalTransportProvider, SftpChannel, SftpChannelRequest,
-        SharedTerminalTransportFactory, TerminalSize, TerminalTransport, TerminalTransportCommand,
-        TerminalTransportEvent, TerminalTransportFactory,
+        BackgroundCommand, ExecChannelRequest, ExecRequest, RemoteTerminalTransportProvider,
+        SftpChannel, SftpChannelRequest, SharedTerminalTransportFactory, TerminalSize,
+        TerminalTransport, TerminalTransportCommand, TerminalTransportEvent,
+        TerminalTransportFactory,
     },
 };
 use anyhow::{Result, anyhow, bail};
@@ -183,6 +184,12 @@ impl SshTerminalTransport {
                     Some(TerminalTransportCommand::OpenSftp(request)) => {
                         side_queue.push_back(Box::pin(answer_sftp(&handle, fingerprint.clone(), request)));
                     }
+                    Some(TerminalTransportCommand::OpenExec(request)) if shell_only => {
+                        let _ = request.reply.send(Err(describe_channel_error(&ChannelError::ShellOnly)));
+                    }
+                    Some(TerminalTransportCommand::OpenExec(request)) => {
+                        side_queue.push_back(Box::pin(answer_open_exec(&handle, request)));
+                    }
                     Some(TerminalTransportCommand::PromptReply { .. })
                     | Some(TerminalTransportCommand::SendBreak) => {}
                 },
@@ -334,6 +341,28 @@ async fn answer_sftp(handle: &SshHandle, fingerprint: String, request: SftpChann
         .map_err(|error| describe_error(&error));
     // The asker may have stopped waiting.
     let _ = request.reply.send(result);
+}
+
+/// Start a command beside the shell and answer its request with the
+/// command, to be read on the asker's runtime: only the start waits in the
+/// sidebar's line, a round trip, however long the command runs.
+async fn answer_open_exec(handle: &SshHandle, request: ExecChannelRequest) {
+    let ExecChannelRequest { command, reply } = request;
+    let result = open_exec(handle, &command, EXEC_TIMEOUT)
+        .await
+        .map(|channel| {
+            BackgroundCommand::new(move |limits, stop| {
+                Box::pin(async move {
+                    channel
+                        .finish(limits, stop)
+                        .await
+                        .map_err(|error| describe_error(&error))
+                })
+            })
+        })
+        .map_err(|error| describe_error(&error));
+    // The asker may have stopped waiting.
+    let _ = reply.send(result);
 }
 
 #[cfg(test)]
@@ -918,6 +947,9 @@ mod tests {
         latency: Option<Latency>,
         /// The answers to the commands run beside the shell, in order.
         execs: Vec<crate::terminal::ExecResult>,
+        /// How the commands started beside the shell for the AI assistant
+        /// ended, in order.
+        background: Vec<Result<crate::terminal::ExecOutcome, String>>,
     }
 
     /// Connect, answer whatever is asked, then shut down. The report says what
@@ -928,6 +960,29 @@ mod tests {
         secrets: SharedSecretSource,
         wait_for_host_os: bool,
         execs: &[&str],
+        answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
+    ) -> ConnectionReport {
+        connect_running(
+            login,
+            known_hosts,
+            secrets,
+            wait_for_host_os,
+            execs,
+            &[],
+            answer,
+        )
+    }
+
+    /// As [`connect`], also starting `background` commands beside the
+    /// shell and reading each on a runtime of the test's own, as the AI
+    /// assistant reads them.
+    fn connect_running(
+        login: HostLogin,
+        known_hosts: &Path,
+        secrets: SharedSecretSource,
+        wait_for_host_os: bool,
+        execs: &[&str],
+        background: &[&str],
         mut answer: impl FnMut(&ConnectionPromptKind) -> ConnectionPromptReply,
     ) -> ConnectionReport {
         let mut report = ConnectionReport::default();
@@ -1010,6 +1065,33 @@ mod tests {
                     .recv_timeout(EXEC_TIMEOUT)
                     .expect("a command beside the shell was never answered"),
             );
+        }
+        let reader = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        for command in background {
+            let (reply, answer) = tokio::sync::oneshot::channel();
+            command_tx
+                .send(TerminalTransportCommand::OpenExec(ExecChannelRequest {
+                    command: command.to_string(),
+                    reply,
+                }))
+                .unwrap();
+            let limits = crate::terminal::ExecLimits {
+                head: 1024,
+                tail: 1024,
+            };
+            report.background.push(reader.block_on(async {
+                let started = tokio::time::timeout(EXEC_TIMEOUT, answer)
+                    .await
+                    .expect("a command for the assistant was never started")
+                    .expect("answered");
+                match started {
+                    Ok(command) => command.finish(limits, std::future::pending()).await,
+                    Err(error) => Err(error),
+                }
+            }));
         }
         command_tx.send(TerminalTransportCommand::Shutdown).unwrap();
         done_rx
@@ -2055,6 +2137,75 @@ mod tests {
         );
         assert_eq!(report.host_os, None);
         assert!(report.latency.is_some());
+        let execs = server
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .execs
+            .clone();
+        assert!(execs.is_empty(), "{execs:?}");
+    }
+
+    #[test]
+    fn a_command_for_the_assistant_is_read_apart_with_its_status() {
+        let Some(server) = start_server_replying(TestAuth::Password, tool_reply) else {
+            eprintln!(
+                "loopback sockets are unavailable in this sandbox; skipping integration body"
+            );
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+
+        let report = connect_running(
+            HostLogin::of(&password_host(server.port), None),
+            &known_hosts,
+            Arc::new(NoSecretStore),
+            false,
+            &[],
+            &[CLI_COMMAND],
+            trust_and_type_password,
+        );
+
+        // Both outputs apart, and the status the server sent after the EOF.
+        let outcome = report.background[0].as_ref().unwrap();
+        assert_eq!(outcome.stdout.head(), b"out");
+        assert_eq!(outcome.stderr.head(), b"err");
+        assert_eq!(
+            outcome.end,
+            crate::terminal::ExecEnd::Exited(Some(crate::ssh::ExecExit::Code(3)))
+        );
+    }
+
+    #[test]
+    fn a_bastion_terminal_starts_no_command_for_the_assistant() {
+        let Some(server) = start_server_replying(TestAuth::Password, tool_reply) else {
+            eprintln!(
+                "loopback sockets are unavailable in this sandbox; skipping integration body"
+            );
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let known_hosts = directory.path().join("known_hosts");
+        let mut login = HostLogin::of(&password_host(server.port), None);
+        login.shell_only = true;
+
+        let report = connect_running(
+            login,
+            &known_hosts,
+            Arc::new(NoSecretStore),
+            false,
+            &[],
+            &["uptime"],
+            trust_and_type_password,
+        );
+
+        assert_eq!(
+            report.background,
+            vec![Err(
+                "这个终端经由堡垒机打开，只能使用终端本身，不能另外执行命令".to_string()
+            )]
+        );
         let execs = server
             .state
             .lock()

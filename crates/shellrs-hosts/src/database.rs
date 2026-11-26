@@ -14,12 +14,13 @@ use gpui_shared_string::SharedString;
 use rusqlite::{Connection, params};
 
 use super::{
-    AuthKind, BookmarkSide, Credential, CredentialDraft, CredentialId, CredentialKind, DataBits,
-    FlowControl, ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft,
-    GroupId, Host, HostDraft, HostGroup, HostId, HostOs, Parity, Protocol, ProxyCommandSettings,
-    ProxyKind, ProxySettings, PublicId, Route, SavedTerminal, SavedTerminalId, SavedTerminalTab,
-    SerialSettings, Snippet, SnippetCategory, SnippetCategoryId, SnippetDraft, SnippetId,
-    SnippetScope, StopBits, TelnetSettings, TerminalGroup, TerminalGroupId, TotpSettings,
+    AiProtocol, AiProvider, AiProviderDraft, AiProviderId, AuthKind, BookmarkSide, Credential,
+    CredentialDraft, CredentialId, CredentialKind, DataBits, FlowControl, ForwardDraft,
+    ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft, GroupId, Host, HostDraft,
+    HostGroup, HostId, HostOs, Parity, Protocol, ProxyCommandSettings, ProxyKind, ProxySettings,
+    PublicId, Route, SavedTerminal, SavedTerminalId, SavedTerminalTab, SerialSettings, Snippet,
+    SnippetCategory, SnippetCategoryId, SnippetDraft, SnippetId, SnippetScope, StopBits,
+    TelnetSettings, TerminalGroup, TerminalGroupId, TotpSettings,
 };
 
 /// SQLite's only integer type is `i64`, so the `u64` ids cross the boundary
@@ -43,8 +44,9 @@ fn from_sql(id: i64) -> u64 {
 /// what sync needs, 21 the snippet categories' nesting and the snippets'
 /// order, 22 目录跟随 per host, 23 the user a host logs in as with its
 /// credential, 24 the one-time codes an SSH host fills in, 25 what an SSH
-/// host types once logged in, 26 a host's `ProxyCommand`.
-const SCHEMA_VERSION: i64 = 26;
+/// host types once logged in, 26 a host's `ProxyCommand`, 27 the AI
+/// assistant's model services.
+const SCHEMA_VERSION: i64 = 28;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -123,6 +125,11 @@ const SCHEMA_VERSION: i64 = 26;
 ///   key, never the secret; **sync_state** is the sync's one blob of state,
 ///   whose secrets are sealed; **sync_pending** names the secrets a round
 ///   brought that are not written yet, by their sync key.
+/// - **ai_providers** are the AI assistant's model services, in
+///   `sort_order`; `models` is a JSON list of model names, never empty. A
+///   service's id for sync and for its key in the keychain is its
+///   `public_id`; the key is never here. The assistant's
+///   conversations are not in this file: they have one of their own.
 ///
 /// A column added later goes after the table's last column here and is
 /// added to existing files with `ALTER TABLE ADD COLUMN`, which puts it in
@@ -304,7 +311,17 @@ CREATE TABLE sync_pending (
     kind TEXT NOT NULL,
     id   TEXT NOT NULL,
     PRIMARY KEY (kind, id)
-) STRICT, WITHOUT ROWID;";
+) STRICT, WITHOUT ROWID;
+CREATE TABLE ai_providers (
+    id         INTEGER PRIMARY KEY,
+    public_id  TEXT NOT NULL UNIQUE,
+    name       TEXT NOT NULL CHECK (name <> ''),
+    protocol   TEXT NOT NULL CHECK (protocol IN ('anthropic', 'openai', 'openai_responses')),
+    base_url   TEXT NOT NULL CHECK (base_url <> ''),
+    models     TEXT NOT NULL CHECK (json_array_length(models) > 0),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    edited_ms  INTEGER NOT NULL DEFAULT 0
+) STRICT;";
 
 /// One step from a version to the next: one transaction that ends by
 /// recording the version it reached.
@@ -321,7 +338,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 13] = [
+const STEPS: [(i64, Step); 15] = [
     (
     13,
     // The command snippets.
@@ -486,6 +503,53 @@ COMMIT;",
     // `route` cannot be changed with ALTER, so `hosts` is made again as
     // `add_telnet` makes it.
     (25, Step::Code(add_proxy_command)),
+    (
+        26,
+        // The AI assistant's model services: none so far.
+        Step::Sql(
+            "BEGIN;
+CREATE TABLE ai_providers (
+    id         INTEGER PRIMARY KEY,
+    public_id  TEXT NOT NULL UNIQUE,
+    name       TEXT NOT NULL CHECK (name <> ''),
+    preset     TEXT NOT NULL CHECK (preset <> ''),
+    protocol   TEXT NOT NULL CHECK (protocol IN ('anthropic', 'openai')),
+    base_url   TEXT NOT NULL CHECK (base_url <> ''),
+    model      TEXT NOT NULL CHECK (model <> ''),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    edited_ms  INTEGER NOT NULL DEFAULT 0
+) STRICT;
+PRAGMA user_version = 27;
+COMMIT;",
+        ),
+    ),
+    (
+        27,
+        // A model service has a list of models and no preset, and speaks
+        // OpenAI's Responses too: the table is made again, each service's
+        // one model the first of its list. Nothing refers to it.
+        Step::Sql(
+            "BEGIN;
+CREATE TEMP TABLE ai_providers_27 AS SELECT * FROM main.ai_providers;
+DROP TABLE main.ai_providers;
+CREATE TABLE ai_providers (
+    id         INTEGER PRIMARY KEY,
+    public_id  TEXT NOT NULL UNIQUE,
+    name       TEXT NOT NULL CHECK (name <> ''),
+    protocol   TEXT NOT NULL CHECK (protocol IN ('anthropic', 'openai', 'openai_responses')),
+    base_url   TEXT NOT NULL CHECK (base_url <> ''),
+    models     TEXT NOT NULL CHECK (json_array_length(models) > 0),
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    edited_ms  INTEGER NOT NULL DEFAULT 0
+) STRICT;
+INSERT INTO ai_providers (id, public_id, name, protocol, base_url, models, sort_order, edited_ms)
+SELECT id, public_id, name, protocol, base_url, json_array(model), sort_order, edited_ms
+FROM ai_providers_27;
+DROP TABLE ai_providers_27;
+PRAGMA user_version = 28;
+COMMIT;",
+        ),
+    ),
 ];
 
 /// Version 16, the Telnet hosts: `protocol` takes `telnet`, and the two
@@ -800,6 +864,8 @@ pub struct StoredData {
     pub secret_edits: HashMap<(String, String), u64>,
     /// The secrets a round brought and that are not written yet, likewise.
     pub sync_pending: Vec<(String, String)>,
+    /// The AI assistant's model services in the order the list shows them.
+    pub ai_providers: Vec<AiProvider>,
 }
 
 pub struct HostDatabase {
@@ -1268,6 +1334,38 @@ impl HostDatabase {
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
+        let ai_providers = self
+            .connection
+            .prepare(
+                "SELECT id, public_id, name, protocol, base_url, models, sort_order, \
+                 edited_ms FROM ai_providers ORDER BY sort_order, id",
+            )?
+            .query_map([], |row| {
+                let id: i64 = row.get(0)?;
+                let public_id: String = row.get(1)?;
+                let name: String = row.get(2)?;
+                let protocol: String = row.get(3)?;
+                let base_url: String = row.get(4)?;
+                let models: String = row.get(5)?;
+                let sort_order: i64 = row.get(6)?;
+                let edited_ms: i64 = row.get(7)?;
+                // The table's CHECKs admit only the protocols this build
+                // knows and a list of models.
+                let models = serde_json::from_str::<Vec<String>>(&models).ok();
+                Ok(AiProtocol::from_stored(&protocol)
+                    .zip(models)
+                    .map(|(protocol, models)| {
+                        let draft = AiProviderDraft::new(name, protocol, base_url, models);
+                        let mut provider = AiProvider::new(AiProviderId(from_sql(id)), draft);
+                        provider.public_id = PublicId::from_stored(public_id);
+                        provider.sort_order = sort_order;
+                        provider.edited_ms = from_sql(edited_ms);
+                        provider
+                    }))
+            })?
+            .filter_map(Result::transpose)
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
         Ok(StoredData {
             groups,
             hosts,
@@ -1282,7 +1380,51 @@ impl HostDatabase {
             saved_terminal_tabs,
             secret_edits,
             sync_pending,
+            ai_providers,
         })
+    }
+
+    pub fn insert_ai_provider(&self, provider: &AiProvider) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "INSERT INTO ai_providers (id, public_id, name, protocol, base_url, models, \
+             sort_order, edited_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                to_sql(provider.id.0),
+                provider.public_id.as_str(),
+                provider.name.as_ref(),
+                provider.protocol.as_str(),
+                provider.base_url.as_ref(),
+                models_json(provider),
+                provider.sort_order,
+                to_sql(provider.edited_ms),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_ai_provider(&self, provider: &AiProvider) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE ai_providers SET name = ?2, protocol = ?3, base_url = ?4, models = ?5, \
+             sort_order = ?6, edited_ms = ?7 WHERE id = ?1",
+            params![
+                to_sql(provider.id.0),
+                provider.name.as_ref(),
+                provider.protocol.as_str(),
+                provider.base_url.as_ref(),
+                models_json(provider),
+                provider.sort_order,
+                to_sql(provider.edited_ms),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_ai_provider(&self, id: AiProviderId) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "DELETE FROM ai_providers WHERE id = ?1",
+            params![to_sql(id.0)],
+        )?;
+        Ok(())
     }
 
     /// Run `write` in one transaction that lands whole or not at all: the
@@ -2342,6 +2484,12 @@ pub fn now_millis() -> u64 {
         .unwrap_or_default()
 }
 
+/// A model service's models as the `models` column holds them.
+fn models_json(provider: &AiProvider) -> String {
+    let models: Vec<&str> = provider.models.iter().map(|model| model.as_ref()).collect();
+    serde_json::to_string(&models).unwrap_or_else(|_| "[]".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3358,6 +3506,76 @@ INSERT INTO hosts (id, name, address, port, auth, credential_id, edited_ms) \
         telnet.totp = Some(TotpSettings::default());
         db.insert_host(&telnet).unwrap();
         assert_eq!(db.load().unwrap().hosts[3].totp, None);
+    }
+
+    #[test]
+    fn a_version_26_file_gets_the_model_services_and_keeps_its_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            // Version 26 is this schema without the model services.
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(&format!(
+                "BEGIN;\n{SCHEMA}\nDROP TABLE ai_providers;\nPRAGMA user_version = 26;\nCOMMIT;"
+            ))
+            .unwrap();
+            old.execute_batch(
+                "INSERT INTO hosts (id, name, address, port, auth, username, edited_ms) \
+                 VALUES (1, 'web', '10.0.0.1', 22, 'password', 'root', 5);",
+            )
+            .unwrap();
+        }
+
+        let db = HostDatabase::open(&path).unwrap();
+        let version: i64 = db
+            .connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(dir.path().join("shellrs.db.v26.bak").exists());
+        let fresh = HostDatabase::in_memory().unwrap();
+        assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
+        let data = db.load().unwrap();
+        assert_eq!(data.hosts[0].name.as_ref(), "web");
+        assert!(data.ai_providers.is_empty());
+    }
+
+    #[test]
+    fn a_version_27_files_model_service_keeps_its_model_as_its_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            // Version 27 as files of it have it: 26 and its step.
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(&format!(
+                "BEGIN;\n{SCHEMA}\nDROP TABLE ai_providers;\nPRAGMA user_version = 26;\nCOMMIT;"
+            ))
+            .unwrap();
+            let (_, Step::Sql(step_26)) = STEPS.iter().find(|(version, _)| *version == 26).unwrap()
+            else {
+                panic!("version 26 is an SQL step");
+            };
+            old.execute_batch(step_26).unwrap();
+            old.execute_batch(
+                "INSERT INTO ai_providers (id, public_id, name, preset, protocol, base_url, \
+                 model, sort_order, edited_ms) VALUES (3, 'p3', 'DeepSeek', 'deepseek', \
+                 'openai', 'https://api.deepseek.com/v1', 'deepseek-chat', 1, 9);",
+            )
+            .unwrap();
+        }
+
+        let db = HostDatabase::open(&path).unwrap();
+        assert!(dir.path().join("shellrs.db.v27.bak").exists());
+        let fresh = HostDatabase::in_memory().unwrap();
+        assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
+        let data = db.load().unwrap();
+        let provider = &data.ai_providers[0];
+        assert_eq!(provider.public_id.as_str(), "p3");
+        assert_eq!(provider.name.as_ref(), "DeepSeek");
+        assert_eq!(provider.protocol, AiProtocol::OpenAi);
+        assert_eq!(provider.base_url.as_ref(), "https://api.deepseek.com/v1");
+        assert_eq!(provider.models, ["deepseek-chat"]);
+        assert_eq!((provider.sort_order, provider.edited_ms), (1, 9));
     }
 
     #[test]
@@ -4615,6 +4833,7 @@ INSERT INTO hosts (id, name, address, port, auth, credential_id, edited_ms) \
             "secret_edits",
             "sync_state",
             "sync_pending",
+            "ai_providers",
         ] {
             assert!(tables.contains(&table.to_string()), "{table}");
         }

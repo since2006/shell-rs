@@ -8327,6 +8327,7 @@ dependencies = [
  "serde_yaml_ng",
  "serial2",
  "sha2 0.10.9",
+ "shellrs-assistant",
  "shellrs-hosts",
  "shellrs-ssh",
  "shellrs-sync",
@@ -8349,6 +8350,22 @@ dependencies = [
  "zeroize",
  "zip",
  "zmodem2",
+]
+
+[[package]]
+name = "shellrs-assistant"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "rand 0.9.5",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -8387,6 +8404,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "shellrs-assistant",
  "shellrs-hosts",
  "shellrs-ssh",
  "shellrs-sync",

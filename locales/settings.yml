@@ -52,6 +52,9 @@ settings.category.shortcuts:
 settings.category.external_cli:
   zh-CN: 外部 CLI
   en: External CLI
+settings.category.assistant:
+  zh-CN: AI 助手
+  en: AI assistant
 settings.category.sync:
   zh-CN: 云同步
   en: Cloud sync
@@ -236,6 +239,9 @@ settings.sidebar_tools.history:
 settings.sidebar_tools.files:
   zh-CN: 终端连接上的远程文件列表，可以跟随终端目录。
   en: The host’s files over the terminal’s connection, following its folder.
+settings.sidebar_tools.assistant:
+  zh-CN: 和模型对话，模型可以读取终端、在这台主机上执行命令。
+  en: Talk with a model that can read the terminal and run commands on this host.
 settings.sidebar_tools.tmux:
   zh-CN: 主机上的 tmux 会话：新建、连接、退出、重命名和结束。
   en: The host’s tmux sessions, to start, attach, detach, rename and end.
@@ -811,3 +817,90 @@ settings.sync.change_password_description:
 settings.sync.change:
   zh-CN: 更换…
   en: Change…
+
+settings.assistant.access:
+  zh-CN: AI 助手
+  en: AI assistant
+settings.assistant.enabled:
+  zh-CN: 启用 AI 助手
+  en: Enable AI assistant
+settings.assistant.enabled_description:
+  zh-CN: 打开后才能在 SSH 终端旁的右侧栏里使用 AI 助手。
+  en: Turn on to use the AI assistant in the right sidebar beside SSH terminals.
+settings.assistant.default_model:
+  zh-CN: 默认模型
+  en: Default model
+settings.assistant.default_model_description:
+  zh-CN: 新对话用这个模型，每个对话里也可以换。
+  en: New conversations use this model. Each conversation can change it.
+settings.assistant.providers:
+  zh-CN: 模型服务
+  en: Model services
+settings.assistant.providers_description:
+  zh-CN: 模型服务和它们的 API Key 开启同步时会同步到其他设备。
+  en: Model services and their API keys sync to your other devices with sync on.
+settings.assistant.providers_empty:
+  zh-CN: 还没有模型服务。添加 Anthropic、OpenAI 或兼容它们的服务，如 DeepSeek、本地的 Ollama。
+  en: There’s no model service yet. Add Anthropic, OpenAI or a service compatible with them, such as DeepSeek or Ollama on this computer.
+settings.assistant.provider_detail.one:
+  en: "%{protocol} · 1 model · %{address}"
+settings.assistant.provider_detail.other:
+  zh-CN: "%{protocol} · %{count} 个模型 · %{address}"
+  en: "%{protocol} · %{count} models · %{address}"
+settings.assistant.edit:
+  zh-CN: 编辑…
+  en: Edit…
+settings.assistant.new_provider:
+  zh-CN: 新建模型服务
+  en: New model service
+settings.assistant.new_provider_button:
+  zh-CN: 新建…
+  en: New…
+settings.assistant.new_provider_description:
+  zh-CN: 选接口类型，填地址、API Key 和模型。
+  en: Pick its API type, then enter the address, the API key and its models.
+settings.assistant.approval:
+  zh-CN: 批准方式
+  en: Approval
+settings.assistant.approval.ask:
+  zh-CN: 请求批准
+  en: Ask for approval
+settings.assistant.approval.ask_description:
+  zh-CN: 执行每条命令、读取每个文件前都先问。
+  en: Ask before every command and every file read.
+settings.assistant.approval.approve_for_me:
+  zh-CN: 帮我批准
+  en: Approve for me
+settings.assistant.approval.approve_for_me_description:
+  zh-CN: 直接执行，只有删除、改写、停止、重启这类危险的命令才问。
+  en: Run without asking, except dangerous commands such as deleting, overwriting, stopping or rebooting.
+settings.assistant.approval.full_access:
+  zh-CN: 完全访问权限
+  en: Full access
+settings.assistant.approval.full_access_description:
+  zh-CN: 什么都不问，危险的命令也直接执行。
+  en: Never ask, dangerous commands included.
+settings.assistant.run_in:
+  zh-CN: 执行方式
+  en: Run commands
+settings.assistant.run_in_description:
+  zh-CN: 后台执行另开一个通道，不打扰终端；在终端中执行打进你的终端，先按 Ctrl+C。只许一个通道的连接总在终端中执行。每个对话里也可以单独改。
+  en: In the background they run on a channel of their own; in the terminal they’re typed into yours, after Ctrl+C. Connections that allow one channel always run them in the terminal. Each conversation can change this.
+settings.assistant.run_in.background:
+  zh-CN: 后台执行
+  en: In the background
+settings.assistant.run_in.terminal:
+  zh-CN: 在终端中执行
+  en: In the terminal
+settings.assistant.conversations:
+  zh-CN: 对话
+  en: Conversations
+settings.assistant.delete_all:
+  zh-CN: 删除全部对话
+  en: Delete all conversations
+settings.assistant.delete_all_button:
+  zh-CN: 删除全部对话…
+  en: Delete all conversations…
+settings.assistant.delete_all_description:
+  zh-CN: 对话只存在这台电脑上，不同步。
+  en: Conversations are kept on this computer only and don’t sync.

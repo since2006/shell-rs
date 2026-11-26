@@ -6,6 +6,9 @@ _version: 2
 tools.kind.snippets:
   zh-CN: 命令片段
   en: Snippets
+tools.kind.assistant:
+  zh-CN: AI 助手
+  en: AI assistant
 tools.kind.history:
   zh-CN: 历史命令
   en: History

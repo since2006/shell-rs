@@ -34,16 +34,17 @@ in its own language.
   They need `net.java.dev.jna:jna:5.x@aar` and
   `org.jetbrains.kotlinx:kotlinx-coroutines-core`. `ANDROID_PLATFORM` sets
   the oldest Android, API level 24 unless set.
-- **Android, sync over HTTPS.** WebDAV servers and S3 buckets have their
-  certificates checked by Android's own `TrustManager`, the one OkHttp
-  uses: native code reaches it only through the JVM. Call
-  `Tls.setUp(applicationContext)` once before the core syncs, and add the
+- **Android, HTTPS.** WebDAV servers, S3 buckets and AI 助手's model
+  services have their certificates checked by Android's own
+  `TrustManager`, the one OkHttp uses: native code reaches it only through
+  the JVM. Call `Tls.setUp(applicationContext)` once before the core syncs
+  or talks to a model service, and add the
   verifier's Kotlin part, `org.rustls:rustls-platform-verifier`, at the
   version `Cargo.lock` has for `rustls-platform-verifier-android`, with its
   Proguard rule, as
   [its README](https://github.com/rustls/rustls-platform-verifier#android)
-  says. Without them, every sync to an `https` address fails; `http`
-  addresses and folders need neither.
+  says. Without them, every sync to an `https` address and every model
+  service on one fails; `http` addresses and folders need neither.
 
 `cargo test -p shellrs-mobile` runs its tests against an SSH server in the
 test process, a keychain in memory and a sync folder on disk (`cargo test`
@@ -187,6 +188,40 @@ with `checkWebdavLogin`, `checkS3Login` and `checkNewSyncPassword`.
   automatic rounds until they have; each case says what settles it.
 - Passwords, passphrases and keys sync with everything else, encrypted
   with the sync password: as on the desktop, there is no switch.
+
+## AI 助手
+
+The desktop's AI assistant, on a connection of the app's: the core
+(`crates/shellrs-assistant`) runs the conversation, the app shows it and
+answers what the model calls for.
+
+- **Model services** are in the store with the hosts, and sync with them:
+  `aiProviders`, `saveAiProvider` (with the API key, which goes to the
+  keychain as `ai_key:<public id>`; waits for it), `deleteAiProvider`. Each
+  speaks one of three APIs (`anthropic`, `openAi`, `openAiResponses`) and
+  offers one or more models, the user's own names: no service has default
+  ones. `aiEndpoint` says where the requests of an address go, for the
+  form to show under it; `Core.aiProviderModels` reads the models a service
+  lists (刷新模型) and `Core.checkAiProvider` asks it one short question
+  (测试连接), each with the key typed or the one saved.
+- **A conversation**: `Core.startAssistant(start, connection)` reads the
+  key and gives an `AssistantSession`; `start.model` picks one of the
+  service's models, its first when none. `send` asks, with what is known of
+  the host; `nextEvent` gives what happens: the text as it streams, the
+  messages, the calls, the usage, how the turn ended. Conversations are
+  saved in `assistant.db` in the data folder and never sync;
+  `assistantConversations`, `assistantMessages` and the deletes list and
+  remove them.
+- **The model's calls** come as `toolCall` events, with whether to ask the
+  user first (`needsApproval`, from the `approval` the conversation
+  has) and whether the call is marked dangerous. A `readTerminal` call is
+  answered by the app with the screen's text (`answerTerminal`); a
+  command or a file is run on the connection by `runCall`, beside the
+  shell, after the user agreed when asked; `deny` turns it down and
+  `answerInserted` says the app put the command into the terminal for the
+  user to run instead. `stop` stops the turn and its commands.
+- What the model service said when it failed is in `failed`; the core
+  words nothing, as everywhere else.
 
 ## Updates outside the app stores
 

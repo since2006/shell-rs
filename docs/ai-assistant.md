@@ -15,7 +15,7 @@ AI 助手是远程终端右侧栏的一个工具，用户在里面和模型对�
 
 用户定的：
 
-1. **模型服务跟着同步。** 协议、地址、模型名和 API Key 都同步。Key 是秘密，只进钥匙串，同密码一样同步。
+1. **模型服务跟着同步。** 接口类型、地址、模型和 API Key 都同步。Key 是秘密，只进钥匙串，同密码一样同步。
 2. **对话存在本机的库里，不同步。**
 3. **只放在 SSH 远程终端旁。** 本地终端、Telnet、串口终端旁都没有。
 4. **不做 MCP。**
@@ -32,14 +32,16 @@ AI 助手是远程终端右侧栏的一个工具，用户在里面和模型对�
    - 「在终端中执行」：同 `exec --terminal`，把命令打进终端，读回输出和退出码。
 9. **默认显示，排在「文件」后面。** 右侧栏按钮在「文件」后面，默认显示，可以在设置里关掉。
 10. **对话里显示这个对话用了多少 tokens。**
-11. **预设不带模型名。** 模型名留空，由用户填写；旁边有「测试连接」按钮，核对地址、Key 和模型名能不能用。
+11. **预设只帮着填，存的是接口类型和地址。** 接口类型三种：Anthropic、OpenAI、OpenAI Responses。对话框里「预设」列出常用的服务，选了填好接口类型、地址和名称；预设本身不保存、不同步。地址下面写出请求发到哪里（`/v1/messages`、`/v1/chat/completions`、`/v1/responses`）。
+12. **一个模型服务有多个模型**，可以添加、删除。「刷新模型」从服务的模型列表（`/v1/models`）预填；「测试连接」用第一个模型试一次。
+13. **「设置 › AI 助手」第一项是「启用 AI 助手」开关**，同「启用外部 CLI」，出厂关着。关着时 SSH 终端旁照样有 AI 助手的按钮，打开后只提示去设置里配置和启用，「打开设置」直接到「设置 › AI 助手」。
 
 技术上定的：
 
-- **loop 和适配器自己写，不用 agent 框架。** 适配器只做两种协议：Anthropic Messages 和 OpenAI Chat Completions。
+- **loop 和适配器自己写，不用 agent 框架。** 适配器做三种协议：Anthropic Messages、OpenAI Chat Completions 和 OpenAI Responses。
   - rig 还在 0.x，几天就出一个不兼容的版本；genai 只是客户端。
   - Anthropic 没有官方的 Rust SDK，直接走 HTTP。
-- **两种协议能接的服务**：Claude、OpenAI、DeepSeek、通义千问、Kimi、智谱、豆包、硅基流动、OpenRouter、Ollama、vLLM、LM Studio。很多用户在中国大陆，而 Anthropic、OpenAI 不对大陆提供服务，所以国内厂商和本地模型一开始就要能接。
+- **这些协议能接的服务**：Claude、OpenAI、DeepSeek、通义千问、Kimi、智谱、豆包、硅基流动、OpenRouter、Ollama、vLLM、LM Studio。很多用户在中国大陆，而 Anthropic、OpenAI 不对大陆提供服务，所以国内厂商和本地模型一开始就要能接。
 - **叫「AI 助手」/ AI assistant，代码里叫 `assistant`。** 不叫 agent，因为凭据里已经有「SSH Agent」（`credential.kind = agent`）。
 
 ## 架构
@@ -58,30 +60,81 @@ src/settings/assistant_page.rs  「设置 › AI 助手」
 - **核心和应用之间是「事件 + 回答」。** 核心发出 `ToolCall { id, call, approval }`，应用执行或问过用户后调用 `answer(id, …)`。
   - 不让应用实现 trait，原因有三：手机上终端画面在 App 里；UniFFI 的异步外部 trait 不好用；确认本来就在界面上做。
   - 什么要确认、怎么截断、什么算危险，都由核心决定，桌面和手机一致。
-- **核心不读主机核心，也不读钥匙串。** 它拿到的是解析好的 `ProviderConfig { protocol, base_url, model, api_key, preset, user_agent }`。
+- **核心不读主机核心，也不读钥匙串。** 它拿到的是解析好的 `ProviderConfig { protocol, base_url, model, api_key }`；User-Agent 在应用建的 HTTP 客户端上。
 - **MIT 许可。** 核心里只放作者自己写的代码。
 
 ## 模型服务
 
-### 协议和预设
+### 接口类型和地址
 
-- **预设**：Claude（Anthropic 协议），以及 OpenAI、DeepSeek、通义千问、Kimi、智谱、豆包、硅基流动、OpenRouter、Ollama、LM Studio（都是 OpenAI 协议）。另有「自定义」，自己选协议，vLLM 和其他兼容服务走这里。
-- **预设内容写在核心的 `presets.rs`，不含文案**：id、协议、默认地址、上下文长度，以及各家的差异。差异包括：
-  - 用 `max_tokens` 还是 `max_completion_tokens`；
-  - 推理内容（`reasoning_content`）要不要回传；
-  - 工具调用 id 的格式。
+- **三种接口类型**，即核心的 `Protocol`：
 
-  预设的名称在桌面的 locale 里。各家的差异会变，实现时逐家核对文档。
-- **预设不带模型名**：模型名留空，由用户自己填，必填。各家的模型更新得快，写死的默认名很快就过时。
+  | 类型 | 请求发到 | 存的值 |
+  |---|---|---|
+  | Anthropic | 地址 + `/v1/messages` | `anthropic` |
+  | OpenAI | 地址 + `/v1/chat/completions` | `openai` |
+  | OpenAI Responses | 地址 + `/v1/responses` | `openai_responses` |
+
+  存的值发布后不能改。模型列表都在地址 + `/v1/models`。
+- **地址里已有版本号时不再加 `/v1`**（`endpoint_url`）：地址的路径里有一段是 `v` 加数字（`/v1`、`/v4`、`/v1beta`），就只接后面的部分。例子：
+  - `https://api.openai.com` → `https://api.openai.com/v1/chat/completions`
+  - `https://open.bigmodel.cn/api/paas/v4` → `…/api/paas/v4/chat/completions`
+  - `https://api.deepseek.com/anthropic` → `…/anthropic/v1/messages`
+
+  对话框在地址下面实时写出完整的请求地址，填错了一眼看得出。
+- **预设**（桌面的 `src/assistant/presets.rs`）：只是对话框里帮着填的一张表，不进记录、不同步，以后的版本可以随便加减。
+
+  | 预设 | 接口类型 | 地址 |
+  |---|---|---|
+  | Anthropic | Anthropic | `https://api.anthropic.com` |
+  | OpenAI | OpenAI Responses | `https://api.openai.com/v1` |
+  | DeepSeek | OpenAI | `https://api.deepseek.com/v1` |
+  | 通义千问 | OpenAI | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+  | Kimi | OpenAI | `https://api.moonshot.cn/v1` |
+  | 智谱 GLM | OpenAI | `https://open.bigmodel.cn/api/paas/v4` |
+  | 豆包 | OpenAI | `https://ark.cn-beijing.volces.com/api/v3` |
+  | 硅基流动 | OpenAI | `https://api.siliconflow.cn/v1` |
+  | OpenRouter | OpenAI | `https://openrouter.ai/api/v1` |
+  | Ollama | OpenAI | `http://localhost:11434/v1` |
+  | LM Studio | OpenAI | `http://localhost:1234/v1` |
+  | 自定义 | （不变） | （清空，自己填） |
+
+  - 选了预设：填好接口类型和地址；名称还是空的或是某个预设给的，就换成这个预设的名称（「自定义」清空），用户自己起的名称不动。
+  - 对话框显示哪个预设由地址决定（不分大小写、不管末尾的 `/`）：输入的地址正好是某家的，预设跟着变成那家；改了接口类型不变（OpenAI 的地址也能用 Responses）。编辑已有的服务时也是按地址认。
+  - 新建时默认 OpenAI 预设，所以类型默认 OpenAI Responses。别的预设填 OpenAI（Chat Completions）：智谱、硅基流动没有 Responses，DeepSeek、通义千问的 Responses 地址和预设的对不上（DeepSeek 文档是 `…/responses`，不带 `/v1`；通义千问要带业务空间的域名）。
+- **没有按厂商写的差异。** 预设不进记录，原来按预设处理的几件事改成：
+  - Claude 专有的参数（effort、服务端回退、`eager_input_streaming`）、`max_tokens` 32000 和 200K 上下文：只给地址是 `api.anthropic.com` 的；其他 Anthropic 协议的服务 `max_tokens` 8192。
+  - 推理内容（`reasoning_content`）：同一个模型在同一轮里一律回传（DeepSeek、Kimi 要）。
+  - 上下文长度：本机和内网地址（localhost、私有网段、`.local`）按 32K，其余 128K。
+- **OpenAI Responses**（`responses.rs`）：`store: false`，每次发整段对话；工具调用和结果是单独的 `function_call`、`function_call_output` 项，用助手自己的 id。推理内容只显示、不回传（不存在服务端时只能回传加密的推理，不是每个模型都给）。被拒绝、出错的调用没有专门的标记，输出前加 `[error]`。
+
+### 模型
+
+- **一个模型服务有一个或多个模型**，按用户的顺序；不能一个都没有。名称去掉首尾空白，重复的只留一个。
+- **对话框的模型一栏**：标题「模型」那一行右边是「刷新模型」「添加模型」两个按钮。每个模型是一行输入框（可以直接改名），后面是删除图标。「添加模型」在最后加一个空行、聚焦并滚到它；留空的行保存时不算。输入框里按回车同其他字段，是提交对话框。
+- **「刷新模型」**：用对话框里填的类型、地址和 Key（没填 Key 就用已保存的），读 `GET /v1/models`（Anthropic 带 `?limit=1000`）。服务列出、列表里还没有的追加到后面，已有的不动；结果写在模型列表下面（列出几个、新加几个）。
+  - **列出很多模型的服务只加常用系列的最新一代**（`Preset::common_models`，按地址认出的预设）：OpenAI、通义千问、豆包、硅基流动、OpenRouter。别的预设（Anthropic、DeepSeek、Kimi、智谱列出的不多）、本地和自定义的照旧全加。
+    - 系列写名称开头、不带版本号，版本号紧跟在后面（`gpt-` 6.2-sol、`deepseek-v` 4-flash、`kimi-k` 2.6），出了新一代自动换过去，不用改 ShellRS：OpenAI `gpt-`；通义千问 `qwen`；豆包 `doubao-seed-`、`deepseek-v`、`kimi-k`、`glm-`；硅基流动 `deepseek-ai/deepseek-v`、`zai-org/glm-`、`moonshotai/kimi-k`、`qwen/qwen`、`minimaxai/minimax-m`；OpenRouter `openai/gpt-`、`anthropic/claude-opus-`、`anthropic/claude-sonnet-`、`anthropic/claude-haiku-`、`deepseek/deepseek-v`、`google/gemini-`、`x-ai/grok-`、`qwen/qwen`、`moonshotai/kimi-k`、`z-ai/glm-`、`minimax/minimax-m`、`tencent/hy`。不分大小写。
+    - 「一代」：GPT、Claude、DeepSeek、Gemini、Grok、MiniMax、混元按第一个数（6、6.1、6.2 是一代）；通义千问、智谱、Kimi、豆包按整个版本号（3.6、3.7 是两代，这几家每个小版本就是新一代）。版本号读法：开头的数，后面跟着 `.` 或 `-` 的一两位数接着算（`2-1-pro` 是 2.1，`4-0125-preview` 是 4，`3-32b` 是 3）。
+    - 宁可多放几个、漏几个，也不报错（用户定的）：系列后面没有版本号的（`qwen-max`、`gpt-oss-120b`）照样加，读不出的不算错。
+    - 名称里有 realtime、audio、tts、transcribe、search、image、embed、moderation、rerank、cyber 的不加（不是对话模型，或只给审核过的组织）。
+    - 带日期的快照（`-2026-10-01`、`-260915`、`-20251101`、`-1017`）和 `-latest`：列表里有不带日期的同名模型就不加，没有就只加日期最新的那个（豆包的模型名都带日期）。
+    - 结果写明是只加了最新一代（「服务列出 120 个模型，只加常用系列的最新一代：6 个里新加了 6 个」）；一个都没有时用灰字请用户自己填，不算出错。服务没有模型列表（404）时说「请自己填写」。
+- **「测试连接」**：在底部左边，同「新建主机」（「取消」「确定」在右边）；用第一个模型发一次简短的请求，结果写在对话框最下面。
+- **用哪个模型**：
+  - 面板顶部的下拉菜单按服务分组列出全部模型，选了记在这个对话上，从下一条消息起用。
+  - 新对话用「设置 › AI 助手 › 默认模型」（`assistant.provider` + `assistant.model`）；没设，或那个服务、模型已删时，用第一个服务的第一个模型。
+  - 打开旧对话时，用它上次的服务和模型；那个模型已从列表删掉时，用这个服务的第一个。
 
 ### 记录和同步
 
 - **主机核心的新实体 `AiProvider`**（`crates/shellrs-hosts/src/ai_provider.rs`）：
   - 表 `ai_providers`，STRICT。
-  - `SCHEMA_VERSION` 升到 27，加「旧库升级后与新库比对」的测试。
+  - `SCHEMA_VERSION` 升到 28，加「旧库升级后与新库比对」的测试：26 → 27 建表（最初一版：`preset`、单个 `model`），27 → 28 重建成现在的样子（没有 `preset`，`model` 成为 `models` 列表的第一个）。开发中已经升到 27 的库靠这一步接着升，不改已经跑过的步骤。
   - 同步 id 用 PublicId，同凭据的 `keychain_id`。
 - **同步记录。** 发布后字段名不能改。
-  - kind `ai_provider`，字段：`name`（不空）、`preset`、`protocol`（`anthropic`、`openai`）、`base_url`（不空）、`model`（不空）、`sort_order`。
+  - kind `ai_provider`，字段：`name`（不空）、`protocol`（`anthropic`、`openai`、`openai_responses`）、`base_url`（不空）、`models`（模型名的列表，至少一个、都不空）、`sort_order`。
+  - 表 `ai_providers` 的 `models` 列存 JSON 列表，CHECK 不能是空列表。
   - `secret.ai_key` 只有 `value`，id 就是模型服务的 id。
 - **`FORMAT.md` 加这两行，再加一条 ⁵ 注**（版本号发布时填），写明：旧版本把 `ai_provider` 当不认识的 kind，原样保留、带着走；`secret.ai_key` 当不认识的秘密，封着带走。这一点已核对：`Kind::Other` 会被停放，有测试 `round_tests.rs` 的 `records_this_version_cannot_use_pass_through`。
   - `Kind::KNOWN` 里 `ai_provider` 排在 `secret.ai_key` 前面。
@@ -97,7 +150,8 @@ src/settings/assistant_page.rs  「设置 › AI 助手」
   - 新的 `Change` 变体加进 `src/host/describe.rs::not_saved` 和手机 `store.rs` 的 `From<Change>`。
   - 新的写方法加进 `src/host/store.rs` 的 `settled!`。
 - **不同步、每台设备自己的**（都放在设置里）：
-  - 默认用哪个模型服务（`assistant.provider`）。没设或已删时，用排第一的。
+  - 是否启用 AI 助手（`assistant.enabled`，出厂关）。
+  - 默认模型（`assistant.provider` + `assistant.model`）。没设或已删时，用第一个服务的第一个模型。
   - 默认执行方式（`assistant.run_in`）。
   - 批准方式（`assistant.approval`）。
 - **`localhost` 地址照样同步。** 同步到别的设备后，它指的是那台设备自己。手机上连不上就报错，不另设开关。
@@ -111,7 +165,8 @@ src/settings/assistant_page.rs  「设置 › AI 助手」
 - **User-Agent** 由应用给（`ShellRS/<版本>`）。
 - **超时**：连接 15 秒；第一个事件 120 秒（推理模型慢）；事件之间 90 秒。
 - **明文提示**：地址是 `http://`、又不是本机或内网地址时，对话框提示 Key 会明文发出。
-- **「测试连接」**：用对话框里填的地址、Key 和模型名发一次 1 个 token 的请求。结果是类型化的：能用、Key 被拒、模型不存在、地址不对、额度用完、连不上。没保存也能测。
+- **「测试连接」**：用对话框里填的地址、Key 和第一个模型发一次简短的请求。结果是类型化的：能用、Key 被拒、模型不存在、地址不对、额度用完、连不上。没保存也能测。
+- **「刷新模型」**：`GET`，响应读到 16 MiB 为止（OpenRouter 的列表带着说明，很长）。认 `{"data": [{"id"}]}`，也认 `{"models": [{"name"}]}` 和直接一个列表。
 
 ## 对话存储
 
@@ -172,7 +227,7 @@ messages(
   不认识的种类原样保留。
 - **`raw` 存厂商原样返回的内容**：Anthropic 的 content 数组（含 thinking 的 signature），OpenAI 的 `reasoning_content` 和 `tool_calls`。换了模型服务或模型就不回放 `raw`，改按 `parts` 重建历史。
 - **工具调用用自己的 id**（`c<seq>_<n>`），厂商的 id 留在 `raw` 里。有的厂商的 id 格式过不了 Anthropic 的校验，换模型服务后会出错。
-- **写库时机。** 一轮结束（完成、出错、取消）才写库。没写完的工具调用写成 `cancelled` 结果；打开旧对话时也按这条补齐，保证历史两种协议都认。
+- **写库时机。** 一轮结束（完成、出错、取消）才写库。没写完的工具调用写成 `cancelled` 结果；打开旧对话时也按这条补齐，保证历史每种协议都认。
 - **保留和删除：**
   - 主机删了（包括同步删的），对话留着，显示当时的名称。
   - 临时连接、外部连接的对话也存，`host_public_id` 为空。
@@ -239,7 +294,7 @@ send(text) · answer(call_id, ToolAnswer) · stop() · next_event() · end()
 - **快满时的处理。** 按每次返回的用量估算：
   - 到模型上下文的 75%：把最近两条用户消息之前的工具输出换成占位，记下 `elided_before_seq`。缓存失效一次，之后又只追加。
   - 到 90%，或模型报上下文太长：请用户「新建对话」。自动摘要放到以后。
-- **上下文长度**由预设给；自定义的默认按 128K。
+- **上下文长度**按地址估：Anthropic 自己的 200K，本机和内网的 32K，其余 128K（见「接口类型和地址」）。
 
 ### 适配器
 
@@ -248,11 +303,12 @@ send(text) · answer(call_id, ToolAnswer) · stop() · next_event() · end()
   - 工具定义和 system 排在前面、保持不变；终端内容这类会变的放进消息里。
   - 两个缓存断点：system 之后一个，最后一条消息上一个。
   - `tool_choice` 只用 `auto`：新模型上强制调用工具会返回 400。不做预填。
-  - Claude 预设另外三件事。兼容端点（自定义地址）不发这些 Claude 专有参数。
+  - 地址是 `api.anthropic.com` 时另外三件事。别的服务只是兼容这个协议，不发这些 Claude 专有参数。
     - 显式设 `output_config.effort`：Opus 5.5 默认是 medium，不设就是它。
     - 带服务端回退（`fallbacks: "default"`，beta `server-side-fallback-2026-07-01`），请求被拒时由服务端换模型。
     - 工具定义带 `eager_input_streaming`。
-- **OpenAI**（`openai.rs`）：Chat Completions 流式。各家的差异（见「协议和预设」）按预设处理。
+- **OpenAI**（`openai.rs`）：Chat Completions 流式，不发 `max_tokens`（各家的名称和上限不同，不发就用模型自己的）。
+- **OpenAI Responses**（`responses.rs`）：见「接口类型和地址」。
 - **金样**：SSE 金样按各家真实的返回录。
 
 ### system prompt（`prompt.rs`）
@@ -307,19 +363,18 @@ system prompt 用英文写、内容固定，要求模型回答时用 `{language}
 - **切到「完全访问权限」要先确认。** 不论在设置里还是对话里，切换前都先用 `confirm_danger` 问一次，说明模型执行任何命令都不再问，包括删除和重启。
 - **在终端中执行会先按 Ctrl+C。** 卡片和这三个选项的说明都要写明。
 - **确认卡片**写明主机名、执行方式、目录和命令原文（等宽字体）。
-  - 按钮：执行、修改、拒绝。
-  - 可以勾「本对话里这条原样命令不再问」。
-  - 拒绝时可以写一句理由，作为结果还给模型。
-- **危险标记只决定「帮我批准」时问不问**，不会让「请求批准」少问。被标为危险的：
-  - `rm -r` / `rm -rf`、`mkfs`、`dd of=`
-  - `shutdown`、`reboot`、`halt`
-  - `chmod -R`、`chown -R`、`iptables -F`、`kill -9 1`
-  - 重定向到 `/dev/sd*`、`curl … | sh`
-  - `systemctl stop` / `disable` / `mask`
-  - `sudo`、`su`
-  - 拆不清的命令：命令替换、`eval`、here-doc、`sh -c` 里又套一层等
+  - 按钮：执行、「执行，本对话不再问相似命令」、插入终端、拒绝。「不再问」按程序记（用户定的，同 Claude Code）：核心的 `command_kinds` 把命令拆成各段，取每段的程序（跳过 `VAR=x`、`nohup`、`timeout`、`xargs` 这类包装，`sudo` 连着它运行的程序记成 `sudo systemctl`，`cd`、`pwd` 不算）；之后的命令每一段的程序都记过就不问。拆不清的、`sh -c`、`python3`、`eval`、`su` 这类交出代码的只记原样的命令；读文件只记这个路径。按钮写「相似命令」，悬停提示写出是哪些程序；记不了程序的写「这条命令」，读文件写「这个文件」。同一次回答里已经在问的调用，同一类的随这一下一起执行（`Remembered`）。
+  - 第一版没有「修改」，拒绝时也不写理由（见「开发阶段」的「以后」）。
+- **危险标记只决定「帮我批准」时问不问**，不会让「请求批准」少问。按关键字判断（用户定的，不按参数细分，同 Warp 的黑名单思路，但不是正则）：核心的 `danger.rs` 把命令拆成词，每个词按非字母数字切开、转小写，任何一段在 `KEYWORDS` 里就算危险，不论在哪个位置：
+  - 删除、改写文件：`rm`、`mv`、`cp`、`dd`、`truncate`、`tee`、`chmod`、`chown` 等
+  - 磁盘：`mkfs`、`fdisk`、`parted`、`mount` 等
+  - 机器：`shutdown`、`reboot`、`halt`、`sysctl`、`modprobe` 等
+  - 进程和服务：`kill`、`stop`、`restart`、`disable`、`mask`、`down`、`drain` 等
+  - 删掉、升级、部署：`delete`、`remove`、`purge`、`prune`、`drop`、`destroy`、`upgrade`、`apply`、`reset`、`force` 等
+  - 用户和权限：`sudo`、`su`、`passwd`、`useradd` 等；防火墙：`iptables`、`nft`、`ufw`、`firewall`
+  - `eval`、`exec`、`exit`、`logout`
 
-  判断时先把命令拆成管道和 `;`、`&&`、`||` 连起来的各段，逐段查。宁可多问：拆不清的一律算危险。
+  另外三条兜底：写文件的重定向（`/dev/null` 除外）；运行的程序（跳过 `VAR=x` 和 `nohup`、`timeout`、`xargs` 这类包装）是 shell、Python 等解释器、`source`、`$VAR`，或 `sed -i`、`crontab -r`；拆不清的（命令替换、here-doc、子 shell、引号没关）。解释器只按「运行的程序」算，不当关键字，所以 `ps aux | grep python3` 不问。只是提到关键字的（`grep stop app.log`）也问：宁可多问。
 
 ## 命令的两种执行方式
 
@@ -329,16 +384,15 @@ system prompt 用英文写、内容固定，要求模型回答时用 `{language}
 | 终端里看得见吗 | 看不见，输出只在对话里（折叠显示） | 看得见；打进去的是一行包装过的 `sh -c` |
 | 输出 | stdout、stderr 分开，有退出码或信号 | 合在一起，有退出码 |
 | 限制 | 没有 TTY，stdin 关着，不读 rc 文件；外部连接不能用 | 只认 Linux 上的 bash、dash、busybox；先按 Ctrl+C；全屏程序、ZMODEM、另一条命令在跑时拒绝；没有 TTY |
-| 超时 | 默认 60 秒，模型最多可要 600 秒；到时问用户继续等还是停止 | 同左；`TerminalRun` 自己没有总超时，由助手加 |
+| 超时 | 默认 60 秒，模型最多可要 600 秒；到时停止命令（同「停止」），结果写明超时 | 同左；`TerminalRun` 自己没有总超时，由助手加 |
 | 停止 | 发 TERM 信号再关通道（老的 OpenSSH 不认这个信号，进程可能还在） | Ctrl+C |
 
 - **选哪种：**
   - 默认方式在「设置 › AI 助手」里选，出厂是后台执行。
-  - 对话顶部可以改这个对话的方式，卡片上可以改这一条的。
+  - 对话顶部可以改这个对话的方式。
   - 外部连接只有「在终端中执行」。
-- **在终端中执行不成时**（不是 Linux、shell 不认、终端正忙），卡片写明原因，给两条路：
-  - 改成后台执行（外部连接除外）；
-  - 「插入终端」（`EnterCommand { run: false }`）：用户自己按回车，助手拿不到输出，告诉模型「用户自己执行」。
+- **在终端中执行不成时**（不是 Linux、shell 不认、终端正忙），原因作为失败的结果还给模型，卡片上也写着。
+- **「插入终端」**（`EnterCommand { run: false }`）在问的时候可选：用户自己按回车，助手拿不到输出，告诉模型「用户自己执行」。
 - **后台执行的做法：**
   - SSH 核心加两个函数，复用已有的 `ExecStream` / `ExecExit`：
     - `open_exec_channel(handle, command)`
@@ -360,7 +414,7 @@ system prompt 用英文写、内容固定，要求模型回答时用 `{language}
   - 想每条都看的用户选「请求批准」；
   - 切到「完全访问权限」前先确认一次，并写明它的风险。
 - **秘密不交给模型。** 钥匙串里的东西永远不交给工具和模型。`sudo` 只用 `-n`，不替用户输密码。
-- **Markdown 不加载外部图片。** `TextView::image_source` 只放行 `data:` 图片；不然模型可以写 `![](https://…?q=<机密>)`，把内容带出去。点链接时先显示地址再打开（`on_link_click`）。
+- **Markdown 不加载图片。** `TextView::image_source` 一律换成空的，`data:` 图片也不显示；不然模型可以写 `![](https://…?q=<机密>)`，把内容带出去。点链接时先显示地址再打开（`on_link_click`）。
 - **Key 和日志。** API Key 用 `Zeroizing` 包着，`Debug` 不显示内容。不记录请求内容、Key 和终端内容；错误只留厂商给的错误码和消息。
 - **发了什么、发给谁。** 发出去的是用户的对话、终端内容、命令和输出，只发给用户配的那个模型服务，不经过 shellrs.com。
 - **手册「隐私」一节要改写。** 现在写的是「只有这三件事联网」「不发送会话内容、命令」，要加上 AI 助手这个例外。
@@ -370,17 +424,18 @@ system prompt 用英文写、内容固定，要求模型回答时用 `{language}
 
 ### 「设置 › AI 助手」
 
-- **模型服务列表**，可以拖动排序，能新建、编辑、删除、设为默认。
+- **第一项是「启用 AI 助手」开关**，同「启用外部 CLI」，出厂关着。
+- **默认模型**：下拉菜单按服务分组列出全部模型。
+- **模型服务列表**，按添加的顺序，每行写「类型 · 几个模型 · 地址」，能新建、编辑、删除（核心有 `move_ai_provider`，界面第一版不拖动排序）。
 - **模型服务对话框**，字段有：
-  - 预设（`Select`）
   - 名称
-  - 协议（选了预设就锁定）
-  - 地址
-  - 模型：输入框，留空，必填；没填不能保存
+  - 预设（`Select`）：见「接口类型和地址」
+  - 接口类型（`Select`：Anthropic / OpenAI / OpenAI Responses），下面不另写说明，请求地址写在地址下面
+  - 地址：下面实时写出完整的请求地址
   - API Key：本地服务可以不填
-  - 「测试连接」按钮，放在模型名旁边：测的时候显示转圈，结果写在对话框里，不弹通知
+  - 模型：标题行右边「刷新模型」「添加模型」，每个模型一行输入框加删除图标
 
-  底部的取消、确定用 `DialogClose` / `DialogAction` 包着，对话框设 `overlay_closable(false)`。
+  底部左边「测试连接」，右边取消、确定（用 `DialogClose` / `DialogAction` 包着），同「新建主机」；对话框设 `overlay_closable(false)`。「刷新模型」「测试连接」做的时候显示转圈，结果写在对话框里，不弹通知。
 - **批准方式**：请求批准 / 帮我批准 / 完全访问权限。每项下面写一句说明。
 - **默认执行方式**：后台执行 / 在终端中执行。
 - **「删除全部对话…」**，要确认。
@@ -394,14 +449,16 @@ system prompt 用英文写、内容固定，要求模型回答时用 `{language}
   - 不算 `runs_commands()`，否则外部连接旁会被藏掉。`works_on` 对所有系统都成立。
   - 只给 SSH 远程终端：`offered_tools` 对 Telnet、串口和本地终端不给。
   - 面板照 Kubernetes 的样子，用到时才创建。
-- **顶部**：对话标题；历史（这台主机的对话，可以打开、改名、删除）；新建对话；模型服务切换；执行方式；批准方式。
+  - 比别的工具宽（用户定的）：显示助手时右侧栏默认 420（其余 320），拖动后的宽度和其余工具分开记（设置的 `sidebar_widths.assistant`），切工具时跟着换（`workspace/sidebar_widths.rs` 的 `fit_right_sidebar`）。
+- **顶部**：对话标题；历史（这台主机的对话，可以打开；单个改名、删除放到以后）；新建对话。
 - **中间：**
   - `MessageScroller` 跟到底，「跳到最新」的文字经 `t!`；消息用 `Message` / `Bubble`。
-  - `TextView` 流式显示 Markdown（`stream_fade`）。代码块右上角有「复制」（`code_block_actions` + `Clipboard`）和「插入终端」。
-  - 工具调用显示成一行小标签（读了多少行、执行了什么、退出码），展开能看发出去的原文和输出。
+  - `TextView` 流式显示 Markdown（`stream_fade`）。代码块右上角有「复制」（`code_block_actions` + `Clipboard`）。
+  - 工具调用显示成一行小标签（读了多少行、执行了什么、退出码），展开能看完整的命令（`$ ` 加实际执行的那行，带 `cd`）或文件路径，执行后接着输出（行高同终端，不按正文）；等批准的也能展开。
+  - 间距由各行自己定（`MessageScroller` 默认每行下面留 2rem，太宽，改成 0）：消息上下各 0.5rem，连着的工具调用之间 0.25rem。
   - 推理内容折叠；等待时显示 `ShimmerText`「正在思考…」。
-- **底部**：输入框，Enter 发送、Shift+Enter 换行；正在跑时换成「停止」。
-- **用量**：输入框上方一行小字显示这个对话一共用了多少 tokens（如「12.3K tokens」，按 K、M 缩写）。
+- **底部**：照 Codex 的输入框（用户定的），gpui-kit 的 `InputGroup`：一个圆角框里是输入框，下面一行左边是批准方式（圆角的小块，带图标；弹出的菜单有标题，每项是图标、名称和说明，「完全访问权限」用危险色），右边是选模型（按服务分组列出全部模型）和圆形的「发送」（框是空的不能点；正在跑时换成「停止」）；框的圆角用主题的 xl 档（默认 12），比里面的控件柔和一档，不用更大的。框下面一行左边是执行方式，右边是用量。菜单都向上弹出。Enter 发送、Shift+Enter 换行。
+- **用量**：输入框下方右边一行小字显示这个对话一共用了多少 tokens（如「12.3K tokens」，按 K、M 缩写）。
   - 每次模型返回用量就更新；打开旧对话时，从库里各条消息的用量加起来。
   - 悬停显示明细：输入、输出、缓存读取、缓存写入，以及上下文已用多少（如「上下文 45K / 200K」）。
   - 换过模型服务的对话照样累计。不返回用量的服务（有的兼容接口不给）显示「这个模型服务没有返回用量」，不估算。
@@ -467,7 +524,9 @@ system prompt 用英文写、内容固定，要求模型回答时用 `{language}
 - **主机核心、同步核心**：`ai_provider` / `secret.ai_key` 的导出、应用、删除连带，旧版本停放（`round_tests.rs`），金样能读。
 - **UI**（`tests/ui/assistant.rs`，假模型和假执行经 `Workspace::new_with_services` 注入）：
   - 默认显示，按钮在「文件」后面；在设置里关掉后不见；没有模型服务时的空状态。
-  - 模型服务对话框：选了预设，模型名仍是空的；模型名没填不能保存；「测试连接」的各种结果写在对话框里（假传输给出能用、Key 被拒、模型不存在、连不上）。
+  - 模型服务对话框：选预设后名称、接口类型和地址跟着变，换接口类型后请求地址跟着变；输入的地址认出预设，「自定义」清空地址和预设给的名称；「添加模型」加一行输入框、删除图标删掉那一行、留空的行不算；「刷新模型」把服务列出的追加进来；底部的「测试连接」用第一个模型；保存后记下类型、地址和模型。
+  - 出厂没有启用：按钮照样在，面板只提示去设置，「打开设置」到「设置 › AI 助手」；启用后才有输入框。
+  - 默认模型和对话里选的模型，请求里用的是它。
   - 发消息后看到流式文字。
   - 确认卡片的执行、拒绝、不再问。
   - 三种批准方式：出厂是「帮我批准」，普通命令直接执行、危险的问；「请求批准」都问；「完全访问权限」都不问。
@@ -491,14 +550,14 @@ system prompt 用英文写、内容固定，要求模型回答时用 `{language}
 | 阶段 | 内容 | 主要文件 |
 |---|---|---|
 | P0 执行通道和终端文字 | `open_exec_channel` / `drive_exec`；`OpenExec`；`recent_text` | `crates/shellrs-ssh/src/session.rs`、`src/terminal/transport.rs`、`src/ssh/transport.rs`、`src/terminal/engine.rs`、`src/terminal/terminal_view.rs` |
-| P1 助手核心 | SSE、两个适配器、预设、消息模型、loop、工具策略、`assistant.db`、`testing` | `crates/shellrs-assistant/`；workspace 成员；`.github/workflows/assistant.yml`；`src/i18n.rs` 守卫清单；`windows.yml` 路径 |
+| P1 助手核心 | SSE、三个适配器、请求地址的规则、消息模型、loop、工具策略、`assistant.db`、`testing` | `crates/shellrs-assistant/`；workspace 成员；`.github/workflows/assistant.yml`；`src/i18n.rs` 守卫清单；`windows.yml` 路径 |
 | P2 模型服务和同步 | `ai_provider` 表和实体；`secret.ai_key`；FORMAT.md ⁵；金样 | `crates/shellrs-hosts`、`crates/shellrs-sync`、`crates/shellrs-ssh/src/secret.rs`、`src/host/store.rs`、`src/host/describe.rs`、手机 `store.rs` / `secrets.rs` |
 | P3 设置 | 「设置 › AI 助手」（模型服务、批准方式、默认执行方式）；模型服务对话框；「测试连接」按钮；`ToolKind::Assistant`，排在「文件」后面，默认显示 | `src/settings/assistant_page.rs`、`src/assistant/provider_dialog.rs`、`src/app/actions.rs`、`src/workspace/tool_sidebar.rs`、`src/settings/sidebar_tools.rs`、`locales/assistant.yml` |
 | P4 对话面板（只读终端） | 服务线程；面板；历史；用量；`read_terminal` | `src/assistant/{service,panel,history,describe}.rs`、`src/workspace/assistant.rs`、`tests/ui/assistant.rs` |
 | P5 执行命令 | 两种执行方式；确认卡片；三种批准方式；危险标记；插入终端；停止；统计；改写手册「隐私」 | 同 P4，加 `src/analytics/model.rs` 和两份手册 |
 | P6 读文件 | `read_file` 经 SFTP | `src/assistant/`，照 `src/explorer/file_edit.rs` 的读法 |
 | P7 手机 | `assistant.rs`；模型服务接口；README | `crates/shellrs-mobile`、`mobile.yml` 路径 |
-| 以后 | 写文件（带 diff）；长对话自动摘要；终端右键「问 AI 助手」；显示或隐藏的快捷键；手机端在终端中执行；Telnet / 串口 | |
+| 以后 | 写文件（带 diff）；长对话自动摘要；卡片上「修改」命令、拒绝时写理由、改这一条的执行方式；超时时问继续等还是停止；对话单个改名和删除；代码块「插入终端」；模型服务拖动排序；终端右键「问 AI 助手」；显示或隐藏的快捷键；手机端在终端中执行；Telnet / 串口 | |
 
 ## 文档、统计和 CI
 
@@ -525,10 +584,10 @@ system prompt 用英文写、内容固定，要求模型回答时用 `{language}
 
 ## 风险
 
-- **各家 OpenAI 兼容接口的差异会变**：推理内容回传规则、`max_tokens` 参数名、工具调用 id 格式。差异都集中在预设里，金样按真实返回录，出了问题只改预设。
+- **各家 OpenAI 兼容接口的差异会变**：推理内容回传规则、`max_tokens` 参数名、工具调用 id 格式。没有预设之后，差异只能按地址认（`api.anthropic.com`、本机地址）或一律处理（推理内容同一轮回传、不发 `max_tokens`）；金样按真实返回录，出了问题改适配器。
 - **后台执行没有用户的 rc 环境**（nvm、conda、加进 PATH 的目录），模型可能找不到命令。system prompt 里写明，找不到时建议改用在终端中执行。
 - **停止后进程可能还在跑**：老的 OpenSSH 不认 `signal` 请求。卡片和手册写明。
 - **在终端中执行有两个限制**：先按 Ctrl+C，会中断终端里正在跑的程序；只认 Linux 上的 bash、dash、busybox。
 - **模型可能被服务器上的内容诱导**：靠确认和危险标记挡住。「完全访问权限」下没有这一道，只靠切换时的那次确认提醒用户。
-- **危险标记会漏判，而出厂的「帮我批准」正靠它决定问不问**：漏判的命令会不问就执行。所以宁可多问，拆不清的一律算危险，规则用表驱动测试守着；漏判的例子一经发现就补进规则和测试。
+- **危险标记会漏判，而出厂的「帮我批准」正靠它决定问不问**：漏判的命令会不问就执行。所以宁可多问，拆不清的一律算危险，规则用表驱动测试守着；漏判的例子一经发现就补进关键字和测试。
 - **费用由用户自己的 Key 承担**：对话里显示 tokens，不显示费用。

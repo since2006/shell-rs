@@ -1729,7 +1729,7 @@ fn the_sidebars_keep_their_widths_until_reset(cx: &mut TestAppContext) {
     assert_eq!(widths(cx, &workspace), (px(280.), px(320.)));
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-7", cx)
+        window.within("settings").click("0-8", cx)
     });
     // Nothing to restore yet.
     in_frame(cx, handle, |window, _| {
@@ -1747,6 +1747,7 @@ fn the_sidebars_keep_their_widths_until_reset(cx: &mut TestAppContext) {
     let dragged = SidebarWidths {
         left: Some(f32::from(left).round()),
         right: Some(400.),
+        assistant: None,
     };
     assert_eq!(saved(), dragged);
 

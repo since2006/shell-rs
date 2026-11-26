@@ -40,6 +40,9 @@ pub enum SecretRef {
     /// The secret a saved host's one-time codes come from (TOTP), by the
     /// host's public id.
     Totp { host: String },
+    /// The API key of a model service of the AI assistant, by the
+    /// service's public id.
+    AiKey { provider: String },
     /// The password of a connection that is not saved (an external or quick
     /// connection), by that temporary host's id. Only ever held in memory,
     /// never in a keychain.
@@ -86,6 +89,12 @@ impl SecretRef {
         Self::Totp { host: host.into() }
     }
 
+    pub fn ai_key(provider: impl Into<String>) -> Self {
+        Self::AiKey {
+            provider: provider.into(),
+        }
+    }
+
     pub fn temporary(host: u64) -> Self {
         Self::Temporary { host }
     }
@@ -100,6 +109,7 @@ impl SecretRef {
             Self::Credential { keychain_id } => format!("credential:{keychain_id}"),
             Self::Proxy { user, host, port } => format!("proxy:{user}@{host}:{port}"),
             Self::Totp { host } => format!("totp:{host}"),
+            Self::AiKey { provider } => format!("ai_key:{provider}"),
             Self::Temporary { host } => format!("temporary:{host}"),
             Self::SyncKeyring => "sync:keyring".into(),
             Self::SyncLogin => "sync:login".into(),
@@ -171,6 +181,12 @@ mod tests {
     }
 
     #[test]
+    fn model_service_accounts_name_the_service() {
+        let secret = SecretRef::ai_key("Jwg5rHvXCxw89paM");
+        assert_eq!(secret.account(), "ai_key:Jwg5rHvXCxw89paM");
+    }
+
+    #[test]
     fn other_accounts_are_fixed() {
         assert_eq!(SecretRef::temporary(7).account(), "temporary:7");
         assert_eq!(SecretRef::SyncKeyring.account(), "sync:keyring");
@@ -185,6 +201,7 @@ mod tests {
             SecretRef::credential("root@10.0.1.12:22"),
             SecretRef::proxy("root", "10.0.1.12", 22),
             SecretRef::totp("root@10.0.1.12:22"),
+            SecretRef::ai_key("root@10.0.1.12:22"),
             SecretRef::temporary(22),
             SecretRef::SyncKeyring,
             SecretRef::SyncLogin,

@@ -225,6 +225,9 @@ fn not_saved(change: Change, error: &str) -> SharedString {
             error = error
         ),
         Change::MoveSnippetNode => t!("host.store.not_saved.move_snippet_node", error = error),
+        Change::NewAiProvider => t!("host.store.not_saved.new_ai_provider", error = error),
+        Change::SaveAiProvider => t!("host.store.not_saved.save_ai_provider", error = error),
+        Change::DeleteAiProvider => t!("host.store.not_saved.delete_ai_provider", error = error),
         Change::NewTerminalGroup => {
             t!("host.store.not_saved.new_terminal_group", error = error)
         }
@@ -284,6 +287,12 @@ fn secret_failure(secret: &SecretRef, writing: bool) -> fn(&str) -> SharedString
         (SecretRef::Totp { .. }, true) => |error| t!("host.store.secret.totp_write", error = error),
         (SecretRef::Totp { .. }, false) => {
             |error| t!("host.store.secret.totp_delete", error = error)
+        }
+        (SecretRef::AiKey { .. }, true) => {
+            |error| t!("host.store.secret.ai_key_write", error = error)
+        }
+        (SecretRef::AiKey { .. }, false) => {
+            |error| t!("host.store.secret.ai_key_delete", error = error)
         }
         // Kept in memory, which does not fail.
         (SecretRef::Temporary { .. }, _) => {

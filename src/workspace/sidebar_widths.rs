@@ -1,6 +1,8 @@
 //! How wide the two sidebars are. Each opens at its default width, or at
 //! the width it was last dragged to; is dragged no narrower than its
-//! minimum; and goes back to its default from 设置 › 应用 › 窗口.
+//! minimum; and goes back to its default from 设置 › 应用 › 窗口. The right
+//! one is wider while it shows AI 助手, a conversation, and keeps that
+//! width apart from the other tools'.
 //!
 //! The widths are kept in the settings once a drag settles, and on quitting.
 //! The workspace remembers what it last wrote there, so it tells its own
@@ -12,6 +14,7 @@ use gpui_kit::component::dock::DockPlacement;
 use gpui_kit::*;
 
 use super::Workspace;
+use crate::app::ToolKind;
 use crate::settings::SidebarWidths;
 
 /// How long a drag has to settle before its width is written: the dock
@@ -30,6 +33,9 @@ pub(super) const SIDEBAR_MIN_WIDTH: Pixels = px(180.);
 pub(super) const TOOL_SIDEBAR_WIDTH: Pixels = px(320.);
 /// The narrowest the right sidebar can be dragged.
 pub(super) const TOOL_SIDEBAR_MIN_WIDTH: Pixels = px(220.);
+/// The right sidebar's width while it shows AI 助手, on a first launch and
+/// after a reset: room for a conversation beside the terminal.
+pub(super) const ASSISTANT_SIDEBAR_WIDTH: Pixels = px(420.);
 
 /// One sidebar's place and widths.
 #[derive(Clone, Copy)]
@@ -51,6 +57,13 @@ const RIGHT: Sidebar = Sidebar {
     min: TOOL_SIDEBAR_MIN_WIDTH,
 };
 
+/// The right sidebar while it shows AI 助手.
+const ASSISTANT: Sidebar = Sidebar {
+    placement: DockPlacement::Right,
+    default: ASSISTANT_SIDEBAR_WIDTH,
+    min: TOOL_SIDEBAR_MIN_WIDTH,
+};
+
 impl Sidebar {
     /// The width it opens at from a saved one.
     fn opening(self, saved: Option<f32>) -> Pixels {
@@ -64,9 +77,15 @@ impl Sidebar {
     }
 }
 
-/// The widths the sidebars open at, from the ones saved.
-pub(super) fn opening_widths(saved: SidebarWidths) -> (Pixels, Pixels) {
-    (LEFT.opening(saved.left), RIGHT.opening(saved.right))
+/// The widths the sidebars open at, from the ones saved; the right one's
+/// as it shows AI 助手 or as it shows another tool.
+pub(super) fn opening_widths(saved: SidebarWidths, assistant: bool) -> (Pixels, Pixels) {
+    let right = if assistant {
+        ASSISTANT.opening(saved.assistant)
+    } else {
+        RIGHT.opening(saved.right)
+    };
+    (LEFT.opening(saved.left), right)
 }
 
 impl Workspace {
@@ -75,7 +94,7 @@ impl Workspace {
     /// callback is not ours to wrap. Set back within the same update, so no
     /// frame shows it narrower.
     pub(super) fn hold_sidebar_widths(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for sidebar in [LEFT, RIGHT] {
+        for sidebar in [LEFT, self.right_sidebar()] {
             let narrower = self
                 .dock_area
                 .read(cx)
@@ -89,17 +108,54 @@ impl Workspace {
         }
     }
 
-    /// The widths the sidebars have now, as the settings keep them.
+    /// The right sidebar as it is sized now: for AI 助手 or for the rest.
+    fn right_sidebar(&self) -> Sidebar {
+        if self.assistant_width {
+            ASSISTANT
+        } else {
+            RIGHT
+        }
+    }
+
+    /// The widths the sidebars have now, as the settings keep them. The
+    /// right sidebar's goes to the width it is sized for; the other is
+    /// kept.
     fn current_sidebar_widths(&self, cx: &App) -> SidebarWidths {
         let area = self.dock_area.read(cx);
         let width = |sidebar: Sidebar, kept: Option<f32>| {
             area.dock_size(sidebar.placement)
                 .map_or(kept, |width| sidebar.saved(width))
         };
+        let kept = self.sidebar_widths;
         SidebarWidths {
-            left: width(LEFT, self.sidebar_widths.left),
-            right: width(RIGHT, self.sidebar_widths.right),
+            left: width(LEFT, kept.left),
+            right: if self.assistant_width {
+                kept.right
+            } else {
+                width(RIGHT, kept.right)
+            },
+            assistant: if self.assistant_width {
+                width(ASSISTANT, kept.assistant)
+            } else {
+                kept.assistant
+            },
         }
+    }
+
+    /// Size the right sidebar for the tool it shows: wider for AI 助手.
+    /// Runs as the tool changes; a drag that has not settled is written to
+    /// the width it was made at first.
+    pub(super) fn fit_right_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let assistant = self.tools.read(cx).tool() == ToolKind::Assistant;
+        if assistant == self.assistant_width {
+            return;
+        }
+        self.save_sidebar_widths(cx);
+        self.assistant_width = assistant;
+        let (_, right) = opening_widths(self.sidebar_widths, assistant);
+        self.dock_area.update(cx, |area, cx| {
+            area.set_dock_size(DockPlacement::Right, right, window, cx);
+        });
     }
 
     /// Write the widths once they have stayed as they are for a moment.
@@ -138,7 +194,7 @@ impl Workspace {
         }
         self.sidebar_widths = saved;
         self.sidebar_widths_save = None;
-        let (left, right) = opening_widths(saved);
+        let (left, right) = opening_widths(saved, self.assistant_width);
         self.dock_area.update(cx, |area, cx| {
             area.set_dock_size(DockPlacement::Left, left, window, cx);
             area.set_dock_size(DockPlacement::Right, right, window, cx);
@@ -148,7 +204,7 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use super::{LEFT, RIGHT};
+    use super::{ASSISTANT, LEFT, RIGHT};
     use gpui_kit::px;
 
     #[test]
@@ -159,6 +215,8 @@ mod tests {
         assert_eq!(RIGHT.opening(None), px(320.));
         assert_eq!(RIGHT.opening(Some(200.)), px(220.));
         assert_eq!(RIGHT.opening(Some(480.)), px(480.));
+        assert_eq!(ASSISTANT.opening(None), px(420.));
+        assert_eq!(ASSISTANT.opening(Some(200.)), px(220.));
     }
 
     #[test]
@@ -168,5 +226,7 @@ mod tests {
         assert_eq!(LEFT.saved(px(240.4)), Some(240.));
         assert_eq!(RIGHT.saved(px(320.)), None);
         assert_eq!(RIGHT.saved(px(280.)), Some(280.));
+        assert_eq!(ASSISTANT.saved(px(420.)), None);
+        assert_eq!(ASSISTANT.saved(px(320.)), Some(320.));
     }
 }

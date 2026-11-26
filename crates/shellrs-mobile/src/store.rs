@@ -128,6 +128,10 @@ pub enum StoreError {
     Secret {
         problem: SecretProblem,
     },
+    /// A model service of AI 助手 as its form gave it.
+    AiProvider {
+        problem: crate::assistant::AiProviderProblem,
+    },
     /// The core is gone.
     Closed,
     /// What should never happen: a bug in ShellRS.
@@ -1042,6 +1046,9 @@ impl From<Change> for ChangeKind {
             | Change::DeleteSavedTerminal
             | Change::MoveTerminalNode
             | Change::SavedTerminalTabs
+            | Change::NewAiProvider
+            | Change::SaveAiProvider
+            | Change::DeleteAiProvider
             | Change::Batch => Self::Other,
         }
     }

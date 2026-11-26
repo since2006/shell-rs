@@ -519,6 +519,8 @@ pub enum ChannelError {
     ExecSendFailed,
     ExecRefused,
     ExecTimeout,
+    /// The connection went away before the command said how it ended.
+    ExecLost,
     SftpRefused,
     SftpTimeout,
     /// A bastion host's link carries the shell and nothing else.
@@ -538,6 +540,7 @@ impl fmt::Display for ChannelError {
             Self::ExecSendFailed => "couldn't send the command",
             Self::ExecRefused => "the server refused to run the command",
             Self::ExecTimeout => "the command timed out",
+            Self::ExecLost => "the connection closed before the command finished",
             Self::SftpRefused => "the server doesn't offer SFTP",
             Self::SftpTimeout => "opening SFTP timed out",
             Self::ShellOnly => "this connection carries the shell only",

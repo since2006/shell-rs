@@ -95,6 +95,11 @@ icon_assets!(
         SquareDashedText,
         CopyPlus,
         CloudSync,
+        BotMessageSquare,
+        // AI 助手's 批准方式.
+        Hand,
+        ShieldCheck,
+        ShieldAlert,
         // Icons a promotion's text link may start with (`promotion::ICONS`).
         Smartphone,
         TabletSmartphone,
@@ -221,6 +226,18 @@ mod tests {
             .expect("in the bundle");
         assert!(bytes.starts_with(b"<svg"));
         assert!(String::from_utf8_lossy(&bytes).contains("<title>Docker</title>"));
+    }
+
+    #[test]
+    fn every_sidebar_tool_has_its_icon_in_the_bundle() {
+        for tool in crate::app::ToolKind::ALL {
+            let path = tool.icon_path();
+            let bytes = AppAssets.load(&path).unwrap();
+            assert!(
+                bytes.is_some_and(|bytes| bytes.starts_with(b"<svg")),
+                "{tool:?}: {path}"
+            );
+        }
     }
 
     #[test]

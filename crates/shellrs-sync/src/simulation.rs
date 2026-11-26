@@ -310,12 +310,14 @@ impl Sim {
             RecordData::Forward(f) => f.name = name,
             RecordData::SnippetCategory(c) => c.name = name,
             RecordData::Snippet(s) => s.name = name,
+            RecordData::AiProvider(p) => p.name = name,
             RecordData::Bookmark(b) => b.sort_order += 1,
             RecordData::Password(e) | RecordData::ProxyPassword(e) => e.value = value,
             RecordData::CredentialPassword(s)
             | RecordData::Passphrase(s)
             | RecordData::PrivateKey(s)
-            | RecordData::Totp(s) => *s = value,
+            | RecordData::Totp(s)
+            | RecordData::AiKey(s) => *s = value,
         }
         self.save(d, &key.id, data);
     }

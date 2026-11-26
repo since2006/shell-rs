@@ -187,7 +187,7 @@ fn turned_off_in_the_settings_nothing_is_reported(cx: &mut TestAppContext) {
     // 设置 › 关于 › 隐私 › 发送匿名使用统计.
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-9", cx)
     });
     in_frame(cx, handle, |window, cx| {
         let switch = window

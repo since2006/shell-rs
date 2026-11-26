@@ -45,11 +45,12 @@ pub use shellrs::sftp::{
     SftpRoute, SftpTransport, SftpTransportProvider, TextFile, UploadRequest,
 };
 pub use shellrs::terminal::{
-    FixedLocalTerminalTransportProvider, FixedRemoteTerminalTransportProvider,
-    FixedSerialTerminalTransportProvider, FixedTelnetTerminalTransportProvider, LocalShell,
-    LocalTerminalId, RemoteTerminalId, RemoteTerminalTransportProvider, SftpChannel,
-    SharedTerminalTransportFactory, TerminalFont, TerminalLifecycle, TerminalSize,
-    TerminalTransport, TerminalTransportCommand, TerminalTransportEvent, TerminalTransportFactory,
+    BackgroundCommand, ExecOutcome, FixedLocalTerminalTransportProvider,
+    FixedRemoteTerminalTransportProvider, FixedSerialTerminalTransportProvider,
+    FixedTelnetTerminalTransportProvider, LocalShell, LocalTerminalId, RemoteTerminalId,
+    RemoteTerminalTransportProvider, SftpChannel, SharedTerminalTransportFactory, TerminalFont,
+    TerminalLifecycle, TerminalSize, TerminalTransport, TerminalTransportCommand,
+    TerminalTransportEvent, TerminalTransportFactory,
 };
 pub use shellrs::update::{
     Channel, InstallKind, Installer, Relaunch, Release, Staged, TrustedKeys, Unsupported,

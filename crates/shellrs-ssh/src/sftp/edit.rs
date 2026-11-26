@@ -387,6 +387,64 @@ async fn read_all<F: RemoteFs>(fs: &F, handle: &str, size: u64, text: bool) -> R
     }
 }
 
+/// What [`read_file_start`] read: the start of a file, and how long it is.
+#[derive(Debug)]
+pub struct FileStart {
+    pub bytes: Vec<u8>,
+    pub size: u64,
+}
+
+/// The first `limit` bytes of a remote text file and its size, following
+/// links, on an SFTP channel `opener` opens beside a terminal's shell: for
+/// someone to read, such as the AI assistant, not to edit. `~` and a path
+/// that does not start at `/` are the home folder's. Refused as
+/// [`read_text`] refuses (a [`ReadFailure`] inside the error) when it is
+/// not a file or not text.
+pub async fn read_file_start(
+    opener: &dyn super::SftpChannelOpener,
+    path: &str,
+    limit: u64,
+) -> Result<FileStart> {
+    let client = super::client::SftpClient::on_channel(opener).await?;
+    read_start(&client, path, limit).await
+}
+
+pub(super) async fn read_start(
+    fs: &super::client::SftpClient,
+    path: &str,
+    limit: u64,
+) -> Result<FileStart> {
+    let path = if path.starts_with('/') {
+        RemotePath::new(path)?
+    } else {
+        let home = fs.canonicalize(&RemotePath::new(".")?).await?;
+        let rest = path
+            .strip_prefix('~')
+            .unwrap_or(path)
+            .trim_start_matches('/');
+        if rest.is_empty() {
+            home
+        } else {
+            RemotePath::new(format!("{}/{rest}", home.as_str().trim_end_matches('/')))?
+        }
+    };
+    let Some(metadata) = fs.stat(&path).await? else {
+        bail!(EditError::Missing);
+    };
+    if metadata.kind() != EntryKind::File {
+        return Err(Refusal::NotFile.into());
+    }
+    let handle = fs.open_read(&path).await?;
+    let bytes = read_all(fs, &handle, metadata.size().min(limit), true).await;
+    let close = fs.close(&handle).await;
+    let bytes = bytes?;
+    close?;
+    Ok(FileStart {
+        bytes,
+        size: metadata.size(),
+    })
+}
+
 /// Write `bytes` over a remote file in place, following links and creating
 /// it when it is gone. With `expected`, the file must still match it, or
 /// the save fails with `SaveFailure::Changed` and nothing is written; a

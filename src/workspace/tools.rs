@@ -119,6 +119,7 @@ impl Workspace {
             name: panel.host().name.clone(),
             os: panel.host().os,
             shell_only: panel.shell_only(),
+            ssh: panel.host().is_ssh(),
             view: panel.terminal().downgrade(),
         })
     }
@@ -157,6 +158,8 @@ impl Workspace {
                             && shown.shows(*tool)
                             && tool.works_on(os)
                             && !(shell_only && tool.runs_commands())
+                            // Not beside Telnet or a serial line.
+                            && (*tool != ToolKind::Assistant || terminal.ssh)
                     })
                     .collect()
             }
@@ -818,6 +821,8 @@ impl Workspace {
             self.tools
                 .update(cx, |tools, cx| tools.show(tool, window, cx));
         }
+        // Before the dock opens, so it never shows at the other width.
+        self.fit_right_sidebar(window, cx);
         let open = tool.is_some();
         // A terminal's 文件 is made the first time it is shown, and kept.
         // 目录跟随's check goes first: the terminal's channels open one at a

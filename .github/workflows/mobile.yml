@@ -12,6 +12,7 @@ on:
       - "crates/shellrs-ssh/**"
       - "crates/shellrs-hosts/**"
       - "crates/shellrs-sync/**"
+      - "crates/shellrs-assistant/**"
       - "scripts/build-ios.sh"
       - "scripts/build-android.sh"
       - "Cargo.toml"

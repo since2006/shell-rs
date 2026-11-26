@@ -5,6 +5,7 @@
 mod analytics;
 mod app_lock;
 mod app_shell;
+mod assistant;
 mod cli_changes;
 mod compose;
 mod compose_history;
@@ -40,6 +41,7 @@ mod workspace_view;
 mod zmodem;
 
 pub use links::open_link_once_open;
+pub use tool_sidebar::ToolTerminal;
 pub use window_state::WindowState;
 pub use workspace_view::{Workspace, notify_once_open, window_options};
 

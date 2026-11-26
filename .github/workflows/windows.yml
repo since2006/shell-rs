@@ -60,6 +60,7 @@ on:
       - "src/terminal/recording.rs"
       - "src/serial/**"
       - "crates/shellrs-sync/**"
+      - "crates/shellrs-assistant/**"
       - "src/app/shortcuts.rs"
       - "src/terminal/terminal_view.rs"
       - "tests/ui/terminal.rs"
@@ -120,3 +121,5 @@ jobs:
       - run: ./scripts/windows-runtime.ps1 target/debug
         shell: pwsh
       - run: cargo test --locked -p shellrs-sync
+      # The AI assistant's core: its conversations' file and its requests.
+      - run: cargo test --locked -p shellrs-assistant

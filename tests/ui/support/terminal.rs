@@ -44,6 +44,11 @@ pub struct FakeTerminalFactory {
     pub exec_outputs: Arc<Mutex<std::collections::VecDeque<String>>>,
     /// The commands run beside the shell, in order.
     pub exec_commands: Arc<Mutex<Vec<String>>>,
+    /// How the commands the AI assistant starts beside the shell end, one
+    /// after another; with none left the requests are dropped.
+    pub background_outcomes: Arc<Mutex<std::collections::VecDeque<Result<ExecOutcome, String>>>>,
+    /// The commands the AI assistant started beside the shell, in order.
+    pub background_commands: Arc<Mutex<Vec<String>>>,
     /// The SFTP channels opened beside the shell, by the run (1 for the
     /// first connection, 2 after one reconnect…) that opened each.
     pub sftp_opens: Arc<Mutex<Vec<usize>>>,
@@ -163,6 +168,8 @@ impl TerminalTransportFactory for FakeTerminalFactory {
             resizes: self.resizes.clone(),
             exec_outputs: self.exec_outputs.clone(),
             exec_commands: self.exec_commands.clone(),
+            background_outcomes: self.background_outcomes.clone(),
+            background_commands: self.background_commands.clone(),
             sftp_opens: self.sftp_opens.clone(),
             breaks: self.breaks.clone(),
             data: self.data.clone(),
@@ -178,6 +185,8 @@ pub struct FakeTerminalTransport {
     pub resizes: Arc<Mutex<Vec<TerminalSize>>>,
     pub exec_outputs: Arc<Mutex<std::collections::VecDeque<String>>>,
     pub exec_commands: Arc<Mutex<Vec<String>>>,
+    pub background_outcomes: Arc<Mutex<std::collections::VecDeque<Result<ExecOutcome, String>>>>,
+    pub background_commands: Arc<Mutex<Vec<String>>>,
     pub sftp_opens: Arc<Mutex<Vec<usize>>>,
     pub breaks: Arc<AtomicUsize>,
     pub data: Arc<Mutex<Vec<Vec<u8>>>>,
@@ -290,6 +299,22 @@ impl TerminalTransport for FakeTerminalTransport {
                         stream: Box::new(stream),
                         fingerprint: format!("SHA256:fake-{}", self.run),
                     }));
+                }
+                TerminalTransportCommand::OpenExec(request) => {
+                    self.background_commands
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(request.command.clone());
+                    let outcome = self
+                        .background_outcomes
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .pop_front();
+                    if let Some(outcome) = outcome {
+                        let _ = request.reply.send(outcome.map(|outcome| {
+                            BackgroundCommand::new(move |_, _| Box::pin(async move { Ok(outcome) }))
+                        }));
+                    }
                 }
                 TerminalTransportCommand::SendBreak => {
                     self.breaks.fetch_add(1, Ordering::SeqCst);

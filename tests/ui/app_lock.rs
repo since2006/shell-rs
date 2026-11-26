@@ -86,7 +86,7 @@ fn app_settings(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
         window.dispatch_action(Box::new(OpenSettings), cx)
     });
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-7", cx)
+        window.within("settings").click("0-8", cx)
     });
 }
 

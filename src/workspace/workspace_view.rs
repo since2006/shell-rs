@@ -163,6 +163,8 @@ pub struct Workspace {
     pub(super) sidebar: Entity<Sidebar>,
     /// The right dock's panel: the tools for the host of the tab in front.
     pub(super) tools: Entity<ToolSidebar>,
+    /// AI 助手's thread, client and conversations.
+    pub(super) assistant: Entity<crate::assistant::AssistantService>,
     pub(super) host_panel: Entity<HostPanel>,
     /// The port forwards that are running, each on a connection of its own.
     pub(super) forwards: Entity<ForwardManager>,
@@ -248,6 +250,8 @@ pub struct Workspace {
     /// `sidebar_widths.rs`.
     pub(super) sidebar_widths: crate::settings::SidebarWidths,
     pub(super) sidebar_widths_save: Option<Task<()>>,
+    /// The right sidebar is sized for AI 助手, which is wider.
+    pub(super) assistant_width: bool,
     /// Where the title bar's list switch ends, for the sidebar toggle.
     pub(super) switch_end: SwitchEnd,
     /// Where 导入 reads `~/.ssh/config` and `known_hosts`. Production only:
@@ -351,6 +355,10 @@ impl Workspace {
             sync.set_services(crate::sync::system_services(), cx)
         });
         this.set_promotion_services(PromotionServices::system(), cx);
+        this.set_assistant_services(
+            crate::assistant::AssistantServices::system(&crate::app::data_dir()),
+            cx,
+        );
         if let Some(services) = AnalyticsServices::system() {
             let enabled = this.settings.read(cx).settings().analytics.enabled;
             this.set_analytics(Analytics::start(services, enabled), window, cx);
@@ -443,7 +451,26 @@ impl Workspace {
         let credential_panel =
             cx.new(|cx| CredentialPanel::new(store.clone(), focus_handle.clone(), window, cx));
         let sidebar = cx.new(|_| Sidebar::new(host_panel.clone(), forward_panel, credential_panel));
-        let tools = cx.new(|cx| ToolSidebar::new(store.clone(), focus_handle.clone(), window, cx));
+        let assistant = cx.new(|_| crate::assistant::AssistantService::new());
+        let assistant_panel = cx.new(|cx| {
+            crate::assistant::AssistantPanel::new(
+                store.clone(),
+                settings.clone(),
+                assistant.clone(),
+                focus_handle.clone(),
+                window,
+                cx,
+            )
+        });
+        let tools = cx.new(|cx| {
+            ToolSidebar::new(
+                store.clone(),
+                assistant_panel.clone(),
+                focus_handle.clone(),
+                window,
+                cx,
+            )
+        });
         // Start with focus in the host panel so window-level actions have a
         // dispatch path. The workspace's own handle is never focused: the
         // dialog layer is its child, and a focused ancestor would keep the
@@ -662,7 +689,9 @@ impl Workspace {
             center = center.active_index(terminals.len() + index);
         }
         let center_empty = terminals.is_empty() && local_terminals.is_empty();
-        let (left_width, right_width) = opening_widths(launch_settings.sidebar_widths);
+        // No tool is shown yet: the right sidebar is sized for AI 助手 as
+        // it comes to show it.
+        let (left_width, right_width) = opening_widths(launch_settings.sidebar_widths, false);
 
         dock_area.update(cx, |area, cx| {
             // With nothing to show, the center keeps the empty layout the
@@ -712,12 +741,19 @@ impl Workspace {
         // arrives as events, once the workspace is there to show it.
         forwards.update(cx, |forwards, cx| forwards.start_automatic(cx));
 
+        subscriptions.push(cx.subscribe(
+            &assistant_panel,
+            |this, _, event: &crate::assistant::AssistantPanelEvent, _| match event {
+                crate::assistant::AssistantPanelEvent::Count(counter) => this.count(*counter),
+            },
+        ));
         let this = Self {
             store,
             dock_area,
             skin,
             sidebar,
             tools,
+            assistant,
             host_panel,
             forwards,
             recent,
@@ -760,6 +796,7 @@ impl Workspace {
             window_state_save: None,
             sidebar_widths: launch_settings.sidebar_widths,
             sidebar_widths_save: None,
+            assistant_width: false,
             switch_end: SwitchEnd::default(),
             ssh_dir: None,
             recording_folder: None,
@@ -1531,7 +1568,12 @@ impl Workspace {
 
     /// Open the settings tab, or bring the open one forward: settings are
     /// one place, not one tab per visit.
-    fn on_open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn on_open_settings(
+        &mut self,
+        _: &OpenSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(panel) = self.settings_tab.clone() {
             let group = panel.read(cx).tab_group();
             self.activate_tab(group, panel.entity_id(), window, cx);
@@ -1546,7 +1588,9 @@ impl Workspace {
         integration.update(cx, |integration, cx| integration.refresh(cx));
         let updater = self.updater.clone();
         let sync = self.sync.clone();
-        let panel = cx.new(|cx| SettingsPanel::new(store, integration, updater, sync, window, cx));
+        let hosts = self.store.clone();
+        let panel =
+            cx.new(|cx| SettingsPanel::new(store, hosts, integration, updater, sync, window, cx));
         let subscription = cx.subscribe_in(
             &panel,
             window,
@@ -3273,6 +3317,26 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_end_process))
             .on_action(cx.listener(Self::on_show_process))
             .on_action(cx.listener(Self::on_refresh_services))
+            .on_action(cx.listener(Self::on_new_ai_provider))
+            .on_action(cx.listener(Self::on_edit_ai_provider))
+            .on_action(cx.listener(Self::on_delete_ai_provider))
+            .on_action(cx.listener(Self::on_set_default_ai_model))
+            .on_action(cx.listener(Self::on_set_assistant_approval))
+            .on_action(cx.listener(Self::on_set_conversation_approval))
+            .on_action(cx.listener(Self::on_set_conversation_run_in))
+            .on_action(cx.listener(Self::on_use_ai_model))
+            .on_action(cx.listener(Self::on_open_assistant_settings))
+            .on_action(cx.listener(Self::on_send_assistant_message))
+            .on_action(cx.listener(Self::on_stop_assistant))
+            .on_action(cx.listener(Self::on_continue_assistant))
+            .on_action(cx.listener(Self::on_new_assistant_conversation))
+            .on_action(cx.listener(Self::on_open_assistant_conversation))
+            .on_action(cx.listener(Self::on_delete_all_assistant_conversations))
+            .on_action(cx.listener(Self::on_run_assistant_call))
+            .on_action(cx.listener(Self::on_deny_assistant_call))
+            .on_action(cx.listener(Self::on_insert_assistant_call))
+            .on_action(cx.listener(Self::on_toggle_assistant_call_details))
+            .on_action(cx.listener(Self::on_open_assistant_link))
             .on_action(cx.listener(Self::on_show_service))
             .on_action(cx.listener(Self::on_control_service))
             .on_action(cx.listener(Self::on_refresh_history))

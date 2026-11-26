@@ -14,7 +14,7 @@ use crate::secrets::{
 use super::database::{now_millis, now_seconds};
 use super::private_key::{is_kept_in, moved_key, write_key_file};
 use super::{
-    AuthKind, BookmarkSide, Credential, CredentialDraft, CredentialId, CredentialKind,
+    AiProvider, AuthKind, BookmarkSide, Credential, CredentialDraft, CredentialId, CredentialKind,
     ForwardDraft, ForwardId, ForwardRule, GroupDraft, GroupId, GroupPathError, GroupPlan, Host,
     HostConnection, HostDatabase, HostDraft, HostGroup, HostId, HostLogin, HostLoginExt, HostNode,
     HostOs, JumpLogin, LoginRoute, NodeDrop, Protocol, ProxyCommandLogin, ProxyLogin, PublicId,
@@ -22,6 +22,7 @@ use super::{
     StoredData, TelnetLogin, TerminalGroup,
 };
 
+mod ai_providers;
 mod saved_terminals;
 mod snippets;
 mod sync;
@@ -95,6 +96,9 @@ pub struct HostData {
     next_snippet_id: u64,
     snippet_categories: Vec<SnippetCategory>,
     next_snippet_category_id: u64,
+    /// The AI assistant's model services, in list order.
+    ai_providers: Vec<AiProvider>,
+    next_ai_provider_id: u64,
     /// 项目's groups and the local terminals in them, each in the order
     /// made.
     terminal_groups: Vec<TerminalGroup>,
@@ -190,6 +194,9 @@ pub enum Change {
     SaveSnippetCategory,
     DeleteSnippetCategory,
     MoveSnippetNode,
+    NewAiProvider,
+    SaveAiProvider,
+    DeleteAiProvider,
     NewTerminalGroup,
     SaveTerminalGroup,
     DeleteTerminalGroup,
@@ -372,6 +379,8 @@ impl HostData {
             next_snippet_id: 1,
             snippet_categories: Vec::new(),
             next_snippet_category_id: 1,
+            ai_providers: Vec::new(),
+            next_ai_provider_id: 1,
             terminal_groups: Vec::new(),
             next_terminal_group_id: 1,
             saved_terminals: Vec::new(),
@@ -462,6 +471,7 @@ impl HostData {
             saved_terminal_tabs,
             secret_edits,
             sync_pending,
+            ai_providers,
         } = database.load()?;
         let sync_state = database.sync_state()?;
         recent.truncate(MAX_RECENT);
@@ -497,6 +507,8 @@ impl HostData {
                 .max()
                 .unwrap_or(0)
                 + 1,
+            next_ai_provider_id: ai_providers.iter().map(|p| p.id.0).max().unwrap_or(0) + 1,
+            ai_providers,
             next_terminal_group_id: terminal_groups.iter().map(|g| g.id.0).max().unwrap_or(0) + 1,
             next_saved_terminal_id: saved_terminals.iter().map(|t| t.id.0).max().unwrap_or(0) + 1,
             forwards,

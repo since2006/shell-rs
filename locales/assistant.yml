@@ -1,0 +1,382 @@
+_version: 2
+
+# AI 助手: the right sidebar's conversation, the model service dialog, and
+# the failures and notices of the model services and of the commands run.
+
+assistant.panel.placeholder:
+  zh-CN: 问问这台主机的事…
+  en: Ask about this host…
+assistant.panel.send:
+  zh-CN: 发送
+  en: Send
+assistant.panel.stop:
+  zh-CN: 停止
+  en: Stop
+assistant.panel.thinking:
+  zh-CN: 正在思考…
+  en: Thinking…
+assistant.panel.new:
+  zh-CN: 新建对话
+  en: New conversation
+assistant.panel.new_title:
+  zh-CN: 新对话
+  en: New conversation
+assistant.panel.untitled:
+  zh-CN: （未命名）
+  en: (Untitled)
+assistant.panel.history:
+  zh-CN: 历史对话
+  en: Conversations
+assistant.panel.jump:
+  zh-CN: 跳到最新
+  en: Jump to latest
+assistant.panel.copy:
+  zh-CN: 复制
+  en: Copy
+assistant.panel.disabled:
+  zh-CN: AI 助手还没有启用。到「设置 › AI 助手」添加模型服务，再打开「启用 AI 助手」。
+  en: The AI assistant is off. In Settings › AI assistant, add a model service, then turn on Enable AI assistant.
+assistant.panel.open_settings:
+  zh-CN: 打开设置
+  en: Open settings
+assistant.panel.no_provider:
+  zh-CN: 还没有模型服务。添加一个，就能在这里问这台主机的事。
+  en: There’s no model service yet. Add one to ask about this host here.
+assistant.panel.no_provider_short:
+  zh-CN: 没有模型服务
+  en: No model service
+assistant.model_of:
+  zh-CN: "%{provider} · %{model}"
+  en: "%{provider} · %{model}"
+assistant.panel.add_provider:
+  zh-CN: 添加模型服务…
+  en: Add model service…
+assistant.panel.retrying:
+  zh-CN: 重试中（%{attempt}/%{of}）…
+  en: Retrying (%{attempt}/%{of})…
+assistant.panel.approval_title:
+  zh-CN: 应如何批准 AI 助手的操作？
+  en: How should actions be approved?
+assistant.panel.continue:
+  zh-CN: 继续
+  en: Continue
+assistant.panel.continue_message:
+  zh-CN: 继续
+  en: Continue
+assistant.panel.usage:
+  zh-CN: "%{tokens} tokens"
+  en: "%{tokens} tokens"
+assistant.panel.usage_unknown:
+  zh-CN: 这个模型服务没有返回用量
+  en: This model service doesn’t report usage
+assistant.panel.usage_detail:
+  zh-CN: 输入 %{input} · 输出 %{output} · 缓存读取 %{cache_read} · 缓存写入 %{cache_write}
+  en: Input %{input} · output %{output} · cache read %{cache_read} · cache write %{cache_write}
+assistant.panel.usage_detail_context:
+  zh-CN: 输入 %{input} · 输出 %{output} · 缓存读取 %{cache_read} · 缓存写入 %{cache_write} · 上下文 %{context} / %{window}
+  en: Input %{input} · output %{output} · cache read %{cache_read} · cache write %{cache_write} · context %{context} / %{window}
+
+assistant.call.read_terminal:
+  zh-CN: 读取终端最后 %{lines} 行
+  en: Read the terminal’s last %{lines} lines
+assistant.call.read_file:
+  zh-CN: 读取文件 %{path}
+  en: Read %{path}
+assistant.call.asking:
+  zh-CN: 等你确认
+  en: Waiting for you
+assistant.call.running:
+  zh-CN: 执行中…
+  en: Running…
+assistant.call.done:
+  zh-CN: 完成
+  en: Done
+assistant.call.failed:
+  zh-CN: 失败
+  en: Failed
+assistant.call.denied:
+  zh-CN: 已拒绝
+  en: Declined
+assistant.call.cancelled:
+  zh-CN: 已取消
+  en: Cancelled
+assistant.call.dangerous:
+  zh-CN: 这条命令可能删除、改写或停止服务器上的东西，请看清再执行。
+  en: This command may delete, overwrite or stop things on the server. Check it before you run it.
+assistant.call.run:
+  zh-CN: 执行
+  en: Run
+assistant.call.run_always_similar:
+  zh-CN: 执行，本对话不再问相似命令
+  en: Run and don’t ask again here about similar commands
+assistant.call.run_always_similar_tip:
+  zh-CN: 之后本对话里的 %{kinds} 命令都直接执行
+  en: Later %{kinds} commands in this conversation run without asking
+assistant.call.run_always_command:
+  zh-CN: 执行，本对话不再问这条命令
+  en: Run and don’t ask again here about this command
+assistant.call.run_always_file:
+  zh-CN: 执行，本对话不再问这个文件
+  en: Run and don’t ask again here about this file
+assistant.call.insert:
+  zh-CN: 插入终端
+  en: Insert into terminal
+assistant.call.deny:
+  zh-CN: 拒绝
+  en: Decline
+
+assistant.turn.refused:
+  zh-CN: 模型拒绝了这个请求。
+  en: The model declined this request.
+assistant.turn.stopped:
+  zh-CN: 已停止。
+  en: Stopped.
+assistant.turn.trimmed:
+  zh-CN: 较早的工具输出已不再发送，以节省空间。
+  en: Older tool output is no longer sent, to save room.
+assistant.turn.step_limit:
+  zh-CN: 这一轮已经执行了很多步，要继续吗？
+  en: This turn has taken many steps. Continue?
+assistant.turn.max_tokens:
+  zh-CN: 回答达到了长度上限，可以让它继续。
+  en: The answer reached its length limit. You can let it continue.
+assistant.turn.context_full:
+  zh-CN: 这个对话太长了，模型装不下。请新建一个对话。
+  en: This conversation is too long for the model. Start a new conversation.
+
+assistant.error.key_rejected:
+  zh-CN: API Key 被拒绝：检查 Key 是否正确、是否有权使用这个模型
+  en: The API key was rejected. Check that it’s right and allowed to use this model
+assistant.error.not_found:
+  zh-CN: 地址或模型名不对
+  en: The address or the model name is wrong
+assistant.error.quota:
+  zh-CN: 账户余额或额度用完了
+  en: The account is out of balance or quota
+assistant.error.rate_limited:
+  zh-CN: 请求太频繁，稍后再试
+  en: Too many requests. Try again later
+assistant.error.overloaded:
+  zh-CN: 模型服务繁忙，稍后再试
+  en: The model service is busy. Try again later
+assistant.error.context:
+  zh-CN: 对话太长，模型装不下，请新建对话
+  en: The conversation is too long for the model. Start a new conversation
+assistant.error.bad_request:
+  zh-CN: 模型服务拒绝了这个请求
+  en: The model service refused the request
+assistant.error.server:
+  zh-CN: 模型服务出错了
+  en: The model service failed
+assistant.error.network:
+  zh-CN: 连不上模型服务
+  en: Couldn’t reach the model service
+assistant.error.timeout:
+  zh-CN: 模型服务响应超时
+  en: The model service took too long to answer
+assistant.error.protocol:
+  zh-CN: 模型服务的回答看不懂：检查地址和协议
+  en: The model service’s answer couldn’t be read. Check the address and the protocol
+assistant.error.with_detail:
+  zh-CN: "%{what}（%{detail}）"
+  en: "%{what} (%{detail})"
+assistant.error.store:
+  zh-CN: 对话未能保存：%{error}
+  en: "Couldn’t save the conversation: %{error}"
+assistant.error.conversation_gone:
+  zh-CN: 这个对话已经不在了
+  en: This conversation is gone
+
+assistant.run.not_connected:
+  zh-CN: 终端没有连接
+  en: The terminal isn’t connected
+assistant.run.no_terminal:
+  zh-CN: 终端已经关闭
+  en: The terminal was closed
+assistant.run.no_files:
+  zh-CN: 这里不能读取文件
+  en: Files can’t be read here
+assistant.run.unknown_shell:
+  zh-CN: 认不出终端里的 shell：在终端中执行只支持 Linux 上的 bash、dash 和 busybox
+  en: Couldn’t tell the terminal’s shell. Running in the terminal works with bash, dash and busybox on Linux
+assistant.run.unsupported_shell:
+  zh-CN: 终端里的 shell 是 %{shell}：在终端中执行只支持 bash、dash 和 busybox
+  en: The terminal’s shell is %{shell}. Running in the terminal works with bash, dash and busybox
+assistant.run.too_long:
+  zh-CN: 命令太长，在终端中执行最多 %{limit} 字节
+  en: The command is too long. Running in the terminal takes at most %{limit} bytes
+assistant.run.full_screen:
+  zh-CN: 终端里有全屏程序在运行
+  en: A full-screen program is running in the terminal
+assistant.run.another_run:
+  zh-CN: 终端里已有另一条命令在执行
+  en: Another command is running in the terminal
+assistant.run.transfer:
+  zh-CN: 终端正在用 ZMODEM 传文件
+  en: The terminal is transferring files with ZMODEM
+assistant.run.no_answer:
+  zh-CN: 终端里的 shell 没有响应：它可能正忙
+  en: The terminal’s shell didn’t answer. It may be busy
+assistant.run.disconnected:
+  zh-CN: 命令执行时终端断开了：它可能只执行了一部分
+  en: The terminal went away while the command ran. It may have run in part
+assistant.run.not_started:
+  zh-CN: 无法开始执行
+  en: Couldn’t start running it
+
+assistant.service.failed:
+  zh-CN: AI 助手无法启动：%{error}
+  en: "AI assistant couldn’t start: %{error}"
+assistant.service.no_thread:
+  zh-CN: AI 助手无法启动后台线程
+  en: AI assistant couldn’t start its background thread
+assistant.service.unavailable:
+  zh-CN: AI 助手现在不可用
+  en: AI assistant isn’t available now
+
+
+assistant.dialog.title_new:
+  zh-CN: 新建模型服务
+  en: New model service
+assistant.dialog.title_edit:
+  zh-CN: 编辑模型服务
+  en: Edit model service
+assistant.dialog.create:
+  zh-CN: 创建
+  en: Create
+assistant.dialog.name:
+  zh-CN: 名称
+  en: Name
+assistant.dialog.name_placeholder:
+  zh-CN: 如 DeepSeek
+  en: For example, DeepSeek
+assistant.dialog.preset:
+  zh-CN: 预设
+  en: Preset
+assistant.dialog.protocol:
+  zh-CN: 接口类型
+  en: API type
+assistant.dialog.base_url:
+  zh-CN: 地址
+  en: Address
+assistant.dialog.models:
+  zh-CN: 模型
+  en: Models
+assistant.dialog.model_placeholder:
+  zh-CN: 模型名称
+  en: Model name
+assistant.dialog.endpoint:
+  zh-CN: 请求发到 %{url}
+  en: Requests go to %{url}
+assistant.dialog.endpoint_path:
+  zh-CN: 请求发到地址后面加 %{path}；地址里已有版本号（如 /v1、/v4）时不再加 /v1
+  en: Requests go to the address followed by %{path}, without its /v1 when the address already has a version such as /v1 or /v4
+assistant.dialog.no_models:
+  zh-CN: 还没有模型。点「添加模型」填写，或点「刷新模型」从服务读取。
+  en: No models yet. Add one, or read them from the service with Refresh models.
+assistant.dialog.add_model:
+  zh-CN: 添加模型
+  en: Add model
+assistant.dialog.remove_model:
+  zh-CN: 删除这个模型
+  en: Delete this model
+assistant.dialog.fetch:
+  zh-CN: 刷新模型
+  en: Refresh models
+assistant.dialog.fetching:
+  zh-CN: 正在读取模型…
+  en: Loading models…
+assistant.dialog.fetched.one:
+  en: The service lists 1 model. %{added} added
+assistant.dialog.fetched.other:
+  zh-CN: 服务列出 %{count} 个模型，新加了 %{added} 个
+  en: The service lists %{count} models. %{added} added
+assistant.dialog.fetched_common.one:
+  en: The service lists 1 model. Only the newest of common families are added; of %{common}, %{added} new
+assistant.dialog.fetched_common.other:
+  zh-CN: 服务列出 %{count} 个模型，只加常用系列的最新一代：%{common} 个里新加了 %{added} 个
+  en: The service lists %{count} models. Only the newest of common families are added; of %{common}, %{added} new
+assistant.dialog.fetched_no_common.one:
+  en: The service lists 1 model, not of a common family. Type the ones you use
+assistant.dialog.fetched_no_common.other:
+  zh-CN: 服务列出 %{count} 个模型，没有常用系列的，请自己填写
+  en: The service lists %{count} models, none of a common family. Type the ones you use
+assistant.dialog.fetched_none:
+  zh-CN: 服务没有列出模型，请自己填写
+  en: The service lists no models. Type the ones you use
+assistant.dialog.no_model_list:
+  zh-CN: 这个服务不提供模型列表，请自己填写
+  en: This service doesn’t list its models. Type the ones you use
+assistant.dialog.check:
+  zh-CN: 测试连接
+  en: Test connection
+assistant.dialog.checking:
+  zh-CN: 正在测试…
+  en: Testing…
+assistant.dialog.check_passed:
+  zh-CN: 连接成功，%{model} 可以使用
+  en: Connected. %{model} works
+assistant.dialog.key:
+  zh-CN: API Key
+  en: API key
+assistant.dialog.key_optional:
+  zh-CN: 本地服务可以不填
+  en: Not needed for a local service
+assistant.dialog.key_keep:
+  zh-CN: 留空则保持原来的 API Key
+  en: Leave empty to keep the API key
+assistant.dialog.error.name:
+  zh-CN: 请填写名称
+  en: Enter a name
+assistant.dialog.error.base_url:
+  zh-CN: 请填写以 http:// 或 https:// 开头的地址
+  en: Enter an address that starts with http:// or https://
+assistant.dialog.error.model:
+  zh-CN: 请至少添加一个模型
+  en: Add at least one model
+
+assistant.delete_provider.title:
+  zh-CN: 删除模型服务“%{name}”？
+  en: Delete the model service “%{name}”?
+assistant.delete_provider.description:
+  zh-CN: 它的 API Key 也会从钥匙串删除，开启同步时其他设备上的也会删除。用过它的对话还在。
+  en: Its API key is deleted from the keychain too, and from your other devices with sync on. Conversations that used it stay.
+assistant.delete_all.title:
+  zh-CN: 删除全部对话？
+  en: Delete all conversations?
+assistant.delete_all.description:
+  zh-CN: AI 助手在这台电脑上保存的对话都会删除，不能恢复。
+  en: Every AI assistant conversation saved on this computer is deleted. This can’t be undone.
+assistant.delete_all.confirm:
+  zh-CN: 删除全部对话
+  en: Delete all conversations
+assistant.full_access.title:
+  zh-CN: 改为完全访问权限？
+  en: Switch to full access?
+assistant.full_access.description:
+  zh-CN: 模型执行任何命令、读取任何文件都不再询问，包括删除文件、停止服务和重启。服务器上的内容可能诱导模型做这些事。
+  en: The model then runs any command and reads any file without asking, deleting files, stopping services and rebooting included. What’s on the server can lead the model to do these things.
+assistant.full_access.confirm:
+  zh-CN: 改为完全访问权限
+  en: Switch to full access
+assistant.link.title:
+  zh-CN: 打开这个链接？
+  en: Open this link?
+assistant.link.open:
+  zh-CN: 打开
+  en: Open
+assistant.preset.qwen:
+  zh-CN: 通义千问
+  en: Qwen
+assistant.preset.glm:
+  zh-CN: 智谱 GLM
+  en: Zhipu GLM
+assistant.preset.doubao:
+  zh-CN: 豆包
+  en: Doubao
+assistant.preset.siliconflow:
+  zh-CN: 硅基流动
+  en: SiliconFlow
+assistant.preset.custom:
+  zh-CN: 自定义
+  en: Custom

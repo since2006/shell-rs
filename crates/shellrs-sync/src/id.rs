@@ -65,6 +65,8 @@ pub enum Kind {
     Forward,
     SnippetCategory,
     Snippet,
+    /// A model service of the AI assistant.
+    AiProvider,
     /// An endpoint's sign-in password (SSH, Telnet).
     SecretPassword,
     /// A proxy's password.
@@ -77,6 +79,8 @@ pub enum Kind {
     SecretPrivateKey,
     /// The secret of a host's one-time codes; its id is the host's.
     SecretTotp,
+    /// A model service's API key; its id is the service's.
+    SecretAiKey,
     Secret(String),
     Other(String),
 }
@@ -84,7 +88,7 @@ pub enum Kind {
 impl Kind {
     /// Every kind this version knows, in the order the app takes them in:
     /// what a record points at comes before it.
-    pub const KNOWN: [Kind; 13] = [
+    pub const KNOWN: [Kind; 15] = [
         Kind::Group,
         Kind::Credential,
         Kind::Host,
@@ -92,12 +96,14 @@ impl Kind {
         Kind::Forward,
         Kind::SnippetCategory,
         Kind::Snippet,
+        Kind::AiProvider,
         Kind::SecretPassword,
         Kind::SecretProxy,
         Kind::SecretCredential,
         Kind::SecretPassphrase,
         Kind::SecretPrivateKey,
         Kind::SecretTotp,
+        Kind::SecretAiKey,
     ];
 
     /// The kind written as `name`, or `None` when it is not shaped like a
@@ -119,12 +125,14 @@ impl Kind {
             "forward" => Self::Forward,
             "snippet_category" => Self::SnippetCategory,
             "snippet" => Self::Snippet,
+            "ai_provider" => Self::AiProvider,
             "secret.password" => Self::SecretPassword,
             "secret.proxy" => Self::SecretProxy,
             "secret.credential" => Self::SecretCredential,
             "secret.passphrase" => Self::SecretPassphrase,
             "secret.private_key" => Self::SecretPrivateKey,
             "secret.totp" => Self::SecretTotp,
+            "secret.ai_key" => Self::SecretAiKey,
             secret if secret == "secret" || secret.starts_with("secret.") => {
                 Self::Secret(secret.to_owned())
             }
@@ -141,12 +149,14 @@ impl Kind {
             Self::Forward => "forward",
             Self::SnippetCategory => "snippet_category",
             Self::Snippet => "snippet",
+            Self::AiProvider => "ai_provider",
             Self::SecretPassword => "secret.password",
             Self::SecretProxy => "secret.proxy",
             Self::SecretCredential => "secret.credential",
             Self::SecretPassphrase => "secret.passphrase",
             Self::SecretPrivateKey => "secret.private_key",
             Self::SecretTotp => "secret.totp",
+            Self::SecretAiKey => "secret.ai_key",
             Self::Secret(name) | Self::Other(name) => name,
         }
     }
@@ -166,6 +176,7 @@ impl Kind {
                 | Self::SecretPassphrase
                 | Self::SecretPrivateKey
                 | Self::SecretTotp
+                | Self::SecretAiKey
                 | Self::Secret(_)
         )
     }

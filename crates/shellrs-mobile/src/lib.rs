@@ -13,6 +13,7 @@
 
 #[cfg(target_os = "android")]
 mod android;
+mod assistant;
 mod connection;
 mod core;
 mod events;
@@ -28,6 +29,12 @@ mod task;
 mod terminal;
 mod update;
 
+pub use assistant::{
+    AiProtocol, AiProvider, AiProviderDraft, AiProviderProblem, Approval, AssistantCall,
+    AssistantContext, AssistantError, AssistantEvent, AssistantFailure, AssistantMessage,
+    AssistantSession, AssistantStart, AssistantToolCall, AssistantToolResult, CallStatus,
+    ConversationInfo, MessageRole, ProviderErrorKind, TurnEnd, ai_endpoint,
+};
 pub use connection::{Connection, ConnectionEvent, ExecOutput};
 pub use core::{Core, CoreConfig, CoreError};
 pub use failure::*;

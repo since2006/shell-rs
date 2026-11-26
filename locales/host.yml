@@ -746,6 +746,15 @@ host.store.not_saved.save_snippet_category:
 host.store.not_saved.delete_snippet_category:
   zh-CN: 删除片段分类未能保存到本地数据库：%{error}
   en: "Couldn’t delete the snippet category from the local database: %{error}"
+host.store.not_saved.new_ai_provider:
+  zh-CN: 新建模型服务未能保存到本地数据库：%{error}
+  en: "Couldn’t save the new model service to the local database: %{error}"
+host.store.not_saved.save_ai_provider:
+  zh-CN: 修改模型服务未能保存到本地数据库：%{error}
+  en: "Couldn’t save the model service to the local database: %{error}"
+host.store.not_saved.delete_ai_provider:
+  zh-CN: 删除模型服务未能保存到本地数据库：%{error}
+  en: "Couldn’t delete the model service from the local database: %{error}"
 host.store.not_saved.move_snippet_node:
   zh-CN: 调整片段顺序未能保存到本地数据库：%{error}
   en: "Couldn’t save the rearranged snippet list to the local database: %{error}"
@@ -835,6 +844,12 @@ host.store.secret.totp_write:
 host.store.secret.totp_delete:
   zh-CN: 动态验证码的密钥未能从系统钥匙串删除：%{error}
   en: "Couldn’t delete the OTP secret from the system keychain: %{error}"
+host.store.secret.ai_key_write:
+  zh-CN: 模型服务的 API Key 未能写入系统钥匙串：%{error}
+  en: "Couldn’t save the model service’s API key to the system keychain: %{error}"
+host.store.secret.ai_key_delete:
+  zh-CN: 模型服务的 API Key 未能从系统钥匙串删除：%{error}
+  en: "Couldn’t delete the model service’s API key from the system keychain: %{error}"
 host.store.secret.temporary:
   zh-CN: 这次连接的密码未能记下：%{error}
   en: "Couldn’t keep the password for this connection: %{error}"

@@ -274,7 +274,7 @@ fn the_about_page_opens_the_website(cx: &mut TestAppContext) {
 fn open_about_settings(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
-        window.within("settings").click("0-8", cx)
+        window.within("settings").click("0-9", cx)
     });
 }
 

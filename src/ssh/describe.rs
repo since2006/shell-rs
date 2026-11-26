@@ -520,6 +520,7 @@ pub fn describe_channel_error(error: &ChannelError) -> String {
         ChannelError::ExecSendFailed => t!("ssh.exec.send_failed"),
         ChannelError::ExecRefused => t!("ssh.exec.refused"),
         ChannelError::ExecTimeout => t!("ssh.exec.timeout"),
+        ChannelError::ExecLost => t!("ssh.exec.lost"),
         ChannelError::SftpRefused => t!("ssh.terminal.sftp_refused"),
         ChannelError::SftpTimeout => t!("ssh.terminal.sftp_timeout"),
         ChannelError::ShellOnly => t!("ssh.terminal.shell_only"),

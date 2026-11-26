@@ -891,7 +891,10 @@ fn deliverable(
             }
             // A host's, only while it fills in codes.
             RecordData::Totp(_) => totp_hosts.contains(key.id.as_str()),
-            RecordData::Credential(_)
+            // A model service's, while the service is there.
+            RecordData::AiKey(_) => has(Kind::AiProvider, &key.id),
+            RecordData::AiProvider(_)
+            | RecordData::Credential(_)
             | RecordData::SnippetCategory(_)
             | RecordData::Password(_)
             | RecordData::ProxyPassword(_) => true,

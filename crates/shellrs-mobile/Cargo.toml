@@ -37,6 +37,7 @@ serde = { version = "1", features = ["derive"] }
 # Where sync goes through, kept beside the database as the desktop keeps it
 # in its settings.
 serde_json = "1"
+shellrs-assistant = { path = "../shellrs-assistant" }
 shellrs-hosts = { path = "../shellrs-hosts" }
 shellrs-ssh = { path = "../shellrs-ssh" }
 shellrs-sync = { path = "../shellrs-sync" }
@@ -53,6 +54,7 @@ rustls-platform-verifier = "0.7"
 [dev-dependencies]
 # Signs the update manifests the tests read, as the release workflow does.
 minisign = "0.7"
+shellrs-assistant = { path = "../shellrs-assistant", features = ["testing"] }
 shellrs-hosts = { path = "../shellrs-hosts", features = ["testing"] }
 shellrs-ssh = { path = "../shellrs-ssh", features = ["testing"] }
 tempfile = "3"

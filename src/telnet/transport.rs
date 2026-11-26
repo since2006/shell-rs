@@ -201,6 +201,7 @@ impl TelnetTransport {
                     Some(
                         TerminalTransportCommand::Exec(_)
                         | TerminalTransportCommand::OpenSftp(_)
+                        | TerminalTransportCommand::OpenExec(_)
                         | TerminalTransportCommand::PromptReply { .. },
                     ) => {}
                 },

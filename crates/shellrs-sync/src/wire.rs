@@ -38,6 +38,29 @@ pub enum RecordData {
     PrivateKey(Secret),
     /// The secret of the one-time codes of the host with the record's id.
     Totp(Secret),
+    /// A model service of the AI assistant.
+    AiProvider(AiProviderData),
+    /// The API key of the model service with the record's id.
+    AiKey(Secret),
+}
+
+/// A model service of the AI assistant: its key is a record of its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AiProviderData {
+    pub name: String,
+    pub protocol: AiProtocol,
+    pub base_url: String,
+    /// At least one, none empty, in the user's order.
+    pub models: Vec<String>,
+    pub sort_order: i64,
+}
+
+/// The wire protocol a model service speaks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiProtocol {
+    Anthropic,
+    OpenAi,
+    OpenAiResponses,
 }
 
 /// A host group; `parent` is another group's id, `None` at the top.
@@ -252,6 +275,11 @@ spelled!(CredentialKind { Password = "password", Key = "key", Agent = "agent" })
 spelled!(Auth { Password = "password", NoPassword = "no-password", Credential = "credential" });
 spelled!(ProxyKind { Http = "http", Socks5 = "socks5" });
 spelled!(ForwardKind { Local = "local", Remote = "remote", Dynamic = "dynamic" });
+spelled!(AiProtocol {
+    Anthropic = "anthropic",
+    OpenAi = "openai",
+    OpenAiResponses = "openai_responses",
+});
 
 impl RecordData {
     pub fn kind(&self) -> Kind {
@@ -269,6 +297,8 @@ impl RecordData {
             Self::Passphrase(_) => Kind::SecretPassphrase,
             Self::PrivateKey(_) => Kind::SecretPrivateKey,
             Self::Totp(_) => Kind::SecretTotp,
+            Self::AiProvider(_) => Kind::AiProvider,
+            Self::AiKey(_) => Kind::SecretAiKey,
         }
     }
 
@@ -336,6 +366,14 @@ pub(crate) fn parse(key: &RecordKey, data: &Map) -> Result<RecordData, String> {
         Kind::SecretPassphrase => RecordData::Passphrase(r.secret()?),
         Kind::SecretPrivateKey => RecordData::PrivateKey(r.secret()?),
         Kind::SecretTotp => RecordData::Totp(r.secret()?),
+        Kind::AiProvider => RecordData::AiProvider(AiProviderData {
+            name: r.name("name")?,
+            protocol: r.spelled("protocol", AiProtocol::parse)?,
+            base_url: r.name("base_url")?,
+            models: r.names("models")?,
+            sort_order: r.order()?,
+        }),
+        Kind::SecretAiKey => RecordData::AiKey(r.secret()?),
         Kind::Secret(_) | Kind::Other(_) => return Err(format!("unknown kind {}", key.kind)),
     })
 }
@@ -555,10 +593,12 @@ fn known_fields(kind: &Kind) -> &'static [&'static str] {
             "sort_order",
         ],
         Kind::SecretPassword | Kind::SecretProxy => &["user", "host", "port", "value"],
+        Kind::AiProvider => &["name", "protocol", "base_url", "models", "sort_order"],
         Kind::SecretCredential
         | Kind::SecretPassphrase
         | Kind::SecretPrivateKey
-        | Kind::SecretTotp => &["value"],
+        | Kind::SecretTotp
+        | Kind::SecretAiKey => &["value"],
         Kind::Secret(_) | Kind::Other(_) => &[],
     }
 }
@@ -680,10 +720,18 @@ fn fields(data: &RecordData) -> Vec<(&'static str, Value)> {
             ("port", json!(endpoint.port)),
             ("value", json!(endpoint.value.expose())),
         ],
+        RecordData::AiProvider(provider) => vec![
+            ("name", json!(provider.name)),
+            ("protocol", json!(provider.protocol.as_str())),
+            ("base_url", json!(provider.base_url)),
+            ("models", json!(provider.models)),
+            ("sort_order", json!(provider.sort_order)),
+        ],
         RecordData::CredentialPassword(value)
         | RecordData::Passphrase(value)
         | RecordData::PrivateKey(value)
-        | RecordData::Totp(value) => vec![("value", json!(value.expose()))],
+        | RecordData::Totp(value)
+        | RecordData::AiKey(value) => vec![("value", json!(value.expose()))],
     }
 }
 
@@ -714,6 +762,24 @@ impl Reader<'_> {
             return Err(format!("{key} is empty"));
         }
         Ok(text)
+    }
+
+    /// A list of text, at least one and none empty.
+    fn names(&self, key: &str) -> Result<Vec<String>, String> {
+        let Some(Value::Array(items)) = self.0.get(key) else {
+            return Err(format!("{key} is not a list"));
+        };
+        let names: Vec<String> = items
+            .iter()
+            .map(|item| match item {
+                Value::String(text) if !text.is_empty() => Ok(text.clone()),
+                _ => Err(format!("{key} holds what is not a name")),
+            })
+            .collect::<Result<_, _>>()?;
+        if names.is_empty() {
+            return Err(format!("{key} is empty"));
+        }
+        Ok(names)
     }
 
     /// A prompt: `null`, or text that is not empty.
@@ -1295,6 +1361,58 @@ pub(crate) mod tests {
             fields.insert("login_commands".into(), wrong.clone());
             assert!(parse(&key, &fields).is_err(), "{wrong}");
         }
+    }
+
+    #[test]
+    fn a_model_service_and_its_key_read_back() {
+        let key = RecordKey::new(Kind::AiProvider, "p1");
+        let provider = AiProviderData {
+            name: "DeepSeek".into(),
+            protocol: AiProtocol::OpenAi,
+            base_url: "https://api.deepseek.com".into(),
+            models: vec!["deepseek-chat".into(), "deepseek-reasoner".into()],
+            sort_order: 2,
+        };
+        let written = write_into(&RecordData::AiProvider(provider.clone()), None);
+        assert_eq!(written["protocol"], json!("openai"));
+        assert_eq!(
+            written["models"],
+            json!(["deepseek-chat", "deepseek-reasoner"])
+        );
+        assert_eq!(parse(&key, &written), Ok(RecordData::AiProvider(provider)));
+        let mut responses = written.clone();
+        responses.insert("protocol".into(), json!("openai_responses"));
+        assert!(matches!(
+            parse(&key, &responses),
+            Ok(RecordData::AiProvider(AiProviderData {
+                protocol: AiProtocol::OpenAiResponses,
+                ..
+            }))
+        ));
+        for (field, wrong) in [
+            ("protocol", json!("grpc")),
+            ("models", json!([])),
+            ("models", json!(["m", ""])),
+            ("models", json!("deepseek-chat")),
+            ("base_url", json!(null)),
+        ] {
+            let mut fields = written.clone();
+            fields.insert(field.into(), wrong.clone());
+            assert!(parse(&key, &fields).is_err(), "{field} {wrong}");
+        }
+
+        // The key is a record of its own, under the service's id.
+        let secret = RecordKey::new(Kind::SecretAiKey, "p1");
+        let mut fields = Map::new();
+        fields.insert("value".into(), json!("sk-test-key"));
+        let Ok(RecordData::AiKey(value)) = parse(&secret, &fields) else {
+            panic!("the key does not read");
+        };
+        assert_eq!(value.expose(), "sk-test-key");
+        assert_eq!(Kind::parse("ai_provider"), Some(Kind::AiProvider));
+        assert_eq!(Kind::parse("secret.ai_key"), Some(Kind::SecretAiKey));
+        assert!(Kind::SecretAiKey.is_secret());
+        assert!(!Kind::AiProvider.is_secret());
     }
 
     #[test]

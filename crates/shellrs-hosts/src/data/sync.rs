@@ -33,11 +33,12 @@ use super::{BookmarkMeta, Failure, HostData, SecretError};
 use crate::private_key::{read_small, write_key_file};
 use crate::secrets::{SecretRef, SecretStore};
 use crate::{
-    AuthKind, BookmarkSide, Credential, CredentialDraft, CredentialId, CredentialKind,
-    ForwardDraft, ForwardEndpoint, ForwardId, ForwardKind, ForwardRule, GroupDraft, GroupId, Host,
-    HostDraft, HostGroup, HostId, Protocol, ProxyCommandSettings, ProxyKind, ProxySettings,
-    PublicId, Route, Snippet, SnippetCategory, SnippetCategoryDraft, SnippetCategoryId,
-    SnippetDraft, SnippetId, SnippetScope, TelnetSettings, TotpSettings,
+    AiProtocol, AiProvider, AiProviderDraft, AiProviderId, AuthKind, BookmarkSide, Credential,
+    CredentialDraft, CredentialId, CredentialKind, ForwardDraft, ForwardEndpoint, ForwardId,
+    ForwardKind, ForwardRule, GroupDraft, GroupId, Host, HostDraft, HostGroup, HostId, Protocol,
+    ProxyCommandSettings, ProxyKind, ProxySettings, PublicId, Route, Snippet, SnippetCategory,
+    SnippetCategoryDraft, SnippetCategoryId, SnippetDraft, SnippetId, SnippetScope, TelnetSettings,
+    TotpSettings,
 };
 
 /// What one round of sync takes from the store, on the UI thread.
@@ -182,6 +183,7 @@ pub fn read_secrets(
             (Kind::SecretPassphrase, _) => Some(RecordData::Passphrase(value)),
             (Kind::SecretPrivateKey, _) => Some(RecordData::PrivateKey(value)),
             (Kind::SecretTotp, _) => Some(RecordData::Totp(value)),
+            (Kind::SecretAiKey, _) => Some(RecordData::AiKey(value)),
             _ => None,
         };
         if let Some(data) = data {
@@ -351,6 +353,8 @@ enum Write {
     DeleteCategory(SnippetCategoryId),
     Snippet(SnippetId, bool),
     DeleteSnippet(SnippetId),
+    AiProvider(AiProviderId, bool),
+    DeleteAiProvider(AiProviderId),
 }
 
 /// Memory as it was before a round was applied, to go back to.
@@ -361,11 +365,12 @@ struct Saved {
     forwards: Vec<ForwardRule>,
     snippets: Vec<Snippet>,
     snippet_categories: Vec<SnippetCategory>,
+    ai_providers: Vec<AiProvider>,
     bookmarks: HashMap<(HostId, BookmarkSide), Vec<String>>,
     bookmark_meta: HashMap<(HostId, BookmarkSide, String), BookmarkMeta>,
     recent: Vec<HostId>,
     sync_pending: BTreeSet<RecordKey>,
-    next: [u64; 6],
+    next: [u64; 7],
 }
 
 /// Which internal record each global id is, the new ones included.
@@ -377,6 +382,7 @@ struct Ids {
     forwards: HashMap<String, ForwardId>,
     categories: HashMap<String, SnippetCategoryId>,
     snippets: HashMap<String, SnippetId>,
+    ai_providers: HashMap<String, AiProviderId>,
 }
 
 impl HostData {
@@ -568,6 +574,23 @@ impl HostData {
                 edited_ms: snippet.edited_ms,
             });
         }
+        for provider in &self.ai_providers {
+            records.push(LocalRecord {
+                id: provider.public_id.to_string(),
+                data: RecordData::AiProvider(sync::AiProviderData {
+                    name: provider.name.to_string(),
+                    protocol: match provider.protocol {
+                        AiProtocol::Anthropic => sync::AiProtocol::Anthropic,
+                        AiProtocol::OpenAi => sync::AiProtocol::OpenAi,
+                        AiProtocol::OpenAiResponses => sync::AiProtocol::OpenAiResponses,
+                    },
+                    base_url: provider.base_url.to_string(),
+                    models: provider.models.iter().map(ToString::to_string).collect(),
+                    sort_order: provider.sort_order,
+                }),
+                edited_ms: provider.edited_ms,
+            });
+        }
         SyncExport {
             records,
             secrets: self.secret_sources(),
@@ -649,6 +672,13 @@ impl HostData {
                 _ => {}
             }
         }
+        for provider in &self.ai_providers {
+            add(
+                Kind::SecretAiKey,
+                provider.public_id.to_string(),
+                SecretPlace::Keychain(provider.key_secret(), None),
+            );
+        }
         sources
     }
 
@@ -674,6 +704,7 @@ impl HostData {
                 vec![(Kind::SecretCredential, keychain_id.clone())]
             }
             SecretRef::Totp { host } => vec![(Kind::SecretTotp, host.clone())],
+            SecretRef::AiKey { provider } => vec![(Kind::SecretAiKey, provider.clone())],
             SecretRef::Passphrase { key_path } => self
                 .credentials
                 .iter()
@@ -777,6 +808,7 @@ impl HostData {
                 &mut passphrases,
             );
         }
+        self.sort_ai_providers();
         // A passphrase goes under its key's file: one the round brings, or
         // the one there. A credential with neither waits for its key.
         for (credential, passphrase) in passphrases {
@@ -871,6 +903,7 @@ impl HostData {
             forwards: self.forwards.clone(),
             snippets: self.snippets.clone(),
             snippet_categories: self.snippet_categories.clone(),
+            ai_providers: self.ai_providers.clone(),
             bookmarks: self.bookmarks.clone(),
             bookmark_meta: self.bookmark_meta.clone(),
             recent: self.recent.clone(),
@@ -882,6 +915,7 @@ impl HostData {
                 self.next_forward_id,
                 self.next_snippet_category_id,
                 self.next_snippet_id,
+                self.next_ai_provider_id,
             ],
         }
     }
@@ -893,6 +927,7 @@ impl HostData {
         self.forwards = saved.forwards;
         self.snippets = saved.snippets;
         self.snippet_categories = saved.snippet_categories;
+        self.ai_providers = saved.ai_providers;
         self.bookmarks = saved.bookmarks;
         self.bookmark_meta = saved.bookmark_meta;
         self.recent = saved.recent;
@@ -904,6 +939,7 @@ impl HostData {
             self.next_forward_id,
             self.next_snippet_category_id,
             self.next_snippet_id,
+            self.next_ai_provider_id,
         ] = saved.next;
     }
 
@@ -931,6 +967,10 @@ impl HostData {
         }
         for snippet in &self.snippets {
             ids.snippets.insert(snippet.sync_id.to_string(), snippet.id);
+        }
+        for provider in &self.ai_providers {
+            ids.ai_providers
+                .insert(provider.public_id.to_string(), provider.id);
         }
         for change in changes {
             let sync::Change::Upsert { id, data } = change else {
@@ -963,6 +1003,11 @@ impl HostData {
                 RecordData::Snippet(_) if !ids.snippets.contains_key(&id) => {
                     ids.snippets.insert(id, SnippetId(self.next_snippet_id));
                     self.next_snippet_id += 1;
+                }
+                RecordData::AiProvider(_) if !ids.ai_providers.contains_key(&id) => {
+                    ids.ai_providers
+                        .insert(id, AiProviderId(self.next_ai_provider_id));
+                    self.next_ai_provider_id += 1;
                 }
                 _ => {}
             }
@@ -1309,6 +1354,42 @@ impl HostData {
                 SecretRef::totp(id),
                 Some(Zeroizing::new(value.expose().to_owned())),
             )),
+            RecordData::AiKey(value) => work.keychain.push((
+                RecordKey::new(Kind::SecretAiKey, id),
+                SecretRef::ai_key(id),
+                Some(Zeroizing::new(value.expose().to_owned())),
+            )),
+            RecordData::AiProvider(data) => {
+                let Some(&provider_id) = ids.ai_providers.get(id) else {
+                    return;
+                };
+                let protocol = match data.protocol {
+                    sync::AiProtocol::Anthropic => AiProtocol::Anthropic,
+                    sync::AiProtocol::OpenAi => AiProtocol::OpenAi,
+                    sync::AiProtocol::OpenAiResponses => AiProtocol::OpenAiResponses,
+                };
+                let draft = AiProviderDraft::new(
+                    data.name.as_str(),
+                    protocol,
+                    data.base_url.as_str(),
+                    data.models.iter().map(String::as_str),
+                );
+                let mut fresh = AiProvider::new(provider_id, draft);
+                fresh.public_id = PublicId::from_stored(id.to_owned());
+                fresh.sort_order = data.sort_order;
+                let is_new = match self.ai_providers.iter_mut().find(|p| p.id == provider_id) {
+                    Some(old) => {
+                        fresh.edited_ms = old.edited_ms;
+                        *old = fresh;
+                        false
+                    }
+                    None => {
+                        self.ai_providers.push(fresh);
+                        true
+                    }
+                };
+                writes.push(Write::AiProvider(provider_id, is_new));
+            }
             RecordData::Passphrase(value) => passphrases.push((
                 PublicId::from_stored(id.to_owned()),
                 Zeroizing::new(value.expose().to_owned()),
@@ -1438,6 +1519,18 @@ impl HostData {
                 SecretRef::totp(id),
                 None,
             )),
+            Kind::SecretAiKey => work.keychain.push((
+                RecordKey::new(Kind::SecretAiKey, id),
+                SecretRef::ai_key(id),
+                None,
+            )),
+            Kind::AiProvider => {
+                if let Some(&provider_id) = ids.ai_providers.get(id) {
+                    self.ai_providers
+                        .retain(|provider| provider.id != provider_id);
+                    writes.push(Write::DeleteAiProvider(provider_id));
+                }
+            }
             Kind::SecretPassphrase | Kind::SecretPrivateKey => {
                 let Some(credential) = ids
                     .credentials
@@ -1559,6 +1652,12 @@ impl HostData {
                 None => Ok(()),
             },
             Write::DeleteSnippet(id) => db.remove_snippet(*id),
+            Write::AiProvider(id, new) => match self.ai_provider(*id) {
+                Some(provider) if *new => db.insert_ai_provider(provider),
+                Some(provider) => db.update_ai_provider(provider),
+                None => Ok(()),
+            },
+            Write::DeleteAiProvider(id) => db.remove_ai_provider(*id),
         }
     }
 }
@@ -2055,6 +2154,75 @@ mod tests {
         b.sync(&vault, &keys);
         a.sync(&vault, &keys);
         assert!(a.store.hosts().is_empty());
+        assert!(a.secrets.get(&secret).unwrap().is_none());
+        assert_eq!(b.held(), a.held());
+    }
+
+    #[test]
+    fn model_services_sync_with_their_keys() {
+        use crate::secrets::SecretStore as _;
+        use crate::{AiProtocol, AiProviderDraft};
+
+        let (vault, keys) = vault();
+        let mut a = Device::new('a');
+        let mut b = Device::new('b');
+        let claude = a.store.insert_ai_provider(AiProviderDraft::new(
+            "Claude",
+            AiProtocol::Anthropic,
+            "https://api.anthropic.com",
+            ["claude-x", "claude-y"],
+        ));
+        let local = a.store.insert_ai_provider(AiProviderDraft::new(
+            "Ollama",
+            AiProtocol::OpenAiResponses,
+            "http://localhost:11434",
+            ["qwen"],
+        ));
+        let secret = a.store.ai_provider(claude).unwrap().key_secret();
+        a.store
+            .save_secret(secret.clone(), Some("sk-ant-test".into()));
+        run_secret_jobs(&mut a.store);
+        a.sync(&vault, &keys);
+        b.sync(&vault, &keys);
+        assert_eq!(b.held(), a.held());
+        let names: Vec<_> = b
+            .store
+            .ai_providers()
+            .iter()
+            .map(|p| p.name.to_string())
+            .collect();
+        assert_eq!(names, ["Claude", "Ollama"]);
+        assert_eq!(b.store.ai_providers()[0].models, ["claude-x", "claude-y"]);
+        assert_eq!(
+            b.store.ai_providers()[1].protocol,
+            AiProtocol::OpenAiResponses
+        );
+        assert_eq!(b.store.ai_providers()[0].key_secret(), secret);
+        assert_eq!(
+            b.secrets
+                .get(&secret)
+                .unwrap()
+                .as_deref()
+                .map(String::as_str),
+            Some("sk-ant-test")
+        );
+        assert_eq!(a.sync(&vault, &keys), 0);
+        assert_eq!(b.sync(&vault, &keys), 0);
+
+        // Moved and edited on one, so on the other.
+        let on_b = b.store.ai_providers()[1].id;
+        b.store.move_ai_provider(on_b, 0);
+        b.sync(&vault, &keys);
+        a.sync(&vault, &keys);
+        assert_eq!(a.store.ai_providers()[0].id, local);
+
+        // Deleted on one, it goes with its key on both.
+        a.store.remove_ai_provider(claude);
+        run_secret_jobs(&mut a.store);
+        a.sync(&vault, &keys);
+        b.sync(&vault, &keys);
+        assert_eq!(b.store.ai_providers().len(), 1);
+        assert!(b.secrets.get(&secret).unwrap().is_none());
         assert!(a.secrets.get(&secret).unwrap().is_none());
         assert_eq!(b.held(), a.held());
     }
