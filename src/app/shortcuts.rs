@@ -1451,6 +1451,15 @@ mod tests {
                 Err(Refusal::Reserved)
             }
         );
+        // And Ctrl+Insert copies there (issue #158).
+        assert_eq!(
+            check(clear, "ctrl-insert"),
+            if cfg!(target_os = "macos") {
+                Ok("ctrl-insert".into())
+            } else {
+                Err(Refusal::Reserved)
+            }
+        );
         assert_eq!(
             check(new_host, "shift-pagedown"),
             Ok("shift-pagedown".into())

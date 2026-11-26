@@ -290,6 +290,73 @@ async fn function_keys_reach_the_program_unless_find_or_paste_take_them(cx: &mut
     assert_eq!(factory.written_text(), sent);
 }
 
+/// Outside macOS Ctrl+Insert copies what is selected and keeps the
+/// selection, as in Xshell and Windows Terminal: selection tools, as
+/// Feishu's, press it to read the selection (issue #158). With nothing
+/// selected, and on a Mac, it goes to the program.
+#[gpui_kit::test]
+async fn ctrl_insert_copies_the_selection_or_reaches_the_program(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        local_screen(&workspace, cx).contains("会议纪要")
+    })
+    .await;
+    let clipboard = |cx: &mut TestAppContext| {
+        cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))
+    };
+    let press = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find(("local-terminal", 1_u64)).focused(), Some(true));
+            window.press("ctrl-insert", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let ctrl_insert = "\x1b[2;5~";
+    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("原剪贴板".into())));
+
+    press(cx);
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+        factory.written_text() == ctrl_insert
+    })
+    .await;
+    assert_eq!(clipboard(cx).as_deref(), Some("原剪贴板"));
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(SelectAllTerminal), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    press(cx);
+    if cfg!(target_os = "macos") {
+        cx.wait_for(handle.into(), Duration::from_secs(2), |_, _| {
+            factory.written_text() == ctrl_insert.repeat(2)
+        })
+        .await;
+        assert_eq!(clipboard(cx).as_deref(), Some("原剪贴板"));
+        return;
+    }
+    assert_eq!(
+        clipboard(cx).as_deref(),
+        Some("run:1$ alpha.txt 会议纪要.md")
+    );
+    assert_eq!(factory.written_text(), ctrl_insert);
+    // Still selected: 复制 copies it again.
+    cx.update(|cx| cx.write_to_clipboard(ClipboardItem::new_string("原剪贴板".into())));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_action(Box::new(CopyTerminal), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        clipboard(cx).as_deref(),
+        Some("run:1$ alpha.txt 会议纪要.md")
+    );
+}
+
 #[gpui_kit::test]
 async fn local_terminals_run_the_shell_the_settings_name(cx: &mut TestAppContext) {
     let local = fake_local_terminals();

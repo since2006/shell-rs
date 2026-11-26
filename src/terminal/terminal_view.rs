@@ -143,7 +143,7 @@ struct FindBar {
     _subscription: Subscription,
 }
 
-gpui_kit::actions!(shellrs_terminal, [SendTab, SendBackTab]);
+gpui_kit::actions!(shellrs_terminal, [SendTab, SendBackTab, CopyIfSelected]);
 
 /// The terminal's keys that no setting changes.
 pub(crate) fn terminal_key_bindings() -> Vec<KeyBinding> {
@@ -152,12 +152,20 @@ pub(crate) fn terminal_key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-tab", SendBackTab, Some(TERMINAL_KEY_CONTEXT)),
     ];
     // Shift+Insert pastes on Windows and Linux, as in Xshell, PuTTY and
-    // Windows Terminal, besides 粘贴's own key (issue #145). A Mac keyboard
-    // has no Insert: there it goes to the program.
+    // Windows Terminal, besides 粘贴's own key (issue #145); Ctrl+Insert
+    // copies what is selected, as in Xshell and Windows Terminal, and with
+    // nothing selected goes to the program. Selection tools, as Feishu's and
+    // Yuanbao's, press it to read what was selected (issue #158). A Mac
+    // keyboard has no Insert: there both go to the program.
     if !cfg!(target_os = "macos") {
         bindings.push(KeyBinding::new(
             "shift-insert",
             PasteTerminal,
+            Some(TERMINAL_KEY_CONTEXT),
+        ));
+        bindings.push(KeyBinding::new(
+            "ctrl-insert",
+            CopyIfSelected,
             Some(TERMINAL_KEY_CONTEXT),
         ));
     }
@@ -587,15 +595,18 @@ impl TerminalView {
         self.engine.read(cx).recent_text(lines)
     }
 
-    pub fn copy_selection(&self, cx: &mut App) {
-        if let Some(text) = self
+    /// Copy what is selected, and say whether anything was.
+    pub fn copy_selection(&self, cx: &mut App) -> bool {
+        let Some(text) = self
             .engine
             .read(cx)
             .selection_text()
             .filter(|text| !text.is_empty())
-        {
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
-        }
+        else {
+            return false;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        true
     }
 
     /// Select all the text, the scrollback with it. With 选中复制 on, it
@@ -1370,6 +1381,13 @@ impl Render for TerminalView {
             }))
             .on_action(cx.listener(|this, _: &SendBackTab, _, cx| {
                 this.send_user_input(b"\x1b[Z".to_vec(), cx);
+            }))
+            // The selection stays, and with none the key goes on to
+            // `on_key_down`, which sends it to the program.
+            .on_action(cx.listener(|this, _: &CopyIfSelected, _, cx| {
+                if !this.copy_selection(cx) {
+                    cx.propagate();
+                }
             }))
             .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::right_click))

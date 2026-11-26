@@ -105,6 +105,8 @@ jobs:
       - run: "cargo test --locked --test ui workspace::close_shortcut"
       # Shift+Insert pastes there, and F3 reaches the program (issue #145).
       - run: "cargo test --locked --test ui terminal::function_keys_reach_the_program"
+      # Ctrl+Insert copies what is selected there (issue #158).
+      - run: "cargo test --locked --test ui terminal::ctrl_insert_copies_the_selection"
       - run: "cargo test --locked --lib app::tray::"
       - run: "cargo test --lib cli::"
       - run: "cargo test --lib update::"
