@@ -460,11 +460,11 @@ impl From<core::ProviderErrorKind> for ProviderErrorKind {
 /// Why a conversation failed.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum AssistantFailure {
-    /// The model service failed; `message` is what it said.
+    /// The model service failed; `service_message` is what it said.
     Provider {
         kind: ProviderErrorKind,
         status: Option<u16>,
-        message: Option<String>,
+        service_message: Option<String>,
     },
     /// The conversations' database failed, in English.
     Store { detail: String },
@@ -478,7 +478,7 @@ impl From<core::SessionFailure> for AssistantFailure {
             core::SessionFailure::Provider(error) => Self::Provider {
                 kind: error.kind.into(),
                 status: error.status,
-                message: error.message,
+                service_message: error.message,
             },
             core::SessionFailure::Store(detail) => Self::Store { detail },
             core::SessionFailure::NotFound => Self::NotFound,
@@ -576,11 +576,11 @@ pub enum AssistantError {
     /// The conversations' database or the HTTP client could not be had, in
     /// English.
     Unavailable { detail: String },
-    /// The model service failed; `message` is what it said.
+    /// The model service failed; `service_message` is what it said.
     Provider {
         kind: ProviderErrorKind,
         status: Option<u16>,
-        message: Option<String>,
+        service_message: Option<String>,
     },
     /// The core is gone.
     Closed,
@@ -593,7 +593,7 @@ impl From<core::ProviderError> for AssistantError {
         Self::Provider {
             kind: error.kind.into(),
             status: error.status,
-            message: error.message,
+            service_message: error.message,
         }
     }
 }

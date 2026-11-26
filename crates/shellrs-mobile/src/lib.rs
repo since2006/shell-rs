@@ -68,3 +68,49 @@ pub use update::{
 };
 
 uniffi::setup_scaffolding!();
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    /// What every Kotlin exception has already, from `Throwable`: a field
+    /// of an error by one of these names does not compile there.
+    const THROWABLE_MEMBERS: &[&str] = &[
+        "message",
+        "cause",
+        "localized_message",
+        "stack_trace",
+        "suppressed",
+    ];
+
+    /// The errors' fields (a `uniffi::Error` becomes a Kotlin exception)
+    /// keep clear of `Throwable`'s members. Swift does not mind, so only
+    /// the Kotlin check would find one, on a computer with `kotlinc`.
+    #[test]
+    fn no_error_field_is_named_like_a_member_of_throwable() {
+        let mut clashes = Vec::new();
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in fs::read_dir(&source).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let text = fs::read_to_string(&path).unwrap();
+            let mut in_error = false;
+            for (number, line) in text.lines().enumerate() {
+                if line.starts_with("#[derive(") && line.contains("uniffi::Error") {
+                    in_error = true;
+                } else if in_error && line == "}" {
+                    in_error = false;
+                } else if in_error {
+                    let field = line.trim_start().split(':').next().unwrap_or_default();
+                    if line.contains(':') && THROWABLE_MEMBERS.contains(&field) {
+                        clashes.push(format!("{}:{}: {line}", path.display(), number + 1));
+                    }
+                }
+            }
+        }
+        assert!(clashes.is_empty(), "{clashes:#?}");
+    }
+}
