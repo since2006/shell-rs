@@ -1109,6 +1109,77 @@ async fn enter_reconnects_exited_remote(cx: &mut TestAppContext) {
     enter_reconnects_stopped_remote(cx, Arc::new(FakeTerminalFactory::exit_first())).await;
 }
 
+/// Reconnecting in the tab keeps what the terminal showed (issue #162):
+/// the old connection's output and how it ended, the new one below.
+#[gpui_kit::test]
+async fn a_reconnected_terminal_keeps_what_it_showed(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::exit_first());
+    let (store, host) = one_host_store(AuthKind::Password);
+    let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory.clone());
+    let terminal = RemoteTerminalId(1);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .within("host-tree")
+            .double_click(("host-row", host.0), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        matches!(
+            remote_lifecycle(&workspace, terminal, cx),
+            TerminalLifecycle::Exited { .. }
+        )
+    })
+    .await;
+    let text = |cx: &mut TestAppContext| {
+        workspace.read_with(cx, |workspace, cx| {
+            workspace
+                .remote_terminal(terminal)
+                .unwrap()
+                .read(cx)
+                .terminal()
+                .read(cx)
+                .recent_text(100, cx)
+                .text
+        })
+    };
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("terminal", terminal.0), cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        remote_lifecycle(&workspace, terminal, cx) == TerminalLifecycle::Running
+            && workspace
+                .read(cx)
+                .remote_terminal(terminal)
+                .unwrap()
+                .read(cx)
+                .terminal()
+                .read(cx)
+                .recent_text(100, cx)
+                .text
+                .contains("run:2$")
+    })
+    .await;
+    let lines: Vec<String> = text(cx)
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            "run:1$ alpha.txt 会议纪要.md",
+            "[进程已退出，退出码 9]",
+            "[按 Enter 重新连接，按 Space 关闭标签页]",
+            "run:2$ alpha.txt 会议纪要.md",
+        ],
+        "{lines:#?}"
+    );
+}
+
 /// Space closes a remote terminal whose connection ended, as its tab's ×
 /// does; while connected it is typed into the shell.
 #[gpui_kit::test]

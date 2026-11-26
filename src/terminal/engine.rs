@@ -344,18 +344,28 @@ impl TerminalEngine {
     }
 
     pub fn restart(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        self.start_again(false, cx);
+    }
+
+    /// Start a new connection, in a new emulator. With `keep_output`, what
+    /// the old one shows is drawn in it first: a remote terminal connected
+    /// again in its tab (issue #162).
+    fn start_again(&mut self, keep_output: bool, cx: &mut gpui_kit::Context<Self>) {
         self.generation = self.generation.saturating_add(1);
         self.runtime.shutdown();
+        let replay = keep_output
+            .then(|| super::kept_output::output_for_reconnect(&mut self.runtime.term.lock()))
+            .flatten();
         self.lifecycle = TerminalLifecycle::Starting;
         self.title = None;
         self.latency = None;
         self.directory = None;
-        // The new emulator starts empty; matches in the old one mean nothing.
+        // Matches in the old emulator mean nothing in the new one.
         self.search.replace(None);
         self.runtime = TerminalRuntime::start(
             self.generation,
             self.size,
-            Launch::of(&self.factory),
+            Launch::of(&self.factory).showing_first(replay),
             self.event_sender.clone(),
             ParserShared {
                 highlights: self.highlights.clone(),
@@ -375,6 +385,17 @@ impl TerminalEngine {
     ) {
         self.factory = factory;
         self.restart(cx);
+    }
+
+    /// Connect again with `factory`, what the terminal shows kept; see
+    /// [`Self::start_again`].
+    pub fn reconnect_with_factory(
+        &mut self,
+        factory: SharedTerminalTransportFactory,
+        cx: &mut gpui_kit::Context<Self>,
+    ) {
+        self.factory = factory;
+        self.start_again(true, cx);
     }
 
     pub fn reply_to_prompt(&self, request_id: u64, reply: ConnectionPromptReply) {
@@ -1002,11 +1023,14 @@ struct TerminalRuntime {
     transferring: Arc<AtomicBool>,
 }
 
-/// One connection of a terminal: its transport, and what it types once
-/// logged in.
+/// One connection of a terminal: its transport, what it types once
+/// logged in, and what the terminal showed before it.
 struct Launch {
     transport: Box<dyn super::TerminalTransport>,
     login: LoginTyping,
+    /// Drawn in the new emulator before anything the transport sends,
+    /// and before it is first shown.
+    replay: Option<Vec<u8>>,
 }
 
 impl Launch {
@@ -1014,7 +1038,13 @@ impl Launch {
         Self {
             transport: factory.create(),
             login: LoginTyping::new(factory.login_commands()),
+            replay: None,
         }
+    }
+
+    /// The same, `replay` drawn first.
+    fn showing_first(self, replay: Option<Vec<u8>>) -> Self {
+        Self { replay, ..self }
     }
 
     #[cfg(test)]
@@ -1022,6 +1052,7 @@ impl Launch {
         Self {
             transport,
             login: LoginTyping::default(),
+            replay: None,
         }
     }
 }
@@ -1069,7 +1100,11 @@ impl TerminalRuntime {
         let run: Arc<Mutex<Option<RunHandle>>> = Arc::default();
         let (zmodem, zmodem_controls) = async_channel::unbounded();
         let transferring = Arc::new(AtomicBool::new(false));
-        let Launch { transport, login } = launch;
+        let Launch {
+            transport,
+            login,
+            replay,
+        } = launch;
         let mut parser = Parser {
             term: term.clone(),
             processor: Processor::new(),
@@ -1084,6 +1119,11 @@ impl TerminalRuntime {
             transferring: transferring.clone(),
             login,
         };
+        // Here, not on the parser thread: no frame shows the new emulator
+        // empty.
+        if let Some(replay) = replay {
+            parser.processor.advance(&mut *term.lock(), &replay);
+        }
         thread::Builder::new()
             .name("shellrs-terminal-parser".into())
             .spawn(move || {
@@ -2579,6 +2619,35 @@ mod tests {
         assert!(screen.starts_with("$ ls\nsrc\n$"), "{screen}");
     }
 
+    /// What a terminal connected again in its tab showed (issue #162) is
+    /// on its new screen from the start, the new shell below it.
+    #[test]
+    fn what_a_reconnected_terminal_showed_is_there_from_the_start() {
+        let (ui_events, _) = mpsc::channel();
+        let script = vec![
+            TerminalTransportEvent::Started,
+            TerminalTransportEvent::Output(b"new$ ".to_vec()),
+        ];
+        let runtime = TerminalRuntime::start(
+            2,
+            TerminalSize::new(40, 4, 8, 16),
+            Launch::typing_nothing(Box::new(ScriptedTransport(script)))
+                .showing_first(Some(b"old$ ls\r\nsrc\r\n".to_vec())),
+            ui_events,
+            ParserShared {
+                highlights: Arc::default(),
+                theme: Arc::new(Mutex::new(TerminalTheme::default_for(
+                    gpui_kit::component::ThemeMode::Light,
+                ))),
+                recording: Arc::default(),
+            },
+            TerminalInteraction::default(),
+        );
+        assert_eq!(line_text(&runtime.term.lock(), 1), "src");
+        let screen = screen_once_it_shows(&runtime, "new$");
+        assert!(screen.starts_with("old$ ls\nsrc\nnew$"), "{screen}");
+    }
+
     #[test]
     fn an_update_ended_in_time_is_drawn_whole() {
         let runtime = run_script(vec![
@@ -2683,6 +2752,7 @@ mod tests {
                     commands: commands_out,
                 }),
                 login: LoginTyping::new(lines),
+                replay: None,
             },
             ui_events,
             ParserShared {

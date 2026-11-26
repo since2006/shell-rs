@@ -89,6 +89,21 @@ pub fn kept_output<T: EventListener>(term: &Term<T>, lines: usize) -> Option<Vec
     Some(out.into_bytes())
 }
 
+/// All of `term`'s output, the scrollback and the screen, as bytes that
+/// draw it again: what a terminal connected again in its tab shows first
+/// (issue #162). The new connection gets a new emulator, so nothing the
+/// old programs switched on (mouse reporting, bracketed paste, cursor
+/// keys) goes with it. A full-screen program's picture goes with the
+/// connection it ran on; the lines it covered are kept, `term` left on
+/// them. `None` when there is nothing.
+pub fn output_for_reconnect<T: EventListener>(term: &mut Term<T>) -> Option<Vec<u8>> {
+    if term.mode().contains(TermMode::ALT_SCREEN) {
+        term.swap_alt();
+    }
+    let lines = term.grid().total_lines();
+    kept_output(term, lines).filter(|output| !output.is_empty())
+}
+
 /// Whether a cell shows nothing: a space on the default background, with
 /// nothing drawn over it.
 fn is_blank(cell: &Cell) -> bool {
@@ -250,5 +265,35 @@ mod tests {
         let mut old = term(10, 4);
         feed(&mut old, b"$ vim\r\n\x1b[?1049h~\r\n~");
         assert_eq!(kept_output(&old, KEPT_LINES), None);
+    }
+
+    /// Reconnecting in the tab (issue #162) keeps all of the scrollback,
+    /// not just the last `KEPT_LINES`, and the shell's lines a full-screen
+    /// program covered, but none of the modes the programs set.
+    #[test]
+    fn reconnecting_keeps_everything_but_the_modes() {
+        let mut old = term(20, 5);
+        for number in 0..KEPT_LINES + 500 {
+            feed(&mut old, format!("line {number}\r\n").as_bytes());
+        }
+        feed(
+            &mut old,
+            b"$ vim\r\n\x1b[?2004h\x1b[?1000h\x1b[?1h\x1b[?1049h~ vim's screen\r\n~",
+        );
+        let kept = output_for_reconnect(&mut old).unwrap();
+        let mut new = term(20, 5);
+        feed(&mut new, &kept);
+        let lines = text(&new);
+        assert_eq!(lines.len(), KEPT_LINES + 501);
+        assert_eq!(lines[0], "line 0");
+        assert_eq!(lines.last().unwrap(), "$ vim");
+        assert!(!new.mode().intersects(
+            TermMode::ALT_SCREEN
+                | TermMode::BRACKETED_PASTE
+                | TermMode::MOUSE_REPORT_CLICK
+                | TermMode::APP_CURSOR
+        ));
+
+        assert_eq!(output_for_reconnect(&mut term(10, 4)), None);
     }
 }

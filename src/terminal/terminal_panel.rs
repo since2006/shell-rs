@@ -342,14 +342,15 @@ impl TerminalPanel {
     }
 
     /// Connect again as the tab first did, typing what the host types once
-    /// logged in again too.
+    /// logged in again too. What the terminal showed stays above the new
+    /// connection's output (issue #162).
     pub fn reconnect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let factory = typing_on_login(
             self.transports.factory_for(&self.connection),
             self.host.login_lines(),
         );
         self.terminal.update(cx, |terminal, cx| {
-            terminal.restart_with_factory(factory, cx)
+            terminal.reconnect_with_factory(factory, cx)
         });
         let focus = self.terminal.read(cx).focus_handle();
         window.focus(&focus, cx);

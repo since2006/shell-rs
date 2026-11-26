@@ -494,6 +494,18 @@ impl TerminalView {
             .update(cx, |engine, cx| engine.restart_with_factory(factory, cx));
     }
 
+    /// Connect again with `factory`, what the terminal shows kept (issue
+    /// #162); see [`TerminalEngine::reconnect_with_factory`].
+    pub fn reconnect_with_factory(
+        &mut self,
+        factory: SharedTerminalTransportFactory,
+        cx: &mut Context<Self>,
+    ) {
+        self.reset_interaction();
+        self.engine
+            .update(cx, |engine, cx| engine.reconnect_with_factory(factory, cx));
+    }
+
     pub fn reply_to_prompt(&self, request_id: u64, reply: ConnectionPromptReply, cx: &App) {
         self.engine.read(cx).reply_to_prompt(request_id, reply);
     }
