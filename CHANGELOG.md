@@ -4,6 +4,23 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.20-beta.6]
+
+### Added
+
+- AI assistant: a new “AI assistant” in the right sidebar beside SSH terminals. Ask about the host in English or Chinese (“why is the disk full?”), and the model reads the terminal, runs commands on the host and reads files before it answers. It’s off until you add a model service and turn on “Enable AI assistant” under Settings › AI assistant. Presets cover Anthropic, OpenAI, DeepSeek, Qwen, Kimi, Zhipu GLM, Doubao, SiliconFlow, OpenRouter, and Ollama and LM Studio on your own computer; choose “Custom” for any other compatible service. Commands run in the background or are typed into the terminal; with the default approval mode, “Approve for me”, you’re asked first only for risky ones such as deleting, restarting or `sudo`. Model services and API keys sync with cloud sync; conversations stay on this computer. Your questions, the terminal’s contents and command output go only to the model service you chose, never through ShellRS’s servers.
+- The editor opens and saves files that aren’t UTF-8, such as GBK, GB18030, Big5, Shift_JIS, EUC-KR and Windows-1252. The encoding is detected for you and shown in the status bar (such as “GBK · CRLF”), and saving writes the file back in it, leaving what you didn’t change as it was. If you type a character the encoding can’t hold (an emoji in a GBK file, say), saving names the character and leaves the file unchanged. Markdown preview reads these encodings too. ([#159](https://github.com/since2006/shell-rs/issues/159))
+- The host list on the left follows the tab in front: switching tabs, or clicking into another pane of a split, selects that tab’s host and scrolls to it. For a host in a folded group, or one a search leaves out, right-click its remote terminal or SFTP tab and choose “Show in host list” to unfold the groups above it and select it. ([#135](https://github.com/since2006/shell-rs/issues/135), [#161](https://github.com/since2006/shell-rs/pull/161))
+
+### Improved
+
+- Reconnecting a remote terminal in its tab keeps everything it showed before, scrollback included, and the new connection carries on below it. ([#162](https://github.com/since2006/shell-rs/issues/162))
+- With the center area split, “Duplicate session” opens the new tab in the same pane as the original instead of always in the first one. ([#105](https://github.com/since2006/shell-rs/issues/105), [#160](https://github.com/since2006/shell-rs/pull/160))
+
+### Fixed
+
+- On Windows and Linux, selecting text in a terminal with a select-to-look-up tool such as Feishu or Yuanbao no longer types `5~` into it. Ctrl+Insert in a terminal now copies the selection when there is one and goes to the program otherwise, as in Windows Terminal. ([#158](https://github.com/since2006/shell-rs/issues/158))
+
 ## [0.1.20-beta.5]
 
 ### Fixed

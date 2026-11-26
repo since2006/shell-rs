@@ -4,6 +4,23 @@
 
 每个版本一节，标题写成 `## [版本号]`，可以在后面加日期。每一节同时写中文（这里）和英文（[CHANGELOG.md](CHANGELOG.md)），在同一次提交里。发布流程（`.github/workflows/release.yml`）把英文版里与 tag 同版本的那一节原样作为 GitHub Release 的说明；官网的更新日志英文和日文页显示英文版，中文页显示这一份（ShellRS 的更新对话框用「查看更新内容」打开官网的更新日志）。用 Markdown 书写，面向使用者。
 
+## [0.1.20-beta.6]
+
+### 新增
+
+- AI 助手：SSH 终端旁的右侧栏新增「AI 助手」，用中文或英文问这台主机的事（比如「磁盘为什么满了」），模型会读终端里的内容、在这台主机上执行命令、读文件，再回答你。默认没有启用，先在「设置 › AI 助手」里添加模型服务、打开「启用 AI 助手」。预设了 Anthropic、OpenAI、DeepSeek、通义千问、Kimi、智谱 GLM、豆包、硅基流动、OpenRouter 和本地的 Ollama、LM Studio，其他兼容的服务选「自定义」。命令可以在后台执行，也可以打进终端里执行；默认的批准方式「帮我批准」只在删除、重启、`sudo` 这类危险命令前先问。模型服务和 API Key 跟着云同步，对话只存在这台电脑上。使用时你的问题、终端内容和命令输出只发给你选的模型服务，不经过 ShellRS 的服务器。
+- 编辑器能打开和保存 GBK、GB18030、Big5、Shift_JIS、EUC-KR、Windows-1252 等不是 UTF-8 的文件：自动识别编码，状态栏显示编码（如「GBK · CRLF」），保存时按原编码写回，没改的地方保持原样；输入了原编码存不下的字（比如在 GBK 文件里输入 emoji），保存时会说明是哪个字，文件不会被改动。Markdown 预览也支持这些编码。([#159](https://github.com/since2006/shell-rs/issues/159))
+- 左侧主机列表跟着当前标签选中它的主机：切换标签、或在分屏里点进另一个窗格时自动选中，不在视野里就滚过去。主机在折叠的分组里、或被搜索筛掉时，右键远程终端或 SFTP 标签，点「在主机列表中定位」，会逐级展开上层分组并选中它。([#135](https://github.com/since2006/shell-rs/issues/135)、[#161](https://github.com/since2006/shell-rs/pull/161))
+
+### 改进
+
+- 远程终端断开后在原标签重连，断开前的内容（包括往上滚的历史）都保留，新连接的输出接在下面。([#162](https://github.com/since2006/shell-rs/issues/162))
+- 分屏时「复制会话」的新标签开在原标签所在的窗格，不再总是开在第一个窗格。([#105](https://github.com/since2006/shell-rs/issues/105)、[#160](https://github.com/since2006/shell-rs/pull/160))
+
+### 修复
+
+- 修复 Windows、Linux 上用飞书、元宝等划词工具选中终端里的文字时，终端里打出 `5~` 的问题。现在终端里按 Ctrl+Insert，选中了文字就复制，没选中时照旧发给程序，同 Windows Terminal。([#158](https://github.com/since2006/shell-rs/issues/158))
+
 ## [0.1.20-beta.5]
 
 ### 修复
