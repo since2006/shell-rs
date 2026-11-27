@@ -185,6 +185,13 @@ workspace.recording.not_started:
 workspace.recording.stopped:
   zh-CN: 录制已停止，写入 %{path} 失败：%{error}
   en: "Recording stopped: couldn’t write %{path}: %{error}"
+# 导出当前终端内容: where the exported text went, or why it failed.
+workspace.export.saved:
+  zh-CN: 终端内容已导出到 %{path}
+  en: Terminal output exported to %{path}
+workspace.export.failed:
+  zh-CN: 无法导出到 %{path}：%{error}
+  en: "Couldn’t export to %{path}: %{error}"
 workspace.link.open_failed:
   zh-CN: 无法打开链接
   en: Couldn’t open the link

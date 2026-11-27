@@ -11,9 +11,9 @@ use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::*;
 
 use super::Workspace;
-use crate::app::{RecordTerminal, StopRecordingTerminal};
+use crate::app::{ExportTerminal, RecordTerminal, StopRecordingTerminal};
 use crate::i18n::t;
-use crate::terminal::recording_file_name;
+use crate::terminal::{export_file_name, export_text_bytes, recording_file_name};
 
 /// How often the window asks whether a recording ended.
 const ENDED_POLL: Duration = Duration::from_millis(200);
@@ -131,6 +131,58 @@ impl Workspace {
         if let Some(terminal) = self.active_terminal(cx) {
             terminal.update(cx, |terminal, cx| terminal.stop_recording(cx));
         }
+    }
+
+    /// Export the active terminal's scrollback and current screen as plain text
+    /// to a file chosen in the save panel, offered as
+    /// `ShellRS-<date>-<time>.txt` in the folder the last recording or export
+    /// went into (Downloads at first).
+    pub(super) fn on_export_terminal(
+        &mut self,
+        _: &ExportTerminal,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(terminal) = self.active_terminal(cx) else {
+            return;
+        };
+        // Snapshot the terminal content immediately so the exported file
+        // matches what the user saw when invoking Export.
+        let text = terminal.read(cx).all_text(cx);
+        let folder = self
+            .recording_folder
+            .clone()
+            .unwrap_or_else(|| self.local_directory_provider.downloads());
+        let name = export_file_name(chrono::Local::now().naive_local());
+        let chosen = cx.prompt_for_new_path(&folder, Some(&name));
+        cx.spawn_in(window, async move |this, cx| {
+            let Some(path) = chosen.await.ok().and_then(Result::ok).flatten() else {
+                return;
+            };
+            let bytes = export_text_bytes(&text);
+            let written = cx
+                .background_spawn({
+                    let path = path.clone();
+                    async move { std::fs::write(&path, bytes) }
+                })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this.recording_folder = path.parent().map(Path::to_path_buf);
+                let notification = match written {
+                    Ok(()) => {
+                        Notification::success(t!("workspace.export.saved", path = shown(&path)))
+                    }
+                    Err(error) => Notification::error(t!(
+                        "workspace.export.failed",
+                        path = shown(&path),
+                        error = error
+                    )),
+                };
+                window.push_notification(notification, cx);
+            })
+            .ok();
+        })
+        .detach();
     }
 }
 

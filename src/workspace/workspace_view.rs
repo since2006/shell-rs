@@ -3354,6 +3354,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_clear_terminal))
             .on_action(cx.listener(Self::on_record_terminal))
             .on_action(cx.listener(Self::on_stop_recording_terminal))
+            .on_action(cx.listener(Self::on_export_terminal))
             .on_action(cx.listener(Self::on_scroll_terminal_page_up))
             .on_action(cx.listener(Self::on_scroll_terminal_page_down))
             .on_action(cx.listener(Self::on_toggle_host_panel))

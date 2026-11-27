@@ -63,7 +63,7 @@ pub use model::{
 };
 pub use notices::TerminalNotice;
 pub use plain_text::TerminalText;
-pub use recording::{RecordingOutcome, recording_file_name};
+pub use recording::{RecordingOutcome, export_file_name, export_text_bytes, recording_file_name};
 pub use run::{
     BusyReason, RunContext, RunEvent, RunFailure, RunHandle, RunProgress, RunShell, RunTiming,
     TerminalRun,

@@ -26,7 +26,7 @@ use gpui_kit::*;
 use unicode_width::UnicodeWidthChar as _;
 
 use crate::app::{
-    CatalogIcon, ClearTerminal, CopyTerminal, DismissTerminalFind, FindInTerminal,
+    CatalogIcon, ClearTerminal, CopyTerminal, DismissTerminalFind, ExportTerminal, FindInTerminal,
     FindNextInTerminal, FindPreviousInTerminal, PasteTerminal, RecordTerminal, SelectAllTerminal,
     StopRecordingTerminal, ToggleComposePane,
 };
@@ -605,6 +605,12 @@ impl TerminalView {
     /// assistant: history and screen, not just what is in view.
     pub fn recent_text(&self, lines: usize, cx: &App) -> crate::terminal::TerminalText {
         self.engine.read(cx).recent_text(lines)
+    }
+
+    /// Everything the terminal holds as plain text: all scrollback history
+    /// and the screen, or the current view of a full-screen program.
+    pub fn all_text(&self, cx: &App) -> String {
+        self.engine.read(cx).all_text()
     }
 
     /// Copy what is selected, and say whether anything was.
@@ -1218,6 +1224,11 @@ impl TerminalView {
                         )
                     }
                 })
+                .menu_with_icon(
+                    t!("terminal.menu.export"),
+                    Icon::new(CatalogIcon::Download),
+                    Box::new(ExportTerminal),
+                )
                 .menu_with_check(
                     t!("terminal.menu.compose"),
                     compose_shown,

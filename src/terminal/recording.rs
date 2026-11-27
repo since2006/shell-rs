@@ -44,6 +44,26 @@ pub fn recording_file_name(now: NaiveDateTime) -> String {
     format!("ShellRS-{}.log", now.format("%Y%m%d-%H%M%S"))
 }
 
+/// The name an exported terminal output file is offered:
+/// `ShellRS-20261123-174322.txt`, by the local time it is exported.
+pub fn export_file_name(now: NaiveDateTime) -> String {
+    format!("ShellRS-{}.txt", now.format("%Y%m%d-%H%M%S"))
+}
+
+/// Format plain terminal text for saving to disk, using the platform's line
+/// ending and a trailing newline when non-empty.
+pub fn export_text_bytes(text: &str) -> Vec<u8> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(text.len() + NEWLINE.len());
+    for line in text.split('\n') {
+        out.extend_from_slice(line.as_bytes());
+        out.extend_from_slice(NEWLINE);
+    }
+    out
+}
+
 /// Write what comes over the returned sender into `file`, on a thread of
 /// its own, until `Recorded::End` or the sender goes.
 pub(super) fn record(file: File) -> io::Result<(mpsc::Sender<Recorded>, RecordingOutcome)> {
@@ -145,5 +165,17 @@ mod tests {
             .and_hms_opt(17, 43, 22)
             .unwrap();
         assert_eq!(recording_file_name(now), "ShellRS-20261123-174322.log");
+        assert_eq!(export_file_name(now), "ShellRS-20261123-174322.txt");
+    }
+
+    #[test]
+    fn exported_text_uses_platform_newlines() {
+        assert!(export_text_bytes("").is_empty());
+        let bytes = export_text_bytes("first\nsecond");
+        let expected = format!(
+            "first{nl}second{nl}",
+            nl = std::str::from_utf8(NEWLINE).unwrap()
+        );
+        assert_eq!(bytes, expected.as_bytes());
     }
 }

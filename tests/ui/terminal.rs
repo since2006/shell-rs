@@ -3,7 +3,7 @@
 
 use crate::support::*;
 use shellrs::app::{
-    CopyTerminal, DuplicateTerminal, RecordTerminal, SelectAllTerminal, Shortcut,
+    CopyTerminal, DuplicateTerminal, ExportTerminal, RecordTerminal, SelectAllTerminal, Shortcut,
     StopRecordingTerminal,
 };
 use shellrs::terminal::RightClick;
@@ -1600,6 +1600,69 @@ async fn a_recording_that_cannot_start_says_why(cx: &mut TestAppContext) {
     })
     .await;
     assert!(!recording_badge(cx, handle));
+}
+
+/// 导出当前终端内容 (issue #75): exports the active terminal's scrollback
+/// history and current screen as plain text without ANSI escapes, remembers the
+/// last chosen folder, and reports write errors.
+#[gpui_kit::test]
+async fn exporting_a_terminal_saves_scrollback_and_screen_as_plain_text(cx: &mut TestAppContext) {
+    let text: String = (1..=120)
+        .map(|line| format!("\x1b[32mline {line}\x1b[0m\r\n"))
+        .collect();
+    let (handle, _, _) = terminal_printing(cx, String::leak(text + "tail-end"), "tail-end").await;
+    let folder = tempfile::tempdir().unwrap();
+    let path = folder.path().join("exported.txt");
+
+    in_frame(cx, handle, |window, cx| {
+        window.click(("local-terminal", 1_u64), cx);
+        window.dispatch_action(Box::new(ExportTerminal), cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_new_path_selection(|offered| {
+        assert_eq!(offered, std::path::Path::new("/local/tester/Downloads"));
+        Some(path.clone())
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.notifications(cx).len() == 1
+    })
+    .await;
+
+    let saved = recorded(&path);
+    assert!(
+        saved.contains("line 1\n"),
+        "scrollback line 1 missing: {saved}"
+    );
+    assert!(saved.contains("line 120\n"), "line 120 missing: {saved}");
+    assert!(saved.ends_with("tail-end\n"), "tail missing: {saved}");
+    assert!(!saved.contains('\x1b'), "ANSI escapes leaked: {saved}");
+
+    // The next export offers the same folder; cancelling does nothing.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ExportTerminal), cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_new_path_selection(|offered| {
+        assert_eq!(offered, folder.path());
+        None
+    });
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.notifications(cx).len(), 1);
+    });
+
+    // An unwritable path reports an error notification.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(ExportTerminal), cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_new_path_selection(|_| Some(folder.path().join("missing-dir").join("out.txt")));
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.notifications(cx).len() == 2
+    })
+    .await;
 }
 
 #[gpui_kit::test]

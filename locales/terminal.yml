@@ -131,6 +131,9 @@ terminal.menu.record:
 terminal.menu.stop_recording:
   zh-CN: 停止录制当前终端
   en: Stop recording
+terminal.menu.export:
+  zh-CN: 导出当前终端内容…
+  en: Export terminal output…
 # The badge at the top right while a terminal is recorded, and where to.
 terminal.recording.badge:
   zh-CN: 录制中

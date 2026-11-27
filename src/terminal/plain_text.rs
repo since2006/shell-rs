@@ -25,6 +25,16 @@ pub struct TerminalText {
 /// to the screen. The first line is taken whole when the terminal wrapped
 /// it onto the rows counted, so the text may hold a few rows more.
 pub fn recent_text<T: EventListener>(term: &Term<T>, lines: usize) -> TerminalText {
+    extract_text(term, Some(lines.max(1)))
+}
+
+/// Everything `term` holds as plain text: all scrollback history and the
+/// screen, or on an alternate screen the full-screen program's current view.
+pub fn all_text<T: EventListener>(term: &Term<T>) -> String {
+    extract_text(term, None).text
+}
+
+fn extract_text<T: EventListener>(term: &Term<T>, lines: Option<usize>) -> TerminalText {
     let full_screen = term.mode().contains(TermMode::ALT_SCREEN);
     let grid = term.grid();
     let columns = grid.columns();
@@ -44,10 +54,10 @@ pub fn recent_text<T: EventListener>(term: &Term<T>, lines: usize) -> TerminalTe
             full_screen,
         };
     };
-    let mut first = (top..=last)
-        .find(|line| has_text(*line))
-        .unwrap_or(last)
-        .max(last + 1 - lines.max(1) as i32);
+    let mut first = (top..=last).find(|line| has_text(*line)).unwrap_or(last);
+    if let Some(lines) = lines {
+        first = first.max(last + 1 - lines as i32);
+    }
     while first > top && wraps(first - 1) {
         first -= 1;
     }
@@ -155,5 +165,17 @@ mod tests {
     #[test]
     fn an_empty_terminal_gives_nothing() {
         assert_eq!(recent_text(&term(20, 3), 10), TerminalText::default());
+        assert_eq!(all_text(&term(20, 3)), "");
+    }
+
+    #[test]
+    fn all_text_includes_scrollback_and_screen() {
+        let mut term = term(10, 3);
+        feed(
+            &mut term,
+            b"one\r\n\x1b[32mtwo\x1b[0m\r\nthree\r\n0123456789abcde\r\nlast",
+        );
+
+        assert_eq!(all_text(&term), "one\ntwo\nthree\n0123456789abcde\nlast");
     }
 }

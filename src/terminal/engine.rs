@@ -645,6 +645,12 @@ impl TerminalEngine {
         super::plain_text::recent_text(&self.runtime.term.lock(), lines)
     }
 
+    /// Everything the terminal holds as plain text: all scrollback history
+    /// and the screen, or the current view of a full-screen program.
+    pub fn all_text(&self) -> String {
+        super::plain_text::all_text(&self.runtime.term.lock())
+    }
+
     pub fn has_selection(&self) -> bool {
         self.selection_text().is_some_and(|text| !text.is_empty())
     }

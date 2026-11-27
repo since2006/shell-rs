@@ -90,6 +90,9 @@ gpui_kit::actions!(
         /// 停止录制当前终端: the active terminal's recording ends, its file
         /// whole.
         StopRecordingTerminal,
+        /// 导出当前终端内容…: save the active terminal's scrollback and
+        /// screen as plain text to a chosen file.
+        ExportTerminal,
         /// 复制会话 for the remote terminal in front, from the keyboard.
         DuplicateFrontTerminal,
         /// 打开 SFTP on the host of the SSH terminal in front.
