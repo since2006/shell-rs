@@ -4,6 +4,45 @@
 
 每个版本一节，标题写成 `## [版本号]`，可以在后面加日期。每一节同时写中文（这里）和英文（[CHANGELOG.md](CHANGELOG.md)），在同一次提交里。发布流程（`.github/workflows/release.yml`）把英文版里与 tag 同版本的那一节原样作为 GitHub Release 的说明；官网的更新日志英文和日文页显示英文版，中文页显示这一份（ShellRS 的更新对话框用「查看更新内容」打开官网的更新日志）。用 Markdown 书写，面向使用者。
 
+## [0.1.20]
+
+### 新增
+
+- AI 助手：SSH 终端旁的右侧栏新增「AI 助手」，用中文或英文问这台主机的事（比如「磁盘为什么满了」），模型会读终端里的内容、在这台主机上执行命令、读文件，再回答你。默认没有启用，先在「设置 › AI 助手」里添加模型服务、打开「启用 AI 助手」。预设了 Anthropic、OpenAI、DeepSeek、通义千问、Kimi、智谱 GLM、豆包、硅基流动、OpenRouter 和本地的 Ollama、LM Studio，其他兼容的服务选「自定义」。命令可以在后台执行，也可以打进终端里执行；默认的批准方式「帮我批准」只在删除、重启、`sudo` 这类危险命令前先问。模型服务和 API Key 跟着云同步，对话只存在这台电脑上。使用时你的问题、终端内容和命令输出只发给你选的模型服务，不经过 ShellRS 的服务器。
+- 主机的「连接方式」新增「代理命令」，同 OpenSSH 的 `ProxyCommand`：经 cloudflared（Cloudflare Access）、AWS SSM、Google Cloud IAP、tailcat、ncat 这类程序连到不开 22 端口的服务器，命令里的 `%h`、`%p`、`%r` 换成地址、端口和用户名。只有 SSH 主机能用；命令没装、没登录而退出时，错误里写出它的退出码和最后几行输出。从 `~/.ssh/config` 导入主机时，`ProxyCommand` 也会导入。([#103](https://github.com/since2006/shell-rs/issues/103)、[#134](https://github.com/since2006/shell-rs/pull/134))
+- 终端录制：右键终端选「录制当前终端…」，选好保存位置（默认文件名形如 `ShellRS-20261123-174322.log`），终端显示的内容就按纯文本逐行写进这个文件，直到「停止录制当前终端」或关闭标签。颜色和控制字符都去掉，记事本就能打开；输入按回显记录，不回显的密码不会写进去。录制中终端右上角显示「录制中」。([#121](https://github.com/since2006/shell-rs/issues/121))
+- 主机对话框的「高级设置」里新增「登录后执行的命令」：SSH 主机每次连上（断线后按 Enter 重连也算），把这些命令逐行输入终端，每行等上一行的输出停下再发。适合 `sudo -i`、`cd` 到常用目录，或在堡垒机菜单里选好目标机器。命令跟着云同步，不要在这里写密码。([#138](https://github.com/since2006/shell-rs/issues/138))
+- 编辑器能打开和保存 GBK、GB18030、Big5、Shift_JIS、EUC-KR、Windows-1252 等不是 UTF-8 的文件：自动识别编码，状态栏显示编码（如「GBK · CRLF」），保存时按原编码写回，没改的地方保持原样；输入了原编码存不下的字（比如在 GBK 文件里输入 emoji），保存时会说明是哪个字，文件不会被改动。Markdown 预览也支持这些编码。([#159](https://github.com/since2006/shell-rs/issues/159))
+- 云同步的配置码：在已开启同步的电脑上点「设置 › 云同步」里的「显示配置码…」，在另一台电脑上点「输入配置码…」、粘贴它，再输入同步密码就加入了同步，不用重填地址和密钥。配置码用同步密码加密；文件夹同步没有配置码。([#95](https://github.com/since2006/shell-rs/issues/95))
+- SFTP 远程一侧可以粘贴上传：在访达、资源管理器或 IDE 里复制的文件和文件夹，在远程列表里按 ⌘V（Windows、Linux 上是 Ctrl+V 或 Shift+Insert）或右键空白处选「粘贴」，就上传到当前目录。([#129](https://github.com/since2006/shell-rs/issues/129))
+- 左侧主机列表跟着当前标签选中它的主机：切换标签、或在分屏里点进另一个窗格时自动选中，不在视野里就滚过去。主机在折叠的分组里、或被搜索筛掉时，右键远程终端或 SFTP 标签，点「在主机列表中定位」，会逐级展开上层分组并选中它。([#135](https://github.com/since2006/shell-rs/issues/135)、[#161](https://github.com/since2006/shell-rs/pull/161))
+- 退出前确认：开着标签时退出（⌘Q / Ctrl+Shift+Q、托盘的「退出」、Windows 和 Linux 上关闭窗口），先问一句「退出 ShellRS？」，免得误点后打开的会话全部断开。不想被问，在「设置 › 应用 › 窗口」关掉「退出前确认」；有没保存的文件时总会先问。([#152](https://github.com/since2006/shell-rs/issues/152))
+- 新快捷键，作用于在前的远程终端：复制会话 ⌘⇧D（Windows、Linux 上 Ctrl+Shift+D）、打开 SFTP ⌘⇧S（Ctrl+Shift+S）、重新连接 ⌘⇧R（Ctrl+Shift+R，连着的也断开重连，比如改了服务器上的 profile 后让它生效）、显示或隐藏右侧栏的「文件」⌘⌥F（Ctrl+Alt+F），都可以在「设置 › 键盘快捷键」里改。([#137](https://github.com/since2006/shell-rs/issues/137)、[#151](https://github.com/since2006/shell-rs/issues/151))
+- 「快速连接」有了快捷键：⌘P（Windows、Linux 上 Ctrl+Shift+P）打开「快速连接」，输入名称、地址等就能找到保存的主机，回车连接，在终端里也能按。原来的「聚焦搜索」快捷键（⌘K / Ctrl+K）去掉了，⌘K 只用来清屏。
+- 终端里按 Shift+PageUp、Shift+PageDown 一次翻一屏回滚历史（Mac 笔记本的键盘上是 fn+Shift+↑、fn+Shift+↓）；vim、less 等全屏程序里照旧交给程序。([#148](https://github.com/since2006/shell-rs/issues/148))
+- macOS 上可以从访达打开文件夹：把文件夹拖到程序坞里的 ShellRS 图标上，或用访达右键增强工具里的「用 ShellRS 打开」，就在那个文件夹里新开一个本地终端。ShellRS 不会成为打开文件夹的默认程序，双击文件夹照旧在访达里打开。([#146](https://github.com/since2006/shell-rs/issues/146))
+- 编辑器为 XML、`.properties`、INI（含 systemd 单元文件、yum 的 `.repo`）和 nginx 配置着色；其他 `.conf` 仍是纯文本。([#142](https://github.com/since2006/shell-rs/issues/142))
+
+### 改进
+
+- Windows、Linux 上 ShellRS 自己的快捷键统一改成 Ctrl+Shift 加字母（同 Windows Terminal、GNOME Terminal），在终端里也能按：新建本地终端 Ctrl+Shift+T（以前的 Ctrl+T 在终端里会发给 shell，打出 `^T`，开不了第二个）、新建主机 Ctrl+Shift+N、新建分组 Ctrl+Shift+G、显示或隐藏侧栏 Ctrl+Shift+B、退出 Ctrl+Shift+Q。在「设置 › 键盘快捷键」里自己改过的保持不变；设成 Ctrl 加单个字母的，那一行下面会注明它在终端里发给 shell。([#163](https://github.com/since2006/shell-rs/issues/163))
+- 远程终端断开后在原标签重连，断开前的内容（包括往上滚的历史）都保留，新连接的输出接在下面。([#162](https://github.com/since2006/shell-rs/issues/162))
+- SSH 终端连接中途断开时，终端里写明「连接已断开」和原因（如服务器长时间没有响应），不再提示「进程已退出，退出码 0」；关闭标签时先告诉服务器再断开。([#140](https://github.com/since2006/shell-rs/issues/140))
+- 系统服务详情和 Docker 容器详情的「日志」可以选中一段复制，标签栏右边的「复制日志」复制全部；Docker 详情里的环境变量也能选中复制。([#164](https://github.com/since2006/shell-rs/issues/164))
+- 分屏时「复制会话」的新标签开在原标签所在的窗格，不再总是开在第一个窗格。([#105](https://github.com/since2006/shell-rs/issues/105)、[#160](https://github.com/since2006/shell-rs/pull/160))
+- 开始页只有主机列表滚动，上面的标题和「快速连接」「新建主机…」按钮固定不动；底部可显示 ShellRS 官网的推荐内容。
+
+### 修复
+
+- 修复 Windows、Linux 上用飞书、元宝等划词工具选中终端里的文字时，终端里打出 `5~` 的问题。现在终端里按 Ctrl+Insert，选中了文字就复制，没选中时照旧发给程序，同 Windows Terminal。([#158](https://github.com/since2006/shell-rs/issues/158))
+- 修复 Windows 上网络（VPN、Wi-Fi）抖动约 20 秒 SSH 连接就断开的问题，现在和其他平台一样，等服务器约两分钟才放弃。([#140](https://github.com/since2006/shell-rs/issues/140))
+- 修复在 tmux 2.4–3.1（如 Ubuntu 20.04 自带的 3.0a）里运行 Claude Code 这类要全部鼠标移动的程序、detach 回到 shell 后，移动鼠标打出乱码、拖动选不了文字的问题。现在程序关掉任何一种鼠标上报时三种一起关，同 xterm。([#150](https://github.com/since2006/shell-rs/issues/150))
+- 修复终端里 Shift+F5、Shift+F6 等带修饰键的功能键丢了 Shift、mc 的复制和改名用不了的问题，现在照 xterm 连同修饰键发给程序；F3、Shift+F3 只在查找条打开时用来查找，关着时发给程序。Windows、Linux 上 Shift+Insert 在终端里总是粘贴。([#145](https://github.com/since2006/shell-rs/issues/145))
+- 修复 SFTP 本机一侧打不开 Windows 快捷方式（`.lnk`）的问题：指向文件夹的双击进入那个文件夹，指向文件的双击、编辑、预览打开它指向的文件。([#144](https://github.com/since2006/shell-rs/issues/144))
+- 修复编辑器里把 Windows 剪贴板的文本粘贴进只用 LF 换行的脚本后，保存时混进 CRLF、让 `\` 续行失效的问题。([#129](https://github.com/since2006/shell-rs/issues/129))
+- 修复 SFTP 里拖动列标题后只换了列宽、标题和内容留在原处的问题，现在整列一起移动，刷新、换目录后保持。
+- 修复确认「放弃修改并退出」后，跳过退出前最后一次云同步的问题。
+
 ## [0.1.20-beta.7]
 
 ### 改进
