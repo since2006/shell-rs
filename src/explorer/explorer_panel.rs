@@ -1,6 +1,6 @@
 use super::{
     ExplorerId, FileLocation, FilePane, FilePaneEvent, LoadIntent, PaneSide, QueueId, QueueState,
-    Removal, TransferJob, TransferQueue,
+    Removal, SftpPaneLayout, TransferJob, TransferQueue,
     file_edit::{Opening, PendingFile},
     find_window::{FIND_REQUESTS, FindWindow},
     pane_operations::PendingOperation,
@@ -1283,22 +1283,24 @@ impl Render for ExplorerPanel {
         let panes = if self.sidebar {
             self.remote.clone().into_any_element()
         } else {
+            // Half and half when the tab opens; the state then keeps
+            // where the user puts the divider.
+            let local = resizable_panel()
+                .flex_basis(relative(0.5))
+                .size_range(px(320.)..Pixels::MAX)
+                .child(self.local.clone());
+            let remote = resizable_panel()
+                .flex_basis(relative(0.5))
+                .size_range(px(280.)..Pixels::MAX)
+                .child(self.remote.clone());
+            let (left, right) = match SftpPaneLayout::current(cx) {
+                SftpPaneLayout::LocalLeft => (local, remote),
+                SftpPaneLayout::RemoteLeft => (remote, local),
+            };
             h_resizable(("explorer-panes", sid.0))
                 .with_state(&self.panes_split)
-                .child(
-                    // Half and half when the tab opens; the state then keeps
-                    // where the user puts the divider.
-                    resizable_panel()
-                        .flex_basis(relative(0.5))
-                        .size_range(px(320.)..Pixels::MAX)
-                        .child(self.local.clone()),
-                )
-                .child(
-                    resizable_panel()
-                        .flex_basis(relative(0.5))
-                        .size_range(px(280.)..Pixels::MAX)
-                        .child(self.remote.clone()),
-                )
+                .child(left)
+                .child(right)
                 .into_any_element()
         };
         // The queue always has its place, shown only with something in it,

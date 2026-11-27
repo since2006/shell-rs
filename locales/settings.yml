@@ -381,6 +381,21 @@ settings.file_icons.monochrome:
 settings.file_icons.color:
   zh-CN: 彩色
   en: Color
+settings.sftp.pane_layout:
+  zh-CN: 左右分栏顺序
+  en: Pane order
+settings.sftp.pane_layout_description:
+  zh-CN: 选择 SFTP 双栏中本地与远程文件列表的左右位置。
+  en: Choose whether local or remote files appear on the left in SFTP tabs.
+settings.sftp.pane_layout_keywords:
+  zh-CN: 分栏,左右,对换,交换,布局,本地,远程
+  en: panes,layout,swap,order,left,right,local,remote
+settings.sftp_pane_layout.local_left:
+  zh-CN: 本地左，远程右
+  en: Local left, remote right
+settings.sftp_pane_layout.remote_left:
+  zh-CN: 远程左，本地右
+  en: Remote left, local right
 
 settings.highlight.options:
   zh-CN: 常规
