@@ -3,12 +3,14 @@
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
+    clipboard::Clipboard,
     dialog::DialogFooter,
     h_flex,
     spinner::Spinner,
     tab::{Tab, TabBar},
     v_flex,
 };
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::linux::{log_command, parse_status, status_command};
@@ -19,7 +21,7 @@ use super::model::{
 use super::service_panel::{command_icon, state_color};
 use crate::app::{CatalogIcon, ControlService};
 use crate::i18n::t;
-use crate::shared::{format_bytes, soft_tag};
+use crate::shared::{format_bytes, soft_tag, text_block};
 use crate::terminal::{ExecResult, TerminalView, exec_answer};
 
 /// How wide the dialog is: two columns of a label and a value, and the
@@ -254,20 +256,13 @@ impl ServiceDetailsView {
 
     fn render_journal(&self, cx: &App) -> AnyElement {
         match &self.journal {
-            Read::Known(journal) => div()
-                .id("service-journal")
-                .test_support()
-                .aria_label(journal.clone())
-                .h(rems(20.))
-                .overflow_y_scroll()
-                .track_scroll(&self.journal_scroll)
-                .p_3()
-                .rounded(cx.theme().radius)
-                .bg(cx.theme().muted)
-                .font_family(cx.theme().mono_font_family.clone())
-                .text_xs()
-                .child(journal.clone())
-                .into_any_element(),
+            Read::Known(journal) => {
+                text_block("service-journal".into(), journal.clone().into(), cx)
+                    .h(rems(20.))
+                    .overflow_y_scroll()
+                    .track_scroll(&self.journal_scroll)
+                    .into_any_element()
+            }
             Read::Unknown(why) => message("service-journal-unknown", why.clone(), cx),
             Read::Reading | Read::NotYet => reading("service-journal-reading", cx),
         }
@@ -357,6 +352,11 @@ fn message(id: &'static str, text: String, cx: &App) -> AnyElement {
 
 impl Render for ServiceDetailsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The whole journal at once: dragging over 200 lines is a chore.
+        let copy = match (&self.journal, self.tab) {
+            (Read::Known(journal), 1) => Some(journal.clone()),
+            _ => None,
+        };
         v_flex()
             .id("service-details")
             .test_support()
@@ -368,6 +368,14 @@ impl Render for ServiceDetailsView {
                         .small()
                         .selected_index(self.tab)
                         .on_click(cx.listener(|this, index: &usize, _, cx| this.select(*index, cx)))
+                        .when_some(copy, |bar, journal| {
+                            bar.suffix(
+                                Clipboard::new("service-copy-journal")
+                                    .small()
+                                    .label(t!("services.details.copy_journal"))
+                                    .value(journal),
+                            )
+                        })
                         .child(
                             Tab::new()
                                 .icon(Icon::new(CatalogIcon::CircleDot))

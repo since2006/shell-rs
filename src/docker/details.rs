@@ -7,7 +7,7 @@ use gpui_kit::*;
 
 use super::model::{DetailSection, SectionBody};
 use crate::i18n::t;
-use crate::shared::detail_row;
+use crate::shared::{detail_row, text_block};
 use crate::terminal::{ExecResult, TerminalView, exec_answer};
 
 /// Something read off the host for a dialog.
@@ -125,22 +125,14 @@ fn render_body(prefix: &'static str, section: &DetailSection, cx: &App) -> AnyEl
                 })
                 .collect(),
         ),
-        SectionBody::Text(text) => {
-            let text = text.join("\n");
-            div()
-                .id(SharedString::from(format!("{prefix}-{}", section.id)))
-                .test_support()
-                .aria_label(text.clone())
-                .max_h(rems(12.))
-                .overflow_y_scroll()
-                .p_3()
-                .rounded(cx.theme().radius)
-                .bg(cx.theme().muted)
-                .font_family(cx.theme().mono_font_family.clone())
-                .text_xs()
-                .child(text)
-                .into_any_element()
-        }
+        SectionBody::Text(text) => text_block(
+            SharedString::from(format!("{prefix}-{}", section.id)).into(),
+            text.join("\n").into(),
+            cx,
+        )
+        .max_h(rems(12.))
+        .overflow_y_scroll()
+        .into_any_element(),
     }
 }
 

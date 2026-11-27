@@ -216,6 +216,9 @@ services.details.unreadable:
 services.details.no_journal:
   zh-CN: 没有日志
   en: No journal entries
+services.details.copy_journal:
+  zh-CN: 复制日志
+  en: Copy journal
 services.field.load:
   zh-CN: 加载状态
   en: Load state

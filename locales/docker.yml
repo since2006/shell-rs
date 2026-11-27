@@ -140,6 +140,9 @@ docker.details.tab_logs:
 docker.details.no_output:
   zh-CN: 没有输出
   en: No output
+docker.details.copy_logs:
+  zh-CN: 复制日志
+  en: Copy logs
 docker.details.container_gone:
   zh-CN: 读不到这个容器：它可能已经被删除
   en: Couldn’t read this container. It may have been deleted.

@@ -283,10 +283,45 @@ async fn a_click_on_a_service_shows_its_state_and_journal(cx: &mut TestAppContex
     // The journal is read when its tab opens.
     assert_eq!(factory.exec_count(), 2);
     in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("service-copy-journal").is_none());
         window.within("service-tabs").click(1usize, cx)
     });
     wait_for_label(cx, handle, "service-journal", JOURNAL.trim_end()).await;
     assert!(factory.exec_commands()[2].contains("journalctl -u \"nginx.service\""));
+
+    // Its lines are text to select and copy (issue #164): across the
+    // first, inside the box's padding.
+    in_frame(cx, handle, |window, cx| {
+        let journal = window.find("service-journal").bounds();
+        let y = journal.top() + px(16.);
+        window.drag(
+            point(journal.left() + px(13.), y),
+            point(journal.right() - px(13.), y),
+            cx,
+        );
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-c"
+            } else {
+                "ctrl-c"
+            },
+            cx,
+        );
+    });
+    assert_eq!(
+        clipboard(cx).as_deref(),
+        JOURNAL.lines().next(),
+        "the first line"
+    );
+    // 「复制日志」 copies all of it.
+    in_frame(cx, handle, |window, cx| {
+        window.click("service-copy-journal", cx)
+    });
+    assert_eq!(clipboard(cx).as_deref(), Some(JOURNAL.trim_end()));
+}
+
+fn clipboard(cx: &mut TestAppContext) -> Option<String> {
+    cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))
 }
 
 #[gpui_kit::test]

@@ -308,10 +308,23 @@ async fn a_click_on_a_container_shows_its_details_and_output(cx: &mut TestAppCon
     assert!(factory.exec_commands()[1].contains("$d inspect \"ccc333\""));
 
     in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("container-copy-logs").is_none());
         window.within("container-tabs").click(1usize, cx)
     });
     wait_for_label(cx, handle, "container-output", OUTPUT.trim_end()).await;
     assert!(factory.exec_commands()[2].contains("$d logs --tail 200"));
+    // 「复制日志」 copies all of it (issue #164).
+    in_frame(cx, handle, |window, cx| {
+        window.click("container-copy-logs", cx)
+    });
+    cx.update(|cx| {
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some(OUTPUT.trim_end())
+        )
+    });
 }
 
 const VOLUME: &str = r#"[{"CreatedAt":"2026-09-01T08:00:00+08:00","Driver":"local","Labels":{},

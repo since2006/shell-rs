@@ -4,6 +4,7 @@
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
+    clipboard::Clipboard,
     dialog::DialogFooter,
     h_flex,
     tab::{Tab, TabBar},
@@ -18,7 +19,7 @@ use super::linux::{inspect_command, logs_command, parse_details};
 use super::model::{Container, ContainerCommand, ContainerDetails, ContainerSubject, DockerObject};
 use crate::app::{CatalogIcon, ControlContainers, RemoveDockerObject};
 use crate::i18n::t;
-use crate::shared::soft_tag;
+use crate::shared::{soft_tag, text_block};
 use crate::terminal::TerminalView;
 
 /// How wide the dialog is: long IDs, image names and environment lines.
@@ -210,19 +211,10 @@ impl ContainerDetailsView {
 
     fn render_output(&self, cx: &App) -> AnyElement {
         match &self.output {
-            Read::Known(output) => div()
-                .id("container-output")
-                .test_support()
-                .aria_label(output.clone())
+            Read::Known(output) => text_block("container-output".into(), output.clone().into(), cx)
                 .h(rems(20.))
                 .overflow_y_scroll()
                 .track_scroll(&self.output_scroll)
-                .p_3()
-                .rounded(cx.theme().radius)
-                .bg(cx.theme().muted)
-                .font_family(cx.theme().mono_font_family.clone())
-                .text_xs()
-                .child(output.clone())
                 .into_any_element(),
             Read::Unknown(why) => message("container-output-unknown", why.clone(), cx),
             Read::Reading | Read::NotYet => reading("container-output-reading", cx),
@@ -232,6 +224,12 @@ impl ContainerDetailsView {
 
 impl Render for ContainerDetailsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The whole output at once: dragging over hundreds of lines is a
+        // chore.
+        let copy = match (&self.output, self.tab) {
+            (Read::Known(output), 1) => Some(output.clone()),
+            _ => None,
+        };
         v_flex()
             .gap_3()
             .child(
@@ -241,6 +239,14 @@ impl Render for ContainerDetailsView {
                         .small()
                         .selected_index(self.tab)
                         .on_click(cx.listener(|this, index: &usize, _, cx| this.select(*index, cx)))
+                        .when_some(copy, |bar, output| {
+                            bar.suffix(
+                                Clipboard::new("container-copy-logs")
+                                    .small()
+                                    .label(t!("docker.details.copy_logs"))
+                                    .value(output),
+                            )
+                        })
                         .child(
                             Tab::new()
                                 .icon(Icon::new(IconName::Info))
