@@ -4,6 +4,14 @@
 
 每个版本一节，标题写成 `## [版本号]`，可以在后面加日期。每一节同时写中文（这里）和英文（[CHANGELOG.md](CHANGELOG.md)），在同一次提交里。发布流程（`.github/workflows/release.yml`）把英文版里与 tag 同版本的那一节原样作为 GitHub Release 的说明；官网的更新日志英文和日文页显示英文版，中文页显示这一份（ShellRS 的更新对话框用「查看更新内容」打开官网的更新日志）。用 Markdown 书写，面向使用者。
 
+## [0.1.20-beta.7]
+
+### 改进
+
+- Windows、Linux 上 ShellRS 自己的快捷键统一改成 Ctrl+Shift 加字母（同 Windows Terminal、GNOME Terminal），在终端里也能按：新建本地终端 Ctrl+Shift+T（以前的 Ctrl+T 在终端里会发给 shell，打出 `^T`，开不了第二个）、新建主机 Ctrl+Shift+N、新建分组 Ctrl+Shift+G、显示或隐藏侧栏 Ctrl+Shift+B、聚焦搜索 Ctrl+Shift+P、退出 Ctrl+Shift+Q。在「设置 › 键盘快捷键」里自己改过的保持不变；设成 Ctrl 加单个字母的，那一行下面会注明它在终端里发给 shell。([#163](https://github.com/since2006/shell-rs/issues/163))
+- macOS 上聚焦搜索（主机列表上方的搜索框）改为 ⌘P，在终端里也能用；⌘K 只用来清屏。
+- 系统服务详情和 Docker 容器详情的「日志」可以选中一段复制，标签栏右边的「复制日志」复制全部；Docker 详情里的环境变量也能选中复制。([#164](https://github.com/since2006/shell-rs/issues/164))
+
 ## [0.1.20-beta.6]
 
 ### 新增

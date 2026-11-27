@@ -4,6 +4,14 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.20-beta.7]
+
+### Improved
+
+- On Windows and Linux, ShellRS’s own shortcuts are now Ctrl+Shift with a letter (as in Windows Terminal and GNOME Terminal), so they work in a terminal too: New local terminal Ctrl+Shift+T (Ctrl+T went to the shell in a terminal, typing `^T` instead of opening another), New host Ctrl+Shift+N, New group Ctrl+Shift+G, Show or hide sidebar Ctrl+Shift+B, Focus search Ctrl+Shift+P and Quit Ctrl+Shift+Q. Shortcuts you changed in Settings › Keyboard shortcuts stay as they are; one set to Ctrl with a single letter says on its row that it goes to the shell in a terminal. ([#163](https://github.com/since2006/shell-rs/issues/163))
+- On macOS, Focus search (the search box above the host list) is now ⌘P, and works in a terminal too; ⌘K only clears the terminal.
+- The journal in a service’s details and the logs in a Docker container’s details can be selected and copied, and “Copy journal” or “Copy logs” beside the tabs copies all of it. A container’s environment can be selected and copied too. ([#164](https://github.com/since2006/shell-rs/issues/164))
+
 ## [0.1.20-beta.6]
 
 ### Added
