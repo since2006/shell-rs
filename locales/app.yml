@@ -75,9 +75,9 @@ app.shortcut.restore_window:
 app.shortcut.show_hide_app:
   zh-CN: 显示或隐藏 ShellRS（全局）
   en: Show or hide ShellRS (system-wide)
-app.shortcut.focus_search:
-  zh-CN: 聚焦搜索
-  en: Focus search
+app.shortcut.quick_connect:
+  zh-CN: 快速连接
+  en: Find a host
 app.shortcut.zoom_in:
   zh-CN: 放大界面
   en: Zoom in

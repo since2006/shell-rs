@@ -66,21 +66,6 @@ impl Sidebar {
         window.focus(&handle, cx);
         cx.notify();
     }
-
-    /// Put the keyboard in the search field of the list being shown.
-    pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.mode {
-            SidebarMode::Hosts => self
-                .hosts
-                .update(cx, |panel, cx| panel.focus_search(window, cx)),
-            SidebarMode::Forwards => self
-                .forwards
-                .update(cx, |panel, cx| panel.focus_search(window, cx)),
-            SidebarMode::Credentials => self
-                .credentials
-                .update(cx, |panel, cx| panel.focus_search(window, cx)),
-        }
-    }
 }
 
 impl EventEmitter<PanelEvent> for Sidebar {}

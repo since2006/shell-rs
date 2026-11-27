@@ -131,10 +131,6 @@ impl CredentialPanel {
         cx.notify();
     }
 
-    pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.search.update(cx, |input, cx| input.focus(window, cx));
-    }
-
     /// The credential the list has selected, if it is still there.
     pub fn selected(&self) -> Option<CredentialId> {
         self.selected

@@ -189,18 +189,19 @@ pub static SHORTCUTS: [Shortcut; 36] = [
         system_wide: true,
         action: |_| Box::new(ShowOrHideApp),
     },
-    // Its own keys, which work in a terminal too: ⌘P goes to anything in
-    // VS Code and Sublime Text, Ctrl+Shift+P to Windows Terminal's palette.
-    // ⌘K and Ctrl+Shift+K clear a terminal, as in macOS terminals and
-    // Konsole; no program shares a key between clearing and searching.
+    // 快速连接, the palette that finds a saved host and connects to it, in
+    // a terminal too: ⌘P goes to anything in VS Code and Sublime Text,
+    // Ctrl+Shift+P to Windows Terminal's palette. It took the place of
+    // 聚焦搜索 (`focus-search`), gone with its action: keys the user gave
+    // that one stay in the settings unused, as any id this version lacks.
     shortcut!(
-        "focus-search",
-        "app.shortcut.focus_search",
+        "quick-connect",
+        "app.shortcut.quick_connect",
         General,
         &[],
         "cmd-p",
         "ctrl-shift-p",
-        FocusSearch
+        QuickConnect
     ),
     // In a terminal the same keys size its text instead, as terminals do.
     shortcut!(

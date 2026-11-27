@@ -105,6 +105,8 @@ jobs:
       - run: "cargo test --locked --lib app::shortcuts::"
       - run: "cargo test --locked --test ui workspace::close_shortcut"
       - run: "cargo test --locked --test ui terminal::a_local_terminal_opens_another"
+      # Ctrl+Shift+P opens 快速连接 there, from a terminal too.
+      - run: "cargo test --locked --test ui terminal::quick_connect_opens_from_a_terminal"
       # Shift+Insert pastes there, and F3 reaches the program (issue #145).
       - run: "cargo test --locked --test ui terminal::function_keys_reach_the_program"
       # Ctrl+Insert copies what is selected there (issue #158).

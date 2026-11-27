@@ -15,9 +15,9 @@ pub use shellrs::app::{
     ConnectGroup, ConnectHost, CopyCredentialPublicKey, CopyHostAddress, CopyHostId,
     DeleteCredential, DeleteForward, DeleteGroup, DeleteHost, DisconnectTerminal, EditCredential,
     EditForward, EditHost, ExpandAllGroups, FindInTerminal, FindNextInTerminal,
-    FindPreviousInTerminal, FocusSearch, InstallCliCommand, NewHostInGroup, NewLocalTerminal,
-    OpenExplorer, OpenSettings, ReconnectTerminal, RemoveAgentSkill, RenameGroup, RenameTerminal,
-    StartForward, StopForward, ToggleHostPanel, ToggleToolSidebar,
+    FindPreviousInTerminal, InstallCliCommand, NewHostInGroup, NewLocalTerminal, OpenExplorer,
+    OpenSettings, ReconnectTerminal, RemoveAgentSkill, RenameGroup, RenameTerminal, StartForward,
+    StopForward, ToggleHostPanel, ToggleToolSidebar,
 };
 pub use shellrs::cli::{AgentKind, IntegrationPaths};
 pub use shellrs::connection::{

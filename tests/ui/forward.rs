@@ -79,15 +79,6 @@ async fn the_title_bar_switches_the_sidebar_between_hosts_and_forwards(cx: &mut 
         assert_eq!(window.find("forward-empty").label(), Some("还没有端口转发"));
     });
 
-    // The search shortcut goes to the list that is up.
-    in_frame(cx, handle, |window, cx| {
-        window.activate_window();
-        window.dispatch_action(Box::new(FocusSearch), cx);
-    });
-    in_frame(cx, handle, |window, _| {
-        assert_eq!(window.find("forward-search").focused(), Some(true));
-    });
-
     // Hidden, the sidebar marks neither; picking a list brings it back.
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(ToggleHostPanel), cx);
@@ -99,14 +90,6 @@ async fn the_title_bar_switches_the_sidebar_between_hosts_and_forwards(cx: &mut 
     in_frame(cx, handle, |window, cx| window.click("show-hosts", cx));
     assert!(showing(cx, "host-search"));
     assert!(!showing(cx, "forward-search"));
-    // And the host list still takes its own commands.
-    in_frame(cx, handle, |window, cx| {
-        window.activate_window();
-        window.dispatch_action(Box::new(FocusSearch), cx);
-    });
-    in_frame(cx, handle, |window, _| {
-        assert_eq!(window.find("host-search").focused(), Some(true));
-    });
 }
 
 #[gpui_kit::test]

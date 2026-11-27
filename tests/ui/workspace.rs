@@ -578,7 +578,7 @@ fn the_left_sidebar_keeps_its_visibility_after_reopening(cx: &mut TestAppContext
     assert_shown(cx, handle, false);
     in_frame(cx, handle, |window, cx| {
         assert_eq!(window.find("recent-hosts").focused(), Some(true));
-        window.dispatch_action(Box::new(FocusSearch), cx);
+        window.dispatch_action(Box::new(ToggleHostPanel), cx);
     });
     assert_shown(cx, handle, true);
 

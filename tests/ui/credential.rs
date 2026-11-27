@@ -46,15 +46,6 @@ async fn the_title_bar_switches_the_sidebar_to_credentials(cx: &mut TestAppConte
         assert!(window.try_find("host-search").is_none());
     });
 
-    // The search shortcut goes to the list that is up.
-    in_frame(cx, handle, |window, cx| {
-        window.activate_window();
-        window.dispatch_action(Box::new(FocusSearch), cx);
-    });
-    in_frame(cx, handle, |window, _| {
-        assert_eq!(window.find("credential-search").focused(), Some(true));
-    });
-
     in_frame(cx, handle, |window, cx| window.click("show-hosts", cx));
     in_frame(cx, handle, |window, _| {
         assert!(window.find("host-search").visible());

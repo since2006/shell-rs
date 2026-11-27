@@ -255,6 +255,29 @@ async fn a_local_terminal_opens_another_with_the_default_key(cx: &mut TestAppCon
     assert_eq!(factory.written_text(), "", "nothing reached the shell");
 }
 
+/// 快速连接's key opens it from a terminal too: ⌘P, and Ctrl+Shift+P
+/// elsewhere, as Windows Terminal's palette.
+#[gpui_kit::test]
+async fn quick_connect_opens_from_a_terminal_with_its_default_key(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, _) = open_running_local_terminal(cx, factory.clone()).await;
+    let keys = Shortcut::find("quick-connect").unwrap().default_keys();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("local-terminal", 1_u64)).focused(), Some(true));
+        assert!(window.try_find("quick-connect").is_none());
+        window.press(keys, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("quick-connect").visible());
+    })
+    .unwrap();
+    assert_eq!(factory.written_text(), "", "nothing reached the shell");
+}
+
 /// Midnight Commander's keys reach it (issue #145): Shift+F5 with its Shift,
 /// and F3 (查看), which the find keys take only while the find bar is
 /// open. Shift+Insert pastes, except on a Mac, whose keyboard has no

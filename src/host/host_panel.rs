@@ -320,10 +320,6 @@ impl HostPanel {
         self.reveal_node(node, cx);
     }
 
-    pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.search.update(cx, |input, cx| input.focus(window, cx));
-    }
-
     /// Refresh the visible tree after a bulk expansion change in the store.
     pub fn set_all_groups_expanded(&mut self, expanded: bool, cx: &mut Context<Self>) {
         self.expanded = if expanded {

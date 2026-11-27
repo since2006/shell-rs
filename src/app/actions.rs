@@ -198,9 +198,6 @@ gpui_kit::actions!(
         SelectNextCredential,
         /// Switch between the light and dark theme.
         ToggleTheme,
-        /// Move keyboard focus to the search field of the list the left dock
-        /// is showing.
-        FocusSearch,
         /// Connect the host selected in the focused host list.
         ConnectSelected,
         /// Show or hide 主机详情 in the host tree: each host's address and

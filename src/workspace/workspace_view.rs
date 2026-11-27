@@ -33,7 +33,7 @@ use crate::app::{
     CopyAgentSkill, CopyHostAddress, CopyHostId, CopyTerminal, DeleteGroup, DeleteHost,
     DisconnectTerminal, DismissTerminalFind, DuplicateFrontTerminal, DuplicateHost,
     DuplicateTerminal, EditHost, ExpandAllGroups, ExplorerAction, ExplorerCommand,
-    ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal, FocusSearch,
+    ExplorerShortcut, FindInTerminal, FindNextInTerminal, FindPreviousInTerminal,
     InstallAgentSkill, InstallCliCommand, MaximizeWindow, MoveHostNode, NewChildGroup, NewGroup,
     NewHost, NewHostInGroup, NewLocalTerminal, NewTemporaryConnection, OpenExplorer,
     OpenFrontTerminalSftp, OpenSettings, PasteTerminal, QuickConnect, ReconnectFrontTerminal,
@@ -2815,16 +2815,6 @@ impl Workspace {
         });
     }
 
-    fn on_focus_search(&mut self, _: &FocusSearch, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.dock_area.read(cx).is_dock_open(DockPlacement::Left) {
-            self.dock_area.update(cx, |area, cx| {
-                area.toggle_dock(DockPlacement::Left, window, cx);
-            });
-        }
-        self.sidebar
-            .update(cx, |sidebar, cx| sidebar.focus_search(window, cx));
-    }
-
     /// The interface larger or smaller, through the settings (外观 › 界面字号),
     /// which keep it in range and for the next launch; applying them sizes
     /// the interface.
@@ -3445,7 +3435,6 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_copy_credential_public_key))
             .on_action(cx.listener(Self::on_delete_credential))
             .on_action(cx.listener(Self::on_toggle_theme))
-            .on_action(cx.listener(Self::on_focus_search))
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_zoom_reset))
