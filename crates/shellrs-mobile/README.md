@@ -211,7 +211,17 @@ answers what the model calls for.
   messages, the calls, the usage, how the turn ended. Conversations are
   saved in `assistant.db` in the data folder and never sync;
   `assistantConversations`, `assistantMessages` and the deletes list and
-  remove them.
+  remove them. To show a saved conversation before going on with it,
+  `assistantConversation` says which service and model it used last and
+  the approval it was given, and `assistantUsage` what its requests took.
+  A session is attached to one connection and one model: to change either,
+  `end` it and start another on the same conversation. `end` stops it at
+  once (a turn going on is not saved) and `nextEvent` then returns nil.
+- **Presets** (预设) are the services a form fills in, as the desktop's
+  dialog offers them: `aiPresets`, `aiPresetService` (the API type and
+  address), `aiPresetOf` (the preset an address is). For the services that
+  list a great many models, `aiCommonModels` picks what 刷新模型 adds:
+  each common family's newest generation. The app names them.
 - **The model's calls** come as `toolCall` events, with whether to ask the
   user first (`needsApproval`, from the `approval` the conversation
   has) and whether the call is marked dangerous. A `readTerminal` call is
@@ -219,7 +229,10 @@ answers what the model calls for.
   command or a file is run on the connection by `runCall`, beside the
   shell, after the user agreed when asked; `deny` turns it down and
   `answerInserted` says the app put the command into the terminal for the
-  user to run instead. `stop` stops the turn and its commands.
+  user to run instead. `stop` stops the turn and its commands. With
+  `remember`, `runCall` has the calls of the same kind not asked about
+  again in the conversation: `assistantCommandKinds` says which programs
+  those are, for the button to name them.
 - What the model service said when it failed is in `failed`; the core
   words nothing, as everywhere else.
 

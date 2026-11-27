@@ -26,7 +26,7 @@ use shellrs_assistant::{ApiKey, ProviderConfig, ProviderError, ProviderErrorKind
 
 use super::core_protocol;
 use super::describe::{draft_error, provider_error};
-use super::presets::Preset;
+use super::presets::{Preset, PresetItem, PresetLabel as _, preset_service};
 use super::service::AssistantService;
 use crate::app::CatalogIcon;
 use crate::host::{AiProtocol, AiProviderDraft, AiProviderId, HostStore};
@@ -118,7 +118,7 @@ pub struct ProviderForm {
     editing: Option<AiProviderId>,
     /// The preset the address is, which the form shows.
     preset: Preset,
-    preset_select: Entity<SelectState<Vec<Preset>>>,
+    preset_select: Entity<SelectState<Vec<PresetItem>>>,
     protocol: AiProtocol,
     protocol_select: Entity<SelectState<Vec<SharedString>>>,
     name: Entity<InputState>,
@@ -154,14 +154,14 @@ impl ProviderForm {
             })
             .unwrap_or_else(|| {
                 let preset = Preset::OpenAi;
-                let (protocol, address) = preset.service().unwrap_or_default();
+                let (protocol, address) = preset_service(preset).unwrap_or_default();
                 let none: [&str; 0] = [];
                 AiProviderDraft::new(preset.label(), protocol, address, none)
             });
         let preset = Preset::of(&draft.base_url);
         let preset_select = cx.new(|cx| {
             SelectState::new(
-                Preset::ALL.to_vec(),
+                Preset::ALL.map(PresetItem).to_vec(),
                 Some(IndexPath::new(preset_index(preset))),
                 window,
                 cx,
@@ -215,7 +215,7 @@ impl ProviderForm {
             cx.subscribe_in(
                 &preset_select,
                 window,
-                |this, _, event: &SelectEvent<Vec<Preset>>, window, cx| {
+                |this, _, event: &SelectEvent<Vec<PresetItem>>, window, cx| {
                     if let SelectEvent::Confirm(Some(preset)) = event {
                         this.choose_preset(*preset, window, cx);
                     }
@@ -276,7 +276,7 @@ impl ProviderForm {
     /// address, to be typed.
     fn choose_preset(&mut self, preset: Preset, window: &mut Window, cx: &mut Context<Self>) {
         self.follow_name(preset, window, cx);
-        let address = match preset.service() {
+        let address = match preset_service(preset) {
             Some((protocol, address)) => {
                 self.protocol = protocol;
                 self.protocol_select.update(cx, |select, cx| {

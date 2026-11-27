@@ -327,6 +327,14 @@ impl Session {
         let _ = self.commands.send(Command::SetApproval(approval));
     }
 
+    /// End the session at once, as dropping it does: the loop stops where
+    /// it is, a turn going on unsaved. [`Self::next_event`] then gives the
+    /// events not read yet and `None`, so a caller waiting on it lets go.
+    pub fn end(&self) {
+        self.task.abort();
+        self.events.close();
+    }
+
     /// The next event, when there is one now.
     pub fn try_event(&self) -> Option<SessionEvent> {
         self.events.try_pop()

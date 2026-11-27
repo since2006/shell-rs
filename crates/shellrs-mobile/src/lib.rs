@@ -30,10 +30,12 @@ mod terminal;
 mod update;
 
 pub use assistant::{
-    AiProtocol, AiProvider, AiProviderDraft, AiProviderProblem, Approval, AssistantCall,
-    AssistantContext, AssistantError, AssistantEvent, AssistantFailure, AssistantMessage,
-    AssistantSession, AssistantStart, AssistantToolCall, AssistantToolResult, CallStatus,
-    ConversationInfo, MessageRole, ProviderErrorKind, TurnEnd, ai_endpoint,
+    AiPreset, AiPresetService, AiProtocol, AiProvider, AiProviderDraft, AiProviderProblem,
+    Approval, AssistantCall, AssistantContext, AssistantError, AssistantEvent, AssistantFailure,
+    AssistantMessage, AssistantSession, AssistantStart, AssistantToolCall, AssistantToolResult,
+    AssistantUsage, CallStatus, ConversationInfo, MessageRole, ProviderErrorKind, TurnEnd,
+    ai_common_models, ai_endpoint, ai_preset_of, ai_preset_service, ai_presets,
+    assistant_command_kinds,
 };
 pub use connection::{Connection, ConnectionEvent, ExecOutput};
 pub use core::{Core, CoreConfig, CoreError};

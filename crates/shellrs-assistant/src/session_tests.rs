@@ -707,6 +707,38 @@ async fn a_responses_service_runs_a_command_and_answers() {
 }
 
 #[tokio::test]
+async fn an_ended_session_lets_go_of_whoever_waits_for_it() {
+    let transport = ScriptedTransport::new();
+    transport.push(anthropic_tool(
+        "Let me look.",
+        "toolu_1",
+        "run_command",
+        json!({"command": "df -h"}),
+    ));
+    let store = Store::in_memory().unwrap();
+    let session = Arc::new(start(&transport, &store, Approval::Ask));
+    session.send("disk?", None);
+    until(&session, tool_call).await;
+
+    // Waiting for the next event while the call is not answered.
+    let waiting = tokio::spawn({
+        let session = session.clone();
+        async move { while session.next_event().await.is_some() {} }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    session.end();
+    tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("the wait ends")
+        .unwrap();
+    assert_eq!(session.next_event().await, None);
+    // Nothing more goes out.
+    session.send("again?", None);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(transport.requests().len(), 1);
+}
+
+#[tokio::test]
 async fn a_service_lists_its_models() {
     let transport = ScriptedTransport::new();
     transport.push(models_answer(&[

@@ -31,3 +31,12 @@ pub fn core_protocol(protocol: AiProtocol) -> Protocol {
         AiProtocol::OpenAiResponses => Protocol::OpenAiResponses,
     }
 }
+
+/// The core's protocol as a saved service names it.
+pub fn host_protocol(protocol: Protocol) -> AiProtocol {
+    match protocol {
+        Protocol::Anthropic => AiProtocol::Anthropic,
+        Protocol::OpenAi => AiProtocol::OpenAi,
+        Protocol::OpenAiResponses => AiProtocol::OpenAiResponses,
+    }
+}

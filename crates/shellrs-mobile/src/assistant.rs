@@ -82,6 +82,123 @@ pub fn ai_endpoint(protocol: AiProtocol, base_url: String) -> String {
     core::endpoint_url(&base_url, core::Protocol::from(protocol).path())
 }
 
+impl From<core::Protocol> for AiProtocol {
+    fn from(protocol: core::Protocol) -> Self {
+        match protocol {
+            core::Protocol::Anthropic => Self::Anthropic,
+            core::Protocol::OpenAi => Self::OpenAi,
+            core::Protocol::OpenAiResponses => Self::OpenAiResponses,
+        }
+    }
+}
+
+/// 预设: a model service a form fills in, as the desktop's dialog offers
+/// them. Not saved or synced: a service keeps its API type and address. The
+/// app names them; product names are the same in every language.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AiPreset {
+    Anthropic,
+    OpenAi,
+    DeepSeek,
+    Qwen,
+    Kimi,
+    Glm,
+    Doubao,
+    SiliconFlow,
+    OpenRouter,
+    Ollama,
+    LmStudio,
+    /// Any other address, typed in.
+    Custom,
+}
+
+impl From<core::Preset> for AiPreset {
+    fn from(preset: core::Preset) -> Self {
+        match preset {
+            core::Preset::Anthropic => Self::Anthropic,
+            core::Preset::OpenAi => Self::OpenAi,
+            core::Preset::DeepSeek => Self::DeepSeek,
+            core::Preset::Qwen => Self::Qwen,
+            core::Preset::Kimi => Self::Kimi,
+            core::Preset::Glm => Self::Glm,
+            core::Preset::Doubao => Self::Doubao,
+            core::Preset::SiliconFlow => Self::SiliconFlow,
+            core::Preset::OpenRouter => Self::OpenRouter,
+            core::Preset::Ollama => Self::Ollama,
+            core::Preset::LmStudio => Self::LmStudio,
+            core::Preset::Custom => Self::Custom,
+        }
+    }
+}
+
+impl From<AiPreset> for core::Preset {
+    fn from(preset: AiPreset) -> Self {
+        match preset {
+            AiPreset::Anthropic => Self::Anthropic,
+            AiPreset::OpenAi => Self::OpenAi,
+            AiPreset::DeepSeek => Self::DeepSeek,
+            AiPreset::Qwen => Self::Qwen,
+            AiPreset::Kimi => Self::Kimi,
+            AiPreset::Glm => Self::Glm,
+            AiPreset::Doubao => Self::Doubao,
+            AiPreset::SiliconFlow => Self::SiliconFlow,
+            AiPreset::OpenRouter => Self::OpenRouter,
+            AiPreset::Ollama => Self::Ollama,
+            AiPreset::LmStudio => Self::LmStudio,
+            AiPreset::Custom => Self::Custom,
+        }
+    }
+}
+
+/// What a preset fills in.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AiPresetService {
+    pub protocol: AiProtocol,
+    pub base_url: String,
+}
+
+/// The presets, in the order a form offers them, 自定义 last.
+#[uniffi::export]
+pub fn ai_presets() -> Vec<AiPreset> {
+    core::Preset::ALL.into_iter().map(AiPreset::from).collect()
+}
+
+/// The API type and address `preset` fills in; `None` for 自定义.
+#[uniffi::export]
+pub fn ai_preset_service(preset: AiPreset) -> Option<AiPresetService> {
+    core::Preset::from(preset)
+        .service()
+        .map(|(protocol, base_url)| AiPresetService {
+            protocol: protocol.into(),
+            base_url: base_url.to_owned(),
+        })
+}
+
+/// The preset whose address `base_url` is, case and a closing `/` aside,
+/// whatever the API type; else 自定义. A form shows it as the address is
+/// typed, and for a service being edited.
+#[uniffi::export]
+pub fn ai_preset_of(base_url: String) -> AiPreset {
+    core::Preset::of(&base_url).into()
+}
+
+/// Of the models a service lists (刷新模型), the ones to add for a preset
+/// whose service lists a great many: each common family's newest
+/// generation. `None` adds them all.
+#[uniffi::export]
+pub fn ai_common_models(preset: AiPreset, listed: Vec<String>) -> Option<Vec<String>> {
+    core::Preset::from(preset).common_models(&listed)
+}
+
+/// The programs a command runs, as 「执行，本对话不再问相似命令」
+/// remembers them (`sudo` with the program it runs, `sudo systemctl`).
+/// `None` when the command is not split plainly or hands code over (`sh -c`,
+/// `eval`): then only the command itself is remembered.
+#[uniffi::export]
+pub fn assistant_command_kinds(command: String) -> Option<Vec<String>> {
+    core::command_kinds(&command)
+}
+
 /// A saved model service. Its key is in the keychain, never here.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct AiProvider {
@@ -313,6 +430,27 @@ pub struct AssistantToolResult {
     pub output: String,
 }
 
+/// What requests took, in tokens.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, uniffi::Record)]
+pub struct AssistantUsage {
+    /// Input not read from the cache.
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+}
+
+impl From<core::Usage> for AssistantUsage {
+    fn from(usage: core::Usage) -> Self {
+        Self {
+            input: usage.input,
+            output: usage.output,
+            cache_read: usage.cache_read,
+            cache_write: usage.cache_write,
+        }
+    }
+}
+
 /// A message of a conversation, as the app shows it.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct AssistantMessage {
@@ -321,6 +459,9 @@ pub struct AssistantMessage {
     pub text: String,
     pub calls: Vec<AssistantToolCall>,
     pub results: Vec<AssistantToolResult>,
+    /// What the request that gave a model's answer took; `None` for the
+    /// others, and where the service did not say.
+    pub usage: Option<AssistantUsage>,
 }
 
 impl From<&core::Message> for AssistantMessage {
@@ -359,6 +500,7 @@ impl From<&core::Message> for AssistantMessage {
             text: message.text(),
             calls,
             results,
+            usage: message.usage.map(AssistantUsage::from),
         }
     }
 }
@@ -548,8 +690,15 @@ pub struct ConversationInfo {
     pub public_id: String,
     pub host_public_id: Option<String>,
     pub host_label: String,
+    /// Empty until the first message names it.
     pub title: String,
+    /// The model service it used last, which may since be deleted.
+    pub provider_public_id: Option<String>,
+    /// The model it used last.
     pub model: String,
+    /// The approval it was given apart from the settings'; `None` follows
+    /// them.
+    pub approval: Option<Approval>,
     pub updated_ms: i64,
 }
 
@@ -560,7 +709,9 @@ impl From<core::ConversationSummary> for ConversationInfo {
             host_public_id: summary.host_public_id,
             host_label: summary.host_label,
             title: summary.title,
+            provider_public_id: summary.provider_public_id,
             model: summary.model,
+            approval: summary.approval.map(Approval::from),
             updated_ms: summary.updated_ms,
         }
     }
@@ -839,6 +990,33 @@ impl Core {
             })
     }
 
+    /// A saved conversation, to show before going on with it: which model
+    /// service and model it used last, and its approval. `None` when it is
+    /// not saved (any more).
+    pub fn assistant_conversation(
+        &self,
+        public_id: String,
+    ) -> Result<Option<ConversationInfo>, AssistantError> {
+        let store = self.assistant.store(&self.data_dir)?;
+        store
+            .conversation(&public_id)
+            .map(|summary| summary.map(ConversationInfo::from))
+            .map_err(|error| AssistantError::Unavailable {
+                detail: error.to_string(),
+            })
+    }
+
+    /// What all the requests of a saved conversation took.
+    pub fn assistant_usage(&self, public_id: String) -> Result<AssistantUsage, AssistantError> {
+        let store = self.assistant.store(&self.data_dir)?;
+        store
+            .usage(&public_id)
+            .map(AssistantUsage::from)
+            .map_err(|error| AssistantError::Unavailable {
+                detail: error.to_string(),
+            })
+    }
+
     pub fn delete_assistant_conversation(&self, public_id: String) -> Result<(), AssistantError> {
         let store = self.assistant.store(&self.data_dir)?;
         store
@@ -1084,10 +1262,12 @@ impl AssistantSession {
         }
     }
 
-    /// End the conversation. (Not `close`, which Kotlin's `AutoCloseable`
-    /// takes.)
+    /// End the conversation at once: its commands stop, a turn going on is
+    /// not saved, and `next_event` gives what is left and then `None`.
+    /// (Not `close`, which Kotlin's `AutoCloseable` takes.)
     pub fn end(&self) {
         self.stop();
+        self.session.end();
     }
 }
 
@@ -1167,7 +1347,7 @@ mod tests {
     use crate::secrets::{Keychain, KeychainError};
 
     #[derive(Default)]
-    struct Memory(Mutex<HashMap<String, String>>);
+    pub(super) struct Memory(pub(super) Mutex<HashMap<String, String>>);
 
     impl Keychain for Memory {
         fn available(&self) -> bool {
@@ -1189,7 +1369,7 @@ mod tests {
         }
     }
 
-    fn phone(data: &std::path::Path, keychain: &Arc<Memory>) -> Arc<Core> {
+    pub(super) fn phone(data: &std::path::Path, keychain: &Arc<Memory>) -> Arc<Core> {
         let device = DeviceInfo {
             name: "phone".into(),
             platform: "ios".into(),
@@ -1209,7 +1389,7 @@ mod tests {
         .unwrap()
     }
 
-    fn draft(models: &[&str]) -> AiProviderDraft {
+    pub(super) fn draft(models: &[&str]) -> AiProviderDraft {
         AiProviderDraft {
             name: "DeepSeek".into(),
             protocol: AiProtocol::OpenAi,
@@ -1274,8 +1454,160 @@ mod tests {
 }
 
 #[cfg(test)]
+mod conversation_tests {
+    use std::sync::Arc;
+
+    use futures::executor::block_on;
+    use shellrs_assistant::testing::{ScriptedTransport, openai_text};
+
+    use super::tests::{Memory, draft, phone};
+    use super::*;
+    use crate::{Login, LoginMethod, Route, SecretRef};
+
+    /// The events up to and with the turn's end.
+    fn turn(session: &AssistantSession) -> Vec<AssistantEvent> {
+        let mut events = Vec::new();
+        loop {
+            let event = block_on(session.next_event()).expect("the session goes on");
+            let done = matches!(
+                event,
+                AssistantEvent::TurnEnded { .. } | AssistantEvent::Failed { .. }
+            );
+            events.push(event);
+            if done {
+                return events;
+            }
+        }
+    }
+
+    #[test]
+    fn a_saved_conversation_says_what_it_used_and_took() {
+        let data = tempfile::tempdir().unwrap();
+        let keychain = Arc::new(Memory::default());
+        let core = phone(data.path(), &keychain);
+        let provider = block_on(core.store().save_ai_provider(
+            None,
+            draft(&["deepseek-chat", "deepseek-reasoner"]),
+            Some("sk-test".into()),
+        ))
+        .unwrap();
+        let transport = ScriptedTransport::new();
+        transport.push(openai_text("All fine."));
+        assert!(
+            core.assistant
+                .transport
+                .set(Ok(transport.clone() as Arc<dyn Transport>))
+                .is_ok()
+        );
+        // Starting asks nothing of the connection: nobody listens there.
+        let connection = core.connect(Login {
+            host: "127.0.0.1".into(),
+            port: 1,
+            user: "root".into(),
+            method: LoginMethod::NoPassword,
+            key_path: None,
+            password: SecretRef::Temporary { host: 1 },
+            route: Route::Direct,
+        });
+        let start = AssistantStart {
+            provider_public_id: provider.clone(),
+            model: Some("deepseek-reasoner".into()),
+            host_public_id: Some("host1".into()),
+            host_label: "web-01".into(),
+            conversation: None,
+            approval: Approval::ApproveForMe,
+            language: "English".into(),
+        };
+        let session = block_on(core.start_assistant(start, connection.clone())).unwrap();
+        session.send("How is it?".into(), None);
+        let events = turn(&session);
+        let Some(AssistantEvent::Opened { public_id, .. }) = events.first() else {
+            panic!("{events:?}");
+        };
+        let public_id = public_id.clone();
+        session.set_approval(Approval::FullAccess);
+        assert_eq!(
+            block_on(session.next_event()),
+            Some(AssistantEvent::ApprovalChanged {
+                approval: Approval::FullAccess
+            })
+        );
+        // Ended, the session lets go of whoever waits for it.
+        session.end();
+        assert_eq!(block_on(session.next_event()), None);
+        connection.disconnect();
+
+        let info = core
+            .assistant_conversation(public_id.clone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.provider_public_id.as_deref(), Some(provider.as_str()));
+        assert_eq!(info.model, "deepseek-reasoner");
+        assert_eq!(info.approval, Some(Approval::FullAccess));
+        assert_eq!(info.title, "How is it?");
+        assert_eq!(
+            core.assistant_usage(public_id.clone()).unwrap(),
+            AssistantUsage {
+                input: 50,
+                output: 10,
+                cache_read: 0,
+                cache_write: 0
+            }
+        );
+        let messages = core.assistant_messages(public_id.clone()).unwrap();
+        assert_eq!(messages[0].usage, None);
+        assert_eq!(messages[1].usage.map(|usage| usage.output), Some(10));
+        assert_eq!(core.assistant_conversation("gone".into()).unwrap(), None);
+        // The model asked for went out.
+        assert_eq!(transport.requests()[0].json()["model"], "deepseek-reasoner");
+    }
+}
+
+#[cfg(test)]
 mod endpoint_tests {
     use super::*;
+
+    #[test]
+    fn presets_fill_in_a_service_and_are_known_by_their_address() {
+        let presets = ai_presets();
+        assert_eq!(presets.first(), Some(&AiPreset::Anthropic));
+        assert_eq!(presets.last(), Some(&AiPreset::Custom));
+        assert_eq!(
+            ai_preset_service(AiPreset::OpenAi),
+            Some(AiPresetService {
+                protocol: AiProtocol::OpenAiResponses,
+                base_url: "https://api.openai.com/v1".into()
+            })
+        );
+        assert_eq!(ai_preset_service(AiPreset::Custom), None);
+        assert_eq!(
+            ai_preset_of("HTTPS://api.deepseek.com/v1/".into()),
+            AiPreset::DeepSeek
+        );
+        assert_eq!(
+            ai_preset_of("https://llm.example.com".into()),
+            AiPreset::Custom
+        );
+        let listed = vec![
+            "gpt-4o".to_string(),
+            "gpt-6.2-sol".into(),
+            "dall-e-3".into(),
+        ];
+        assert_eq!(
+            ai_common_models(AiPreset::OpenAi, listed.clone()),
+            Some(vec!["gpt-6.2-sol".to_string()])
+        );
+        assert_eq!(ai_common_models(AiPreset::Ollama, listed), None);
+    }
+
+    #[test]
+    fn a_commands_kinds_are_its_programs() {
+        assert_eq!(
+            assistant_command_kinds("sudo systemctl status nginx | head".into()),
+            Some(vec!["sudo systemctl".to_string(), "head".into()])
+        );
+        assert_eq!(assistant_command_kinds("sh -c 'ls'".into()), None);
+    }
 
     #[test]
     fn an_endpoint_is_the_address_and_the_protocols_path() {

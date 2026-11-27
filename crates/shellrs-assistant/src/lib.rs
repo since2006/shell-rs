@@ -2,7 +2,8 @@
 //! mobile apps: the wire protocols model services speak (Anthropic's
 //! Messages, OpenAI's Chat Completions and Responses), the loop of a
 //! conversation, the rules of its tools (what is asked about, what is cut,
-//! what is taken out), and the conversations' own database.
+//! what is taken out), the conversations' own database, and the presets
+//! the model service forms fill in.
 //!
 //! It has no words: failures and events are typed, and the apps word them.
 //! It reads no keychain and knows no saved host: the app gives it the
@@ -17,6 +18,7 @@ mod error;
 mod http;
 mod message;
 mod openai;
+mod presets;
 mod prompt;
 mod provider;
 mod redact;
@@ -39,6 +41,7 @@ pub use http::{HttpRequest, HttpResponse, ReqwestTransport, Transport, Transport
 pub use message::{
     HostContext, Message, NoticeKind, Part, ResultStatus, Role, RunIn, StopReason, Usage,
 };
+pub use presets::Preset;
 pub use redact::redact;
 pub use remember::Remembered;
 pub use session::{

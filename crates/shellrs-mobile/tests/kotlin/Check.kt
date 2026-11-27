@@ -1,6 +1,7 @@
 // The Kotlin interface builds and works: a core keeps a host with its
 // password in the app's keychain, makes a key credential, checks sync's
-// forms, and connects to a closed port and fails, typed as the network.
+// forms, keeps a model service of AI 助手 with its key, and connects to a
+// closed port and fails, typed as the network.
 // `run.sh` runs it on this computer's JVM.
 import com.shellrs.core.*
 import java.nio.file.Files
@@ -110,6 +111,18 @@ fun main() = runBlocking {
         checkAndroidUpdate("{}".toByteArray(), UpdateChannel.STABLE, "0.1.0", 0.5, emptyList())
         check(false) { "an unsigned manifest passed" }
     } catch (_: UpdateFailure.BadManifest) {}
+
+    // AI 助手: a model service with its key in the keychain, the presets, a command's programs.
+    val provider = store.saveAiProvider(
+        null,
+        AiProviderDraft("DeepSeek", AiProtocol.OPEN_AI, "https://api.deepseek.com", listOf("deepseek-chat")),
+        "sk-test",
+    )
+    check(keychain.secrets["ai_key:$provider"] == "sk-test") { "no API key" }
+    check(aiPresetOf("https://api.deepseek.com/v1") == AiPreset.DEEP_SEEK) { "the preset is not known" }
+    check(aiPresetService(AiPreset.OPEN_AI)?.protocol == AiProtocol.OPEN_AI_RESPONSES) { "OpenAI is not on Responses" }
+    check(assistantCommandKinds("sudo systemctl restart nginx") == listOf("sudo systemctl")) { "not its programs" }
+    check(core.assistantConversation("none") == null) { "a conversation out of nowhere" }
 
     // Nothing listens on port 1.
     val connection = core.connect(

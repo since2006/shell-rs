@@ -91,7 +91,7 @@ Cargo workspace，`cargo` 命令默认覆盖除手机端外的五个包：
 - `crates/shellrs-sync` 是同步核心（MIT 许可，以后手机端也链接它）：不依赖 GPUI，也不依赖应用的类型；文件格式见它的 `FORMAT.md`。
 - `crates/shellrs-ssh` 是 SSH 核心（MIT 许可，桌面和手机共用）：登录（`SshConnector`、known_hosts、认证、跳板、代理）、连接上的通道（pty + shell、exec、SFTP）、探测主机系统、SFTP 传输引擎。不依赖 GPUI 和应用的类型，不产出文案。
 - `crates/shellrs-hosts` 是主机核心（MIT 许可，桌面和手机共用）：主机、分组、凭据、端口转发规则、命令片段、项目终端的模型，`HostDatabase`（结构与迁移）、`HostData`（内存为准、写穿 SQLite）、登录快照、`keys/` 里的私钥、秘密接口（`SecretStore`）和不碰钥匙串的实现；同步的导出和应用记录、一轮（`run_round`）、各任务的主体和建同步时的校验。不依赖 GPUI（模型的字符串用它单独的 `gpui-pre-shared-string`）、rust-i18n 和钥匙串，不产出文案。
-- `crates/shellrs-assistant` 是 AI 助手的核心（MIT 许可，桌面和手机共用）：三种模型协议和请求地址的规则、SSE、一轮对话的 loop（重试、步数上限、上下文、停止）、工具的规则（批准、危险标记、截断、脱敏）和对话库 `assistant.db`。不依赖 GPUI、主机核心和应用，不读钥匙串，不产出文案；时间和随机数只经 `Env` 取（守卫测试查）。工具调用以事件交给应用执行、`answer` 回来。
+- `crates/shellrs-assistant` 是 AI 助手的核心（MIT 许可，桌面和手机共用）：三种模型协议和请求地址的规则、SSE、一轮对话的 loop（重试、步数上限、上下文、停止）、工具的规则（批准、危险标记、截断、脱敏）、对话库 `assistant.db` 和模型服务对话框的预设表（名称由应用翻译）。不依赖 GPUI、主机核心和应用，不读钥匙串，不产出文案；时间和随机数只经 `Env` 取（守卫测试查）。工具调用以事件交给应用执行、`answer` 回来。
 - `crates/shellrs-mobile` 是手机端的接口（MIT 许可，UniFFI 生成 Swift / Kotlin 绑定）：包着 SSH 核心、主机核心（主机、分组、凭据、同步）和 AI 助手核心，不在 `default-members` 里，要 `-p shellrs-mobile`；用法、构建和线程规则见它的 `README.md`。
 
 模块按能力划分：功能模块不依赖 `workspace`（窗口壳），也不碰彼此的内部。

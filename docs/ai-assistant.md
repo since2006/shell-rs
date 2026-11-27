@@ -82,7 +82,7 @@ src/settings/assistant_page.rs  「设置 › AI 助手」
   - `https://api.deepseek.com/anthropic` → `…/anthropic/v1/messages`
 
   对话框在地址下面实时写出完整的请求地址，填错了一眼看得出。
-- **预设**（桌面的 `src/assistant/presets.rs`）：只是对话框里帮着填的一张表，不进记录、不同步，以后的版本可以随便加减。
+- **预设**（助手核心的 `presets.rs`，名称在桌面的 `src/assistant/presets.rs`）：只是对话框里帮着填的一张表，不进记录、不同步，以后的版本可以随便加减。
 
   | 预设 | 接口类型 | 地址 |
   |---|---|---|
@@ -500,7 +500,9 @@ system prompt 用英文写、内容固定，要求模型回答时用 `{language}
 - **接口**（`crates/shellrs-mobile/src/assistant.rs`）：
   - `AssistantSession`，方法有 `send`、`answer`、`stop`、`next_event`、`end`。
   - 模型服务的增删改查放在 `HostStore`，同凭据：保存要等钥匙串写完才返回。
-  - 还有对话列表和删除。
+  - 还有对话列表和删除；打开旧对话前读它上次的服务、模型、单独设的批准方式（`assistant_conversation`）和累计用量（`assistant_usage`），同桌面不开会话。
+  - 会话挂在一条连接、一个模型上：换模型、终端重连后 `end` 掉，在同一个对话上重开。`end` 当场结束，`next_event` 随后返回 `None`。
+  - 预设（`Preset`）和「刷新模型」的常用系列筛选在助手核心的 `presets.rs`，桌面和手机共用，名称各自翻译；「不再问相似命令」的程序名经 `assistant_command_kinds` 取。
 - **运行**：跑在 `Core` 的运行时上，包一层 abort-on-drop（`task::run`）。事件用拉的，文字增量放进合并缓冲。
 - **工具：**
   - `read_terminal` 由 App 回答，因为画面在 App 里。
