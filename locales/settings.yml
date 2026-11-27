@@ -644,6 +644,11 @@ settings.shortcuts.disable:
 settings.shortcuts.reset:
   zh-CN: 恢复默认
   en: Restore default
+# Under a shortcut on Ctrl with a letter, which a terminal sends to the
+# shell (^T): it works only outside one.
+settings.shortcuts.left_to_the_shell:
+  zh-CN: 在终端里这个键发给 shell，离开终端才起作用
+  en: In a terminal this key goes to the shell, so it works only outside one
 
 settings.theme.keywords:
   zh-CN: 主题,终端主题,配色,颜色,浅色,深色

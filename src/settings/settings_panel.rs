@@ -912,8 +912,8 @@ fn highlight_preview_item() -> SettingItem {
 }
 
 /// 键盘快捷键.
-fn shortcuts_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
-    shortcut_groups(&panel.shortcuts)
+fn shortcuts_groups(panel: &SettingsPanel, cx: &App) -> Vec<SettingGroup> {
+    shortcut_groups(&panel.shortcuts, cx)
 }
 
 /// AI 助手.

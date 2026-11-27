@@ -165,7 +165,7 @@ async fn tab_keys_are_sent_to_the_focused_terminal(cx: &mut TestAppContext) {
 async fn ctrl_with_a_letter_is_the_shells_in_a_terminal(cx: &mut TestAppContext) {
     let factory = Arc::new(FakeTerminalFactory::default());
     let (handle, workspace) = open_workspace_with_factory(cx, factory.clone());
-    // 新建本地终端 as on Windows and Linux.
+    // 新建本地终端 on Ctrl+T, its key on Windows and Linux before issue #163.
     cx.update(|cx| {
         let settings = workspace.read(cx).settings().clone();
         settings.update(cx, |store, cx| {
@@ -230,6 +230,29 @@ async fn ctrl_with_a_letter_is_the_shells_in_a_terminal(cx: &mut TestAppContext)
             .local_terminal(LocalTerminalId(2))
             .is_some()
     }));
+}
+
+/// 新建本地终端's own key opens another from a terminal (issue #163): ⌘T,
+/// and Ctrl+Shift+T elsewhere, as Windows Terminal's new tab.
+#[gpui_kit::test]
+async fn a_local_terminal_opens_another_with_the_default_key(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let (handle, workspace) = open_running_local_terminal(cx, factory.clone()).await;
+    let keys = Shortcut::find("new-local-terminal").unwrap().default_keys();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find(("local-terminal", 1_u64)).focused(), Some(true));
+        window.press(keys, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(cx.update(|cx| {
+        workspace
+            .read(cx)
+            .local_terminal(LocalTerminalId(2))
+            .is_some()
+    }));
+    assert_eq!(factory.written_text(), "", "nothing reached the shell");
 }
 
 /// Midnight Commander's keys reach it (issue #145): Shift+F5 with its Shift,

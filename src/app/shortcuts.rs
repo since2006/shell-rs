@@ -85,6 +85,9 @@ macro_rules! shortcut {
 }
 
 /// The shortcuts of 设置 › 键盘快捷键, in the order the page lists them.
+/// Where macOS has ⌘, Windows and Linux have Ctrl+Shift, as Windows
+/// Terminal, GNOME Terminal and Konsole do: Ctrl with a letter alone is a
+/// control character, the shell's in a terminal, and Alt is its Meta.
 pub static SHORTCUTS: [Shortcut; 36] = [
     shortcut!(
         "new-host",
@@ -92,7 +95,7 @@ pub static SHORTCUTS: [Shortcut; 36] = [
         General,
         &[],
         "cmd-n",
-        "ctrl-n",
+        "ctrl-shift-n",
         NewHost
     ),
     shortcut!(
@@ -101,7 +104,7 @@ pub static SHORTCUTS: [Shortcut; 36] = [
         General,
         &[],
         "cmd-shift-n",
-        "ctrl-shift-n",
+        "ctrl-shift-g",
         NewGroup
     ),
     shortcut!(
@@ -113,13 +116,15 @@ pub static SHORTCUTS: [Shortcut; 36] = [
         "ctrl-,",
         OpenSettings
     ),
+    // Ctrl+Shift+B elsewhere: Ctrl+B is the shell's in a terminal, tmux's
+    // prefix among others.
     shortcut!(
         "toggle-sidebar",
         "app.shortcut.toggle_sidebar",
         General,
         &[],
         "cmd-b",
-        "ctrl-b",
+        "ctrl-shift-b",
         ToggleHostPanel
     ),
     shortcut!(
@@ -184,14 +189,17 @@ pub static SHORTCUTS: [Shortcut; 36] = [
         system_wide: true,
         action: |_| Box::new(ShowOrHideApp),
     },
-    // In a terminal ⌘K clears instead, as in other macOS terminals.
+    // Its own keys, which work in a terminal too: ⌘P goes to anything in
+    // VS Code and Sublime Text, Ctrl+Shift+P to Windows Terminal's palette.
+    // ⌘K and Ctrl+Shift+K clear a terminal, as in macOS terminals and
+    // Konsole; no program shares a key between clearing and searching.
     shortcut!(
         "focus-search",
         "app.shortcut.focus_search",
         General,
         &[],
-        "cmd-k",
-        "ctrl-k",
+        "cmd-p",
+        "ctrl-shift-p",
         FocusSearch
     ),
     // In a terminal the same keys size its text instead, as terminals do.
@@ -228,16 +236,19 @@ pub static SHORTCUTS: [Shortcut; 36] = [
         General,
         &[],
         "cmd-q",
-        "ctrl-q",
+        "ctrl-shift-q",
         Quit
     ),
+    // Ctrl+Shift+T elsewhere, as Windows Terminal, GNOME Terminal and
+    // Konsole open a tab: Ctrl+T is the shell's in a terminal (readline,
+    // vim's indent), so it opened none from one (issue #163).
     shortcut!(
         "new-local-terminal",
         "app.shortcut.new_local_terminal",
         Tabs,
         &[],
         "cmd-t",
-        "ctrl-t",
+        "ctrl-shift-t",
         NewLocalTerminal
     ),
     // As Windows Terminal duplicates a tab (issue #137).
@@ -477,9 +488,17 @@ impl Shortcut {
         self.contexts.is_empty()
     }
 
+    /// Whether `keys` for it go to the shell in a terminal rather than do
+    /// it: Ctrl with a letter, for a shortcut that works anywhere.
+    pub fn left_to_the_shell(&self, keys: &str) -> bool {
+        self.is_global()
+            && !self.system_wide
+            && parse_keys(keys).is_ok_and(|keystroke| is_control_character(&keystroke))
+    }
+
     /// Whether it and `other` can be in effect at the same place: both
     /// anywhere, or in a key context they share. Anywhere and a context
-    /// may share a key; the context's wins there, as ⌘K does in a terminal.
+    /// may share a key; the context's wins there, as ⌘= does in a terminal.
     /// The system's key wins everywhere.
     fn shares_scope(&self, other: &Shortcut) -> bool {
         self.system_wide
@@ -854,7 +873,7 @@ pub fn fixed_bindings(cx: &App) -> Vec<KeyBinding> {
 
 /// Ours: the shortcuts, then the keys that stay. The ones that work
 /// anywhere come first: for one key, a key context's binding added later
-/// wins there, as the terminal's ⌘K and the preview's ⌘= do.
+/// wins there, as the terminal's ⌘= and the preview's do.
 fn key_bindings(overrides: &ShortcutOverrides, cx: &App) -> Vec<KeyBinding> {
     let mut bindings: Vec<KeyBinding> = SHORTCUTS
         .iter()
@@ -884,15 +903,7 @@ fn shell_keys_in_terminal(anywhere: &[KeyBinding], cx: &App) -> Vec<KeyBinding> 
                 return None;
             };
             let keystroke = keystroke.inner();
-            let modifiers = keystroke.modifiers;
-            let letter = keystroke.key.len() == 1
-                && keystroke.key.bytes().all(|byte| byte.is_ascii_lowercase());
-            let shells = letter
-                && modifiers.control
-                && !modifiers.alt
-                && !modifiers.shift
-                && !modifiers.platform;
-            if !shells {
+            if !is_control_character(keystroke) {
                 return None;
             }
             load_binding(
@@ -903,6 +914,19 @@ fn shell_keys_in_terminal(anywhere: &[KeyBinding], cx: &App) -> Vec<KeyBinding> 
             )
         })
         .collect()
+}
+
+/// Ctrl with a letter alone: a control character in a terminal (Ctrl+T is
+/// 0x14), which every program there may use. Ctrl+Shift with a letter is
+/// the same character, so no program counts on it: the app's keys go there.
+fn is_control_character(keystroke: &Keystroke) -> bool {
+    let modifiers = keystroke.modifiers;
+    keystroke.key.len() == 1
+        && keystroke.key.bytes().all(|byte| byte.is_ascii_lowercase())
+        && modifiers.control
+        && !modifiers.alt
+        && !modifiers.shift
+        && !modifiers.platform
 }
 
 /// A binding for keys known only when it is made, as the user's.
@@ -1283,7 +1307,11 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let bindings = described(&key_bindings(&ShortcutOverrides::default(), cx));
-        assert!(bindings.contains(&(written(&primary("n")), "shellrs::NewHost".into(), None)));
+        assert!(bindings.contains(&(
+            written(shortcut("new-host").default_keys()),
+            "shellrs::NewHost".into(),
+            None
+        )));
         // 切换到标签 1…9: one binding a digit.
         assert_eq!(
             bindings
@@ -1302,10 +1330,6 @@ mod tests {
         );
         // The same key in a context is bound after the one for anywhere,
         // so it wins there.
-        assert!(
-            position(&bindings, "shellrs::ClearTerminal")
-                > position(&bindings, "shellrs::FocusSearch")
-        );
         assert!(
             position(&bindings, "shellrs::ZoomPreviewIn") > position(&bindings, "shellrs::ZoomIn")
         );
@@ -1374,13 +1398,67 @@ mod tests {
         assert!(position(&bindings, "shellrs::CopyTerminal") > in_terminal("ctrl-t").unwrap());
     }
 
+    /// A key that does one thing anywhere and another in a terminal is
+    /// left only to the zoom keys, which size what they are in (字号).
+    /// Clearing a terminal and focusing the search shared ⌘K until issue
+    /// #163; no other program does that.
+    #[test]
+    fn only_the_zoom_keys_mean_another_thing_in_a_terminal() {
+        let zoom = |shortcut: &Shortcut| shortcut.id.contains("zoom");
+        for anywhere in SHORTCUTS.iter().filter(|shortcut| shortcut.is_global()) {
+            for there in SHORTCUTS.iter().filter(|shortcut| !shortcut.is_global()) {
+                for (mine, theirs) in [(anywhere.mac, there.mac), (anywhere.other, there.other)] {
+                    if !mine.is_empty() && mine == theirs {
+                        assert!(
+                            zoom(anywhere) && zoom(there),
+                            "{} and {} share {mine}",
+                            anywhere.id,
+                            there.id
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ctrl_with_a_letter_anywhere_is_left_to_the_shell() {
+        let sidebar = shortcut("toggle-sidebar");
+        assert!(sidebar.left_to_the_shell("ctrl-b"));
+        for keys in [
+            "ctrl-shift-b",
+            "cmd-b",
+            "alt-b",
+            "ctrl-alt-b",
+            "ctrl-,",
+            "ctrl-1",
+        ] {
+            assert!(!sidebar.left_to_the_shell(keys), "{keys}");
+        }
+        // The terminal's own win there, and the system's takes the key
+        // before any terminal.
+        assert!(!shortcut("terminal-paste").left_to_the_shell("ctrl-v"));
+        assert!(!shortcut("show-hide-app").left_to_the_shell("ctrl-j"));
+        // No default is: the app's keys are ⌘ on macOS and Ctrl+Shift
+        // elsewhere, so each works in a terminal too (issue #163).
+        for shortcut in &SHORTCUTS {
+            for keys in [shortcut.mac, shortcut.other] {
+                assert!(!shortcut.left_to_the_shell(keys), "{}: {keys}", shortcut.id);
+            }
+        }
+    }
+
     #[gpui_kit::test]
-    fn a_tab_closes_from_a_terminal_with_the_default_keys_everywhere(cx: &mut TestAppContext) {
-        let close = shortcut("close-tab");
-        for keys in [close.mac, close.other] {
-            let binding = KeyBinding::new(keys, CloseActiveTab, None);
-            let shells = cx.update(|cx| shell_keys_in_terminal(&[binding], cx));
-            assert!(shells.is_empty(), "{keys}");
+    fn tabs_open_and_close_from_a_terminal_with_the_default_keys_everywhere(
+        cx: &mut TestAppContext,
+    ) {
+        for id in ["close-tab", "new-local-terminal"] {
+            let tab = shortcut(id);
+            for keys in [tab.mac, tab.other] {
+                let binding = KeyBinding::new(keys, CloseActiveTab, None);
+                let shells = cx.update(|cx| shell_keys_in_terminal(&[binding], cx));
+                assert!(shells.is_empty(), "{id}: {keys}");
+            }
         }
     }
 

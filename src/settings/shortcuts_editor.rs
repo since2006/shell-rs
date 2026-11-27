@@ -134,22 +134,31 @@ impl ShortcutsEditor {
 }
 
 /// The page: a group of shortcuts for each part of the app.
-pub(super) fn shortcut_groups(editor: &Entity<ShortcutsEditor>) -> Vec<SettingGroup> {
+pub(super) fn shortcut_groups(editor: &Entity<ShortcutsEditor>, cx: &App) -> Vec<SettingGroup> {
+    let overrides = editor.read(cx).store.read(cx).settings().shortcuts;
     ShortcutGroup::ALL
         .into_iter()
         .map(|group| {
-            SettingGroup::new()
-                .title(group.title())
-                .items(Shortcut::in_group(group).map(|shortcut| shortcut_item(editor, shortcut)))
+            SettingGroup::new().title(group.title()).items(
+                Shortcut::in_group(group)
+                    .map(|shortcut| shortcut_item(editor, shortcut, &overrides)),
+            )
         })
         .collect()
 }
 
 /// One shortcut: its name, then its keys, 禁用 and 恢复默认. The page's
-/// 重置 puts it back too.
-fn shortcut_item(editor: &Entity<ShortcutsEditor>, shortcut: &'static Shortcut) -> SettingItem {
+/// 重置 puts it back too. Keys a terminal leaves to the shell say so.
+fn shortcut_item(
+    editor: &Entity<ShortcutsEditor>,
+    shortcut: &'static Shortcut,
+    overrides: &ShortcutOverrides,
+) -> SettingItem {
     let (field, dirty, reset) = (editor.clone(), editor.clone(), editor.clone());
-    SettingItem::new(
+    let left_to_the_shell = overrides
+        .keys(shortcut)
+        .is_some_and(|keys| shortcut.left_to_the_shell(&keys));
+    let item = SettingItem::new(
         shortcut.label(),
         SettingField::render(move |options, window, cx| {
             render_field(&field, shortcut, options, window, cx)
@@ -170,7 +179,12 @@ fn shortcut_item(editor: &Entity<ShortcutsEditor>, shortcut: &'static Shortcut) 
                 });
             },
         ),
-    )
+    );
+    if left_to_the_shell {
+        item.description(t!("settings.shortcuts.left_to_the_shell"))
+    } else {
+        item
+    }
 }
 
 fn element_id(kind: &str, shortcut: &Shortcut) -> ElementId {

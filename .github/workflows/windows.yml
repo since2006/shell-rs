@@ -100,9 +100,11 @@ jobs:
       # A snippet goes after what is typed in a local terminal there.
       - run: "cargo test --locked --test ui projects::a_snippet_beside_a_local_terminal"
       - run: "cargo test --locked --lib settings::"
-      # Ctrl+Shift+W, the default there, closes a tab from a terminal.
+      # Ctrl+Shift+W and Ctrl+Shift+T, the defaults there, close a tab and
+      # open a local terminal from a terminal (issue #163).
       - run: "cargo test --locked --lib app::shortcuts::"
       - run: "cargo test --locked --test ui workspace::close_shortcut"
+      - run: "cargo test --locked --test ui terminal::a_local_terminal_opens_another"
       # Shift+Insert pastes there, and F3 reaches the program (issue #145).
       - run: "cargo test --locked --test ui terminal::function_keys_reach_the_program"
       # Ctrl+Insert copies what is selected there (issue #158).

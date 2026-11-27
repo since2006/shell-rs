@@ -138,11 +138,11 @@ Once installed, ShellRS keeps itself up to date: it checks, downloads and verifi
 
 ## Getting started
 
-1. Click "New host…" in the title bar (⌘N, or Ctrl+N on Windows and Linux) and fill in the address, port and login. Passwords go into the system keychain.
+1. Click "New host…" in the title bar (⌘N, or Ctrl+Shift+N on Windows and Linux) and fill in the address, port and login. Passwords go into the system keychain.
 2. Double-click a host to open a terminal. On the first connection you're asked to confirm the host key.
 3. Right-click a host and choose "Open SFTP", or click "SFTP" at the right of the terminal's tab bar. Drag files between the two panes to transfer them.
 4. The three icons after "ShellRS" in the title bar switch the sidebar between hosts, port forwards and credentials.
-5. ⌘T (Ctrl+T) opens a local terminal. Drag a tab to the top, bottom, left or right edge of the tab area to split it.
+5. ⌘T (Ctrl+Shift+T) opens a local terminal. Drag a tab to the top, bottom, left or right edge of the tab area to split it.
 
 ## For AI agents
 
