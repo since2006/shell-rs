@@ -35,7 +35,8 @@ pub use pane_operations::PaneOperation;
 pub use preview::{IMAGE_LIMIT, PreviewKind};
 pub use selection::{ClickMode, CursorMotion, Selection};
 pub use transfer_queue::{
-    QueueEntry, QueueId, QueueState, Removal, TransferJob, TransferQueue, percent,
+    QueueEntry, QueueId, QueueState, Removal, TransferIndicator, TransferJob, TransferQueue,
+    percent,
 };
 
 mod transfer_dialog;

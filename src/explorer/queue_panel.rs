@@ -14,7 +14,10 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use std::time::Duration;
 
-use super::{ExplorerPanel, FileSizeFormat, QueueEntry, QueueState, format_size, percent};
+use super::explorer_panel::transfer_indicator_icon;
+use super::{
+    ExplorerPanel, FileSizeFormat, QueueEntry, QueueState, TransferIndicator, format_size, percent,
+};
 use crate::app::{CatalogIcon, ExplorerAction, ExplorerCommand, ExplorerDispatch as _};
 use crate::i18n::t;
 use crate::sftp::{TransferDirection, TransferOutcome, TransferPhase};
@@ -25,6 +28,26 @@ const TRANSFERRED: f32 = 110.;
 const TIME: f32 = 72.;
 const SPEED: f32 = 90.;
 const PROGRESS: f32 = 150.;
+
+fn transfer_queue_indicator(
+    sid: super::ExplorerId,
+    indicator: TransferIndicator,
+    cx: &App,
+) -> impl IntoElement {
+    let (icon, color) = transfer_indicator_icon(indicator, cx);
+    let label = indicator.label();
+    h_flex()
+        .id(("queue-transfer-indicator", sid.0))
+        .test_support()
+        .aria_label(label.clone())
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .text_xs()
+        .text_color(color)
+        .child(icon)
+        .child(label)
+}
 
 impl ExplorerPanel {
     pub(super) fn render_queue(&self, cx: &Context<Self>) -> impl IntoElement {
@@ -73,7 +96,7 @@ impl ExplorerPanel {
                 h_flex()
                     .px_2()
                     .py_1()
-                    .gap_1()
+                    .gap_2()
                     .child(
                         div()
                             .min_w_0()
@@ -85,6 +108,9 @@ impl ExplorerPanel {
                                 t!("explorer.queue.title")
                             }),
                     )
+                    .when_some(queue.indicator(), |bar, indicator| {
+                        bar.child(transfer_queue_indicator(sid, indicator, cx))
+                    })
                     .child(div().flex_1())
                     .child(tool(
                         "resume-transfer",

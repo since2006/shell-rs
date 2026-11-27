@@ -420,6 +420,18 @@ explorer.queue.status.not_started:
 explorer.queue.status.removed:
   zh-CN: 已移出
   en: Removed
+explorer.transfer_indicator.transferring:
+  zh-CN: 正在传输
+  en: Transferring
+explorer.transfer_indicator.completed:
+  zh-CN: 传输完成
+  en: Transfer complete
+explorer.transfer_indicator.partly_failed:
+  zh-CN: 部分失败
+  en: Partially failed
+explorer.transfer_indicator.stopped:
+  zh-CN: 已停止
+  en: Stopped
 
 explorer.connection.start_failed:
   zh-CN: 无法启动 SFTP：%{error}
