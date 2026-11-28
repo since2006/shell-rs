@@ -35,6 +35,10 @@ icon_assets!(
         FolderRoot,
         // 同步浏览 in the SFTP toolbars.
         Link,
+        // 在主机列表中定位 on tab menus, 定位 in 查找文件.
+        LocateFixed,
+        // The AI assistant's calls that run no command.
+        ScrollText,
         FolderSymlink,
         FileSymlink,
         FilePlus,
@@ -240,6 +244,55 @@ mod tests {
                 "{tool:?}: {path}"
             );
         }
+    }
+
+    /// The catalog names every Lucide icon; the bundle holds only those
+    /// listed in `ExtraIcons`, and one left out draws nothing. Every one
+    /// the code names must be there.
+    #[test]
+    fn every_catalog_icon_the_code_names_is_in_the_bundle() {
+        let mut names = std::collections::BTreeSet::new();
+        let mut folders = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(folder).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    folders.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|extension| extension != "rs") {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap();
+                for (_, rest) in source.match_indices("CatalogIcon::").map(|(at, _)| {
+                    let rest = &source[at + "CatalogIcon::".len()..];
+                    (at, rest)
+                }) {
+                    let name: String = rest
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                        .collect();
+                    // A variant, not a constant such as `ALL`.
+                    if name.starts_with(|c: char| c.is_ascii_uppercase())
+                        && name.chars().any(|c| c.is_ascii_lowercase())
+                    {
+                        names.insert(name);
+                    }
+                }
+            }
+        }
+        assert!(names.contains("Bookmark"), "the scan found nothing");
+        let missing: Vec<_> = names
+            .iter()
+            .filter(|name| {
+                let icon = super::CatalogIcon::ALL
+                    .iter()
+                    .find(|icon| format!("{icon:?}") == **name)
+                    .unwrap_or_else(|| panic!("{name} is no catalog icon"));
+                AppAssets.load(&icon.path()).ok().flatten().is_none()
+            })
+            .collect();
+        assert!(missing.is_empty(), "not in ExtraIcons: {missing:?}");
     }
 
     #[test]
