@@ -740,3 +740,153 @@ async fn sftp_a_file_drag_shows_its_preview_only_over_the_other_pane(cx: &mut Te
     })
     .unwrap();
 }
+
+/// SFTP tab and transfer queue header show transfer status indicators
+/// (transferring, stopped, completed, partly failed) without scrolling the
+/// queue (issue #133).
+#[gpui_kit::test]
+async fn sftp_shows_transfer_status_indicators_on_tab_and_queue_header(cx: &mut TestAppContext) {
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
+    use shellrs::sftp::{TransferDetail, TransferPhase, TransferProgress};
+
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, _) = open_workspace_with_sftp(cx, provider.clone());
+    open_test_explorer(cx, handle).await;
+
+    let indicators = |cx: &mut TestAppContext| {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let tab = window
+                .try_find(("explorer-tab-transfer", SFTP_TAB))
+                .and_then(|el| el.label().map(str::to_string));
+            let queue = window
+                .try_find(("queue-transfer-indicator", SFTP_TAB))
+                .and_then(|el| el.label().map(str::to_string));
+            (tab, queue)
+        })
+        .unwrap()
+    };
+
+    // No transfers yet: neither indicator is shown.
+    assert_eq!(indicators(cx), (None, None));
+
+    let start_upload = |cx: &mut TestAppContext, name: &str| {
+        let paths = vec![std::path::PathBuf::from(format!("/local/tester/{name}"))];
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.dispatch_action(
+                Box::new(ExplorerAction::new(
+                    ExplorerId(SFTP_TAB),
+                    ExplorerCommand::UploadPaths {
+                        paths,
+                        target: "/home/tester".into(),
+                    },
+                )),
+                cx,
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("upload-confirm", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+
+    // Start upload -> transferring indicator appears in both places.
+    start_upload(cx, "a.txt");
+    wait_for_head_status(cx, handle, "正在扫描").await;
+    assert_eq!(
+        indicators(cx),
+        (Some("正在传输".into()), Some("正在传输".into()))
+    );
+
+    // Stop upload -> stopped indicator.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("cancel-transfer", cx);
+    })
+    .unwrap();
+    wait_for_head_status(cx, handle, "已停止").await;
+    assert_eq!(
+        indicators(cx),
+        (Some("已停止".into()), Some("已停止".into()))
+    );
+
+    // Resume upload -> transferring again.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("resume-transfer", cx);
+    })
+    .unwrap();
+    wait_for_head_status(cx, handle, "0%").await;
+    assert_eq!(
+        indicators(cx),
+        (Some("正在传输".into()), Some("正在传输".into()))
+    );
+
+    // Complete upload cleanly -> completed indicator.
+    let send = |event: SftpEvent| {
+        provider.events.lock().unwrap()[0]
+            .send_blocking(event)
+            .unwrap()
+    };
+    send(SftpEvent::Progress(TransferProgress::new(
+        TransferPhase::Completed,
+    )));
+    send(SftpEvent::Idle);
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(("queue-entry", 1u64))
+            .is_some_and(|row| row.label() == Some("已完成"))
+    })
+    .await;
+    assert_eq!(
+        indicators(cx),
+        (Some("传输完成".into()), Some("传输完成".into()))
+    );
+
+    // Start a second upload -> switches back to transferring, then partly failed.
+    start_upload(cx, "b.txt");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(("explorer-tab-transfer", SFTP_TAB))
+            .and_then(|el| el.label().map(str::to_string))
+            .as_deref()
+            == Some("正在传输")
+    })
+    .await;
+    send(SftpEvent::Progress(
+        TransferProgress::new(TransferPhase::Completed).with_details(vec![TransferDetail::failed(
+            "/home/tester/b.txt",
+            anyhow::anyhow!("denied"),
+        )]),
+    ));
+    send(SftpEvent::Idle);
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(("explorer-tab-transfer", SFTP_TAB))
+            .and_then(|el| el.label().map(str::to_string))
+            .as_deref()
+            == Some("部分失败")
+    })
+    .await;
+    assert_eq!(
+        indicators(cx),
+        (Some("部分失败".into()), Some("部分失败".into()))
+    );
+
+    // Clearing finished batches removes both indicators.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("clear-finished-transfers", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(indicators(cx), (None, None));
+}

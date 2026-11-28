@@ -1,6 +1,6 @@
 use super::{
     ExplorerId, FileLocation, FilePane, FilePaneEvent, LoadIntent, PaneSide, QueueId, QueueState,
-    Removal, TransferJob, TransferQueue,
+    Removal, TransferIndicator, TransferJob, TransferQueue,
     file_edit::{Opening, PendingFile},
     find_window::{FIND_REQUESTS, FindWindow},
     pane_operations::PendingOperation,
@@ -23,13 +23,14 @@ use crate::{
     shared::{ClosableTabTitle, HostMark, LatencyLabel, RenamableTab, close_tab_items},
 };
 use gpui_kit::component::{
-    Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _,
     button::Button,
     dialog::DialogButtonProps,
     dock::{BasePanel, Panel, PanelEvent, TabGroup},
     menu::PopupMenu,
     notification::Notification,
     resizable::{ResizableState, h_resizable, resizable_panel, v_resizable},
+    spinner::Spinner,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -1054,8 +1055,13 @@ impl Panel for ExplorerPanel {
         let mark = HostMark::new(("explorer-tab-os", id.0), name, address, os)
             .connection_state(state)
             .small();
+        let transfer = self
+            .queue
+            .indicator()
+            .map(|indicator| transfer_tab_indicator(id, indicator, cx));
         ClosableTabTitle::new(("explorer-tab", id.0), mark, self.tab_title(cx))
             .connection_state(state)
+            .when_some(transfer, |title, badge| title.trailing(badge))
             .closable(("close-explorer", id.0), Box::new(CloseExplorer(id)))
             .context_menu(move |popup, _, cx| menu.build(popup, cx))
     }
@@ -1324,6 +1330,58 @@ impl Render for ExplorerPanel {
                 ),
             )
     }
+}
+
+/// Icon and semantic color for an SFTP transfer status indicator, shared
+/// between the tab title and the transfer queue header.
+pub(super) fn transfer_indicator_icon(
+    indicator: TransferIndicator,
+    cx: &App,
+) -> (AnyElement, Hsla) {
+    let theme = cx.theme();
+    match indicator {
+        TransferIndicator::Transferring => (
+            Spinner::new().xsmall().color(theme.info).into_any_element(),
+            theme.info,
+        ),
+        TransferIndicator::Completed => (
+            Icon::new(IconName::CircleCheck)
+                .xsmall()
+                .text_color(theme.success)
+                .into_any_element(),
+            theme.success,
+        ),
+        TransferIndicator::PartlyFailed => (
+            Icon::new(CatalogIcon::CircleAlert)
+                .xsmall()
+                .text_color(theme.warning)
+                .into_any_element(),
+            theme.warning,
+        ),
+        TransferIndicator::Stopped => (
+            Icon::new(CatalogIcon::CircleMinus)
+                .xsmall()
+                .text_color(theme.muted_foreground)
+                .into_any_element(),
+            theme.muted_foreground,
+        ),
+    }
+}
+
+fn transfer_tab_indicator(
+    id: ExplorerId,
+    indicator: TransferIndicator,
+    cx: &App,
+) -> impl IntoElement {
+    let (icon, _) = transfer_indicator_icon(indicator, cx);
+    div()
+        .id(("explorer-tab-transfer", id.0))
+        .test_support()
+        .aria_label(indicator.label())
+        .flex()
+        .items_center()
+        .flex_none()
+        .child(icon)
 }
 
 /// The engine's command for a queued batch; fails for paths it cannot take.

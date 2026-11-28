@@ -37,6 +37,7 @@ pub struct ClosableTabTitle {
     id: ElementId,
     leading: AnyElement,
     label: SharedString,
+    trailing: Option<AnyElement>,
     close: Option<(ElementId, Box<dyn Action>)>,
     menu: Option<MenuBuilder>,
     modified: bool,
@@ -55,11 +56,19 @@ impl ClosableTabTitle {
             id: id.into(),
             leading: leading.into_any_element(),
             label: label.into(),
+            trailing: None,
             close: None,
             menu: None,
             modified: false,
             connection_state: None,
         }
+    }
+
+    /// Show a status indicator after the label (and modified dot) and before
+    /// the close button.
+    pub fn trailing(mut self, trailing: impl IntoElement) -> Self {
+        self.trailing = Some(trailing.into_any_element());
+        self
     }
 
     /// Show this tab's own connection state, never its host's aggregate state:
@@ -133,6 +142,7 @@ impl RenderOnce for ClosableTabTitle {
                         .bg(cx.theme().muted_foreground),
                 )
             })
+            .when_some(self.trailing, |row, trailing| row.child(trailing))
             .when_some(self.close, |row, (id, action)| {
                 row.child(
                     Button::new(id)

@@ -575,6 +575,7 @@ Works like WinSCP’s queue panel: it appears below the two panes when there are
 
 - One row per batch: Direction (upload / download), Source (the item’s path for a single item, the folder they’re in for several), Destination, Transferred (in the same units as the “Size” column), Time (time left), Speed (over the last few seconds) and Progress.
 - Batches run top to bottom in the order they were added. A new one goes at the end, and the list scrolls down to show it.
+- Both the SFTP tab title and the Transfers header show the current transfer indicator (Transferring, Transfer complete, Partially failed, or Stopped), so you can tell the status from another tab or a long queue without scrolling; clearing finished batches removes it.
 - A batch in progress shows an overall progress bar, with a second line below for the file being transferred and its own progress bar, like the two progress bars in WinSCP’s progress dialog.
 - The Progress column shows: Waiting, Scanning, a percentage, Waiting for an answer, a note about reconnecting, Stopped, Done, N items failed, Removed.
 - Click the arrow at the start of a row to expand the batch’s results item by item (Done, Skipped, or Failed with the reason), newest first.

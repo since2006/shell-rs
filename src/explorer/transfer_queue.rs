@@ -103,6 +103,33 @@ impl QueueState {
     }
 }
 
+/// Overall transfer state of the queue, shown on the SFTP tab and the queue
+/// header so progress and completion are visible without scrolling the queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferIndicator {
+    /// At least one batch is currently running (scanning, transferring,
+    /// waiting on a prompt, or reconnecting).
+    Transferring,
+    /// Nothing is actively running, and at least one batch is stopped or
+    /// waiting.
+    Stopped,
+    /// Every batch has finished, and at least one completed with failed items.
+    PartlyFailed,
+    /// Every batch has finished cleanly, with at least one completed batch.
+    Completed,
+}
+
+impl TransferIndicator {
+    pub fn label(self) -> gpui_kit::SharedString {
+        match self {
+            TransferIndicator::Transferring => t!("explorer.transfer_indicator.transferring"),
+            TransferIndicator::Stopped => t!("explorer.transfer_indicator.stopped"),
+            TransferIndicator::PartlyFailed => t!("explorer.transfer_indicator.partly_failed"),
+            TransferIndicator::Completed => t!("explorer.transfer_indicator.completed"),
+        }
+    }
+}
+
 pub struct QueueEntry {
     id: QueueId,
     job: TransferJob,
@@ -312,6 +339,44 @@ impl TransferQueue {
             .count()
     }
 
+    /// Overall status of the queue for the tab and queue header indicators.
+    pub fn indicator(&self) -> Option<TransferIndicator> {
+        if self
+            .entries
+            .iter()
+            .any(|entry| entry.state() == QueueState::Active)
+        {
+            return Some(TransferIndicator::Transferring);
+        }
+        if self
+            .entries
+            .iter()
+            .any(|entry| matches!(entry.state(), QueueState::Stopped | QueueState::Pending))
+        {
+            return Some(TransferIndicator::Stopped);
+        }
+        let mut completed = false;
+        let mut partly_failed = false;
+        for entry in &self.entries {
+            if entry.state() == QueueState::Done {
+                completed = true;
+                if entry
+                    .progress()
+                    .is_some_and(|progress| progress.failed() > 0)
+                {
+                    partly_failed = true;
+                }
+            }
+        }
+        if partly_failed {
+            Some(TransferIndicator::PartlyFailed)
+        } else if completed {
+            Some(TransferIndicator::Completed)
+        } else {
+            None
+        }
+    }
+
     /// Which way the batch at the head goes, or the next one, for questions
     /// and the close confirmation.
     pub fn direction(&self) -> Option<TransferDirection> {
@@ -485,5 +550,47 @@ mod tests {
             target: "/local".into(),
         };
         assert_eq!(root.source_label(), "/");
+    }
+
+    #[test]
+    fn indicator_reflects_queue_progress_and_completion() {
+        use super::TransferIndicator;
+        let mut queue = TransferQueue::default();
+        assert_eq!(queue.indicator(), None);
+
+        queue.push(upload("a"));
+        queue.start_next();
+        assert_eq!(queue.indicator(), Some(TransferIndicator::Transferring));
+
+        report(&mut queue, TransferPhase::Stopped);
+        assert_eq!(queue.indicator(), Some(TransferIndicator::Stopped));
+
+        report(&mut queue, TransferPhase::Transferring);
+        assert_eq!(queue.indicator(), Some(TransferIndicator::Transferring));
+
+        report(&mut queue, TransferPhase::Completed);
+        assert_eq!(queue.indicator(), Some(TransferIndicator::Completed));
+
+        // A new batch running overrides the previous completion indicator.
+        queue.push(upload("b"));
+        queue.start_next();
+        assert_eq!(queue.indicator(), Some(TransferIndicator::Transferring));
+
+        queue.on_progress(
+            TransferProgress::new(TransferPhase::Completed).with_details(vec![
+                TransferDetail::failed("/srv/b", anyhow::anyhow!("denied")),
+            ]),
+        );
+        assert_eq!(queue.indicator(), Some(TransferIndicator::PartlyFailed));
+
+        queue.clear_finished();
+        assert_eq!(queue.indicator(), None);
+
+        // A discarded batch alone is not reported as completed.
+        queue.push(upload("c"));
+        queue.start_next();
+        report(&mut queue, TransferPhase::Stopped);
+        queue.abandon_head(Removal::Discarded);
+        assert_eq!(queue.indicator(), None);
     }
 }
