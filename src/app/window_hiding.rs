@@ -20,17 +20,24 @@ impl Global for MainWindow {}
 
 /// Make the window's close button hide ShellRS on macOS. Elsewhere closing
 /// quits, after asking the quit guard, unless Windows hides in the tray.
+///
+/// `keep_place` keeps the window's size and place for the next launch first,
+/// read from the window while it is still whole: closing takes it down on
+/// Windows and Linux before ShellRS quits. Kept even when the guard then
+/// holds the quit back, as it is where the window is.
 #[cfg(target_os = "macos")]
-pub fn hide_when_closed(window: &Window, cx: &App) {
-    window.on_window_should_close(cx, |_, cx| {
+pub fn hide_when_closed(window: &Window, cx: &App, keep_place: fn(&Window, &App)) {
+    window.on_window_should_close(cx, move |window, cx| {
+        keep_place(window, cx);
         cx.hide();
         false
     });
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn hide_when_closed(window: &Window, cx: &App) {
-    window.on_window_should_close(cx, |window, cx| {
+pub fn hide_when_closed(window: &Window, cx: &App, keep_place: fn(&Window, &App)) {
+    window.on_window_should_close(cx, move |window, cx| {
+        keep_place(window, cx);
         #[cfg(windows)]
         if super::tray::hide_on_close(window, cx) {
             return false;

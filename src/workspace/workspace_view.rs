@@ -247,7 +247,6 @@ pub struct Workspace {
     pub(super) notice_times: HashMap<String, std::time::Instant>,
     /// The pending write of the window's size and place, see
     /// `window_state.rs`.
-    pub(super) window_state_save: Option<Task<()>>,
     /// The sidebars' widths as the settings last had them from this
     /// workspace, and the pending write of new ones; see
     /// `sidebar_widths.rs`.
@@ -343,7 +342,7 @@ impl Workspace {
             ),
         }
         this.sync_cli_server(cx);
-        this.remember_window(crate::app::window_state_path(), window, cx);
+        this.keep_window_place_on_quit(window, cx);
         this.compose.update(cx, |pane, _| {
             pane.keep_history(crate::app::compose_history_path())
         });
@@ -791,7 +790,6 @@ impl Workspace {
             editors: HashMap::new(),
             next_editor_id: 1,
             notice_times: HashMap::new(),
-            window_state_save: None,
             sidebar_widths: launch_settings.sidebar_widths,
             sidebar_widths_save: None,
             assistant_width: false,

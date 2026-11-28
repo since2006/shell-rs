@@ -1,11 +1,12 @@
 //! 设置 › 应用 › 窗口: the main window's size, maximized state and place,
-//! kept in `window.json` as they change, and where the next launch opens
-//! the window from them.
+//! kept in `window.json` as the window closes or ShellRS quits, and where the
+//! next launch opens the window from them.
+//!
+//! Read from the window then, once, rather than followed as it moves: on
+//! Windows the close button takes the window down before ShellRS quits, and
+//! what it reported on the way was not where it had been.
 
-use std::cell::RefCell;
-use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::time::Duration;
+use std::path::Path;
 
 use gpui_kit::*;
 use serde::{Deserialize, Serialize};
@@ -14,19 +15,10 @@ use crate::settings::WindowSettings;
 
 use super::Workspace;
 
-/// How long a move or resize has to settle before it is written: a drag
-/// reports every step.
-const SAVE_DELAY: Duration = Duration::from_millis(500);
-
 /// A new window's size, and the size of one whose size is not remembered.
 fn default_size() -> Size<Pixels> {
     size(px(1280.), px(800.))
 }
-
-/// How much of a window has to be on its screen for it to open where it
-/// was: enough of the title bar to drag it by.
-const VISIBLE_WIDTH: f32 = 120.;
-const VISIBLE_HEIGHT: f32 = 40.;
 
 /// The main window as it last was.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -77,46 +69,31 @@ impl WindowState {
     }
 }
 
+/// Keep the window's size and place for the next launch, as they are now:
+/// when its close button is pressed (hiding it on macOS, taking it down
+/// elsewhere) and when ShellRS quits. Nothing when the window cannot say
+/// where it is (on no screen), leaving what was kept before. Always kept:
+/// 设置 › 应用 › 窗口 decides what of it the next launch uses.
+pub fn keep_window_place(window: &Window, cx: &App) {
+    if let Some(state) = WindowState::capture(window, cx) {
+        write(&state, &crate::app::window_state_path());
+    }
+}
+
 impl Workspace {
-    /// Keep the window's size and place at `path` as they change, for the
-    /// next launch. Always kept: 设置 › 应用 › 窗口 decides what of it the
-    /// next launch uses.
-    pub(super) fn remember_window(
-        &mut self,
-        path: PathBuf,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let latest: Rc<RefCell<Option<WindowState>>> = Rc::default();
-        // Written again on quitting, in case a change has not settled. The
-        // app's, not this view's: on Windows and Linux closing the window
-        // has dropped the view by then.
-        App::on_app_quit(cx, {
-            let (latest, path) = (latest.clone(), path.clone());
-            move |_| {
-                if let Some(state) = latest.borrow().as_ref() {
-                    write(state, &path);
-                }
-                async {}
-            }
+    /// Keep the window's place as ShellRS quits with the window still there:
+    /// ⌘Q, the tray's 退出, 退出 after asking, 重启并安装. The app's, not
+    /// this view's, as the view may be gone by then: on Windows and Linux
+    /// the close button takes the window down first, having kept its place.
+    pub(super) fn keep_window_place_on_quit(&self, window: &Window, cx: &mut Context<Self>) {
+        let handle = window.window_handle();
+        App::on_app_quit(cx, move |cx| {
+            handle
+                .update(cx, |_, window, cx| keep_window_place(window, cx))
+                .ok();
+            async {}
         })
         .detach();
-        let subscription = cx.observe_window_bounds(window, move |this, window, cx| {
-            let Some(state) = WindowState::capture(window, cx) else {
-                return;
-            };
-            if latest.borrow().as_ref() == Some(&state) {
-                return;
-            }
-            *latest.borrow_mut() = Some(state.clone());
-            let path = path.clone();
-            this.window_state_save = Some(cx.spawn(async move |_, cx| {
-                cx.background_executor().timer(SAVE_DELAY).await;
-                cx.background_spawn(async move { write(&state, &path) })
-                    .await;
-            }));
-        });
-        self._subscriptions.push(subscription);
     }
 }
 
@@ -140,7 +117,6 @@ pub fn window_placement(
         .map(|display| Screen {
             id: display.id(),
             uuid: display.uuid().ok().map(|uuid| uuid.to_string()),
-            bounds: display.bounds(),
             visible: display.visible_bounds(),
         })
         .collect();
@@ -158,7 +134,6 @@ pub fn window_placement(
 struct Screen {
     id: DisplayId,
     uuid: Option<String>,
-    bounds: Bounds<Pixels>,
     /// Without the menu bar, Dock or taskbar.
     visible: Bounds<Pixels>,
 }
@@ -197,11 +172,9 @@ fn placement(
         None => size,
     };
     let bounds = match (saved, remembered) {
-        (Some(saved), Some(screen))
-            if reachable(Bounds::new(saved.bounds.origin, size), screen.bounds) =>
-        {
-            Bounds::new(saved.bounds.origin, size)
-        }
+        // Where it was, moved back onto its screen where that has changed
+        // since (another resolution or scaling) and left it partly off.
+        (Some(saved), Some(screen)) => onto(Bounds::new(saved.bounds.origin, size), screen.visible),
         // Clear of the menu bar, Dock and taskbar.
         _ => match screen {
             Some(screen) => Bounds::centered_at(screen.visible.center(), size),
@@ -227,14 +200,17 @@ fn placement(
     (WindowBounds::Windowed(bounds), display)
 }
 
-/// Whether enough of `bounds` is on the screen to take hold of: its top
-/// edge on the screen, and a stretch of title bar with it.
-fn reachable(bounds: Bounds<Pixels>, screen: Bounds<Pixels>) -> bool {
-    let overlap = bounds.intersect(&screen);
-    bounds.top() >= screen.top()
-        && bounds.top() <= screen.bottom() - px(VISIBLE_HEIGHT)
-        && overlap.size.width >= px(VISIBLE_WIDTH)
-        && overlap.size.height >= px(VISIBLE_HEIGHT)
+/// `bounds` moved as little as it takes to lie all on `area`, which it fits.
+fn onto(bounds: Bounds<Pixels>, area: Bounds<Pixels>) -> Bounds<Pixels> {
+    let x = bounds
+        .left()
+        .max(area.left())
+        .min(area.right() - bounds.size.width);
+    let y = bounds
+        .top()
+        .max(area.top())
+        .min(area.bottom() - bounds.size.height);
+    Bounds::new(point(x, y), bounds.size)
 }
 
 #[cfg(test)]
@@ -255,13 +231,11 @@ mod tests {
             Screen {
                 id: DisplayId::new(1),
                 uuid: Some("laptop".into()),
-                bounds: rect(0., 0., 1512., 982.),
                 visible: rect(0., 33., 1512., 890.),
             },
             Screen {
                 id: DisplayId::new(2),
                 uuid: Some("monitor".into()),
-                bounds: rect(1512., 0., 2560., 1440.),
                 visible: rect(1512., 0., 2560., 1440.),
             },
         ]
@@ -304,7 +278,6 @@ mod tests {
         vec![Screen {
             id: DisplayId::new(1),
             uuid: Some("laptop".into()),
-            bounds: rect(0., 0., 1280., 720.),
             visible: rect(0., 0., 1280., 672.),
         }]
     }
@@ -346,21 +319,28 @@ mod tests {
     }
 
     #[test]
-    fn a_window_whose_screen_is_gone_or_that_is_off_it_is_centered() {
+    fn a_window_whose_screen_is_gone_is_centered_and_one_off_its_screen_comes_back() {
+        // Its screen unplugged: in the middle of the main one.
         let state = saved("projector", rect(100., 100., 1000., 700.), false);
         assert_eq!(
             place(Some(&state), WindowSettings::default(), false),
             (centered_on_laptop(size(px(1000.), px(700.))), None)
         );
-        // Dragged up past the top, or almost all off the side.
-        for was in [
-            rect(100., -200., 1000., 700.),
-            rect(1450., 100., 1000., 700.),
+        // Partly off its screen, as after a change of resolution or
+        // scaling: moved back the least, onto its visible part.
+        for (was, back) in [
+            (rect(100., -200., 1000., 700.), rect(100., 33., 1000., 700.)),
+            (
+                rect(1450., 100., 1000., 700.),
+                rect(512., 100., 1000., 700.),
+            ),
+            (rect(-300., 500., 1000., 700.), rect(0., 223., 1000., 700.)),
         ] {
             let state = saved("laptop", was, false);
-            let (bounds, display) = place(Some(&state), WindowSettings::default(), false);
-            assert_eq!(bounds, centered_on_laptop(was.size));
-            assert_eq!(display, Some(DisplayId::new(1)));
+            assert_eq!(
+                place(Some(&state), WindowSettings::default(), false),
+                (WindowBounds::Windowed(back), Some(DisplayId::new(1)))
+            );
         }
     }
 

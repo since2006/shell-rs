@@ -244,9 +244,13 @@ async fn quick_connect_finds_saved_hosts_and_connects_one(cx: &mut TestAppContex
             assert!(pair[0].right() <= pair[1].left(), "{pair:?}");
             assert_eq!(pair[0].size, pair[1].size);
         }
-        // Medium buttons at the bar's own 16-pixel rem: 32 pixels with
-        // 16-pixel icons, whatever the interface size.
-        assert_eq!(controls[0].size.height, px(32.));
+        // Medium buttons at the bar's own rem, this platform's default
+        // interface size: 32 pixels with 16-pixel icons, 28 and 14 on
+        // Windows.
+        assert_eq!(
+            controls[0].size.height,
+            px(shellrs::settings::DEFAULT_INTERFACE_FONT_SIZE * 2.)
+        );
         // Up in the title bar, the window's commands at its far end.
         let sidebar = window.find("workspace-sidebar").bounds();
         assert!(
@@ -602,9 +606,9 @@ fn the_left_sidebar_keeps_its_visibility_after_reopening(cx: &mut TestAppContext
     assert_shown(cx, handle, true);
 }
 
-/// The title bar's controls are laid out at a rem of their own (issue
-/// #170): the same 32-pixel buttons on every platform and at every 界面字号,
-/// inside the bar, while the rest of the window follows the interface size.
+/// The title bar's controls are laid out at a rem of their own, this
+/// platform's default interface size (issue #170): the same buttons at every
+/// 界面字号, inside the bar, while the rest of the window follows it.
 #[gpui_kit::test]
 fn the_title_bar_keeps_its_size_at_any_interface_font_size(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
@@ -629,7 +633,8 @@ fn the_title_bar_keeps_its_size_at_any_interface_font_size(cx: &mut TestAppConte
                 "open-settings",
             ] {
                 let button = window.find(id).bounds();
-                assert_eq!(button.size, size(px(32.), px(32.)), "{id} at {font_size}");
+                let side = px(shellrs::settings::DEFAULT_INTERFACE_FONT_SIZE * 2.);
+                assert_eq!(button.size, size(side, side), "{id} at {font_size}");
                 assert!(button.bottom() <= below_bar, "{id} at {font_size}");
             }
             searches.push(window.find("host-search").bounds().size.height);

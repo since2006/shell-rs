@@ -42,7 +42,7 @@ mod zmodem;
 
 pub use links::open_link_once_open;
 pub use tool_sidebar::ToolTerminal;
-pub use window_state::WindowState;
+pub use window_state::{WindowState, keep_window_place};
 pub use workspace_view::{Workspace, notify_once_open, window_options};
 
 pub use app_shell::{AppShell, StartupFailure};

@@ -10,18 +10,19 @@ use crate::app::{
     ToggleCredentialList, ToggleForwardList, ToggleHostList, ToggleHostPanel, ToggleTheme,
 };
 use crate::i18n::t;
+use crate::settings::DEFAULT_INTERFACE_FONT_SIZE;
 use crate::shared::tinted;
 use crate::update::UpdateBadge;
 
 use super::sidebar::SidebarMode;
 
-/// The title bar's rem: macOS's default 界面字号. The bar is a fixed 34
-/// pixels high whatever the interface size is, so all it holds is too, and
-/// the same on every platform: medium buttons of 32 pixels with 16-pixel
-/// icons, where Windows's smaller default drew 28 and 14, and a larger
-/// interface size buttons taller than the bar; the window buttons on
-/// Windows and Linux along with them. A size the rem API takes in pixels.
-const TITLE_BAR_REM: Pixels = px(16.);
+/// The title bar's rem: this platform's default 界面字号, whatever the user
+/// sets it to. The bar is a fixed 34 pixels high, so all it holds is too:
+/// medium buttons of 32 pixels with 16-pixel icons on macOS and Linux, 28
+/// and 14 on Windows (16 looked too large there), where a larger interface
+/// size drew buttons taller than the bar; the window buttons on Windows and
+/// Linux along with them. A size the rem API takes in pixels.
+const TITLE_BAR_REM: Pixels = px(DEFAULT_INTERFACE_FONT_SIZE);
 
 /// The custom title bar (issue #170). On the left the app name, the
 /// sidebar's lists and a new local terminal; on the right the connections
@@ -32,8 +33,8 @@ const TITLE_BAR_REM: Pixels = px(16.);
 /// The buttons keep their default, medium size, as the right sidebar's
 /// tool switch does: small ones drew the icons too small. The whole bar,
 /// the window buttons gpui-kit draws on Windows and Linux included, is laid
-/// out at [`TITLE_BAR_REM`]: window chrome the same on every platform and at
-/// every 界面字号, as the bar's height is.
+/// out at [`TITLE_BAR_REM`]: window chrome the same at every 界面字号, as
+/// the bar's height is.
 ///
 /// `sidebar` is what the left dock is showing, or `None` while it is hidden;
 /// `forwards` is how many port forwards are running, which only assistive
