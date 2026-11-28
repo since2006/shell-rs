@@ -88,6 +88,17 @@ impl Workspace {
                 provider: self.local_directory_provider.clone(),
             },
         };
+        self.create_editor(source, location, file, window, cx);
+    }
+
+    pub(super) fn create_editor(
+        &mut self,
+        source: EditorSource,
+        location: FileLocation,
+        file: Rc<TextFile>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let file = Rc::try_unwrap(file).unwrap_or_else(|file| (*file).clone());
         let id = EditorId(self.next_editor_id);
         self.next_editor_id += 1;

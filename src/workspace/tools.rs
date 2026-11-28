@@ -3,8 +3,7 @@
 //!
 //! The sidebar goes with terminals: with an SFTP tab, the settings or the
 //! start page in front it is not there at all, switch included. Beside an
-//! SSH terminal it has the host's tools; beside a local terminal 项目 and
-//! 命令片段.
+//! SSH terminal it has the host's tools; beside a local terminal 项目, 文件 and 命令片段.
 //! With the center split it goes with the terminal in front last, as long
 //! as that one is on screen, and names an SSH terminal's host; it hides once
 //! no terminal shows. Whether it is open and which tool it shows are the
@@ -851,6 +850,10 @@ impl Workspace {
             {
                 self.check_directory_follow(terminal.id, window, cx);
                 self.ensure_file_sidebar(terminal.id, window, cx)
+                    .map(AnyView::from)
+            }
+            Some(SidebarTarget::Local(id)) if tool == Some(ToolKind::Files) => {
+                Some(self.local_files_for(*id, window, cx).into())
             }
             _ => None,
         };

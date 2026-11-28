@@ -52,6 +52,7 @@ pub struct LocalTerminalPanel {
     id: LocalTerminalId,
     /// Its name in 项目, for a terminal kept there.
     name: Option<SavedName>,
+    directory: Option<std::path::PathBuf>,
     terminal: Entity<TerminalView>,
     tab_group: Option<WeakEntity<TabGroup>>,
     broadcast: Option<super::BroadcastSelection>,
@@ -83,7 +84,7 @@ impl LocalTerminalPanel {
             }),
             cx.subscribe(
                 &terminal,
-                move |_, _, event: &TerminalEvent, cx| match event {
+                move |this, _, event: &TerminalEvent, cx| match event {
                     TerminalEvent::Input(input) => {
                         cx.emit(LocalTerminalPanelEvent::Input(id, input.clone()));
                     }
@@ -94,6 +95,7 @@ impl LocalTerminalPanel {
                         cx.emit(LocalTerminalPanelEvent::ZmodemAsk(id, *direction));
                     }
                     TerminalEvent::WorkingDirectory(folder) => {
+                        this.directory = Some(folder.clone());
                         cx.emit(LocalTerminalPanelEvent::WorkingDirectory(
                             id,
                             folder.clone(),
@@ -108,6 +110,7 @@ impl LocalTerminalPanel {
             id,
             name,
             terminal,
+            directory: None,
             tab_group: None,
             broadcast: None,
             _subscriptions: subscriptions,
@@ -120,6 +123,10 @@ impl LocalTerminalPanel {
         self.name
             .as_ref()
             .map_or_else(|| default_title(self.id), |name| name.name.clone())
+    }
+
+    pub fn directory(&self) -> Option<&std::path::Path> {
+        self.directory.as_deref()
     }
 
     pub fn tab_group(&self) -> Option<WeakEntity<TabGroup>> {
