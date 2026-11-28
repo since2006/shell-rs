@@ -244,8 +244,9 @@ async fn quick_connect_finds_saved_hosts_and_connects_one(cx: &mut TestAppContex
             assert!(pair[0].right() <= pair[1].left(), "{pair:?}");
             assert_eq!(pair[0].size, pair[1].size);
         }
-        // Medium buttons, whose icons are 1 rem: small ones were too small.
-        assert_eq!(controls[0].size.height, window.rem_size() * 2.);
+        // Medium buttons at the bar's own 16-pixel rem: 32 pixels with
+        // 16-pixel icons, whatever the interface size.
+        assert_eq!(controls[0].size.height, px(32.));
         // Up in the title bar, the window's commands at its far end.
         let sidebar = window.find("workspace-sidebar").bounds();
         assert!(
@@ -599,6 +600,42 @@ fn the_left_sidebar_keeps_its_visibility_after_reopening(cx: &mut TestAppContext
         window.dispatch_action(Box::new(ToggleForwardList), cx);
     });
     assert_shown(cx, handle, true);
+}
+
+/// The title bar's controls are laid out at a rem of their own (issue
+/// #170): the same 32-pixel buttons on every platform and at every 界面字号,
+/// inside the bar, while the rest of the window follows the interface size.
+#[gpui_kit::test]
+fn the_title_bar_keeps_its_size_at_any_interface_font_size(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let mut searches = Vec::new();
+    for font_size in [12., 20.] {
+        cx.update(|cx| {
+            workspace
+                .read(cx)
+                .settings()
+                .clone()
+                .update(cx, |store, cx| {
+                    store.update(|settings| settings.interface.font_size = font_size, cx);
+                });
+        });
+        cx.run_until_parked();
+        in_frame(cx, handle, |window, _| {
+            let below_bar = window.find("workspace-sidebar").bounds().top();
+            for id in [
+                "show-hosts",
+                "new-local-terminal",
+                "title-quick-connect",
+                "open-settings",
+            ] {
+                let button = window.find(id).bounds();
+                assert_eq!(button.size, size(px(32.), px(32.)), "{id} at {font_size}");
+                assert!(button.bottom() <= below_bar, "{id} at {font_size}");
+            }
+            searches.push(window.find("host-search").bounds().size.height);
+        });
+    }
+    assert!(searches[1] > searches[0], "{searches:?}");
 }
 
 /// Each list's button in the title bar shows its list, or hides the sidebar
