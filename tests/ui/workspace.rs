@@ -1279,7 +1279,7 @@ async fn the_tool_sidebar_goes_with_terminals_only(cx: &mut TestAppContext) {
         window.dispatch_action(Box::new(OpenSettings), cx)
     });
     assert_eq!(shown(cx), (false, false));
-    // A local terminal has the switch with 项目, then 命令片段, and no
+    // A local terminal has the switch with 命令片段, 项目 and 文件, and no
     // other tool; closed until opened.
     in_frame(cx, handle, |window, cx| {
         window.dispatch_action(Box::new(NewLocalTerminal), cx)
@@ -1288,7 +1288,8 @@ async fn the_tool_sidebar_goes_with_terminals_only(cx: &mut TestAppContext) {
     in_frame(cx, handle, |window, _| {
         let projects = window.find("tool-projects").bounds();
         let snippets = window.find("tool-snippets").bounds();
-        assert!(projects.top() < snippets.top());
+        assert!(snippets.top() < projects.top());
+        assert!(window.try_find("tool-files").is_some());
         assert!(window.try_find("tool-history").is_none());
         assert!(window.try_find(("tool-sidebar-local", 1_u64)).is_none());
     });

@@ -37,6 +37,8 @@ pub(super) struct PaneMenuState {
     /// 查找文件 is offered: on an SFTP tab's remote side, not in the right
     /// sidebar's 文件.
     pub finds: bool,
+    /// The local terminal's 文件: nothing to transfer to, no bookmarks.
+    pub alone: bool,
 }
 
 impl PaneMenuState {
@@ -87,13 +89,17 @@ pub(super) fn item_menu(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
     } else {
         (t!("explorer.command.upload"), CatalogIcon::Upload)
     };
+    let menu = if state.alone {
+        menu
+    } else {
+        menu.menu_with_icon_and_disabled(
+            verb,
+            Icon::new(icon),
+            state.action(ExplorerCommand::Transfer { remote }),
+            state.targets.is_empty() || !state.can_transfer,
+        )
+    };
     menu.menu_with_icon_and_disabled(
-        verb,
-        Icon::new(icon),
-        state.action(ExplorerCommand::Transfer { remote }),
-        state.targets.is_empty() || !state.can_transfer,
-    )
-    .menu_with_icon_and_disabled(
         t!("explorer.command.copy_path"),
         Icon::new(IconName::Copy),
         state.action(ExplorerCommand::CopySelectedPaths { remote }),
@@ -236,6 +242,9 @@ fn refresh_items(
 }
 
 fn add_bookmark_item(menu: PopupMenu, state: &PaneMenuState) -> PopupMenu {
+    if state.alone {
+        return menu;
+    }
     menu.menu_with_icon_and_disabled(
         t!("explorer.command.add_bookmark"),
         Icon::new(CatalogIcon::Bookmark),

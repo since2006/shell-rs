@@ -35,6 +35,9 @@ struct OpenDirectoryForm {
     /// The pane's directory and home, which `~` and relative paths use.
     current: String,
     home: String,
+    /// The host has bookmarks for the pane: none for the local terminal's
+    /// 文件, which has no host.
+    bookmarked: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -276,72 +279,72 @@ impl Render for OpenDirectoryForm {
                                 }),
                         ),
                 )
-                .child(
-                    Field::new()
-                        .label(t!("explorer.open_directory.bookmarks"))
-                        .child(
-                            h_flex()
-                                .gap_2()
-                                .items_start()
-                                .child(self.render_list(&bookmarks, selected, window, cx))
-                                .child(
-                                    v_flex()
-                                        .gap_1()
-                                        .w(rems(5.))
-                                        .flex_shrink_0()
-                                        .child(
-                                            button(
-                                                "bookmark-add",
-                                                t!("explorer.open_directory.add"),
-                                            )
-                                            .w_full()
-                                            .disabled(!typed || selected.is_some())
-                                            .on_click(
-                                                cx.listener(|this, _, window, cx| {
+                .when(self.bookmarked, |form| {
+                    form.child(
+                        Field::new()
+                            .label(t!("explorer.open_directory.bookmarks"))
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_start()
+                                    .child(self.render_list(&bookmarks, selected, window, cx))
+                                    .child(
+                                        v_flex()
+                                            .gap_1()
+                                            .w(rems(5.))
+                                            .flex_shrink_0()
+                                            .child(
+                                                button(
+                                                    "bookmark-add",
+                                                    t!("explorer.open_directory.add"),
+                                                )
+                                                .w_full()
+                                                .disabled(!typed || selected.is_some())
+                                                .on_click(cx.listener(|this, _, window, cx| {
                                                     this.add(window, cx)
-                                                }),
-                                            ),
-                                        )
-                                        .child(
-                                            button(
-                                                "bookmark-remove",
-                                                t!("explorer.open_directory.remove"),
+                                                })),
                                             )
-                                            .w_full()
-                                            .disabled(selected.is_none())
-                                            .on_click(
-                                                cx.listener(|this, _, window, cx| {
+                                            .child(
+                                                button(
+                                                    "bookmark-remove",
+                                                    t!("explorer.open_directory.remove"),
+                                                )
+                                                .w_full()
+                                                .disabled(selected.is_none())
+                                                .on_click(cx.listener(|this, _, window, cx| {
                                                     this.remove(window, cx)
-                                                }),
-                                            ),
-                                        )
-                                        .child(div().h_4())
-                                        .child(
-                                            button("bookmark-up", t!("explorer.open_directory.up"))
+                                                })),
+                                            )
+                                            .child(div().h_4())
+                                            .child(
+                                                button(
+                                                    "bookmark-up",
+                                                    t!("explorer.open_directory.up"),
+                                                )
                                                 .w_full()
                                                 .disabled(selected.is_none_or(|ix| ix == 0))
                                                 .on_click(cx.listener(|this, _, window, cx| {
                                                     this.shift(-1, window, cx)
                                                 })),
-                                        )
-                                        .child(
-                                            button(
-                                                "bookmark-down",
-                                                t!("explorer.open_directory.down"),
                                             )
-                                            .w_full()
-                                            .disabled(
-                                                selected.is_none_or(|ix| ix + 1 >= bookmarks.len()),
-                                            )
-                                            .on_click(
-                                                cx.listener(|this, _, window, cx| {
+                                            .child(
+                                                button(
+                                                    "bookmark-down",
+                                                    t!("explorer.open_directory.down"),
+                                                )
+                                                .w_full()
+                                                .disabled(
+                                                    selected
+                                                        .is_none_or(|ix| ix + 1 >= bookmarks.len()),
+                                                )
+                                                .on_click(cx.listener(|this, _, window, cx| {
                                                     this.shift(1, window, cx)
-                                                }),
+                                                })),
                                             ),
-                                        ),
-                                ),
-                        ),
-                ),
+                                    ),
+                            ),
+                    )
+                }),
         )
     }
 }
@@ -358,9 +361,14 @@ impl ExplorerPanel {
         if !pane.read(cx).is_connected() || window.has_active_dialog(cx) {
             return;
         }
-        let (current, home, pane_focus) = {
+        let (current, home, pane_focus, bookmarked) = {
             let pane = pane.read(cx);
-            (pane.path(), pane.home(), pane.focus_handle(cx))
+            (
+                pane.path(),
+                pane.home(),
+                pane.focus_handle(cx),
+                !pane.is_alone(),
+            )
         };
         let input = cx.new(|cx| InputState::new(window, cx).default_value(&current));
         let form = cx.new(|cx| OpenDirectoryForm {
@@ -373,6 +381,7 @@ impl ExplorerPanel {
             list_focus: cx.focus_handle().tab_stop(true),
             current,
             home,
+            bookmarked,
             _subscriptions: vec![cx.observe(&self.store, |_, _, cx| cx.notify())],
         });
         window.open_dialog(cx, move |dialog, _, _| {

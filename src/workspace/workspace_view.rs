@@ -181,7 +181,9 @@ pub struct Workspace {
     pub(super) explorers: HashMap<ExplorerId, Entity<ExplorerPanel>>,
     /// Each remote terminal's 文件, once shown: on the terminal's own
     /// connection, and gone with the terminal.
-    pub(super) local_files: HashMap<LocalTerminalId, Entity<super::local_files::LocalFiles>>,
+    /// Each local terminal's 文件, once shown: this computer's folders,
+    /// gone with the terminal.
+    pub(super) local_file_sidebars: HashMap<LocalTerminalId, ExplorerId>,
     pub(super) file_sidebars: HashMap<RemoteTerminalId, ExplorerId>,
     /// 目录跟随: what each terminal's current connection was found to be.
     pub(super) directory_follow: HashMap<RemoteTerminalId, super::follow::FollowState>,
@@ -759,7 +761,7 @@ impl Workspace {
             terminals,
             explorers: HashMap::new(),
             file_sidebars: HashMap::new(),
-            local_files: HashMap::new(),
+            local_file_sidebars: HashMap::new(),
             directory_follow: HashMap::new(),
             local_terminals,
             saved_terminals,
@@ -895,6 +897,58 @@ impl Workspace {
     /// A remote terminal's 文件, once it has been shown.
     pub fn file_sidebar(&self, terminal: RemoteTerminalId) -> Option<&Entity<ExplorerPanel>> {
         self.explorers.get(self.file_sidebars.get(&terminal)?)
+    }
+
+    /// A local terminal's 文件, once it has been shown.
+    pub fn local_file_sidebar(&self, terminal: LocalTerminalId) -> Option<&Entity<ExplorerPanel>> {
+        self.explorers.get(self.local_file_sidebars.get(&terminal)?)
+    }
+
+    /// The local terminal whose 文件 an explorer is, if it is one.
+    pub(super) fn local_files_terminal(&self, explorer: ExplorerId) -> Option<LocalTerminalId> {
+        self.local_file_sidebars
+            .iter()
+            .find(|(_, id)| **id == explorer)
+            .map(|(terminal, _)| *terminal)
+    }
+
+    /// A local terminal's 文件, made the first time it is shown: the local
+    /// pane of an SFTP tab, alone, in the terminal's folder, following it.
+    pub(super) fn ensure_local_file_sidebar(
+        &mut self,
+        terminal: LocalTerminalId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<ExplorerPanel>> {
+        if let Some(panel) = self.local_file_sidebar(terminal) {
+            return Some(panel.clone());
+        }
+        let folder = self
+            .local_terminals
+            .get(&terminal)?
+            .read(cx)
+            .directory()
+            .map(std::path::Path::to_owned);
+        let id = ExplorerId(self.next_explorer_id);
+        self.next_explorer_id += 1;
+        let panel = cx.new(|cx| {
+            ExplorerPanel::new_local_files(
+                id,
+                self.store.clone(),
+                self.local_directory_provider.clone(),
+                folder,
+                self.focus_handle.clone(),
+                window,
+                cx,
+            )
+        });
+        let subscription = subscribe_explorer(&panel, window, cx);
+        self._subscriptions.push(subscription);
+        self.explorers.insert(id, panel.clone());
+        self.local_file_sidebars.insert(terminal, id);
+        // Following a local shell needs nothing set up: on from the start.
+        panel.update(cx, |panel, cx| panel.set_follow(true, cx));
+        Some(panel)
     }
 
     /// The terminal whose 文件 an explorer is, if it is one.
@@ -3072,8 +3126,18 @@ fn new_explorer_panel(
             cx,
         )
     });
-    let subscription = cx.subscribe_in(
-        &panel,
+    let subscription = subscribe_explorer(&panel, window, cx);
+    (panel, subscription)
+}
+
+/// What the workspace does as an explorer, tab or 文件, says what happened.
+fn subscribe_explorer(
+    panel: &Entity<ExplorerPanel>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Subscription {
+    cx.subscribe_in(
+        panel,
         window,
         |this, _, event: &ExplorerPanelEvent, window, cx| match event {
             ExplorerPanelEvent::Activated(id) => {
@@ -3089,9 +3153,10 @@ fn new_explorer_panel(
                 if this.active_tab == Some(CenterTab::Explorer(*id)) {
                     this.set_active_tab(None, window, cx);
                 }
-                let sidebars = this.file_sidebars.len();
+                let sidebars = this.file_sidebars.len() + this.local_file_sidebars.len();
                 this.file_sidebars.retain(|_, sidebar| sidebar != id);
-                if this.file_sidebars.len() != sidebars {
+                this.local_file_sidebars.retain(|_, sidebar| sidebar != id);
+                if this.file_sidebars.len() + this.local_file_sidebars.len() != sidebars {
                     // The right sidebar lets go of it.
                     this.sync_tool_sidebar(window, cx);
                 }
@@ -3132,8 +3197,7 @@ fn new_explorer_panel(
                 this.open_editor(*id, location.clone(), file.clone(), window, cx)
             }
         },
-    );
-    (panel, subscription)
+    )
 }
 
 fn new_local_terminal_panel(
@@ -3157,7 +3221,10 @@ fn new_local_terminal_panel(
             }
             LocalTerminalPanelEvent::Closed(id) => {
                 this.keep_what_it_shows(*id, panel, cx);
-                this.local_files.remove(id);
+                // Its 文件 goes with it; local files' editors stay.
+                if let Some(files) = this.local_file_sidebar(*id).cloned() {
+                    files.update(cx, |files, cx| files.close(window, cx));
+                }
                 this.local_terminals.remove(id);
                 this.saved_terminals.remove(id);
                 if this.front_saved_terminal == Some(*id) {
@@ -3179,8 +3246,9 @@ fn new_local_terminal_panel(
             }
             LocalTerminalPanelEvent::WorkingDirectory(id, folder) => {
                 this.on_local_terminal_moved(*id, folder, cx);
-                if let Some(files) = this.local_files.get(id) {
-                    files.update(cx, |files, cx| files.terminal_moved(folder, window, cx));
+                if let Some(files) = this.local_file_sidebar(*id).cloned() {
+                    let folder = folder.to_string_lossy().into_owned();
+                    files.update(cx, |files, cx| files.follow_directory(folder, window, cx));
                 }
             }
             LocalTerminalPanelEvent::Notice(id, notice) => {

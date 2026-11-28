@@ -14,10 +14,12 @@ use crate::{
         OpenExplorer, RenameExplorer, RevealHost,
     },
     connection::{ConnectionPrompt, ConnectionPromptReply, Latency},
-    host::{BookmarkSide, ConnectionState, Host, HostId, HostLogin, HostStore},
+    host::{
+        AuthKind, BookmarkSide, ConnectionState, Host, HostDraft, HostId, HostLogin, HostStore,
+    },
     i18n::t,
     sftp::{
-        DownloadRequest, RemotePath, SftpCommand, SftpEvent, SftpRoute,
+        DownloadRequest, RemotePath, SftpCommand, SftpEvent, SftpRoute, SftpTransport,
         SharedLocalDirectoryProvider, SharedSftpTransportProvider, TextFile, TransferDirection,
         TransferPhase, TransferQuestion, UploadRequest, describe_sftp_error,
     },
@@ -44,6 +46,17 @@ use std::{
     time::Duration,
 };
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+/// What an explorer is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// An SFTP tab: both panes, a login of its own.
+    Tab,
+    /// A remote terminal's 文件: the remote pane, on the terminal's
+    /// connection.
+    RemoteFiles,
+    /// A local terminal's 文件: the local pane, no connection.
+    LocalFiles,
+}
 #[derive(Clone, Debug)]
 pub enum ExplorerPanelEvent {
     Activated(ExplorerId),
@@ -108,6 +121,9 @@ pub struct ExplorerPanel {
     /// connection: the remote pane alone, with no tab of its own. The local
     /// pane is never shown, nor listed; it only holds where downloads go.
     sidebar: bool,
+    /// The local terminal's 文件, a sidebar too: this computer's pane alone,
+    /// with no host and no connection.
+    local_only: bool,
     /// The sidebar's 目录跟随: it goes where the terminal's shell reports
     /// it is, as `follow_directory` hears of it.
     follow: bool,
@@ -153,10 +169,78 @@ impl ExplorerPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let host_id = host.id;
+        let kind = if matches!(route, SftpRoute::Terminal(_)) {
+            Kind::RemoteFiles
+        } else {
+            Kind::Tab
+        };
         let endpoint = login.endpoint();
-        let sidebar = matches!(route, SftpRoute::Terminal(_));
-        let home = if sidebar {
+        let transport = provider.create(&login, route);
+        Self::build(
+            id,
+            host,
+            endpoint,
+            store,
+            Some(transport),
+            kind,
+            local_provider,
+            None,
+            dispatch,
+            window,
+            cx,
+        )
+    }
+
+    /// A local terminal's 文件: this computer's folders alone, starting in
+    /// `folder` (the terminal's, else home). No host and no connection.
+    pub fn new_local_files(
+        id: ExplorerId,
+        store: Entity<HostStore>,
+        local_provider: SharedLocalDirectoryProvider,
+        folder: Option<std::path::PathBuf>,
+        dispatch: FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        // No host has id 0: the store's start at 1. Nothing of a host is
+        // shown, and its bookmarks, being none, are not offered.
+        let host = Host::new(
+            HostId(0),
+            HostDraft::new("", "localhost", 22, "", AuthKind::NoPassword, None),
+        );
+        Self::build(
+            id,
+            host,
+            String::new(),
+            store,
+            None,
+            Kind::LocalFiles,
+            local_provider,
+            folder,
+            dispatch,
+            window,
+            cx,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        id: ExplorerId,
+        host: Host,
+        endpoint: String,
+        store: Entity<HostStore>,
+        transport: Option<Box<dyn SftpTransport>>,
+        kind: Kind,
+        local_provider: SharedLocalDirectoryProvider,
+        folder: Option<std::path::PathBuf>,
+        dispatch: FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let host_id = host.id;
+        let sidebar = kind != Kind::Tab;
+        let local_only = kind == Kind::LocalFiles;
+        let home = if kind == Kind::RemoteFiles {
             local_provider.downloads()
         } else {
             local_provider.home()
@@ -186,35 +270,51 @@ impl ExplorerPanel {
                 cx,
             )
         });
-        let sync_browsing = !sidebar && host.sync_browsing;
-        // Listing a folder such as Downloads makes macOS ask for access,
-        // which a pane nobody sees has no business doing.
-        if sidebar {
-            remote.update(cx, |pane, cx| pane.set_compact(cx));
-        } else {
-            for pane in [&local, &remote] {
-                pane.update(cx, |pane, cx| pane.set_sync_browsing(sync_browsing, cx));
+        let sync_browsing = kind == Kind::Tab && host.sync_browsing;
+        match kind {
+            // Listing a folder such as Downloads makes macOS ask for access,
+            // which a pane nobody sees has no business doing.
+            Kind::RemoteFiles => remote.update(cx, |pane, cx| pane.set_compact(cx)),
+            Kind::LocalFiles => {
+                let folder = folder.map_or(home, |folder| folder.to_string_lossy().into_owned());
+                local.update(cx, |pane, cx| {
+                    pane.set_alone(cx);
+                    pane.load_local(
+                        folder,
+                        LoadIntent::Reload,
+                        local_provider.clone(),
+                        window,
+                        cx,
+                    );
+                });
             }
-            local.update(cx, |pane, cx| {
-                pane.load_local(home, LoadIntent::Reload, local_provider.clone(), window, cx)
-            });
+            Kind::Tab => {
+                for pane in [&local, &remote] {
+                    pane.update(cx, |pane, cx| pane.set_sync_browsing(sync_browsing, cx));
+                }
+                local.update(cx, |pane, cx| {
+                    pane.load_local(home, LoadIntent::Reload, local_provider.clone(), window, cx)
+                });
+            }
         }
         let (commands, receiver) = async_channel::unbounded();
         let (sender, events) = async_channel::unbounded();
-        let transport = provider.create(&login, route);
-        let failed = sender.clone();
-        if let Err(error) = std::thread::Builder::new()
-            .name("shellrs-sftp".into())
-            .spawn(move || {
-                if let Err(error) = transport.run(receiver, sender.clone()) {
-                    let _ =
-                        sender.send_blocking(SftpEvent::Disconnected(describe_sftp_error(&error)));
-                }
-            })
-        {
-            let _ = failed.try_send(SftpEvent::Disconnected(
-                t!("explorer.connection.start_failed", error = error).to_string(),
-            ));
+        // With none, nothing answers: the channels close here.
+        if let Some(transport) = transport {
+            let failed = sender.clone();
+            if let Err(error) = std::thread::Builder::new()
+                .name("shellrs-sftp".into())
+                .spawn(move || {
+                    if let Err(error) = transport.run(receiver, sender.clone()) {
+                        let _ = sender
+                            .send_blocking(SftpEvent::Disconnected(describe_sftp_error(&error)));
+                    }
+                })
+            {
+                let _ = failed.try_send(SftpEvent::Disconnected(
+                    t!("explorer.connection.start_failed", error = error).to_string(),
+                ));
+            }
         }
         // Poll snapshots as the terminal engine does. Worker threads never wake
         // a foreground-only GPUI task directly.
@@ -305,7 +405,11 @@ impl ExplorerPanel {
             find: None,
             find_mask: String::new(),
             commands,
-            state: ConnectionState::Connecting,
+            state: if local_only {
+                ConnectionState::Disconnected
+            } else {
+                ConnectionState::Connecting
+            },
             latency: None,
             queue: TransferQueue::default(),
             engine_busy: false,
@@ -318,6 +422,7 @@ impl ExplorerPanel {
             custom_title: None,
             last_remote: true,
             sidebar,
+            local_only,
             follow: false,
             follow_target: None,
             panes_split: cx.new(|_| ResizableState::default()),
@@ -370,6 +475,19 @@ impl ExplorerPanel {
     pub fn is_sidebar(&self) -> bool {
         self.sidebar
     }
+    /// A local terminal's 文件, which has this computer's pane alone.
+    pub fn is_local_files(&self) -> bool {
+        self.local_only
+    }
+    /// The one pane a sidebar shows: the remote one beside a remote
+    /// terminal, the local one beside a local terminal.
+    fn sidebar_pane(&self) -> &Entity<FilePane> {
+        if self.local_only {
+            &self.local
+        } else {
+            &self.remote
+        }
+    }
     /// 目录跟随 is on.
     pub fn follows(&self) -> bool {
         self.follow
@@ -380,7 +498,8 @@ impl ExplorerPanel {
         if !follow {
             self.follow_target = None;
         }
-        self.remote
+        self.sidebar_pane()
+            .clone()
             .update(cx, |pane, cx| pane.set_follow(follow, cx));
         cx.notify();
     }
@@ -394,7 +513,11 @@ impl ExplorerPanel {
         if !self.follow {
             return;
         }
-        if self.state != ConnectionState::Connected {
+        if self.local_only {
+            if self.local.read(cx).path() != path {
+                self.navigate(false, path, LoadIntent::Visit, window, cx);
+            }
+        } else if self.state != ConnectionState::Connected {
             self.follow_target = Some(path);
         } else if self.remote.read(cx).path() != path {
             self.navigate(true, path, LoadIntent::Visit, window, cx);
@@ -748,8 +871,8 @@ impl ExplorerPanel {
         if remote && self.state != ConnectionState::Connected {
             return None;
         }
-        // The sidebar's local pane is only a download target.
-        if !remote && self.sidebar {
+        // A remote terminal's 文件 has its local pane only to download to.
+        if !remote && self.sidebar && !self.local_only {
             return None;
         }
         self.leading[usize::from(remote)] = false;
@@ -792,6 +915,10 @@ impl ExplorerPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A local terminal's 文件 has no remote side to ask anything of.
+        if self.local_only && needs_connection(command) {
+            return;
+        }
         // Disconnected, a command for the remote side says why nothing
         // happens and offers to reconnect, rather than doing nothing.
         if self.state == ConnectionState::Disconnected && needs_connection(command) {
@@ -946,7 +1073,12 @@ impl ExplorerPanel {
                 }
             }
             ExplorerCommand::FocusPane { remote } => {
-                let focus = self.pane(*remote || self.sidebar).read(cx).focus_handle(cx);
+                let pane = if self.sidebar {
+                    self.sidebar_pane()
+                } else {
+                    self.pane(*remote)
+                };
+                let focus = pane.read(cx).focus_handle(cx);
                 window.focus(&focus, cx);
             }
             ExplorerCommand::MoveCursor {
@@ -1405,7 +1537,7 @@ impl Render for ExplorerPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sid = self.id;
         let panes = if self.sidebar {
-            self.remote.clone().into_any_element()
+            self.sidebar_pane().clone().into_any_element()
         } else {
             // Half and half when the tab opens, and as they were when the
             // panes change sides; the state then keeps where the user puts

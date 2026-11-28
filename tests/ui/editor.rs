@@ -1002,12 +1002,16 @@ async fn an_nginx_file_is_highlighted_as_nginx_by_its_folder(cx: &mut TestAppCon
     }
 }
 
+/// A local terminal's 文件 is the SFTP tab's local pane, alone: browsed
+/// and opened the same way, nothing to transfer and no bookmarks, no
+/// connection at all. It follows the terminal's folder unless switched off,
+/// and goes with the terminal; files opened from it stay open.
 #[gpui_kit::test]
-async fn local_terminal_sidebar_opens_and_saves_a_file(cx: &mut TestAppContext) {
-    let local = FakeLocalDirectory::default();
+async fn a_local_terminals_files_browse_follow_and_edit_on_this_computer(cx: &mut TestAppContext) {
+    use shellrs::app::CloseLocalTerminal;
     use shellrs::terminal::{LocalTerminalId, TerminalEvent};
-    let followed = std::path::PathBuf::from("/local/followed");
-    let path = followed.join("文件 甲.txt");
+    let local = FakeLocalDirectory::default();
+    let path = std::path::PathBuf::from("/local/followed/文件 甲.txt");
     local
         .files
         .lock()
@@ -1020,33 +1024,97 @@ async fn local_terminal_sidebar_opens_and_saves_a_file(cx: &mut TestAppContext) 
     });
     wait_for(cx, handle, "tool-files").await;
     in_frame(cx, handle, |window, cx| window.click("tool-files", cx));
-    wait_for(cx, handle, "local-file:目录").await;
-    in_frame(cx, handle, |window, cx| window.click("local-file:目录", cx));
-    wait_for(cx, handle, "local-file:文件 甲.txt").await;
-    in_frame(cx, handle, |window, cx| {
-        window.click("local-files-follow", cx)
+    cx.run_until_parked();
+    let files = cx.update(|cx| {
+        workspace
+            .read(cx)
+            .local_file_sidebar(LocalTerminalId(1))
+            .map(|panel| panel.read(cx).id())
+            .expect("made as it is shown")
     });
-    cx.update(|cx| {
-        let terminal = workspace
-            .read(cx)
-            .local_terminal(LocalTerminalId(1))
-            .unwrap()
-            .read(cx)
-            .terminal()
-            .clone();
-        terminal.update(cx, |_, cx| {
-            cx.emit(TerminalEvent::WorkingDirectory(followed.clone()))
+    let pane = ("local-pane", files.0);
+    let local_path = |cx: &mut TestAppContext| {
+        in_frame(cx, handle, |window, _| {
+            window.find("local-path").value().map(str::to_string)
+        })
+    };
+    // The terminal's shell says it is in `folder`.
+    let moved = |cx: &mut TestAppContext, folder: &str| {
+        cx.update(|cx| {
+            let terminal = workspace
+                .read(cx)
+                .local_terminal(LocalTerminalId(1))
+                .unwrap()
+                .read(cx)
+                .terminal()
+                .clone();
+            terminal.update(cx, |_, cx| {
+                cx.emit(TerminalEvent::WorkingDirectory(folder.into()))
+            });
         });
+        cx.run_until_parked();
+    };
+    let open = |cx: &mut TestAppContext, name: &str| {
+        let name = ElementId::Name(format!("name:{name}").into());
+        in_frame(cx, handle, |window, cx| {
+            window.within(pane).double_click(name, cx)
+        });
+    };
+    cx.wait_for(handle.into(), Duration::from_secs(2), move |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(pane)
+            .is_some_and(|_| window.within(pane).try_find("name:目录").is_some())
+    })
+    .await;
+    // Nowhere to transfer to, no host to keep bookmarks for.
+    in_frame(cx, handle, |window, _| {
+        let pane = window.within(pane);
+        for id in ["upload", "upload-menu", "choose-files", "bookmarks-menu"] {
+            assert!(pane.try_find(id).is_none(), "{id}");
+        }
+    });
+
+    // A double-click goes in, as in the SFTP tab.
+    open(cx, "目录");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("local-path").value() == Some("/local/tester/目录")
+    })
+    .await;
+
+    // 目录跟随 switched off: the terminal moves alone.
+    in_frame(cx, handle, |window, cx| {
+        window.within(pane).click("follow-terminal", cx)
     });
     cx.run_until_parked();
-    assert!(!local.listed.lock().unwrap().contains(&followed));
+    moved(cx, "/local/followed");
+    assert_eq!(local_path(cx).as_deref(), Some("/local/tester/目录"));
+    // On again: to where the terminal is.
     in_frame(cx, handle, |window, cx| {
-        window.click("local-files-follow", cx)
+        window.within(pane).click("follow-terminal", cx)
     });
-    wait_for(cx, handle, "local-file:文件 甲.txt").await;
-    in_frame(cx, handle, |window, cx| {
-        window.click("local-file:文件 甲.txt", cx)
-    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("local-path").value() == Some("/local/followed")
+    })
+    .await;
+    // And on with the terminal as it moves.
+    moved(cx, "/local/tester");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("local-path").value() == Some("/local/tester")
+    })
+    .await;
+    moved(cx, "/local/followed");
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("local-path").value() == Some("/local/followed")
+    })
+    .await;
+
+    // A file opens in the editor and is saved on this computer.
+    open(cx, "文件 甲.txt");
     wait_for_editor(cx, handle, FIRST).await;
     assert_eq!(text_of(&workspace, FIRST, cx), "local");
     type_text(cx, handle, "edited ");
@@ -1055,5 +1123,18 @@ async fn local_terminal_sidebar_opens_and_saves_a_file(cx: &mut TestAppContext) 
         local.files.lock().unwrap()[&path] == b"edited local"
     })
     .await;
-    assert_eq!(*sftp.on_terminal.lock().unwrap(), 0);
+    // No SFTP anywhere.
+    assert!(sftp.events.lock().unwrap().is_empty());
+
+    // 文件 goes with its terminal; the file stays open.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(CloseLocalTerminal(LocalTerminalId(1))), cx)
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let workspace = workspace.read(cx);
+        assert!(workspace.local_file_sidebar(LocalTerminalId(1)).is_none());
+        assert!(workspace.explorer(files).is_none());
+        assert!(workspace.editor(FIRST).is_some());
+    });
 }

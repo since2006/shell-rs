@@ -212,6 +212,9 @@ pub struct FilePane {
     /// 同步浏览, a switch on both panes of an SFTP tab, on or off; the
     /// sidebar has none.
     sync_browsing: Option<bool>,
+    /// The local terminal's 文件: this computer's folders alone, with no
+    /// other side to transfer to and no host to keep bookmarks for.
+    alone: bool,
     /// A file operation on this pane is running.
     busy: bool,
     store: Entity<HostStore>,
@@ -313,6 +316,7 @@ impl FilePane {
             compact: false,
             follow: None,
             sync_browsing: None,
+            alone: false,
             busy: false,
             store,
             dispatch,
@@ -522,6 +526,15 @@ impl FilePane {
             table.refresh(cx);
         });
         cx.notify();
+    }
+    /// The local terminal's 文件; see `alone`.
+    pub(super) fn is_alone(&self) -> bool {
+        self.alone
+    }
+    /// Be the local terminal's 文件; see `alone`.
+    pub(super) fn set_alone(&mut self, cx: &mut Context<Self>) {
+        self.alone = true;
+        self.set_compact(cx);
     }
     /// Show 目录跟随 in the status line, on or off.
     pub(super) fn set_follow(&mut self, follow: bool, cx: &mut Context<Self>) {
@@ -948,6 +961,7 @@ impl FilePane {
             can_transfer: self.transfer_enabled,
             show_hidden: ShowHiddenFiles::get(self.side, cx),
             finds: self.is_remote() && !self.compact,
+            alone: self.alone,
         }
     }
 }
@@ -1057,25 +1071,28 @@ impl Render for FilePane {
                 )
             })
             // WinSCP's 打开目录/书签 button; its menu jumps straight to a
-            // bookmark.
-            .child({
+            // bookmark. With no host there are none: the path label opens
+            // 打开目录 instead.
+            .when(!self.alone, |row| {
                 let menu = state.clone();
-                DropdownButton::new("bookmarks-menu")
-                    .ghost()
-                    .small()
-                    .button(
-                        tool(
-                            "bookmarks",
-                            Icon::new(CatalogIcon::Bookmark),
-                            t!("explorer.command.open_directory"),
-                            ExplorerCommand::OpenDirectory { remote },
+                row.child(
+                    DropdownButton::new("bookmarks-menu")
+                        .ghost()
+                        .small()
+                        .button(
+                            tool(
+                                "bookmarks",
+                                Icon::new(CatalogIcon::Bookmark),
+                                t!("explorer.command.open_directory"),
+                                ExplorerCommand::OpenDirectory { remote },
+                            )
+                            .disabled(!navigable),
                         )
-                        .disabled(!navigable),
-                    )
-                    .disabled(!navigable)
-                    .dropdown_menu(move |popup, _, _| bookmark_menu(popup, &menu))
+                        .disabled(!navigable)
+                        .dropdown_menu(move |popup, _, _| bookmark_menu(popup, &menu)),
+                )
+                .child(Separator::vertical())
             })
-            .child(Separator::vertical())
             .child(
                 tool(
                     "up",
@@ -1251,7 +1268,7 @@ impl Render for FilePane {
                 .into_any_element()
         };
         // With no local pane beside it, the sidebar picks what to upload.
-        let choose = self.compact.then(|| {
+        let choose = (self.compact && remote).then(|| {
             let dispatch = self.dispatch.clone();
             Button::new("choose-files")
                 .ghost()
@@ -1268,10 +1285,11 @@ impl Render for FilePane {
                     )
                 })
         });
+        // Alone, there is nowhere to transfer to.
+        let transfer = (!self.alone).then(|| [transfer, Separator::vertical().into_any_element()]);
         let operations = toolbar()
             .children(choose)
-            .child(transfer)
-            .child(Separator::vertical())
+            .children(transfer.into_iter().flatten())
             .child(
                 tool(
                     "delete",

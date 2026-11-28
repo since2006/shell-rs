@@ -12,11 +12,12 @@ use gpui_kit::component::{WindowExt as _, dialog::DialogButtonProps, notificatio
 use gpui_kit::*;
 
 use crate::app::{InstallDirectoryFollow, ToggleDirectoryFollow, ToolKind};
+use crate::explorer::ExplorerId;
 use crate::i18n::t;
 use crate::terminal::{
-    ExecResult, FollowCheck, RemoteTerminalId, ReportedDirectory, TerminalLifecycle, TerminalView,
-    directory_check_command, directory_install_command, directory_installed, exec_answer,
-    parse_directory_check,
+    ExecResult, FollowCheck, LocalTerminalId, RemoteTerminalId, ReportedDirectory,
+    TerminalLifecycle, TerminalView, directory_check_command, directory_install_command,
+    directory_installed, exec_answer, parse_directory_check,
 };
 
 use super::Workspace;
@@ -325,6 +326,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(terminal) = self.local_files_terminal(action.0) {
+            return self.toggle_local_follow(terminal, action.0, window, cx);
+        }
         let Some(terminal) = self.sidebar_terminal(action.0) else {
             return;
         };
@@ -342,6 +346,30 @@ impl Workspace {
             // already asked on this connection is not asked again.
             self.check_directory_follow(terminal, window, cx);
             self.follow_current_directory(terminal, window, cx);
+        }
+    }
+
+    /// 目录跟随 of a local terminal's 文件: nothing to set up, nothing kept.
+    /// Turned on, it goes where the terminal's shell is.
+    fn toggle_local_follow(
+        &mut self,
+        terminal: LocalTerminalId,
+        explorer: ExplorerId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = self.explorers.get(&explorer).cloned() else {
+            return;
+        };
+        let follow = !panel.read(cx).follows();
+        panel.update(cx, |panel, cx| panel.set_follow(follow, cx));
+        let folder = self
+            .local_terminals
+            .get(&terminal)
+            .and_then(|panel| panel.read(cx).directory())
+            .map(|folder| folder.to_string_lossy().into_owned());
+        if let (true, Some(folder)) = (follow, folder) {
+            panel.update(cx, |panel, cx| panel.follow_directory(folder, window, cx));
         }
     }
 

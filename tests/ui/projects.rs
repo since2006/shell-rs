@@ -882,8 +882,21 @@ async fn a_snippet_beside_a_local_terminal_types_into_it(cx: &mut TestAppContext
     });
 }
 
+/// Beside a local terminal the tools it shares with remote ones are where
+/// they are there: 命令片段 first, 文件 third; 项目 between them.
 #[gpui_kit::test]
-async fn projects_and_snippets_hidden_in_the_settings_leave_local_terminals_without_a_sidebar(
+async fn a_local_terminals_shared_tools_are_where_a_remote_ones_are(cx: &mut TestAppContext) {
+    let (handle, _) = open_with_local(cx, projects_store(), fake_local_terminals());
+    open_projects(cx, handle);
+    in_frame(cx, handle, |window, _| {
+        let top = |id: &'static str| window.find(id).bounds().top();
+        assert!(top("tool-snippets") < top("tool-projects"));
+        assert!(top("tool-projects") < top("tool-files"));
+    });
+}
+
+#[gpui_kit::test]
+async fn projects_files_and_snippets_hidden_in_the_settings_leave_local_terminals_without_a_sidebar(
     cx: &mut TestAppContext,
 ) {
     let (handle, workspace) = open_with_local(cx, projects_store(), fake_local_terminals());
@@ -901,7 +914,13 @@ async fn projects_and_snippets_hidden_in_the_settings_leave_local_terminals_with
         assert!(window.try_find("tool-snippets").is_some());
         assert!(window.try_find(("tool-sidebar-local", 1_u64)).is_none());
     });
+    // 文件 is still there, then nothing is.
     hide(ToolKind::Snippets, cx);
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("tool-snippets").is_none());
+        assert!(window.try_find("tool-files").is_some());
+    });
+    hide(ToolKind::Files, cx);
     in_frame(cx, handle, |window, _| {
         assert!(window.try_find("tool-switch").is_none());
         assert!(window.try_find(("tool-sidebar-local", 1_u64)).is_none());

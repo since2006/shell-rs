@@ -850,10 +850,9 @@ impl Workspace {
             {
                 self.check_directory_follow(terminal.id, window, cx);
                 self.ensure_file_sidebar(terminal.id, window, cx)
-                    .map(AnyView::from)
             }
             Some(SidebarTarget::Local(id)) if tool == Some(ToolKind::Files) => {
-                Some(self.local_files_for(*id, window, cx).into())
+                self.ensure_local_file_sidebar(*id, window, cx)
             }
             _ => None,
         };
