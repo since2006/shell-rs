@@ -4,6 +4,19 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.21-beta.1]
+
+### Improved
+
+- The Hosts, Port forwarding and Credentials buttons in the title bar now work as toggles: click the one showing again to hide the sidebar, as ⌘B (Ctrl+Shift+B on Windows and Linux) does. The separate Hide sidebar button is gone. ([#170](https://github.com/since2006/shell-rs/issues/170))
+- Settings moved from the bottom of the sidebar to the top right of the title bar, beside the theme button, and New local terminal moved next to the Credentials button. ([#170](https://github.com/since2006/shell-rs/issues/170))
+- The title bar’s icons are bigger, and the same size on Windows as on macOS. The title bar no longer scales with Interface font size, so a larger size doesn’t push its buttons past it; the system’s display scaling still applies. ([#170](https://github.com/since2006/shell-rs/issues/170))
+- The Port forwarding button no longer shows how many forwards are running; the list of forwards shows which are. ([#170](https://github.com/since2006/shell-rs/issues/170))
+
+### Fixed
+
+- Hiding the sidebar while its list had the focus (with ⌘B / Ctrl+Shift+B or by double-clicking a tab’s title) left every shortcut dead, ⌘B included, until you clicked in the window. The focus now moves to the tab in front.
+
 ## [0.1.20]
 
 ### Added
