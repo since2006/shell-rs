@@ -29,6 +29,28 @@ pub(crate) async fn run<F: RemoteFs>(fs: &F, operation: &RemoteOperation) -> Res
             }
             fs.mkdir(path).await
         }
+        RemoteOperation::CreateDirectories { path } => {
+            let mut missing = Vec::new();
+            let mut current = path.clone();
+            loop {
+                match fs.stat(&current).await? {
+                    Some(metadata) if metadata.kind() == EntryKind::Directory => break,
+                    Some(_) => bail!(SftpError::NotAFolder {
+                        path: current.to_string()
+                    }),
+                    None if current.is_root() => break,
+                    None => {
+                        let parent = current.parent();
+                        missing.push(current);
+                        current = parent;
+                    }
+                }
+            }
+            for directory in missing.iter().rev() {
+                fs.mkdir(directory).await?;
+            }
+            Ok(())
+        }
         RemoteOperation::CreateFile { path } => {
             let handle = fs.open(path, true).await?;
             fs.close(&handle).await

@@ -102,6 +102,9 @@ app.shortcut.open_sftp:
 app.shortcut.reconnect_terminal:
   zh-CN: 重新连接
   en: Reconnect
+app.shortcut.sync_browsing:
+  zh-CN: SFTP 同步浏览
+  en: SFTP sync browsing
 app.shortcut.close_tab:
   zh-CN: 关闭标签
   en: Close tab

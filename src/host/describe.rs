@@ -211,6 +211,7 @@ fn not_saved(change: Change, error: &str) -> SharedString {
         Change::HostOs => t!("host.store.not_saved.host_os", error = error),
         Change::SidebarTool => t!("host.store.not_saved.sidebar_tool", error = error),
         Change::DirectoryFollow => t!("host.store.not_saved.directory_follow", error = error),
+        Change::SyncBrowsing => t!("host.store.not_saved.sync_browsing", error = error),
         Change::NewSnippet => t!("host.store.not_saved.new_snippet", error = error),
         Change::SaveSnippet => t!("host.store.not_saved.save_snippet", error = error),
         Change::DeleteSnippet => t!("host.store.not_saved.delete_snippet", error = error),

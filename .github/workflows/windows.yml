@@ -48,6 +48,7 @@ on:
       - "crates/shellrs-ssh/src/sftp/tests.rs"
       - "src/sftp/local.rs"
       - "src/sftp/shortcut.rs"
+      - "src/explorer/sync_browsing.rs"
       - "src/credential/credential_dialog.rs"
       - "src/settings/model.rs"
       - "src/settings/settings_panel.rs"
@@ -119,6 +120,8 @@ jobs:
       - run: "cargo test --lib sftp::local::tests::local_listing"
       # Explorer's shortcuts, read by the shell (issue #144).
       - run: "cargo test --lib sftp::shortcut"
+      # 同步浏览 between a Windows folder and the server's (issue #61).
+      - run: "cargo test --lib explorer::sync_browsing"
       - run: "cargo test --lib terminal::local_shell"
       - run: "cargo test --lib serial::"
       - run: "cargo test --lib settings::model"

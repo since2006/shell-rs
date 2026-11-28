@@ -409,6 +409,11 @@ pub struct Host {
     /// until then: the app's setting decides. Written by the sidebar, never
     /// by the host form.
     pub directory_follow: Option<bool>,
+    /// 同步浏览 in the host's SFTP tabs as the user last switched it: the
+    /// next tab of the host starts with it. Off until switched on. Written
+    /// by the SFTP tab, never by the host form, and not synced: browsing
+    /// follows this computer's folders.
+    pub sync_browsing: bool,
     /// When the user last changed what syncs of it, in milliseconds since
     /// the epoch; 0 for a host sync brought. `os` and the like are not
     /// edits.
@@ -439,6 +444,7 @@ impl Host {
             os: None,
             sidebar_tool: None,
             directory_follow: None,
+            sync_browsing: false,
             edited_ms: 0,
         }
     }

@@ -1198,6 +1198,7 @@ impl HostData {
                         fresh.os = old.os;
                         fresh.sidebar_tool = old.sidebar_tool.take();
                         fresh.directory_follow = old.directory_follow;
+                        fresh.sync_browsing = old.sync_browsing;
                         fresh.edited_ms = old.edited_ms;
                         *old = fresh;
                         false

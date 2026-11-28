@@ -1394,6 +1394,43 @@ fn rename_and_create_refuse_existing_names() {
     });
 }
 
+#[test]
+fn create_directories_makes_the_missing_ones_above_and_stops_at_a_file() {
+    runtime().block_on(async {
+        let remote = Remote::new();
+        remote.dir("/srv", 0o755);
+        remote.file("/srv/file", b"x");
+        let create = |path: &str| RemoteOperation::CreateDirectories {
+            path: remote_path(path),
+        };
+        super::operations::run(&remote, &create("/srv/site/assets/css"))
+            .await
+            .unwrap();
+        for dir in ["/srv/site", "/srv/site/assets", "/srv/site/assets/css"] {
+            assert_eq!(
+                remote.nodes.borrow()[dir].metadata.kind(),
+                EntryKind::Directory,
+                "{dir}"
+            );
+        }
+        // Already there: nothing to do.
+        super::operations::run(&remote, &create("/srv/site"))
+            .await
+            .unwrap();
+        // A file where a folder should be.
+        let error = super::operations::run(&remote, &create("/srv/file/sub"))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<SftpError>(),
+            Some(&SftpError::NotAFolder {
+                path: "/srv/file".into()
+            })
+        );
+        assert!(!remote.nodes.borrow().contains_key("/srv/file/sub"));
+    });
+}
+
 async fn download_batch(
     sources: &[&str],
     destination: &Path,

@@ -29,6 +29,8 @@ pub struct FakeSftpProvider {
     pub writes: FakeWrites,
     /// The transports made for a terminal's 文件 rather than an SFTP tab.
     pub on_terminal: Arc<Mutex<usize>>,
+    /// Folders that are not there until something makes them.
+    pub missing: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 impl FakeSftpProvider {
@@ -81,6 +83,7 @@ impl SftpTransportProvider for FakeSftpProvider {
             files: self.files.clone(),
             reads: self.reads.clone(),
             writes: self.writes.clone(),
+            missing: self.missing.clone(),
             home: if self.slow_home {
                 "/slow"
             } else {
@@ -102,6 +105,7 @@ pub struct FakeSftpTransport {
     pub files: FakeFiles,
     pub reads: Arc<Mutex<Vec<String>>>,
     pub writes: FakeWrites,
+    pub missing: Arc<Mutex<std::collections::HashSet<String>>>,
     pub home: &'static str,
 }
 
@@ -145,7 +149,9 @@ impl SftpTransport for FakeSftpTransport {
                     if path.as_str() == "/slow" {
                         continue;
                     }
+                    let missing = self.missing.lock().unwrap().contains(path.as_str());
                     let result = match path.as_str() {
+                        _ if missing => Err("没有那个文件或目录".into()),
                         "/denied" => Err("权限不足".into()),
                         "/empty" => Ok(DirectoryListing::new("/empty", vec![])),
                         "/dotfiles" => Ok(dotfiles_listing()),
@@ -171,6 +177,9 @@ impl SftpTransport for FakeSftpTransport {
                             .lock()
                             .unwrap()
                             .insert(path.to_string(), (Vec::new(), 100));
+                    }
+                    if let shellrs::sftp::RemoteOperation::CreateDirectories { path } = &operation {
+                        self.missing.lock().unwrap().remove(path.as_str());
                     }
                     self.operations.lock().unwrap().push(operation);
                     events.send_blocking(SftpEvent::Operated {
@@ -308,6 +317,8 @@ pub struct FakeLocalDirectory {
     pub places: Arc<Mutex<Vec<(shellrs::sftp::Place, std::path::PathBuf)>>>,
     /// The folders listed, in order.
     pub listed: Arc<Mutex<Vec<std::path::PathBuf>>>,
+    /// Folders that are not there until something makes them.
+    pub missing: Arc<Mutex<std::collections::HashSet<std::path::PathBuf>>>,
 }
 
 impl FakeLocalDirectory {
@@ -326,6 +337,9 @@ impl LocalDirectoryProvider for FakeLocalDirectory {
     }
     fn list(&self, path: &std::path::Path) -> anyhow::Result<DirectoryListing> {
         self.listed.lock().unwrap().push(path.to_path_buf());
+        if self.missing.lock().unwrap().contains(path) {
+            anyhow::bail!("「{}」不存在", path.display());
+        }
         Ok(fake_listing(path.to_str().unwrap()))
     }
     fn places(&self) -> Vec<(shellrs::sftp::Place, std::path::PathBuf)> {
@@ -339,6 +353,10 @@ impl LocalDirectoryProvider for FakeLocalDirectory {
     }
     fn create_dir(&self, path: &std::path::Path) -> anyhow::Result<()> {
         self.record(format!("mkdir {}", path.display()))
+    }
+    fn create_dir_all(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        self.missing.lock().unwrap().remove(path);
+        self.record(format!("mkdir -p {}", path.display()))
     }
     fn create_file(&self, path: &std::path::Path) -> anyhow::Result<()> {
         self.files.lock().unwrap().insert(path.into(), Vec::new());

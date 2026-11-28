@@ -28,6 +28,11 @@ pub enum RemoteOperation {
     CreateDirectory {
         path: RemotePath,
     },
+    /// Create a directory and the ones missing above it, as `mkdir -p`;
+    /// done already when it is there. Links on the way are followed.
+    CreateDirectories {
+        path: RemotePath,
+    },
     /// Create an empty file; fails if the name exists.
     CreateFile {
         path: RemotePath,

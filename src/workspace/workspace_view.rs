@@ -40,8 +40,9 @@ use crate::app::{
     ReconnectTerminal, RefreshCliIntegration, RemoveAgentSkill, RemoveCliCommand, RenameExplorer,
     RenameGroup, RenameTerminal, RestartLocalTerminal, RestoreWindow, RevealHost,
     ScrollTerminalPageDown, ScrollTerminalPageUp, SelectAllTerminal, SendBreak, SetFileSizeFormat,
-    ShowOrHideApp, ToggleHiddenFiles, ToggleHostDetails, ToggleHostPanel, ToggleTheme, ToolKind,
-    ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut, ZoomTerminalReset,
+    ShowOrHideApp, ToggleFrontSyncBrowsing, ToggleHiddenFiles, ToggleHostDetails, ToggleHostPanel,
+    ToggleTheme, ToolKind, ZoomIn, ZoomOut, ZoomReset, ZoomTerminalIn, ZoomTerminalOut,
+    ZoomTerminalReset,
 };
 use crate::cli::{CliIntegration, CliServer, IntegrationPaths, SshCliBackend};
 use crate::connection::{
@@ -2459,6 +2460,26 @@ impl Workspace {
         }
     }
 
+    fn on_toggle_front_sync_browsing(
+        &mut self,
+        _: &ToggleFrontSyncBrowsing,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(CenterTab::Explorer(id)) = self.active_tab else {
+            return;
+        };
+        let Some(panel) = self.explorers.get(&id) else {
+            return;
+        };
+        let on = !panel.read(cx).sync_browsing();
+        self.on_explorer_action(
+            &ExplorerAction::new(id, ExplorerCommand::SyncBrowsing { on }),
+            window,
+            cx,
+        );
+    }
+
     fn on_reconnect_front_terminal(
         &mut self,
         _: &ReconnectFrontTerminal,
@@ -3268,6 +3289,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_duplicate_front_terminal))
             .on_action(cx.listener(Self::on_open_front_terminal_sftp))
             .on_action(cx.listener(Self::on_reconnect_front_terminal))
+            .on_action(cx.listener(Self::on_toggle_front_sync_browsing))
             .on_action(cx.listener(Self::on_send_break))
             .on_action(cx.listener(Self::on_open_explorer))
             .on_action(cx.listener(Self::on_explorer_action))

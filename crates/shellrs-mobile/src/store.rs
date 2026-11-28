@@ -1031,6 +1031,7 @@ impl From<Change> for ChangeKind {
             | Change::HostOs
             | Change::SidebarTool
             | Change::DirectoryFollow
+            | Change::SyncBrowsing
             | Change::NewSnippet
             | Change::SaveSnippet
             | Change::DeleteSnippet

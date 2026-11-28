@@ -21,6 +21,7 @@ mod preview;
 mod properties_dialog;
 mod queue_panel;
 mod selection;
+mod sync_browsing;
 mod transfer_queue;
 
 pub use explorer_panel::{ExplorerPanel, ExplorerPanelEvent, ExplorerStatus};

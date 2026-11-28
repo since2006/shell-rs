@@ -149,6 +149,36 @@ explorer.command.back:
 explorer.command.forward:
   zh-CN: 前进
   en: Forward
+explorer.sync_browsing.name:
+  zh-CN: 同步浏览
+  en: Sync browsing
+explorer.sync_browsing.turn_on:
+  zh-CN: 开启同步浏览
+  en: Turn on sync browsing
+explorer.sync_browsing.turn_off:
+  zh-CN: 关闭同步浏览
+  en: Turn off sync browsing
+explorer.sync_browsing.create_title:
+  zh-CN: 创建对应的文件夹？
+  en: Create the matching folder?
+explorer.sync_browsing.missing_remote:
+  zh-CN: 服务器上打不开对应的文件夹「%{path}」：%{error}。创建这个文件夹，或者关闭同步浏览。
+  en: "The matching folder “%{path}” couldn’t be opened on the server: %{error}. Create it, or turn off sync browsing."
+explorer.sync_browsing.missing_local:
+  zh-CN: 本机上打不开对应的文件夹「%{path}」：%{error}。创建这个文件夹，或者关闭同步浏览。
+  en: "The matching folder “%{path}” couldn’t be opened on this computer: %{error}. Create it, or turn off sync browsing."
+explorer.sync_browsing.create:
+  zh-CN: 创建
+  en: Create folder
+explorer.sync_browsing.stopped:
+  zh-CN: 另一侧跟不过去，同步浏览已关闭。
+  en: The other side can’t make the same move, so sync browsing is off.
+explorer.sync_browsing.stopped_because:
+  zh-CN: 同步浏览已关闭：%{error}
+  en: "Sync browsing is off: %{error}"
+explorer.sync_browsing.stopped_disconnected:
+  zh-CN: SFTP 连接已断开，同步浏览已关闭。
+  en: The SFTP connection is down, so sync browsing is off.
 explorer.command.show_hidden_files:
   zh-CN: 显示隐藏文件
   en: Show hidden files

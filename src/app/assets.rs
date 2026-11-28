@@ -33,6 +33,8 @@ icon_assets!(
         House,
         FolderUp,
         FolderRoot,
+        // 同步浏览 in the SFTP toolbars.
+        Link,
         FolderSymlink,
         FileSymlink,
         FilePlus,

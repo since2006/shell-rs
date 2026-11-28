@@ -187,6 +187,7 @@ pub enum Change {
     HostOs,
     SidebarTool,
     DirectoryFollow,
+    SyncBrowsing,
     NewSnippet,
     SaveSnippet,
     DeleteSnippet,
@@ -987,6 +988,7 @@ impl HostData {
         // drop them.
         let (os, sidebar_tool) = (host.os, host.sidebar_tool.clone());
         let directory_follow = host.directory_follow;
+        let sync_browsing = host.sync_browsing;
         let sort_order = host.sort_order;
         let old_group = host.group;
         let public_id = host.public_id.clone();
@@ -997,6 +999,7 @@ impl HostData {
         host.os = os;
         host.sidebar_tool = sidebar_tool;
         host.directory_follow = directory_follow;
+        host.sync_browsing = sync_browsing;
         host.sort_order = if host.group == old_group {
             sort_order
         } else {
@@ -1084,6 +1087,7 @@ impl HostData {
         // and opens the sidebar as the original does.
         let (os, sidebar_tool) = (self.hosts[ix].os, self.hosts[ix].sidebar_tool.clone());
         let directory_follow = self.hosts[ix].directory_follow;
+        let sync_browsing = self.hosts[ix].sync_browsing;
         let copy_id = HostId(self.next_host_id);
         self.next_host_id += 1;
         let mut copy = Host::new(copy_id, draft);
@@ -1093,6 +1097,7 @@ impl HostData {
         copy.os = os;
         copy.sidebar_tool = sidebar_tool;
         copy.directory_follow = directory_follow;
+        copy.sync_browsing = sync_browsing;
         copy.sort_order = self.hosts[ix].sort_order + 1;
         copy.edited_ms = edited_after(0);
         for host in &mut self.hosts {
@@ -2048,6 +2053,31 @@ impl HostData {
             return false;
         }
         host.directory_follow = Some(follow);
+        true
+    }
+
+    /// Remember 同步浏览 as the user switched it in one of the host's SFTP
+    /// tabs, for the host's next ones. Only a saved host keeps it for the
+    /// next launch.
+    pub fn set_host_sync_browsing(&mut self, id: HostId, on: bool) {
+        if !self.set_host_sync_browsing_unnotified(id, on) {
+            return;
+        }
+        if !self.is_temporary(id) {
+            self.persist(Change::SyncBrowsing, |db| db.set_host_sync_browsing(id, on));
+        }
+        self.changed();
+    }
+
+    /// Returns whether the remembered switch changed.
+    pub fn set_host_sync_browsing_unnotified(&mut self, id: HostId, on: bool) -> bool {
+        let Some(host) = self.host_mut(id) else {
+            return false;
+        };
+        if host.sync_browsing == on {
+            return false;
+        }
+        host.sync_browsing = on;
         true
     }
 
@@ -3194,6 +3224,34 @@ mod tests {
         store.set_host_directory_follow(saved, true);
         let reopened = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
         assert_eq!(follow_of(&reopened, saved), Some(true));
+    }
+
+    #[test]
+    fn the_sync_browsing_switch_is_kept_for_the_next_launch_edits_and_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        let mut store = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        let saved = store.insert(draft("web", None));
+        let temporary = store.insert_temporary(draft("quick", None), None);
+        let on = |store: &HostData, id| store.host(id).is_some_and(|host| host.sync_browsing);
+        assert!(!on(&store, saved));
+        store.set_host_sync_browsing(saved, true);
+        store.set_host_sync_browsing(temporary, true);
+        assert!(on(&store, temporary));
+        assert!(!store.set_host_sync_browsing_unnotified(saved, true));
+        assert!(!store.set_host_sync_browsing_unnotified(HostId(99), true));
+        let reopened = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        assert!(on(&reopened, saved));
+        assert!(reopened.host(temporary).is_none());
+
+        // The form does not own it, and a copy goes to the same machine.
+        store.update(saved, draft("web-renamed", None));
+        assert!(on(&store, saved));
+        let copy = store.duplicate_unnotified(saved, "copy".into()).unwrap();
+        assert!(on(&store, copy));
+        store.set_host_sync_browsing(saved, false);
+        let reopened = HostData::load(HostDatabase::open(&path).unwrap()).unwrap();
+        assert!(!on(&reopened, saved));
     }
 
     #[test]

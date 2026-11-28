@@ -728,6 +728,9 @@ host.store.not_saved.sidebar_tool:
 host.store.not_saved.directory_follow:
   zh-CN: 主机的「目录跟随」开关未能保存到本地数据库：%{error}
   en: "Couldn’t save the host’s Follow switch to the local database: %{error}"
+host.store.not_saved.sync_browsing:
+  zh-CN: 主机的「同步浏览」开关未能保存到本地数据库：%{error}
+  en: "Couldn’t save the host’s Sync browsing switch to the local database: %{error}"
 host.store.not_saved.new_snippet:
   zh-CN: 新建命令片段未能保存到本地数据库：%{error}
   en: "Couldn’t save the new snippet to the local database: %{error}"

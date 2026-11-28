@@ -46,7 +46,7 @@ fn from_sql(id: i64) -> u64 {
 /// credential, 24 the one-time codes an SSH host fills in, 25 what an SSH
 /// host types once logged in, 26 a host's `ProxyCommand`, 27 the AI
 /// assistant's model services.
-const SCHEMA_VERSION: i64 = 28;
+const SCHEMA_VERSION: i64 = 29;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -75,7 +75,9 @@ const SCHEMA_VERSION: i64 = 28;
 ///     `sidebar_tool` (the right sidebar's tool as the host's terminals
 ///     last had it, the app's `ToolKind::key`; `NULL` while hidden) and
 ///     `directory_follow` (目录跟随 in its 文件 as last switched; `NULL`
-///     until then) by the sidebar; none of them by the host form.
+///     until then) by the sidebar, and `sync_browsing` (同步浏览 as its
+///     SFTP tabs last had it) by the SFTP tab; none of them by the host
+///     form.
 ///   - `protocol` is `ssh`, `telnet` or `serial`. A serial host's device is
 ///     its `address` and its line is in the five `serial_*` columns, set
 ///     exactly for a serial host; the login and route columns keep what a
@@ -203,6 +205,7 @@ CREATE TABLE hosts (
         CHECK (one_time_code = 1 OR one_time_code_prompt IS NULL),
     login_commands    TEXT NOT NULL DEFAULT '',
     proxy_command     TEXT CHECK (proxy_command <> ''),
+    sync_browsing     INTEGER NOT NULL DEFAULT 0 CHECK (sync_browsing IN (0, 1)),
     CHECK ((auth = 'credential') = (credential_id IS NOT NULL)),
     CHECK ((auth = 'credential') = (username IS NULL)),
     CHECK ((route = 'proxy') = (proxy_kind IS NOT NULL)),
@@ -338,7 +341,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 15] = [
+const STEPS: [(i64, Step); 16] = [
     (
     13,
     // The command snippets.
@@ -547,6 +550,16 @@ SELECT id, public_id, name, protocol, base_url, json_array(model), sort_order, e
 FROM ai_providers_27;
 DROP TABLE ai_providers_27;
 PRAGMA user_version = 28;
+COMMIT;",
+        ),
+    ),
+    (
+        28,
+        // 同步浏览 as each host's SFTP tabs last had it: off so far.
+        Step::Sql(
+            "BEGIN;
+ALTER TABLE hosts ADD COLUMN sync_browsing     INTEGER NOT NULL DEFAULT 0 CHECK (sync_browsing IN (0, 1));
+PRAGMA user_version = 29;
 COMMIT;",
         ),
     ),
@@ -1017,7 +1030,8 @@ impl HostDatabase {
                  notes, os, protocol, serial_baud, serial_data_bits, serial_parity, \
                  serial_stop_bits, serial_flow, telnet_user_prompt, telnet_pass_prompt, \
                  sidebar_tool, edited_ms, directory_follow, credential_username, \
-                 one_time_code, one_time_code_prompt, login_commands, proxy_command \
+                 one_time_code, one_time_code_prompt, login_commands, proxy_command, \
+                 sync_browsing \
                  FROM hosts ORDER BY id",
             )?
             .query_map([], |row| {
@@ -1102,6 +1116,7 @@ impl HostDatabase {
                     prompt: totp_prompt.map(SharedString::from),
                 });
                 host.login_commands = row.get::<_, String>(31)?.into();
+                host.sync_browsing = row.get(33)?;
                 match protocol.as_str() {
                     "serial" => host.protocol = Protocol::Serial(serial.settings()),
                     "telnet" => host.protocol = Protocol::Telnet(telnet),
@@ -1592,9 +1607,10 @@ impl HostDatabase {
              serial_parity, serial_stop_bits, serial_flow, telnet_user_prompt, \
              telnet_pass_prompt, sidebar_tool, edited_ms, directory_follow, \
              credential_username, one_time_code, one_time_code_prompt, login_commands, \
-             proxy_command) \
+             proxy_command, sync_browsing) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
+             ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, \
+             ?34)",
             params![
                 to_sql(host.id.0),
                 host.public_id.as_str(),
@@ -1629,6 +1645,7 @@ impl HostDatabase {
                 row.one_time_code_prompt,
                 row.login_commands,
                 row.proxy_command,
+                host.sync_browsing,
             ],
         )?;
             write_jumps(connection, host)
@@ -1636,9 +1653,10 @@ impl HostDatabase {
     }
 
     /// Rewrite the fields the host form edits, jump hosts included.
-    /// `last_connected_at`, `os`, `sidebar_tool` and `directory_follow` are
-    /// left alone: they are written by `touch_connected`, `set_host_os`,
-    /// `set_host_sidebar_tool` and `set_host_directory_follow`, and none is
+    /// `last_connected_at`, `os`, `sidebar_tool`, `directory_follow` and
+    /// `sync_browsing` are left alone: they are written by
+    /// `touch_connected`, `set_host_os`, `set_host_sidebar_tool`,
+    /// `set_host_directory_follow` and `set_host_sync_browsing`, and none is
     /// part of the host form.
     /// `public_id` never changes.
     pub fn update_host(&self, host: &Host) -> rusqlite::Result<()> {
@@ -2184,6 +2202,15 @@ impl HostDatabase {
         self.connection.execute(
             "UPDATE hosts SET directory_follow = ?2 WHERE id = ?1",
             params![to_sql(id.0), follow],
+        )?;
+        Ok(())
+    }
+
+    /// Record 同步浏览 as the host's SFTP tab has it now.
+    pub fn set_host_sync_browsing(&self, id: HostId, on: bool) -> rusqlite::Result<()> {
+        self.connection.execute(
+            "UPDATE hosts SET sync_browsing = ?2 WHERE id = ?1",
+            params![to_sql(id.0), on],
         )?;
         Ok(())
     }
@@ -3508,6 +3535,80 @@ INSERT INTO hosts (id, name, address, port, auth, credential_id, edited_ms) \
         assert_eq!(db.load().unwrap().hosts[3].totp, None);
     }
 
+    /// The schema of version 28, as files of that version have it: today's
+    /// without 同步浏览.
+    fn schema_28() -> String {
+        let column = "    sync_browsing     INTEGER NOT NULL DEFAULT 0 \
+                      CHECK (sync_browsing IN (0, 1)),\n";
+        assert!(SCHEMA.contains(column));
+        SCHEMA.replace(column, "")
+    }
+
+    #[test]
+    fn a_version_28_file_gets_the_sync_browsing_column_and_keeps_its_hosts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(&format!(
+                "BEGIN;\n{}\nPRAGMA user_version = 28;\nCOMMIT;",
+                schema_28()
+            ))
+            .unwrap();
+            old.execute(
+                "INSERT INTO hosts (id, name, address, port, auth, username, sidebar_tool, \
+                 directory_follow, edited_ms) \
+                 VALUES (1, 'web', '10.0.0.1', 22, 'password', 'root', 'files', 1, 5)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let db = HostDatabase::open(&path).unwrap();
+        assert!(dir.path().join("shellrs.db.v28.bak").exists());
+        let fresh = HostDatabase::in_memory().unwrap();
+        assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
+        // Off until switched on; nothing else touched.
+        let web = &db.load().unwrap().hosts[0];
+        assert_eq!(
+            (
+                web.sync_browsing,
+                web.directory_follow,
+                web.sidebar_tool.as_deref(),
+                web.edited_ms
+            ),
+            (false, Some(true), Some("files"), 5)
+        );
+    }
+
+    #[test]
+    fn a_host_keeps_its_sync_browsing_apart_from_the_form() {
+        let db = HostDatabase::in_memory().unwrap();
+        let mut host = Host::new(
+            HostId(1),
+            HostDraft::new("web", "10.0.0.1", 22, "root", AuthKind::Password, None),
+        );
+        db.insert_host(&host).unwrap();
+        let on = || db.load().unwrap().hosts[0].sync_browsing;
+        assert!(!on());
+        db.set_host_sync_browsing(HostId(1), true).unwrap();
+        assert!(on());
+
+        // Saving the form leaves it alone.
+        host.name = "web-01".into();
+        db.update_host(&host).unwrap();
+        assert!(on());
+        db.set_host_sync_browsing(HostId(1), false).unwrap();
+        assert!(!on());
+
+        // A copy made with it saved has it from the start.
+        host.id = HostId(2);
+        host.public_id = PublicId::generate();
+        host.sync_browsing = true;
+        db.insert_host(&host).unwrap();
+        assert!(db.load().unwrap().hosts[1].sync_browsing);
+    }
+
     #[test]
     fn a_version_26_file_gets_the_model_services_and_keeps_its_hosts() {
         let dir = tempfile::tempdir().unwrap();
@@ -3516,7 +3617,8 @@ INSERT INTO hosts (id, name, address, port, auth, credential_id, edited_ms) \
             // Version 26 is this schema without the model services.
             let old = Connection::open(&path).unwrap();
             old.execute_batch(&format!(
-                "BEGIN;\n{SCHEMA}\nDROP TABLE ai_providers;\nPRAGMA user_version = 26;\nCOMMIT;"
+                "BEGIN;\n{}\nDROP TABLE ai_providers;\nPRAGMA user_version = 26;\nCOMMIT;",
+                schema_28()
             ))
             .unwrap();
             old.execute_batch(
@@ -3548,7 +3650,8 @@ INSERT INTO hosts (id, name, address, port, auth, credential_id, edited_ms) \
             // Version 27 as files of it have it: 26 and its step.
             let old = Connection::open(&path).unwrap();
             old.execute_batch(&format!(
-                "BEGIN;\n{SCHEMA}\nDROP TABLE ai_providers;\nPRAGMA user_version = 26;\nCOMMIT;"
+                "BEGIN;\n{}\nDROP TABLE ai_providers;\nPRAGMA user_version = 26;\nCOMMIT;",
+                schema_28()
             ))
             .unwrap();
             let (_, Step::Sql(step_26)) = STEPS.iter().find(|(version, _)| *version == 26).unwrap()

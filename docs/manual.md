@@ -434,7 +434,7 @@ Each pane has two rows of toolbar, with the path label below them. When a pane i
 - First row (navigation):
   - The folder list: lists every level from the root to the current folder, plus Home, Desktop, Documents and Downloads on the local side, and on Windows every drive (such as “C: Local disk” and “D: Local disk”); choose one to go there.
   - Bookmarks: the button opens the “Open folder” dialog (see below); the drop-down arrow next to it lists this host’s bookmarks for this side, which you click to go there, and can also add or remove the current path. Bookmarks are saved in the local database and deleted along with the host.
-  - Parent folder, Root folder, Home folder, Refresh, Back, Forward.
+  - Parent folder, Root folder, Home folder, Refresh, Back, Forward, Sync browsing (see “Sync browsing” below).
   - Show / hide hidden files: files and folders whose names start with `.`. An open eye means they’re shown, a crossed-out eye that they’re hidden. Local and remote each have their own switch, independent of each other; each side’s choice applies to every SFTP tab and is saved in the settings; both are hidden by default. While they’re hidden, the bottom of the pane says “N hidden”; while they’re shown, hidden files’ text is lighter. The file lists’ icons are in color by default, as in WinSCP; for monochrome ones like the rest of the interface, see Settings › SFTP.
   - Find files (remote side only): see “Find files” below.
 - Second row (files):
@@ -471,6 +471,17 @@ The columns are the same as in WinSCP: Name, Size, Type and Modified on the loca
 - The owner comes from the server’s `ls -l` line.
 - A symbolic link to a folder shows as a folder with an arrow, and you can double-click it to go in.
 - On this computer’s side, Windows shortcuts (`.lnk`) count as links, as in File Explorer: one to a folder shows as a folder with an arrow; double-clicking it goes into that folder (the path bar shows the folder’s real path), and files dropped on it go into that folder. One to a file shows as a file with an arrow, and double-clicking, editing and previewing open that file. When the folder a shortcut points to is gone, double-clicking it says it can’t be found. Deleting, renaming, uploading and Properties act on the shortcut file itself.
+
+### Sync browsing
+
+Works like WinSCP’s synchronized browsing: while it’s on, when one side changes folder, the other side makes the same move, so you can go through two matching trees together.
+
+- The switch is after Forward in both sides’ navigation toolbars (a chain link), lit while it’s on; the SFTP tab’s context menu has “Sync browsing” too. It’s remembered for the host: if it was on last time, the host’s next SFTP tab starts with it on. It’s off by default. There’s no shortcut by default; you can give “SFTP sync browsing” one in Settings › Keyboard shortcuts.
+- Moves the other side follows: double-clicking into a folder, Parent folder, Root folder, Back, Forward, and clicking a folder above the current one in the path label or the folder list. Into a subfolder, the other side goes into the one of the same name; up some levels, it goes up as many; to a folder beside this one, it goes up to where the two meet and down again.
+- Home folder sends each side to its own home folder.
+- Moves it doesn’t follow: opening a bookmark, typing a folder in “Open folder or bookmark”, the other places in the folder list (such as Desktop, Downloads or another drive), double-clicking a Windows shortcut, and a move to a folder that shares nothing but the root with the last one. Only this side moves; sync browsing stays on, and later moves count from the two new places.
+- When the other side has no matching folder, you’re asked whether to create it: “Create folder” makes it there, with any missing folders above it, and goes in; “Turn off sync browsing” leaves both sides where they are.
+- When the other side can’t follow (it would have to go above its root, creating the folder fails, or the SFTP connection is down), sync browsing turns off and a notification says why.
 
 ### Selection and context menus
 

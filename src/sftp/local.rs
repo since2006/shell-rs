@@ -76,6 +76,9 @@ pub trait LocalDirectoryProvider: Send + Sync + 'static {
     /// Rename without replacing an existing item.
     fn rename(&self, from: &Path, to: &Path) -> Result<()>;
     fn create_dir(&self, path: &Path) -> Result<()>;
+    /// Create a folder and the ones missing above it, as `mkdir -p`; done
+    /// already when it is there.
+    fn create_dir_all(&self, path: &Path) -> Result<()>;
     /// Create an empty file; fails if the name exists.
     fn create_file(&self, path: &Path) -> Result<()>;
     /// Apply `edit` to each path (and, when `recursive`, everything under the
@@ -240,6 +243,9 @@ impl LocalDirectoryProvider for SystemLocalDirectoryProvider {
     }
     fn create_dir(&self, path: &Path) -> Result<()> {
         std::fs::create_dir(path).map_err(|error| describe_io(error, path))
+    }
+    fn create_dir_all(&self, path: &Path) -> Result<()> {
+        std::fs::create_dir_all(path).map_err(|error| describe_io(error, path))
     }
     fn create_file(&self, path: &Path) -> Result<()> {
         std::fs::OpenOptions::new()

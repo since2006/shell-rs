@@ -34,6 +34,11 @@ pub enum PaneOperation {
         recursive: bool,
         add_x_to_dirs: bool,
     },
+    /// The folder 同步浏览 found missing, by its whole path, with the ones
+    /// above it.
+    CreateFolders {
+        path: String,
+    },
 }
 
 /// What to do when an operation answers.
@@ -46,6 +51,9 @@ pub(super) struct PendingOperation {
     edit: Option<String>,
     /// Paths 查找文件 deleted: its window hears how it went, and says it.
     found: Option<Vec<String>>,
+    /// The folder 同步浏览 made, to go into rather than read the pane's
+    /// own again.
+    sync_folder: Option<String>,
 }
 
 impl PaneOperation {
@@ -53,7 +61,9 @@ impl PaneOperation {
         match self {
             PaneOperation::Delete(_) => || t!("explorer.operation.delete_failed"),
             PaneOperation::Rename { .. } => || t!("explorer.operation.rename_failed"),
-            PaneOperation::Create { .. } => || t!("explorer.operation.create_failed"),
+            PaneOperation::Create { .. } | PaneOperation::CreateFolders { .. } => {
+                || t!("explorer.operation.create_failed")
+            }
             PaneOperation::Permissions { .. } => || t!("explorer.operation.permissions_failed"),
         }
     }
@@ -103,6 +113,9 @@ impl PaneOperation {
                 recursive: *recursive,
                 add_x_to_dirs: *add_x_to_dirs,
             },
+            PaneOperation::CreateFolders { path } => RemoteOperation::CreateDirectories {
+                path: RemotePath::new(path.as_str())?,
+            },
         })
     }
 
@@ -130,6 +143,7 @@ impl PaneOperation {
                 recursive,
                 add_x_to_dirs,
             } => provider.set_permissions(&paths(names), *edit, *recursive, *add_x_to_dirs),
+            PaneOperation::CreateFolders { path } => provider.create_dir_all(Path::new(path)),
         }
     }
 }
@@ -163,6 +177,10 @@ impl ExplorerPanel {
             } => Some(pane.read(cx).child_path_of(name)),
             _ => None,
         };
+        let sync_folder = match &operation {
+            PaneOperation::CreateFolders { path } => Some(path.clone()),
+            _ => None,
+        };
         self.operations.insert(
             id,
             PendingOperation {
@@ -171,6 +189,7 @@ impl ExplorerPanel {
                 select: operation.result_name(),
                 edit,
                 found: None,
+                sync_folder,
             },
         );
         pane.update(cx, |pane, cx| pane.set_busy(true, cx));
@@ -219,6 +238,10 @@ impl ExplorerPanel {
                 pane.select_after_load(name);
             }
         });
+        if let Some(path) = pending.sync_folder {
+            self.sync_folder_created(pending.remote, path, result, window, cx);
+            return;
+        }
         match result {
             result if pending.found.is_some() => {
                 self.find_deleted(pending.found.unwrap_or_default(), result, cx)
@@ -266,6 +289,7 @@ impl ExplorerPanel {
                 select: None,
                 edit: None,
                 found: Some(paths.clone()),
+                sync_folder: None,
             },
         );
         self.remote.update(cx, |pane, cx| pane.set_busy(true, cx));

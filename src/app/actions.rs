@@ -96,6 +96,9 @@ gpui_kit::actions!(
         OpenFrontTerminalSftp,
         /// 重新连接 the remote terminal in front, connected or not.
         ReconnectFrontTerminal,
+        /// Turn 同步浏览 on or off in the SFTP tab in front, from the
+        /// keyboard.
+        ToggleFrontSyncBrowsing,
         /// Show or hide the left dock, whichever list it is showing.
         ToggleHostPanel,
         /// Show or hide the right sidebar, whichever tool it is showing.
@@ -873,6 +876,17 @@ pub enum ExplorerCommand {
     FindFiles,
     /// 定位 in 查找文件: show a remote path's folder and select it there.
     Reveal {
+        path: String,
+    },
+    /// 同步浏览, WinSCP's synchronized browsing: when one pane changes
+    /// folder, the other makes the same move. Kept for the host.
+    SyncBrowsing {
+        on: bool,
+    },
+    /// 同步浏览 found no folder to follow into on this side: make it, with
+    /// the ones above it, then go there.
+    CreateSyncFolder {
+        remote: bool,
         path: String,
     },
     /// 复制路径 on the path label: the directory shown.

@@ -3117,3 +3117,243 @@ async fn sftp_panes_swap_sides_when_remote_left_is_chosen(cx: &mut TestAppContex
         assert_eq!(pane_layout.as_deref(), Some("本地在左，远程在右"));
     });
 }
+
+async fn wait_for_paths(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Root>,
+    local: &'static str,
+    remote: &'static str,
+) {
+    cx.wait_for(handle.into(), Duration::from_secs(2), move |window, cx| {
+        window.render_frame(cx);
+        window.find("local-path").value() == Some(local)
+            && window.find("remote-path").value() == Some(remote)
+    })
+    .await;
+}
+
+/// A dialog asks, its 确定 showing.
+async fn wait_for_question(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("ok").is_some_and(|ok| ok.visible())
+    })
+    .await;
+}
+
+/// 同步浏览 (issue #61), after WinSCP's synchronized browsing: the other
+/// pane makes the same move into, up or back; a jump elsewhere is the
+/// pane's alone, and 主目录 sends both home. The switch is the host's.
+#[gpui_kit::test]
+async fn sftp_sync_browsing_makes_the_same_move_on_the_other_side(cx: &mut TestAppContext) {
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+    let command = |cx: &mut TestAppContext, command: ExplorerCommand| {
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_action(
+                Box::new(ExplorerAction::new(ExplorerId(SFTP_TAB), command)),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+    };
+    let paths = |cx: &mut TestAppContext| {
+        in_frame(cx, handle, |window, _| {
+            (
+                window.find("local-path").value().map(str::to_string),
+                window.find("remote-path").value().map(str::to_string),
+            )
+        })
+    };
+    let at = |local: &str, remote: &str| (Some(local.to_string()), Some(remote.to_string()));
+    let host_on = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            workspace
+                .read(cx)
+                .store()
+                .read(cx)
+                .host(HostId(DB_01))
+                .unwrap()
+                .sync_browsing
+        })
+    };
+    assert!(!host_on(cx));
+
+    // Off: one pane moves alone.
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .double_click("name:目录", cx)
+    });
+    wait_for_paths(cx, handle, "/local/tester", "/home/tester/目录").await;
+    command(cx, ExplorerCommand::Up { remote: true });
+    wait_for_paths(cx, handle, "/local/tester", "/home/tester").await;
+
+    // The switch on the local side's toolbar turns it on for both.
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within(("local-pane", SFTP_TAB))
+            .click("sync-browsing", cx)
+    });
+    cx.run_until_parked();
+    assert!(host_on(cx));
+
+    // Into a folder on one side, into the same one on the other.
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .double_click("name:目录", cx)
+    });
+    wait_for_paths(cx, handle, "/local/tester/目录", "/home/tester/目录").await;
+    // Up from the other side.
+    command(cx, ExplorerCommand::Up { remote: false });
+    wait_for_paths(cx, handle, "/local/tester", "/home/tester").await;
+    // Back is a move too.
+    command(cx, ExplorerCommand::Back { remote: true });
+    wait_for_paths(cx, handle, "/local/tester/目录", "/home/tester/目录").await;
+
+    // A jump to a folder elsewhere, as to a bookmark, is the pane's alone,
+    // even one beside this.
+    command(
+        cx,
+        ExplorerCommand::Navigate {
+            remote: true,
+            path: "/home/other".into(),
+        },
+    );
+    wait_for_paths(cx, handle, "/local/tester/目录", "/home/other").await;
+    // 主目录 sends both home.
+    command(cx, ExplorerCommand::Home { remote: false });
+    wait_for_paths(cx, handle, "/local/tester", "/home/tester").await;
+
+    // The host's next SFTP tab starts with it on.
+    in_frame(cx, handle, |window, cx| {
+        window.dispatch_action(Box::new(OpenExplorer(HostId(DB_01))), cx)
+    });
+    cx.run_until_parked();
+    let second = cx.update(|cx| {
+        workspace
+            .read(cx)
+            .explorer(ExplorerId(SFTP_TAB + 1))
+            .map(|explorer| explorer.read(cx).sync_browsing())
+    });
+    assert_eq!(second, Some(true));
+    in_frame(cx, handle, |window, cx| {
+        window.click(("explorer-tab", SFTP_TAB), cx)
+    });
+    cx.run_until_parked();
+
+    // Off again from the tab's menu: the other pane stays.
+    command(cx, ExplorerCommand::SyncBrowsing { on: false });
+    assert!(!host_on(cx));
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .double_click("name:目录", cx)
+    });
+    wait_for_paths(cx, handle, "/local/tester", "/home/tester/目录").await;
+    assert_eq!(paths(cx), at("/local/tester", "/home/tester/目录"));
+}
+
+/// The other side has no folder to follow into: 同步浏览 asks to make it,
+/// as WinSCP does, or stops; where it cannot go up as far, it stops and
+/// says so.
+#[gpui_kit::test]
+async fn sftp_sync_browsing_offers_to_make_the_missing_folder(cx: &mut TestAppContext) {
+    use shellrs::app::{ExplorerAction, ExplorerCommand};
+    use shellrs::sftp::RemoteOperation;
+    let provider = Arc::new(FakeSftpProvider::default());
+    let local = FakeLocalDirectory::default();
+    let (handle, workspace) = open_workspace_with_services(cx, provider.clone(), local.clone());
+    open_test_explorer(cx, handle).await;
+    let command = |cx: &mut TestAppContext, command: ExplorerCommand| {
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_action(
+                Box::new(ExplorerAction::new(ExplorerId(SFTP_TAB), command)),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+    };
+    let on = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            workspace
+                .read(cx)
+                .explorer(ExplorerId(SFTP_TAB))
+                .unwrap()
+                .read(cx)
+                .sync_browsing()
+        })
+    };
+    command(cx, ExplorerCommand::SyncBrowsing { on: true });
+
+    // Not on the server: 创建 makes it, with any missing above it, and
+    // the remote pane goes in.
+    provider
+        .missing
+        .lock()
+        .unwrap()
+        .insert("/home/tester/目录".into());
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within(("local-pane", SFTP_TAB))
+            .double_click("name:目录", cx)
+    });
+    wait_for_question(cx, handle).await;
+    in_frame(cx, handle, |window, cx| window.click("ok", cx));
+    wait_for_paths(cx, handle, "/local/tester/目录", "/home/tester/目录").await;
+    assert!(provider.operations.lock().unwrap().iter().any(|operation| {
+        matches!(operation, RemoteOperation::CreateDirectories { path }
+            if path.as_str() == "/home/tester/目录")
+    }));
+    assert!(on(cx));
+
+    // Not on this computer either, the next folder down: 关闭同步浏览
+    // leaves the local pane where it is.
+    local
+        .missing
+        .lock()
+        .unwrap()
+        .insert("/local/tester/目录/目录".into());
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("ok").is_none()
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| {
+        window
+            .within(("remote-pane", SFTP_TAB))
+            .double_click("name:目录", cx)
+    });
+    wait_for_question(cx, handle).await;
+    in_frame(cx, handle, |window, cx| window.click("cancel", cx));
+    cx.run_until_parked();
+    assert!(!on(cx));
+    assert!(
+        !local
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call.starts_with("mkdir -p"))
+    );
+
+    // Up further than the other side's root: it stops by itself.
+    command(cx, ExplorerCommand::SyncBrowsing { on: true });
+    command(
+        cx,
+        ExplorerCommand::Navigate {
+            remote: true,
+            path: "/srv/a/b/c".into(),
+        },
+    );
+    command(cx, ExplorerCommand::Root { remote: true });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        window.render_frame(cx);
+        window.find("remote-path").value() == Some("/")
+    })
+    .await;
+    cx.run_until_parked();
+    assert!(!on(cx));
+}

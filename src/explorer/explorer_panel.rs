@@ -5,6 +5,7 @@ use super::{
     find_window::{FIND_REQUESTS, FindWindow},
     pane_operations::PendingOperation,
     preview::PreviewKind,
+    sync_browsing::Mirroring,
 };
 use crate::app::ExplorerDispatch as _;
 use crate::{
@@ -126,6 +127,15 @@ pub struct ExplorerPanel {
     /// The queue's rows, scrolled to a batch as it is added, which goes in
     /// last. Kept here for the same reason as the splits.
     pub(super) queue_scroll: ScrollHandle,
+    /// 同步浏览, as the host last had it when the tab opened; never in the
+    /// sidebar, which has no local list to browse.
+    pub(super) sync_browsing: bool,
+    /// Whether each pane's latest load leads the other one under 同步浏览,
+    /// by `remote as usize`: a move the user made, not a jump to a bookmark
+    /// nor the pane following the other.
+    pub(super) leading: [bool; 2],
+    /// The load a pane makes to follow the other, and where to.
+    pub(super) mirroring: Option<Mirroring>,
     _subscriptions: Vec<Subscription>,
     _events: Task<()>,
 }
@@ -176,11 +186,15 @@ impl ExplorerPanel {
                 cx,
             )
         });
+        let sync_browsing = !sidebar && host.sync_browsing;
         // Listing a folder such as Downloads makes macOS ask for access,
         // which a pane nobody sees has no business doing.
         if sidebar {
             remote.update(cx, |pane, cx| pane.set_compact(cx));
         } else {
+            for pane in [&local, &remote] {
+                pane.update(cx, |pane, cx| pane.set_sync_browsing(sync_browsing, cx));
+            }
             local.update(cx, |pane, cx| {
                 pane.load_local(home, LoadIntent::Reload, local_provider.clone(), window, cx)
             });
@@ -229,13 +243,27 @@ impl ExplorerPanel {
         let focus_handle = cx.focus_handle();
         let local_focus = local.read(cx).focus_handle(cx);
         let remote_focus = remote.read(cx).focus_handle(cx);
-        let problem_changed = |this: &mut Self, _, _: &FilePaneEvent, cx: &mut Context<Self>| {
-            cx.emit(ExplorerPanelEvent::StatusChanged(this.id))
+        let pane_event = |remote: bool| {
+            move |this: &mut Self,
+                  _: &Entity<FilePane>,
+                  event: &FilePaneEvent,
+                  window: &mut Window,
+                  cx: &mut Context<Self>| match event {
+                FilePaneEvent::ProblemChanged => {
+                    cx.emit(ExplorerPanelEvent::StatusChanged(this.id))
+                }
+                FilePaneEvent::Loaded {
+                    request_id,
+                    intent,
+                    from,
+                    path,
+                } => this.pane_loaded(remote, *request_id, *intent, from, path, window, cx),
+            }
         };
         let subscriptions = vec![
             cx.observe(&store, |_, _, cx| cx.notify()),
-            cx.subscribe(&local, problem_changed),
-            cx.subscribe(&remote, problem_changed),
+            cx.subscribe_in(&local, window, pane_event(false)),
+            cx.subscribe_in(&remote, window, pane_event(true)),
             // Focus listeners run inside a draw, where a view's `notify` is
             // dropped without asking for another frame: a click on empty list
             // space would switch panes unseen. Deferring runs it after the draw.
@@ -296,6 +324,9 @@ impl ExplorerPanel {
             queue_split: cx.new(|_| ResizableState::default()),
             pane_layout: SftpPaneLayout::current(cx),
             local_share: 0.5,
+            sync_browsing,
+            leading: [false; 2],
+            mirroring: None,
             queue_scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
             _events: events_task,
@@ -702,6 +733,9 @@ impl ExplorerPanel {
         self.sync_available(cx);
         cx.notify();
     }
+    /// Read a pane's directory; returns the load's request id, none when
+    /// the pane cannot load now. A load started here does not lead the
+    /// other pane under 同步浏览 (see `browse`).
     pub fn navigate(
         &mut self,
         remote: bool,
@@ -709,18 +743,26 @@ impl ExplorerPanel {
         intent: LoadIntent,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<u64> {
         // Nothing would answer; the pane would wait forever.
         if remote && self.state != ConnectionState::Connected {
-            return;
+            return None;
         }
         // The sidebar's local pane is only a download target.
         if !remote && self.sidebar {
-            return;
+            return None;
+        }
+        self.leading[usize::from(remote)] = false;
+        if self
+            .mirroring
+            .as_ref()
+            .is_some_and(|mirroring| mirroring.remote == remote)
+        {
+            self.mirroring = None;
         }
         let pane = self.pane(remote).clone();
         let path = pane.read(cx).expanded_path(&path);
-        if remote {
+        let id = if remote {
             let id = pane.update(cx, |pane, cx| pane.begin_load(intent, cx));
             match RemotePath::new(path) {
                 Ok(path) => self.send(SftpCommand::List {
@@ -731,11 +773,13 @@ impl ExplorerPanel {
                     pane.apply_listing(id, Err(describe_sftp_error(&e)), window, cx)
                 }),
             }
+            id
         } else {
             pane.update(cx, |pane, cx| {
                 pane.load_local(path, intent, self.local_provider.clone(), window, cx)
-            });
-        }
+            })
+        };
+        Some(id)
     }
     /// Re-read a pane's current directory, keeping its history.
     pub fn reload(&mut self, remote: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -755,32 +799,38 @@ impl ExplorerPanel {
             return;
         }
         match command {
+            // A bookmark, a typed folder or a place is a jump the other
+            // pane does not make; a folder above this one, from the path
+            // label or the 目录列表, is a move up it does.
             ExplorerCommand::Navigate { remote, path } => {
-                self.navigate(*remote, path.clone(), LoadIntent::Visit, window, cx)
+                if self.is_above(*remote, path, cx) {
+                    self.browse(*remote, path.clone(), LoadIntent::Visit, window, cx)
+                } else {
+                    self.navigate(*remote, path.clone(), LoadIntent::Visit, window, cx);
+                }
             }
             ExplorerCommand::Up { remote } => {
                 let path = self.pane(*remote).read(cx).parent_path();
-                self.navigate(*remote, path, LoadIntent::Visit, window, cx);
+                self.browse(*remote, path, LoadIntent::Visit, window, cx);
             }
             ExplorerCommand::Root { remote } => {
                 let path = self.pane(*remote).read(cx).root_path();
-                self.navigate(*remote, path, LoadIntent::Visit, window, cx);
+                self.browse(*remote, path, LoadIntent::Visit, window, cx);
             }
-            ExplorerCommand::Home { remote } => {
-                let path = self.pane(*remote).read(cx).home();
-                if !path.is_empty() {
-                    self.navigate(*remote, path, LoadIntent::Visit, window, cx);
-                }
-            }
+            ExplorerCommand::Home { remote } => self.go_home(*remote, window, cx),
             ExplorerCommand::Back { remote } => {
                 if let Some(path) = self.pane(*remote).read(cx).back_target() {
-                    self.navigate(*remote, path, LoadIntent::Back, window, cx);
+                    self.browse(*remote, path, LoadIntent::Back, window, cx);
                 }
             }
             ExplorerCommand::Forward { remote } => {
                 if let Some(path) = self.pane(*remote).read(cx).forward_target() {
-                    self.navigate(*remote, path, LoadIntent::Forward, window, cx);
+                    self.browse(*remote, path, LoadIntent::Forward, window, cx);
                 }
+            }
+            ExplorerCommand::SyncBrowsing { on } => self.set_sync_browsing(*on, cx),
+            ExplorerCommand::CreateSyncFolder { remote, path } => {
+                self.create_sync_folder(*remote, path.clone(), window, cx)
             }
             ExplorerCommand::Refresh { remote } => self.reload(*remote, window, cx),
             ExplorerCommand::AddBookmark { remote, path } => {
@@ -812,7 +862,12 @@ impl ExplorerPanel {
                     } else {
                         pane.read(cx).open_path_of(&entry)
                     };
-                    self.navigate(*remote, path, LoadIntent::Visit, window, cx);
+                    // A Windows shortcut goes wherever it points: a jump.
+                    if entry.target_path.is_some() {
+                        self.navigate(*remote, path, LoadIntent::Visit, window, cx);
+                    } else {
+                        self.browse(*remote, path, LoadIntent::Visit, window, cx);
+                    }
                 } else {
                     // A picture is previewed; any other file (an SVG too,
                     // being text) opens in the editor, through the workspace,
@@ -1192,7 +1247,8 @@ fn needs_connection(command: &ExplorerCommand) -> bool {
         | C::Rename { remote }
         | C::New { remote, .. }
         | C::Properties { remote }
-        | C::Operate { remote, .. } => *remote,
+        | C::Operate { remote, .. }
+        | C::CreateSyncFolder { remote, .. } => *remote,
         C::FindFiles
         | C::Reveal { .. }
         | C::DeletePaths { .. }
@@ -1263,6 +1319,8 @@ struct TabMenu {
     /// A saved host, in the host list to show it in; a temporary one is not.
     saved: bool,
     can_reconnect: bool,
+    /// 同步浏览, checked while on.
+    sync_browsing: bool,
     group: Option<WeakEntity<TabGroup>>,
     panel: EntityId,
 }
@@ -1276,6 +1334,7 @@ impl ExplorerPanel {
             host_exists: self.store.read(cx).host(self.host_id).is_some(),
             saved: self.store.read(cx).saved_host(self.host_id).is_some(),
             can_reconnect: self.can_reconnect(),
+            sync_browsing: self.sync_browsing,
             group: self.tab_group.clone(),
             panel: cx.entity_id(),
         }
@@ -1321,6 +1380,16 @@ impl TabMenu {
                 Icon::new(CatalogIcon::RefreshCw),
                 Box::new(ExplorerAction::new(id, ExplorerCommand::Reconnect)),
                 !self.can_reconnect,
+            )
+            .menu_with_check(
+                t!("explorer.sync_browsing.name"),
+                self.sync_browsing,
+                Box::new(ExplorerAction::new(
+                    id,
+                    ExplorerCommand::SyncBrowsing {
+                        on: !self.sync_browsing,
+                    },
+                )),
             )
             .separator();
         close_tab_items(

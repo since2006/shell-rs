@@ -88,7 +88,7 @@ macro_rules! shortcut {
 /// Where macOS has ⌘, Windows and Linux have Ctrl+Shift, as Windows
 /// Terminal, GNOME Terminal and Konsole do: Ctrl with a letter alone is a
 /// control character, the shell's in a terminal, and Alt is its Meta.
-pub static SHORTCUTS: [Shortcut; 36] = [
+pub static SHORTCUTS: [Shortcut; 37] = [
     shortcut!(
         "new-host",
         "app.shortcut.new_host",
@@ -282,6 +282,17 @@ pub static SHORTCUTS: [Shortcut; 36] = [
         "cmd-shift-r",
         "ctrl-shift-r",
         ReconnectFrontTerminal
+    ),
+    // 同步浏览 in the SFTP tab in front. WinSCP's Ctrl+Alt+B shows or hides
+    // the right sidebar here: none until one is chosen.
+    shortcut!(
+        "sync-browsing",
+        "app.shortcut.sync_browsing",
+        Tabs,
+        &[],
+        "",
+        "",
+        ToggleFrontSyncBrowsing
     ),
     // Ctrl+Shift+W elsewhere, as Windows Terminal, GNOME Terminal and
     // Konsole close a tab: Ctrl+W is the shell's in a terminal (readline,

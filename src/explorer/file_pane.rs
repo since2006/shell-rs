@@ -12,14 +12,15 @@ use crate::app::ExplorerDispatch as _;
 use crate::{
     app::{
         CatalogIcon, ExplorerAction, ExplorerCommand, ExplorerShortcut, LOCAL_FILE_LIST_CONTEXT,
-        REMOTE_FILE_LIST_CONTEXT, ToggleDirectoryFollow, ToggleHiddenFiles,
+        REMOTE_FILE_LIST_CONTEXT, ToggleDirectoryFollow, ToggleFrontSyncBrowsing,
+        ToggleHiddenFiles,
     },
     host::{BookmarkSide, ConnectionState, HostId, HostStore},
     i18n::{UiLocale, t, tn},
     sftp::{DirectoryListing, Place, SharedLocalDirectoryProvider},
 };
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _, DropdownButton},
     h_flex,
     menu::DropdownMenu as _,
@@ -45,6 +46,14 @@ const SLOW_LOAD: std::time::Duration = std::time::Duration::from_millis(300);
 pub enum FilePaneEvent {
     /// The pane's `problem` appeared, changed or went away.
     ProblemChanged,
+    /// The load `request_id` that started in `from` has ended: in `path`
+    /// now, or failed with the error. 同步浏览 follows what it shows.
+    Loaded {
+        request_id: u64,
+        intent: LoadIntent,
+        from: String,
+        path: Result<String, String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -200,6 +209,9 @@ pub struct FilePane {
     /// 目录跟随, shown at the end of the status line: only the sidebar's
     /// remote pane has it, on or off.
     follow: Option<bool>,
+    /// 同步浏览, a switch on both panes of an SFTP tab, on or off; the
+    /// sidebar has none.
+    sync_browsing: Option<bool>,
     /// A file operation on this pane is running.
     busy: bool,
     store: Entity<HostStore>,
@@ -300,6 +312,7 @@ impl FilePane {
             transfer_enabled: false,
             compact: false,
             follow: None,
+            sync_browsing: None,
             busy: false,
             store,
             dispatch,
@@ -462,6 +475,13 @@ impl FilePane {
         self.transfer_enabled = transfer;
         self.sync_listing(cx);
         cx.notify();
+    }
+    /// 同步浏览 as the tab has it, for the switch in the toolbar.
+    pub fn set_sync_browsing(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.sync_browsing != Some(on) {
+            self.sync_browsing = Some(on);
+            cx.notify();
+        }
     }
     pub fn set_current(&mut self, current: bool, cx: &mut Context<Self>) {
         if self.current != current {
@@ -782,6 +802,17 @@ impl FilePane {
         }
         self.finish_loading();
         let pending = self.pending.take();
+        if let Some((intent, from)) = &pending {
+            cx.emit(FilePaneEvent::Loaded {
+                request_id,
+                intent: *intent,
+                from: from.clone(),
+                path: result
+                    .as_ref()
+                    .map(|listing| listing.path().to_string())
+                    .map_err(Clone::clone),
+            });
+        }
         match result {
             Ok(listing) => {
                 if let Some((intent, from)) = pending {
@@ -858,6 +889,7 @@ impl FilePane {
             select.set_selected_value(&current, window, cx);
         });
     }
+    /// Read a local directory; returns the load's request id.
     pub fn load_local(
         &mut self,
         path: String,
@@ -865,7 +897,7 @@ impl FilePane {
         provider: SharedLocalDirectoryProvider,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> u64 {
         let id = self.begin_load(intent, cx);
         self.load_task = Some(cx.spawn_in(window, async move |this, cx| {
             let (result, places) = cx
@@ -886,6 +918,7 @@ impl FilePane {
                 this.apply_listing(id, result, window, cx)
             });
         }));
+        id
     }
     /// What the menus show, read when a menu opens.
     pub(super) fn menu_state(&self, cx: &App) -> PaneMenuState {
@@ -1098,6 +1131,36 @@ impl Render for FilePane {
                 )
                 .disabled(!navigable || !state.can_go_forward),
             )
+            // 同步浏览, the same switch on both sides: the other pane goes
+            // along. Lit while on; the tooltip is what a click does.
+            .when_some(self.sync_browsing, |row, on| {
+                let dispatch = self.dispatch.clone();
+                let tip = if on {
+                    t!("explorer.sync_browsing.turn_off")
+                } else {
+                    t!("explorer.sync_browsing.turn_on")
+                };
+                row.child(
+                    Button::new("sync-browsing")
+                        .ghost()
+                        .small()
+                        .icon(Icon::new(CatalogIcon::Link))
+                        .selected(on)
+                        .toggled(on)
+                        .accessibility_label(t!("explorer.sync_browsing.name"))
+                        .tooltip_with_action(tip, &ToggleFrontSyncBrowsing, None)
+                        .on_click(move |_, window, cx| {
+                            dispatch.dispatch_explorer_action(
+                                &ExplorerAction::new(
+                                    sid,
+                                    ExplorerCommand::SyncBrowsing { on: !on },
+                                ),
+                                window,
+                                cx,
+                            )
+                        }),
+                )
+            })
             .child(Separator::vertical())
             // This side's switch, for every SFTP tab. The icon is how things
             // are, an open eye while hidden files show; the tooltip is what a
