@@ -2161,6 +2161,31 @@ mod tests {
         assert_eq!(b.held(), a.held());
     }
 
+    /// A synced host's proxy command changed on one device: the change is
+    /// the newer, there and on the other. It once lost to the copy it was
+    /// written over, the field unknown to the merge.
+    #[test]
+    fn a_changed_proxy_command_syncs() {
+        use crate::ProxyCommandSettings;
+        let (vault, keys) = vault();
+        let mut a = Device::new('a');
+        let mut b = Device::new('b');
+        let mut draft = HostDraft::new("web", "10.0.0.1", 22, "root", AuthKind::Password, None);
+        draft.route = Route::ProxyCommand(ProxyCommandSettings::new("ssh -W %h:%p old"));
+        let web = a.store.insert(draft);
+        a.sync(&vault, &keys);
+        b.sync(&vault, &keys);
+        let mut edited = a.store.host(web).unwrap().draft();
+        edited.route = Route::ProxyCommand(ProxyCommandSettings::new("ssh -W %h:%p new"));
+        a.store.update(web, edited);
+        a.sync(&vault, &keys);
+        b.sync(&vault, &keys);
+        let new = Route::ProxyCommand(ProxyCommandSettings::new("ssh -W %h:%p new"));
+        assert_eq!(a.store.host(web).unwrap().route, new);
+        assert_eq!(b.store.hosts()[0].route, new);
+        assert_eq!(b.held(), a.held());
+    }
+
     #[test]
     fn model_services_sync_with_their_keys() {
         use crate::secrets::SecretStore as _;

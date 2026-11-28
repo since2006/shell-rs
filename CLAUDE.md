@@ -204,6 +204,7 @@ Cargo workspace，`cargo` 命令默认覆盖除手机端外的五个包：
 - 应用这一轮读不出秘密（钥匙串被锁、没有 Secret Service）要把 `secrets_read` 设成 false，读不出的单条（私钥文件）和一轮带来、还没写进去的秘密列进 `unreadable`：它们原样保留，绝不当成删除，`pull` 再交一次。没写进去的秘密按同步键记在数据库的 `sync_pending`（只有键），和改动同一个事务写下，写成功才删。
 - 同步的密钥（`Keyring::to_bytes`，存在钥匙串的 `sync:keyring`）只带最新 8 代数据密钥：Windows 凭据管理器一条最多 2560 字节，约 25 代；更旧的在文件或状态用到时，用包裹密钥从 `vault.json` 取回，不用密码。`vault.json` 保留全部代。
 - 钥匙串只读变过的秘密：编辑时间（`secret_edits`）等于 `SyncState::edit_seen` 的不读，列进 `unchanged`，由状态里存的那份顶上；用户删除秘密也要记编辑时间，否则删除传不出去。不然每轮读一遍全部秘密，未签名的开发版或点了「允许」而非「始终允许」的用户每轮都被钥匙串问一遍。
+- 记录新加字段时，同时加进 `wire.rs` 的 `known_fields`：`write_into` 把不在列表里的字段当成别的版本的、从旧副本原样保留，本机的修改就被旧值盖回去（主机的代理命令 `command` 漏过，改了同步一轮就变回旧命令；守卫测试查）。
 - 格式（`FORMAT.md`）发布后不能改；`testdata/v1` 的金样文件以后每个版本都要能读。发布前不留兼容旧数据的代码：每个字段都写出、读时缺了就算坏记录，不补默认值。发布后新加的字段（`FORMAT.md` 里标 ¹，如片段分类的 `parent`、`sort_order`）读时缺了按旧版本的样子补（`Reader::later`），旧版本靠「不认识的字段原样保留」带着它走；本机默认值要和补的一样，否则升级后每条都被当成过时的副本。
 - WebDAV 后端（`store/webdav.rs`）只用 PROPFIND、GET、PUT、DELETE、MKCOL。ETag 不论强弱都当标签（Apache 给刚写的文件头一秒弱 ETag，`If-Match` 永远不匹配弱的），条件写被拒先 PROPFIND 核对再算冲突；服务器不给 ETag 就用修改时间加大小拼，离服务器的 `Date` 太近就带疑点标记；列目录不给、读文件却给 ETag 的（nginx），读写也改用时间加大小，否则每轮都把别的设备的文件重下一遍。测试起的 Apache 要在自己的进程组里（`process_group(0)`），它退出时会给整个进程组发 TERM，把 cargo 和 shell 一起杀掉。
 - S3 后端（`store/s3.rs`）自己签名（SigV4，`hmac` + `sha2`，不引 SDK），有对照 AWS 官方示例的测试；它和本地文件夹后端是仅有的两处可以读系统时间的地方（签名要用，守卫测试里列着）。条件写（`If-None-Match: *`、`If-Match`）被服务回「未实现」就改成先 HEAD 再写；时钟偏差过大被拒时按服务的 `Date` 校正重签一次。

@@ -591,6 +591,7 @@ fn known_fields(kind: &Kind) -> &'static [&'static str] {
             "notes",
             "totp",
             "login_commands",
+            "command",
         ],
         Kind::Bookmark => &["host", "path", "sort_order"],
         Kind::Forward => &[
@@ -1106,6 +1107,67 @@ pub(crate) mod tests {
     fn a_record_holding_a_secret_does_not_show_it() {
         for (_, data) in samples() {
             assert!(!format!("{data:?}").contains("test "), "{data:?}");
+        }
+    }
+
+    /// Records with every field there is, beyond `samples`: a proxy
+    /// command, one-time codes and login commands, a model service.
+    fn every_field() -> Vec<(RecordKey, RecordData)> {
+        let mut host = ssh_host("bastion");
+        host.route = Route::ProxyCommand("ssh -W %h:%p jump".into());
+        host.totp = Some(TotpData { prompt: None });
+        host.login_commands = "cd /srv".into();
+        let provider = AiProviderData {
+            name: "DeepSeek".into(),
+            protocol: AiProtocol::OpenAi,
+            base_url: "https://api.deepseek.com".into(),
+            models: vec!["deepseek-chat".into()],
+            sort_order: 0,
+            context_window: Some(64_000),
+        };
+        let mut records = samples();
+        records.push((RecordKey::new(Kind::Host, "h9"), RecordData::Host(host)));
+        records.push((
+            RecordKey::new(Kind::AiProvider, "p1"),
+            RecordData::AiProvider(provider),
+        ));
+        records
+    }
+
+    /// `write_into` keeps from the copy it writes over the fields it does
+    /// not know, as another version's: a field it writes but does not list
+    /// would be kept from the old copy over the app's edit. A proxy
+    /// command was, until this was checked.
+    #[test]
+    fn every_field_written_is_one_write_into_knows() {
+        for (key, data) in every_field() {
+            let known = known_fields(&key.kind);
+            for (field, _) in fields(&data) {
+                assert!(known.contains(&field), "{key}: {field}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_edit_over_an_older_copy_replaces_every_field() {
+        for (key, data) in every_field() {
+            if !matches!(data, RecordData::Host(_) | RecordData::AiProvider(_)) {
+                continue;
+            }
+            let older = match data.clone() {
+                RecordData::Host(mut host) => {
+                    host.route = Route::ProxyCommand("ssh -W %h:%p old".into());
+                    RecordData::Host(host)
+                }
+                RecordData::AiProvider(mut provider) => {
+                    provider.context_window = None;
+                    RecordData::AiProvider(provider)
+                }
+                other => other,
+            };
+            let base = write_into(&older, None);
+            let written = write_into(&data, Some(&base));
+            assert_eq!(parse(&key, &written), Ok(data), "{key}");
         }
     }
 
