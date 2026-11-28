@@ -1,6 +1,6 @@
 use gpui_kit::component::{
     ActiveTheme as _, IconName, Selectable as _, TitleBar,
-    button::{Button, ButtonGroup, ButtonRounded, ButtonVariants as _},
+    button::{Button, ButtonGroup, ButtonVariants as _},
     h_flex,
 };
 use gpui_kit::*;
@@ -60,15 +60,10 @@ pub fn render_title_bar(
     // A list's button shows that list, or hides the sidebar when it is the
     // one up, as the right sidebar's tool buttons do. Up, it says so, with
     // ⌘B, which hides the sidebar as well and brings the same list back.
-    // Square: the group fills the title bar's height, and its ends looked
-    // clipped with the round corners.
     let list_button =
         |id: &'static str, icon: CatalogIcon, mode: SidebarMode, name: SharedString| {
             let showing = sidebar == Some(mode);
-            let button = Button::new(id)
-                .icon(icon)
-                .rounded(ButtonRounded::None)
-                .selected(showing);
+            let button = Button::new(id).icon(icon).selected(showing);
             if showing {
                 button.tooltip_with_action(
                     t!("workspace.title_bar.hide_sidebar"),
