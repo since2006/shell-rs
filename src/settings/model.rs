@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::app::{ShortcutOverrides, ToolKind};
-use crate::explorer::{FileIconStyle, FileSizeFormat, ShowHiddenFiles};
+use crate::explorer::{FileIconStyle, FileSizeFormat, SftpPaneLayout, ShowHiddenFiles};
 use crate::i18n::t;
 use crate::sftp::{DEFAULT_PARALLEL_TRANSFERS, PARALLEL_TRANSFERS_RANGE};
 use crate::terminal::{
@@ -72,6 +72,8 @@ pub struct AppSettings {
     pub transfers: TransferSettings,
     /// SFTP → 图标风格.
     pub file_icon_style: FileIconStyle,
+    /// SFTP → 左右分栏顺序.
+    pub sftp_pane_layout: SftpPaneLayout,
     /// SFTP → 文件侧栏.
     pub file_sidebar: FileSidebarSettings,
     /// 终端 → 通知.
@@ -715,6 +717,24 @@ impl Choice for FileIconStyle {
     }
 }
 
+impl Choice for SftpPaneLayout {
+    const ALL: &'static [Self] = &[Self::LocalLeft, Self::RemoteLeft];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::LocalLeft => "local_left",
+            Self::RemoteLeft => "remote_left",
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::LocalLeft => t!("settings.sftp_pane_layout.local_left"),
+            Self::RemoteLeft => t!("settings.sftp_pane_layout.remote_left"),
+        }
+    }
+}
+
 impl Choice for TerminalCursorStyle {
     const ALL: &'static [Self] = &[Self::Block, Self::Underline, Self::Beam];
 
@@ -1029,6 +1049,7 @@ mod tests {
         check::<RightClick>();
         check::<TerminalCursorStyle>();
         check::<FileIconStyle>();
+        check::<SftpPaneLayout>();
         assert_eq!(Appearance::from_key("sepia"), None);
     }
 
@@ -1047,6 +1068,10 @@ mod tests {
         assert_eq!(settings.file_size_format, FileSizeFormat::Short);
         // The SFTP lists show color icons, as in WinSCP, unless asked not to.
         assert_eq!(AppSettings::default().file_icon_style, FileIconStyle::Color);
+        assert_eq!(
+            AppSettings::default().sftp_pane_layout,
+            SftpPaneLayout::LocalLeft
+        );
         // Hidden files are left out unless the file says otherwise, for
         // each side on its own.
         assert_eq!(

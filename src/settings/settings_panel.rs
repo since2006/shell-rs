@@ -815,6 +815,16 @@ fn sftp_groups(panel: &SettingsPanel, _: &App) -> Vec<SettingGroup> {
                         )
                 })
                 .keywords(keywords(t!("settings.sftp.keywords"))),
+                SettingItem::new(
+                    t!("settings.sftp.pane_layout"),
+                    choice_field(
+                        &panel.store,
+                        |settings| settings.sftp_pane_layout,
+                        |settings, layout| settings.sftp_pane_layout = layout,
+                    ),
+                )
+                .description(t!("settings.sftp.pane_layout_description"))
+                .keywords(keywords(t!("settings.sftp.pane_layout_keywords"))),
             ]),
     ]
 }

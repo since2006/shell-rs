@@ -1,7 +1,7 @@
 use gpui_kit::component::{ActiveTheme as _, Theme, ThemeMode};
 use gpui_kit::*;
 
-use crate::explorer::{FileIconStyle, FileSizeFormat, ShowHiddenFiles};
+use crate::explorer::{FileIconStyle, FileSizeFormat, SftpPaneLayout, ShowHiddenFiles};
 use crate::host::ShowHostDetails;
 use crate::i18n::UiLocale;
 use crate::terminal::{
@@ -124,6 +124,11 @@ pub fn apply(settings: AppSettings, window: &mut Window, cx: &mut App) {
 
     if cx.try_global::<FileIconStyle>() != Some(&settings.file_icon_style) {
         cx.set_global(settings.file_icon_style);
+        window.refresh();
+    }
+
+    if cx.try_global::<SftpPaneLayout>() != Some(&settings.sftp_pane_layout) {
+        cx.set_global(settings.sftp_pane_layout);
         window.refresh();
     }
 

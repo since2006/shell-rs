@@ -3048,3 +3048,75 @@ async fn find_files_results_open_their_menu_on_a_right_click(cx: &mut TestAppCon
     })
     .unwrap();
 }
+
+/// 设置 › SFTP › 左右分栏顺序 (issue #61): local pane is on the left by
+/// default and swaps sides with the remote pane immediately when RemoteLeft is
+/// chosen.
+#[gpui_kit::test]
+async fn sftp_panes_swap_sides_when_remote_left_is_chosen(cx: &mut TestAppContext) {
+    use shellrs::explorer::SftpPaneLayout;
+    let provider = Arc::new(FakeSftpProvider::default());
+    let (handle, workspace) = open_workspace_with_sftp(cx, provider);
+    open_test_explorer(cx, handle).await;
+
+    let pane_lefts = |cx: &mut TestAppContext| {
+        in_frame(cx, handle, |window, _| {
+            let local = window.find(("local-pane", SFTP_TAB)).bounds().left();
+            let remote = window.find(("remote-pane", SFTP_TAB)).bounds().left();
+            (local, remote)
+        })
+    };
+
+    let (local, remote) = pane_lefts(cx);
+    assert!(
+        local < remote,
+        "default expects local left: {local:?} vs {remote:?}"
+    );
+
+    let settings = cx.update(|cx| workspace.read(cx).settings().clone());
+    cx.update(|cx| {
+        settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| settings.sftp_pane_layout = SftpPaneLayout::RemoteLeft,
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    let (local, remote) = pane_lefts(cx);
+    assert!(
+        remote < local,
+        "RemoteLeft expects remote left: {remote:?} vs {local:?}"
+    );
+
+    cx.update(|cx| {
+        settings.update(cx, |settings, cx| {
+            settings.update(
+                |settings| settings.sftp_pane_layout = SftpPaneLayout::LocalLeft,
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    let (local, remote) = pane_lefts(cx);
+    assert!(
+        local < remote,
+        "LocalLeft restores local left: {local:?} vs {remote:?}"
+    );
+
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, cx| {
+        window.within("settings").click("0-2", cx)
+    });
+    in_frame(cx, handle, |window, _| {
+        let pane_layout = dropdown_value(
+            window
+                .within("settings")
+                .within("group-2")
+                .within("item-2")
+                .find("btn")
+                .label(),
+        );
+        assert_eq!(pane_layout.as_deref(), Some("本地左，远程右"));
+    });
+}

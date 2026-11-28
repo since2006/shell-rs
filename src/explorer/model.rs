@@ -293,6 +293,26 @@ pub enum FileSizeFormat {
 
 impl Global for FileSizeFormat {}
 
+/// Which side of an SFTP tab shows local files and which shows remote ones.
+/// A global, set from the settings like `FileIconStyle`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SftpPaneLayout {
+    /// Local on the left, remote on the right (the default).
+    #[default]
+    LocalLeft,
+    /// Remote on the left, local on the right.
+    RemoteLeft,
+}
+
+impl Global for SftpPaneLayout {}
+
+impl SftpPaneLayout {
+    pub fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().copied().unwrap_or_default()
+    }
+}
+
 /// 显示隐藏文件: whether the lists show dot files, for each side on its own
 /// (dot files on the server are often wanted, the local home's seldom). A
 /// side's choice holds for every SFTP tab, kept in the settings and set from
