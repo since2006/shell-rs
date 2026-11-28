@@ -4,6 +4,30 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.21]
+
+### Added
+
+- SFTP sync browsing: while it’s on, when one side changes folder, the other makes the same move, into the folder of the same name or up as many levels, so you can go through two matching trees together, as in WinSCP. The switch is after Forward in both sides’ navigation toolbars and in the SFTP tab’s context menu, and is remembered for the host; when the other side has no matching folder, you’re asked whether to create it. Jumps such as opening a bookmark or typing a folder move only that side. ([#61](https://github.com/since2006/shell-rs/issues/61))
+- The local and remote sides of SFTP tabs can swap places: choose “Remote on the left, local on the right” in Settings › SFTP › File list › Pane order. Open tabs change at once, and each side keeps the width you dragged it to. ([#61](https://github.com/since2006/shell-rs/issues/61), [#167](https://github.com/since2006/shell-rs/pull/167))
+- SFTP tabs and the top of the transfer queue show how transfers stand: a spinner while transferring, then “Transfer complete” or “Partially failed”, so you can tell without switching to the tab or scrolling the queue. On the tab, the result goes once you’ve seen it. ([#133](https://github.com/since2006/shell-rs/issues/133), [#166](https://github.com/since2006/shell-rs/pull/166))
+- Files in the right sidebar beside local terminals: this computer’s folders, used like the local side of an SFTP tab, following the terminal’s folder by default with no shell setup. The sidebar’s buttons are Snippets, Projects and Files, with Snippets and Files where they are beside remote terminals. ([#153](https://github.com/since2006/shell-rs/pull/153))
+- On Windows, local terminals running PowerShell or Command Prompt remember their folder too: Projects terminals reopen in it, and local Files follows it. ([#153](https://github.com/since2006/shell-rs/pull/153))
+- The AI assistant can delete a single conversation: the trash icon in its header deletes the one on screen, after asking. ([#171](https://github.com/since2006/shell-rs/issues/171))
+- A model service’s context size can be set: under Advanced in the model service dialog, enter a size such as `128K` or `1M`, or leave it empty to go by the address as before. It syncs with cloud sync. ([#171](https://github.com/since2006/shell-rs/issues/171))
+
+### Improved
+
+- The Hosts, Port forwarding and Credentials buttons in the title bar work as toggles: click the one showing again to hide the sidebar, as ⌘B (Ctrl+Shift+B on Windows and Linux) does, and the separate Hide sidebar button is gone. Settings moved from the bottom of the sidebar to the top right of the title bar, and New local terminal moved next to the Credentials button. ([#170](https://github.com/since2006/shell-rs/issues/170))
+- The title bar’s icons are bigger and no longer scale with Interface font size, so a larger size doesn’t push its buttons past it; the Port forwarding button no longer shows how many forwards are running. ([#170](https://github.com/since2006/shell-rs/issues/170))
+
+### Fixed
+
+- Changing the proxy command of a host that had synced went back to the old command after the next sync round, and other devices never got the new one.
+- On Windows, the window didn’t keep its place and could even open off screen. Its place is now recorded when you click the close button and when ShellRS quits; if its display has been unplugged, it opens in the middle of the main screen, and if part of it would be off screen, it’s moved back on.
+- Hiding the sidebar while its list had the focus left every shortcut dead.
+- The icons of Show in host list, of Go to in Find files results and of some of the AI assistant’s tool calls showed blank.
+
 ## [0.1.21-beta.2]
 
 ### Improved
