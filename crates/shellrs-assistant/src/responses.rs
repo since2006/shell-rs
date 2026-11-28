@@ -339,6 +339,7 @@ mod tests {
             base_url: "https://api.openai.com".into(),
             model: "gpt-x".into(),
             api_key: Some(ApiKey::new("sk-test")),
+            context_window: None,
         };
         let messages = [
             message(

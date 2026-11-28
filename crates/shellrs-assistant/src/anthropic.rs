@@ -376,6 +376,7 @@ mod tests {
             base_url: base_url.into(),
             model: "claude-x".into(),
             api_key: Some(ApiKey::new("sk-ant-test")),
+            context_window: None,
         }
     }
 

@@ -8,11 +8,12 @@ use gpui_kit::*;
 
 use super::Workspace;
 use crate::app::{
-    ContinueAssistant, DeleteAiProvider, DeleteAllAssistantConversations, DenyAssistantCall,
-    EditAiProvider, InsertAssistantCall, NewAiProvider, NewAssistantConversation,
-    OpenAssistantConversation, OpenAssistantLink, OpenAssistantSettings, OpenSettings,
-    RunAssistantCall, SendAssistantMessage, SetAssistantApproval, SetConversationApproval,
-    SetConversationRunIn, SetDefaultAiModel, StopAssistant, ToggleAssistantCallDetails, UseAiModel,
+    ContinueAssistant, DeleteAiProvider, DeleteAllAssistantConversations,
+    DeleteAssistantConversation, DenyAssistantCall, EditAiProvider, InsertAssistantCall,
+    NewAiProvider, NewAssistantConversation, OpenAssistantConversation, OpenAssistantLink,
+    OpenAssistantSettings, OpenSettings, RunAssistantCall, SendAssistantMessage,
+    SetAssistantApproval, SetConversationApproval, SetConversationRunIn, SetDefaultAiModel,
+    StopAssistant, ToggleAssistantCallDetails, UseAiModel,
 };
 use crate::assistant::{AssistantPanel, AssistantServices, ProviderDialog, open_provider_dialog};
 use crate::i18n::t;
@@ -30,7 +31,8 @@ impl Workspace {
             .update(cx, |assistant, cx| assistant.set_services(services, cx));
     }
 
-    fn assistant_panel(&self, cx: &App) -> Entity<AssistantPanel> {
+    /// The right sidebar's AI 助手.
+    pub fn assistant_panel(&self, cx: &App) -> Entity<AssistantPanel> {
         self.tools.read(cx).assistant().clone()
     }
 
@@ -270,6 +272,34 @@ impl Workspace {
         let public_id = action.0.clone();
         self.assistant_panel(cx)
             .update(cx, |panel, cx| panel.open_conversation(&public_id, cx));
+    }
+
+    pub(super) fn on_delete_assistant_conversation(
+        &mut self,
+        action: &DeleteAssistantConversation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(store) = self.assistant.read(cx).store().cloned() else {
+            return;
+        };
+        if !matches!(store.conversation(&action.0), Ok(Some(_))) {
+            return;
+        }
+        let (public_id, panel) = (action.0.clone(), self.assistant_panel(cx));
+        confirm_danger(
+            t!("assistant.delete.title"),
+            Some(t!("assistant.delete.description")),
+            t!("assistant.delete.confirm"),
+            Rc::new(move |_, cx| {
+                let _ = store.delete(&public_id);
+                panel.update(cx, |panel, cx| {
+                    panel.conversation_deleted(Some(&public_id), cx)
+                });
+            }),
+            window,
+            cx,
+        );
     }
 
     pub(super) fn on_delete_all_assistant_conversations(

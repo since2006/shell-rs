@@ -3469,6 +3469,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_continue_assistant))
             .on_action(cx.listener(Self::on_new_assistant_conversation))
             .on_action(cx.listener(Self::on_open_assistant_conversation))
+            .on_action(cx.listener(Self::on_delete_assistant_conversation))
             .on_action(cx.listener(Self::on_delete_all_assistant_conversations))
             .on_action(cx.listener(Self::on_run_assistant_call))
             .on_action(cx.listener(Self::on_deny_assistant_call))

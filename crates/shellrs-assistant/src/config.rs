@@ -102,6 +102,9 @@ pub struct ProviderConfig {
     /// `None` for a service that takes none, such as Ollama on this
     /// computer.
     pub api_key: Option<ApiKey>,
+    /// 上下文大小 as the user set it for the service; `None` to guess by
+    /// the address ([`ProviderConfig::context_window`]).
+    pub context_window: Option<u64>,
 }
 
 impl ProviderConfig {
@@ -157,9 +160,16 @@ impl ProviderConfig {
     }
 
     /// How many tokens the conversation may hold, as far as the assistant
-    /// counts: a guess low enough for the smaller models of the service, so
-    /// trimming starts before the service refuses.
+    /// counts: what the user set, else a guess low enough for the smaller
+    /// models of the service, so trimming starts before the service
+    /// refuses.
     pub fn context_window(&self) -> u64 {
+        self.context_window
+            .unwrap_or_else(|| self.estimated_context_window())
+    }
+
+    /// The guess by the address: what the form shows for 自动.
+    pub fn estimated_context_window(&self) -> u64 {
         if self.is_anthropic() {
             200_000
         } else if self.is_local() {
@@ -186,6 +196,7 @@ mod tests {
             base_url: base_url.into(),
             model: "m".into(),
             api_key: None,
+            context_window: None,
         }
     }
 
@@ -286,6 +297,11 @@ mod tests {
             config(Protocol::OpenAi, "https://api.deepseek.com").context_window(),
             128_000
         );
+        // Set by the user, it is what counts, whatever the address.
+        let mut set = config(Protocol::OpenAi, "http://localhost:11434");
+        set.context_window = Some(256_000);
+        assert_eq!(set.context_window(), 256_000);
+        assert_eq!(set.estimated_context_window(), 32_000);
     }
 
     #[test]

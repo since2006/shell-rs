@@ -355,6 +355,8 @@ id_actions! {
     /// Open a saved conversation, by its public id, beside the terminal in
     /// front.
     OpenAssistantConversation(String);
+    /// Ask first, then delete a saved conversation, by its public id.
+    DeleteAssistantConversation(String);
     /// Turn a call down.
     DenyAssistantCall(String);
     /// Put a command the assistant asks to run into the terminal instead.

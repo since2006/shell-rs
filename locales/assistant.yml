@@ -24,6 +24,9 @@ assistant.panel.new_title:
 assistant.panel.untitled:
   zh-CN: （未命名）
   en: (Untitled)
+assistant.panel.delete:
+  zh-CN: 删除对话
+  en: Delete conversation
 assistant.panel.history:
   zh-CN: 历史对话
   en: Conversations
@@ -334,6 +337,21 @@ assistant.dialog.error.base_url:
 assistant.dialog.error.model:
   zh-CN: 请至少添加一个模型
   en: Add at least one model
+assistant.dialog.error.context_window:
+  zh-CN: 上下文大小要填 1K 到 100M 之间的数，如 128K、1M；留空按地址估算
+  en: Enter a context size from 1K to 100M, such as 128K or 1M, or leave it empty to go by the address
+assistant.dialog.advanced:
+  zh-CN: 高级设置
+  en: Advanced
+assistant.dialog.context:
+  zh-CN: 上下文大小
+  en: Context size
+assistant.dialog.context_automatic:
+  zh-CN: 自动
+  en: Automatic
+assistant.dialog.context_note:
+  zh-CN: 一次对话最多带多少 tokens，如 128K、1M。留空按地址估算，这个地址是 %{estimate}。
+  en: How many tokens a conversation may hold, such as 128K or 1M. Leave it empty to go by the address, which gives %{estimate} here.
 
 assistant.delete_provider.title:
   zh-CN: 删除模型服务“%{name}”？
@@ -341,6 +359,15 @@ assistant.delete_provider.title:
 assistant.delete_provider.description:
   zh-CN: 它的 API Key 也会从钥匙串删除，开启同步时其他设备上的也会删除。用过它的对话还在。
   en: Its API key is deleted from the keychain too, and from your other devices with sync on. Conversations that used it stay.
+assistant.delete.title:
+  zh-CN: 删除这个对话？
+  en: Delete this conversation?
+assistant.delete.description:
+  zh-CN: 是否确认删除这条对话和消息记录。
+  en: Delete this conversation and its messages?
+assistant.delete.confirm:
+  zh-CN: 删除对话
+  en: Delete conversation
 assistant.delete_all.title:
   zh-CN: 删除全部对话？
   en: Delete all conversations?

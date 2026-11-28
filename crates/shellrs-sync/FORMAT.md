@@ -124,7 +124,7 @@ References are other records' ids. `null` means none.
 | `forward` | `host`, `name`, `kind` (`local`, `remote`, `dynamic`), `bind_host`, `bind_port`, `target_host` and `target_port` (null exactly when dynamic), `sort_order` |
 | `snippet_category` | `name` (not empty), `parent` (snippet category or null)¹, `sort_order`¹ |
 | `snippet` | `category` (or null), `name`, `command` (not empty), `scope` (`all`, `group`, `host`), `scope_id` (null exactly when `all`), `run_on_click`, `sort_order`¹ |
-| `ai_provider`⁵ | a model service of the AI assistant: `name` (not empty), `protocol` (`anthropic`: Anthropic's Messages, `openai`: OpenAI's Chat Completions, `openai_responses`: OpenAI's Responses), `base_url` (not empty: the address the protocol's path goes after, `/v1/messages`, `/v1/chat/completions` or `/v1/responses`; after an address whose path already names a version, such as `…/v1` or `…/api/paas/v4`, the path without its `/v1`), `models` [model names, at least one, none empty; the first is used when none is picked], `sort_order` |
+| `ai_provider`⁵ | a model service of the AI assistant: `name` (not empty), `protocol` (`anthropic`: Anthropic's Messages, `openai`: OpenAI's Chat Completions, `openai_responses`: OpenAI's Responses), `base_url` (not empty: the address the protocol's path goes after, `/v1/messages`, `/v1/chat/completions` or `/v1/responses`; after an address whose path already names a version, such as `…/v1` or `…/api/paas/v4`, the path without its `/v1`), `models` [model names, at least one, none empty; the first is used when none is picked], `sort_order`, `context_window` (how many tokens its conversations may hold, 1000 to 100000000, or null to go by the address)⁶ |
 | `secret.password` | `user` (may be empty), `host` (not empty), `port`, `value`: the password saved for signing in as `user` at `host:port`, shared by every host that does; its id is the first 16 bytes, hex, of SHA-256(`user` ‖ 0x00 ‖ `host` ‖ 0x00 ‖ `port` in decimal) |
 | `secret.proxy` | as `secret.password`, for a proxy |
 | `secret.credential` | `value`: the password of the password credential with this id |
@@ -166,6 +166,10 @@ keeps `ai_provider` as a kind it does not know and `secret.ai_key` as a
 secret of a kind it does not know, and passes both on unchanged. A model
 service's key, like other secrets, is not empty: a service that takes none
 has no `secret.ai_key`.
+
+The field marked ⁶ was added after ShellRS 0.1.21-beta.2. Missing,
+`context_window` reads as null. An older version keeps it as a field it does
+not know.
 
 Not synced, each device's own: serial hosts (their port is this computer's);
 a host's detected system, last connection and sidebar tool; a group's expanded

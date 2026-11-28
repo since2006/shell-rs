@@ -39,10 +39,10 @@ use super::service::AssistantService;
 use crate::analytics::Counter;
 use crate::app::AiModelChoice;
 use crate::app::{
-    CatalogIcon, DenyAssistantCall, InsertAssistantCall, NewAiProvider, NewAssistantConversation,
-    OpenAssistantConversation, OpenAssistantLink, OpenAssistantSettings, RunAssistantCall,
-    SendAssistantMessage, SetConversationApproval, SetConversationRunIn, StopAssistant,
-    ToggleAssistantCallDetails, UseAiModel,
+    CatalogIcon, DeleteAssistantConversation, DenyAssistantCall, InsertAssistantCall,
+    NewAiProvider, NewAssistantConversation, OpenAssistantConversation, OpenAssistantLink,
+    OpenAssistantSettings, RunAssistantCall, SendAssistantMessage, SetConversationApproval,
+    SetConversationRunIn, StopAssistant, ToggleAssistantCallDetails, UseAiModel,
 };
 use crate::host::{AiProvider, HostOs, HostStore};
 use crate::i18n::t;
@@ -462,6 +462,7 @@ impl AssistantPanel {
                 base_url: provider.base_url.to_string(),
                 model: model.to_string(),
                 api_key: key,
+                context_window: provider.context_window,
             },
             provider_public_id: Some(provider.public_id.to_string()),
             transport: services.transport.clone(),
@@ -950,10 +951,10 @@ impl AssistantPanel {
         cx.notify();
     }
 
-    /// The conversation in front, for the workspace to delete.
-    pub fn current_conversation(&self) -> Option<ConversationSummary> {
-        let id = self.current()?;
-        self.chats.get(&id)?.conversation.clone()
+    /// The tokens the conversation in front holds and may hold, as its
+    /// model service last reported.
+    pub fn context(&self) -> Option<(u64, u64)> {
+        self.chats.get(&self.current()?)?.context
     }
 
     pub fn set_approval(&mut self, approval: Approval, cx: &mut Context<Self>) {
@@ -1180,6 +1181,30 @@ impl AssistantPanel {
                             );
                         }
                         menu
+                    })
+            })
+            // The conversation on screen, once saved; not while it answers.
+            .child({
+                let dispatch = dispatch.clone();
+                let saved = chat
+                    .conversation
+                    .as_ref()
+                    .map(|conversation| conversation.public_id.clone())
+                    .filter(|_| !chat.busy && !chat.starting && !chat.opening);
+                Button::new("assistant-delete")
+                    .xsmall()
+                    .ghost()
+                    .icon(Icon::new(CatalogIcon::Trash))
+                    .tooltip(t!("assistant.panel.delete"))
+                    .disabled(saved.is_none())
+                    .on_click(move |_, window, cx| {
+                        if let Some(id) = &saved {
+                            dispatch.dispatch_action(
+                                &DeleteAssistantConversation(id.clone()),
+                                window,
+                                cx,
+                            );
+                        }
                     })
             })
             .child(

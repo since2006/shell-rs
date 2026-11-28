@@ -46,7 +46,7 @@ fn from_sql(id: i64) -> u64 {
 /// credential, 24 the one-time codes an SSH host fills in, 25 what an SSH
 /// host types once logged in, 26 a host's `ProxyCommand`, 27 the AI
 /// assistant's model services.
-const SCHEMA_VERSION: i64 = 29;
+const SCHEMA_VERSION: i64 = 30;
 
 /// The whole schema, as a new database gets it.
 ///
@@ -323,7 +323,8 @@ CREATE TABLE ai_providers (
     base_url   TEXT NOT NULL CHECK (base_url <> ''),
     models     TEXT NOT NULL CHECK (json_array_length(models) > 0),
     sort_order INTEGER NOT NULL DEFAULT 0,
-    edited_ms  INTEGER NOT NULL DEFAULT 0
+    edited_ms  INTEGER NOT NULL DEFAULT 0,
+    context_window INTEGER CHECK (context_window > 0)
 ) STRICT;";
 
 /// One step from a version to the next: one transaction that ends by
@@ -341,7 +342,7 @@ enum Step {
 ///
 /// A step is history: it says what that version's change was, and stays as
 /// written when `SCHEMA` changes again.
-const STEPS: [(i64, Step); 16] = [
+const STEPS: [(i64, Step); 17] = [
     (
     13,
     // The command snippets.
@@ -560,6 +561,16 @@ COMMIT;",
             "BEGIN;
 ALTER TABLE hosts ADD COLUMN sync_browsing     INTEGER NOT NULL DEFAULT 0 CHECK (sync_browsing IN (0, 1));
 PRAGMA user_version = 29;
+COMMIT;",
+        ),
+    ),
+    (
+        29,
+        // A model service's 上下文大小: every one so far goes by its address.
+        Step::Sql(
+            "BEGIN;
+ALTER TABLE ai_providers ADD COLUMN context_window INTEGER CHECK (context_window > 0);
+PRAGMA user_version = 30;
 COMMIT;",
         ),
     ),
@@ -1353,7 +1364,7 @@ impl HostDatabase {
             .connection
             .prepare(
                 "SELECT id, public_id, name, protocol, base_url, models, sort_order, \
-                 edited_ms FROM ai_providers ORDER BY sort_order, id",
+                 edited_ms, context_window FROM ai_providers ORDER BY sort_order, id",
             )?
             .query_map([], |row| {
                 let id: i64 = row.get(0)?;
@@ -1364,13 +1375,15 @@ impl HostDatabase {
                 let models: String = row.get(5)?;
                 let sort_order: i64 = row.get(6)?;
                 let edited_ms: i64 = row.get(7)?;
+                let context_window: Option<i64> = row.get(8)?;
                 // The table's CHECKs admit only the protocols this build
                 // knows and a list of models.
                 let models = serde_json::from_str::<Vec<String>>(&models).ok();
                 Ok(AiProtocol::from_stored(&protocol)
                     .zip(models)
                     .map(|(protocol, models)| {
-                        let draft = AiProviderDraft::new(name, protocol, base_url, models);
+                        let draft = AiProviderDraft::new(name, protocol, base_url, models)
+                            .with_context_window(context_window.map(from_sql));
                         let mut provider = AiProvider::new(AiProviderId(from_sql(id)), draft);
                         provider.public_id = PublicId::from_stored(public_id);
                         provider.sort_order = sort_order;
@@ -1402,7 +1415,7 @@ impl HostDatabase {
     pub fn insert_ai_provider(&self, provider: &AiProvider) -> rusqlite::Result<()> {
         self.connection.execute(
             "INSERT INTO ai_providers (id, public_id, name, protocol, base_url, models, \
-             sort_order, edited_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             sort_order, edited_ms, context_window) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 to_sql(provider.id.0),
                 provider.public_id.as_str(),
@@ -1412,6 +1425,7 @@ impl HostDatabase {
                 models_json(provider),
                 provider.sort_order,
                 to_sql(provider.edited_ms),
+                provider.context_window.map(to_sql),
             ],
         )?;
         Ok(())
@@ -1420,7 +1434,7 @@ impl HostDatabase {
     pub fn update_ai_provider(&self, provider: &AiProvider) -> rusqlite::Result<()> {
         self.connection.execute(
             "UPDATE ai_providers SET name = ?2, protocol = ?3, base_url = ?4, models = ?5, \
-             sort_order = ?6, edited_ms = ?7 WHERE id = ?1",
+             sort_order = ?6, edited_ms = ?7, context_window = ?8 WHERE id = ?1",
             params![
                 to_sql(provider.id.0),
                 provider.name.as_ref(),
@@ -1429,6 +1443,7 @@ impl HostDatabase {
                 models_json(provider),
                 provider.sort_order,
                 to_sql(provider.edited_ms),
+                provider.context_window.map(to_sql),
             ],
         )?;
         Ok(())
@@ -3535,13 +3550,75 @@ INSERT INTO hosts (id, name, address, port, auth, credential_id, edited_ms) \
         assert_eq!(db.load().unwrap().hosts[3].totp, None);
     }
 
-    /// The schema of version 28, as files of that version have it: today's
-    /// without 同步浏览.
+    /// The schema of version 29, as files of that version have it: today's
+    /// without a model service's 上下文大小.
+    fn schema_29() -> String {
+        let column = ",\n    context_window INTEGER CHECK (context_window > 0)\n";
+        assert!(SCHEMA.contains(column));
+        SCHEMA.replace(column, "\n")
+    }
+
+    /// The schema of version 28: 29's without 同步浏览.
     fn schema_28() -> String {
         let column = "    sync_browsing     INTEGER NOT NULL DEFAULT 0 \
                       CHECK (sync_browsing IN (0, 1)),\n";
-        assert!(SCHEMA.contains(column));
-        SCHEMA.replace(column, "")
+        let schema = schema_29();
+        assert!(schema.contains(column));
+        schema.replace(column, "")
+    }
+
+    #[test]
+    fn a_version_29_files_model_services_go_by_their_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shellrs.db");
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(&format!(
+                "BEGIN;\n{}\nPRAGMA user_version = 29;\nCOMMIT;",
+                schema_29()
+            ))
+            .unwrap();
+            old.execute(
+                "INSERT INTO ai_providers (id, public_id, name, protocol, base_url, models, \
+                 sort_order, edited_ms) VALUES (1, 'p1', 'DeepSeek', 'openai', \
+                 'https://api.deepseek.com', '[\"deepseek-chat\"]', 0, 5)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let db = HostDatabase::open(&path).unwrap();
+        assert!(dir.path().join("shellrs.db.v29.bak").exists());
+        let fresh = HostDatabase::in_memory().unwrap();
+        assert_eq!(schema_of(&db.connection), schema_of(&fresh.connection));
+        let provider = &db.load().unwrap().ai_providers[0];
+        assert_eq!(provider.context_window, None);
+        assert_eq!(
+            (provider.name.as_ref(), provider.edited_ms),
+            ("DeepSeek", 5)
+        );
+    }
+
+    #[test]
+    fn a_model_services_context_size_is_kept() {
+        let db = HostDatabase::in_memory().unwrap();
+        let draft = AiProviderDraft::new(
+            "DeepSeek",
+            AiProtocol::OpenAi,
+            "https://api.deepseek.com",
+            ["deepseek-chat"],
+        );
+        let mut provider =
+            AiProvider::new(AiProviderId(1), draft.with_context_window(Some(64_000)));
+        db.insert_ai_provider(&provider).unwrap();
+        let read = |db: &HostDatabase| db.load().unwrap().ai_providers[0].context_window;
+        assert_eq!(read(&db), Some(64_000));
+        provider.context_window = None;
+        db.update_ai_provider(&provider).unwrap();
+        assert_eq!(read(&db), None);
+        provider.context_window = Some(1_000_000);
+        db.update_ai_provider(&provider).unwrap();
+        assert_eq!(read(&db), Some(1_000_000));
     }
 
     #[test]

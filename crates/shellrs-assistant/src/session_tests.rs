@@ -22,6 +22,7 @@ fn claude() -> ProviderConfig {
         base_url: "https://api.anthropic.com".into(),
         model: "claude-test".into(),
         api_key: Some(ApiKey::new("sk-ant-test")),
+        context_window: None,
     }
 }
 
@@ -598,6 +599,7 @@ async fn another_service_goes_on_from_the_parts() {
         base_url: "http://localhost:11434/v1".into(),
         model: "qwen".into(),
         api_key: None,
+        context_window: None,
     };
     let session = Session::start(
         &tokio::runtime::Handle::current(),
@@ -678,6 +680,7 @@ async fn a_responses_service_runs_a_command_and_answers() {
         base_url: "https://api.openai.com".into(),
         model: "gpt-test".into(),
         api_key: Some(ApiKey::new("sk-test")),
+        context_window: None,
     };
     let session = Session::start(
         &tokio::runtime::Handle::current(),
@@ -751,6 +754,7 @@ async fn a_service_lists_its_models() {
         base_url: "https://api.deepseek.com".into(),
         model: String::new(),
         api_key: Some(ApiKey::new("sk-test")),
+        context_window: None,
     };
     assert_eq!(
         list_models(&openai, transport.clone()).await,

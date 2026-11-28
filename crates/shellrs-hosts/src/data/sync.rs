@@ -587,6 +587,7 @@ impl HostData {
                     base_url: provider.base_url.to_string(),
                     models: provider.models.iter().map(ToString::to_string).collect(),
                     sort_order: provider.sort_order,
+                    context_window: provider.context_window,
                 }),
                 edited_ms: provider.edited_ms,
             });
@@ -1374,7 +1375,8 @@ impl HostData {
                     protocol,
                     data.base_url.as_str(),
                     data.models.iter().map(String::as_str),
-                );
+                )
+                .with_context_window(data.context_window);
                 let mut fresh = AiProvider::new(provider_id, draft);
                 fresh.public_id = PublicId::from_stored(id.to_owned());
                 fresh.sort_order = data.sort_order;
@@ -2216,6 +2218,19 @@ mod tests {
         b.sync(&vault, &keys);
         a.sync(&vault, &keys);
         assert_eq!(a.store.ai_providers()[0].id, local);
+        assert_eq!(a.store.ai_provider(local).unwrap().context_window, None);
+        // Its 上下文大小 set on the other one, after the move it took in:
+        // the edit is the newer, and stays.
+        let draft = a.store.ai_provider(local).unwrap().draft();
+        a.store
+            .update_ai_provider(local, draft.with_context_window(Some(64_000)));
+        a.sync(&vault, &keys);
+        b.sync(&vault, &keys);
+        assert_eq!(
+            a.store.ai_provider(local).unwrap().context_window,
+            Some(64_000)
+        );
+        assert_eq!(b.store.ai_providers()[0].context_window, Some(64_000));
 
         // Deleted on one, it goes with its key on both.
         a.store.remove_ai_provider(claude);

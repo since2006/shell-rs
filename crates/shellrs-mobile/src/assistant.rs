@@ -294,11 +294,13 @@ impl HostStore {
                 })?;
                 let id = match public_id {
                     Some(public_id) => {
-                        let id = data
+                        let saved = data
                             .ai_provider_by_public_id(&public_id)
-                            .ok_or(StoreError::NotFound)?
-                            .id;
-                        data.update_ai_provider(id, checked);
+                            .ok_or(StoreError::NotFound)?;
+                        // The App's form has no 上下文大小: what the desktop
+                        // set stays.
+                        let (id, context_window) = (saved.id, saved.context_window);
+                        data.update_ai_provider(id, checked.with_context_window(context_window));
                         id
                     }
                     None => data.insert_ai_provider(checked),
@@ -779,6 +781,13 @@ impl Core {
         api_key: Option<String>,
         public_id: Option<String>,
     ) -> ProviderConfig {
+        // The saved service's 上下文大小, set on the desktop.
+        let context_window = public_id.as_ref().and_then(|id| {
+            self.store
+                .lock()
+                .ai_provider_by_public_id(id)
+                .and_then(|provider| provider.context_window)
+        });
         let typed = api_key
             .map(|key| key.trim().to_owned())
             .filter(|key| !key.is_empty());
@@ -812,6 +821,7 @@ impl Core {
             base_url,
             model,
             api_key: key.filter(|key| !key.is_empty()).map(ApiKey::new),
+            context_window,
         }
     }
 }
@@ -1430,6 +1440,26 @@ mod tests {
             ["deepseek-reasoner", "deepseek-chat"]
         );
         assert!(keychain.0.lock().unwrap().contains_key(&account));
+
+        // 上下文大小, set on the desktop and synced here: the App's form has
+        // none, and its save keeps it.
+        {
+            let mut data = store.shared.lock();
+            let saved = data.ai_provider_by_public_id(&id).unwrap();
+            let (provider, draft) = (saved.id, saved.draft());
+            data.update_ai_provider(provider, draft.with_context_window(Some(64_000)));
+        }
+        futures::executor::block_on(store.save_ai_provider(
+            Some(id.clone()),
+            draft(&["deepseek-chat"]),
+            None,
+        ))
+        .unwrap();
+        let context = |store: &HostStore| {
+            let data = store.shared.lock();
+            data.ai_provider_by_public_id(&id).unwrap().context_window
+        };
+        assert_eq!(context(&store), Some(64_000));
 
         let wrong = futures::executor::block_on(store.save_ai_provider(None, draft(&[" "]), None));
         assert!(matches!(

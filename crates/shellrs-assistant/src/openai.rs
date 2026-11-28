@@ -289,6 +289,7 @@ mod tests {
             base_url: "https://api.deepseek.com/v1/".into(),
             model: "deepseek-x".into(),
             api_key: Some(ApiKey::new("sk-test")),
+            context_window: None,
         }
     }
 

@@ -11,6 +11,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, IconName, IndexPath, Sizable as _, StyledExt as _,
     WindowExt as _,
     button::{Button, ButtonVariants as _},
+    collapsible::Collapsible,
     dialog::{DialogAction, DialogClose, DialogFooter},
     form::{Field, Form},
     h_flex,
@@ -29,7 +30,7 @@ use super::describe::{draft_error, provider_error};
 use super::presets::{Preset, PresetItem, PresetLabel as _, preset_service};
 use super::service::AssistantService;
 use crate::app::CatalogIcon;
-use crate::host::{AiProtocol, AiProviderDraft, AiProviderId, HostStore};
+use crate::host::{AI_CONTEXT_WINDOW, AiProtocol, AiProviderDraft, AiProviderId, HostStore};
 use crate::i18n::{t, tn};
 use crate::shared::{dismiss_form_error, form_error_notification};
 
@@ -128,6 +129,11 @@ pub struct ProviderForm {
     /// The id the next row gets: ids outlive the rows deleted.
     next_row: usize,
     models_scroll: ScrollHandle,
+    /// 上下文大小, under 高级设置: empty to go by the address.
+    context: Entity<InputState>,
+    /// 高级设置 unfolded: at first only for a service with one of its
+    /// settings changed.
+    advanced_open: bool,
     status: Status,
     _work: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -211,6 +217,17 @@ impl ProviderForm {
                 .masked(true)
                 .placeholder(key_placeholder)
         });
+        let advanced_open = draft.context_window.is_some();
+        let context = input(
+            draft
+                .context_window
+                .map(context_text)
+                .unwrap_or_default()
+                .into(),
+            t!("assistant.dialog.context_automatic"),
+            window,
+            cx,
+        );
         let subscriptions = vec![
             cx.subscribe_in(
                 &preset_select,
@@ -266,6 +283,8 @@ impl ProviderForm {
             next_row: models.len(),
             models,
             models_scroll: ScrollHandle::new(),
+            context,
+            advanced_open,
             status: Status::Idle,
             _work: None,
             _subscriptions: subscriptions,
@@ -414,11 +433,13 @@ impl ProviderForm {
                 }
                 None => Some(typed),
             };
+            // Asking the service, no conversation: its size does not matter.
             let config = ProviderConfig {
                 protocol,
                 base_url,
                 model: model.to_string(),
                 api_key: key.filter(|key| !key.is_empty()).map(ApiKey::new),
+                context_window: None,
             };
             let Ok(Some(answer)) = cx.update(|_, cx| work(service.read(cx), config)) else {
                 let _ = this.update_in(cx, |this, window, cx| done(this, None, window, cx));
@@ -533,6 +554,17 @@ impl ProviderForm {
                 return false;
             }
         };
+        let Some(context_window) = parse_context(&self.context.read(cx).value()) else {
+            // Where the field is, to be put right.
+            self.advanced_open = true;
+            cx.notify();
+            window.push_notification(
+                form_error_notification(t!("assistant.dialog.error.context_window")),
+                cx,
+            );
+            return false;
+        };
+        let draft = draft.with_context_window(context_window);
         let key = self.key.read(cx).value().trim().to_string();
         let editing = self.editing;
         self.store.update(cx, |store, cx| {
@@ -741,6 +773,113 @@ impl ProviderForm {
     }
 }
 
+impl ProviderForm {
+    /// 「高级设置」, folded away below the models, as in the host form: what
+    /// few services need. For now 上下文大小 alone.
+    fn advanced_field(&self, cx: &mut Context<Self>) -> Field {
+        let open = self.advanced_open;
+        Field::new().label_indent(false).child(
+            Collapsible::new()
+                .w_full()
+                .gap_2()
+                .open(open)
+                .child(
+                    h_flex().child(
+                        Button::new("provider-advanced")
+                            .ghost()
+                            .small()
+                            .compact()
+                            .icon(if open {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
+                            })
+                            .label(t!("assistant.dialog.advanced"))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.advanced_open = !this.advanced_open;
+                                cx.notify();
+                            })),
+                    ),
+                )
+                .content(
+                    v_flex()
+                        .id("provider-advanced-box")
+                        .w_full()
+                        .p_3()
+                        .rounded(cx.theme().radius)
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            Form::new().child(
+                                Field::new()
+                                    .label(t!("assistant.dialog.context"))
+                                    .description(t!(
+                                        "assistant.dialog.context_note",
+                                        estimate = context_text(self.estimated_context(cx))
+                                    ))
+                                    .child(
+                                        Input::new(&self.context).id("provider-context").small(),
+                                    ),
+                            ),
+                        ),
+                ),
+        )
+    }
+
+    /// What the assistant guesses for the service as typed, left empty.
+    fn estimated_context(&self, cx: &App) -> u64 {
+        ProviderConfig {
+            protocol: core_protocol(self.protocol),
+            base_url: self.base_url.read(cx).value().trim().to_string(),
+            model: String::new(),
+            api_key: None,
+            context_window: None,
+        }
+        .estimated_context_window()
+    }
+}
+
+/// 上下文大小 as typed: tokens, with a K or M for thousands or millions
+/// (`128K`, `1M`, `1.5M`, `200000`, `200,000`); empty to go by the
+/// address. `None` for anything else, or outside what a service may be
+/// given.
+fn parse_context(text: &str) -> Option<Option<u64>> {
+    let text: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, ',' | '_'))
+        .collect();
+    if text.is_empty() {
+        return Some(None);
+    }
+    let (number, unit) = match text.char_indices().last() {
+        Some((at, 'k' | 'K')) => (&text[..at], 1_000.0),
+        Some((at, 'm' | 'M')) => (&text[..at], 1_000_000.0),
+        _ => (text.as_str(), 1.0),
+    };
+    let tokens = if unit == 1.0 {
+        number.parse::<u64>().ok()?
+    } else {
+        let value = number
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite())?;
+        (value * unit).round() as u64
+    };
+    AI_CONTEXT_WINDOW.contains(&tokens).then_some(Some(tokens))
+}
+
+/// A size as the field shows it: in K or M when it is a whole number of
+/// them.
+fn context_text(tokens: u64) -> String {
+    if tokens >= 1_000_000 && tokens.is_multiple_of(1_000_000) {
+        format!("{}M", tokens / 1_000_000)
+    } else if tokens >= 1_000 && tokens.is_multiple_of(1_000) {
+        format!("{}K", tokens / 1_000)
+    } else {
+        tokens.to_string()
+    }
+}
+
 impl Render for ProviderForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
@@ -799,7 +938,8 @@ impl Render for ProviderForm {
                         Field::new()
                             .label_indent(false)
                             .child(self.models_field(cx)),
-                    ),
+                    )
+                    .child(self.advanced_field(cx)),
             )
             // By 测试连接, in the footer below.
             .children(self.status_line(Work::Check, cx))
@@ -891,4 +1031,40 @@ fn form_footer(form: &Entity<ProviderForm>, commit_label: SharedString, cx: &App
                         .child(Button::new("commit").primary().label(commit_label).small()),
                 ),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{context_text, parse_context};
+
+    #[test]
+    fn a_context_size_reads_in_tokens_thousands_or_millions() {
+        for (typed, tokens) in [
+            ("128K", 128_000),
+            ("128k", 128_000),
+            (" 200 000 ", 200_000),
+            ("200,000", 200_000),
+            ("1M", 1_000_000),
+            ("1.5m", 1_500_000),
+            ("32000", 32_000),
+        ] {
+            assert_eq!(parse_context(typed), Some(Some(tokens)), "{typed}");
+        }
+        assert_eq!(parse_context(""), Some(None));
+        assert_eq!(parse_context("  "), Some(None));
+        for wrong in ["abc", "128KB", "-5K", "0", "999", "101M", "1e3", "K"] {
+            assert_eq!(parse_context(wrong), None, "{wrong}");
+        }
+    }
+
+    #[test]
+    fn a_context_size_shows_as_it_would_be_typed() {
+        assert_eq!(context_text(128_000), "128K");
+        assert_eq!(context_text(2_000_000), "2M");
+        assert_eq!(context_text(1_500_000), "1500K");
+        assert_eq!(context_text(131_072), "131072");
+        for tokens in [128_000, 2_000_000, 1_500_000, 131_072] {
+            assert_eq!(parse_context(&context_text(tokens)), Some(Some(tokens)));
+        }
+    }
 }

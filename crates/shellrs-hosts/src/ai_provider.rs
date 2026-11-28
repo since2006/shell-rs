@@ -9,6 +9,8 @@ use crate::secrets::SecretRef;
 
 use super::PublicId;
 
+pub use shellrs_sync::AI_CONTEXT_WINDOW;
+
 /// Stable identity of a model service. Never reused within a process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct AiProviderId(pub u64);
@@ -69,6 +71,10 @@ pub struct AiProviderDraft {
     /// The models offered, in the user's order: the first is the one used
     /// when none is picked.
     pub models: Vec<SharedString>,
+    /// 上下文大小: how many tokens its conversations may hold, within
+    /// [`AI_CONTEXT_WINDOW`]; `None` to go by the address, as the assistant
+    /// guesses.
+    pub context_window: Option<u64>,
 }
 
 impl AiProviderDraft {
@@ -83,7 +89,13 @@ impl AiProviderDraft {
             protocol,
             base_url: base_url.into(),
             models: models.into_iter().map(Into::into).collect(),
+            context_window: None,
         }
+    }
+
+    pub fn with_context_window(mut self, context_window: Option<u64>) -> Self {
+        self.context_window = context_window;
+        self
     }
 
     /// The draft with surrounding blanks removed, the address without a
@@ -114,6 +126,10 @@ impl AiProviderDraft {
             return Err(AiProviderDraftError::Model);
         }
         self.models = models;
+        // The form keeps to the range; anything else goes by the address.
+        self.context_window = self
+            .context_window
+            .filter(|tokens| AI_CONTEXT_WINDOW.contains(tokens));
         Ok(self)
     }
 }
@@ -131,6 +147,8 @@ pub struct AiProvider {
     pub base_url: SharedString,
     /// Never empty once saved; see [`AiProviderDraft::models`].
     pub models: Vec<SharedString>,
+    /// See [`AiProviderDraft::context_window`].
+    pub context_window: Option<u64>,
     /// Position in the list.
     pub sort_order: i64,
     /// When the user last changed it; see [`super::Host::edited_ms`].
@@ -148,6 +166,7 @@ impl AiProvider {
             protocol: draft.protocol,
             base_url: draft.base_url,
             models: draft.models,
+            context_window: draft.context_window,
             sort_order: 0,
             edited_ms: 0,
         }
@@ -160,6 +179,7 @@ impl AiProvider {
             protocol: self.protocol,
             base_url: self.base_url.clone(),
             models: self.models.clone(),
+            context_window: self.context_window,
         }
     }
 

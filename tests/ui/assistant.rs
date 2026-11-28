@@ -3,8 +3,8 @@
 //! service, server or keychain is reached.
 
 use shellrs::app::{
-    AiModelChoice, NewAiProvider, RunAssistantCall, SetConversationApproval, SetDefaultAiModel,
-    ToolKind, UseAiModel,
+    AiModelChoice, EditAiProvider, NewAiProvider, RunAssistantCall, SetConversationApproval,
+    SetDefaultAiModel, ToolKind, UseAiModel,
 };
 use shellrs::assistant::AssistantServices;
 use shellrs::host::{AiProtocol, AiProviderDraft};
@@ -33,6 +33,31 @@ fn open_with_models(
     transport: Arc<ScriptedTransport>,
     models: &[&str],
 ) -> (WindowHandle<Root>, Entity<Workspace>) {
+    open_with(cx, factory, AssistantServices::in_memory(transport), models)
+}
+
+/// The same, with the conversations kept where the test can look.
+fn open_with_conversations(
+    cx: &mut TestAppContext,
+    factory: Arc<FakeTerminalFactory>,
+    transport: Arc<ScriptedTransport>,
+) -> (
+    WindowHandle<Root>,
+    Entity<Workspace>,
+    shellrs_assistant::Store,
+) {
+    let services = AssistantServices::in_memory(transport);
+    let conversations = services.store.clone();
+    let (handle, workspace) = open_with(cx, factory, services, &["claude-test"]);
+    (handle, workspace, conversations)
+}
+
+fn open_with(
+    cx: &mut TestAppContext,
+    factory: Arc<FakeTerminalFactory>,
+    services: AssistantServices,
+    models: &[&str],
+) -> (WindowHandle<Root>, Entity<Workspace>) {
     let mut store = HostStore::seed();
     // On the data: no window to settle it in yet.
     shellrs::host::HostData::insert_ai_provider(
@@ -46,7 +71,7 @@ fn open_with_models(
     );
     let (handle, workspace) = open_workspace_with_remote_factory(cx, store, factory);
     workspace.update(cx, |workspace, cx| {
-        workspace.set_assistant_services(Ok(AssistantServices::in_memory(transport)), cx)
+        workspace.set_assistant_services(Ok(services), cx)
     });
     turn_on(cx, &workspace, true);
     in_frame(cx, handle, |window, cx| {
@@ -728,4 +753,134 @@ async fn calls_of_the_same_reply_and_kind_run_along(cx: &mut TestAppContext) {
         ran,
         ["systemctl restart nginx", "systemctl restart php-fpm"]
     );
+}
+
+/// Until the turn's answer is in: the script's service counts 120 tokens.
+async fn answered(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+    wait_for(cx, handle, |window| {
+        window
+            .try_find("assistant-usage")
+            .is_some_and(|usage| usage.label() == Some("120 tokens"))
+    })
+    .await;
+}
+
+/// One conversation deleted by itself (issue #171), from its header, after
+/// asking: the other stays, and the panel starts a new one.
+#[gpui_kit::test]
+async fn a_conversation_is_deleted_by_itself(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let transport = ScriptedTransport::new();
+    transport.push(anthropic_text("Disk first."));
+    transport.push(anthropic_text("Memory next."));
+    let (handle, _, conversations) = open_with_conversations(cx, factory, transport);
+    in_frame(cx, handle, |window, cx| window.click("tool-assistant", cx));
+    let titles = || -> Vec<String> {
+        let mut titles: Vec<String> = conversations
+            .conversations(None)
+            .unwrap()
+            .into_iter()
+            .map(|conversation| conversation.title)
+            .collect();
+        titles.sort();
+        titles
+    };
+    // Nothing saved yet: nothing to delete.
+    in_frame(cx, handle, |window, cx| {
+        window.click("assistant-delete", cx)
+    });
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert!(window.try_find("ok").is_none())
+    });
+
+    ask(cx, handle, "Why is the disk full?");
+    answered(cx, handle).await;
+    in_frame(cx, handle, |window, cx| window.click("assistant-new", cx));
+    ask(cx, handle, "Why is memory short?");
+    answered(cx, handle).await;
+    assert_eq!(titles(), ["Why is memory short?", "Why is the disk full?"]);
+
+    in_frame(cx, handle, |window, cx| {
+        window.click("assistant-delete", cx)
+    });
+    wait_for(cx, handle, |window| {
+        window.try_find("ok").is_some_and(|ok| ok.visible())
+    })
+    .await;
+    in_frame(cx, handle, |window, cx| window.click("ok", cx));
+    cx.run_until_parked();
+    assert_eq!(titles(), ["Why is the disk full?"]);
+    in_frame(cx, handle, |window, _| {
+        assert_eq!(window.find("assistant-title").label(), Some("新对话"));
+    });
+}
+
+/// 高级设置 › 上下文大小 (issue #171): set in the service's form, it is the
+/// size its conversations count against, and the form opens on it again.
+/// Something else is refused there and then.
+#[gpui_kit::test]
+async fn a_model_services_context_size_is_set_under_advanced(cx: &mut TestAppContext) {
+    let factory = Arc::new(FakeTerminalFactory::default());
+    let transport = ScriptedTransport::new();
+    transport.push(anthropic_text("The disk is full."));
+    let (handle, workspace) = open(cx, factory, transport);
+    let provider = |cx: &mut TestAppContext| {
+        cx.update(|cx| workspace.read(cx).store().read(cx).ai_providers()[0].clone())
+    };
+    let id = provider(cx).id;
+    let edit = |cx: &mut TestAppContext| {
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_action(Box::new(EditAiProvider(id)), cx)
+        });
+        cx.run_until_parked();
+    };
+
+    // Folded away until opened, as for a service with none of it set.
+    edit(cx);
+    in_frame(cx, handle, |window, cx| {
+        assert!(window.try_find("provider-context").is_none());
+        window.click("provider-advanced", cx);
+    });
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("provider-context").value(), Some(""));
+        window.click("provider-context", cx);
+        window.input("64K", cx);
+        window.click("commit", cx);
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("provider-context").is_none()
+    })
+    .await;
+    assert_eq!(provider(cx).context_window, Some(64_000));
+
+    // A conversation counts against it.
+    in_frame(cx, handle, |window, cx| window.click("tool-assistant", cx));
+    ask(cx, handle, "Why is the disk full?");
+    wait_for(cx, handle, |window| {
+        window
+            .try_find("assistant-usage")
+            .is_some_and(|usage| usage.label() == Some("120 tokens"))
+    })
+    .await;
+    let context = cx.update(|cx| {
+        let panel = workspace.read(cx).assistant_panel(cx);
+        panel.read(cx).context()
+    });
+    assert_eq!(context, Some((120, 64_000)));
+
+    // The form opens on it; something else is refused, and nothing saved.
+    edit(cx);
+    in_frame(cx, handle, |window, cx| {
+        assert_eq!(window.find("provider-context").value(), Some("64K"));
+        window.click("provider-context", cx);
+        window.press("secondary-a", cx);
+        window.input("lots", cx);
+        window.click("commit", cx);
+    });
+    cx.run_until_parked();
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("provider-context").visible());
+    });
+    assert_eq!(provider(cx).context_window, Some(64_000));
 }

@@ -53,7 +53,14 @@ pub struct AiProviderData {
     /// At least one, none empty, in the user's order.
     pub models: Vec<String>,
     pub sort_order: i64,
+    /// How many tokens its conversations may hold, in
+    /// [`AI_CONTEXT_WINDOW`]; `None` to go by the address.
+    pub context_window: Option<u64>,
 }
+
+/// The context sizes a model service may be given: from small models on
+/// this computer to the largest windows offered.
+pub const AI_CONTEXT_WINDOW: std::ops::RangeInclusive<u64> = 1_000..=100_000_000;
 
 /// The wire protocol a model service speaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -372,6 +379,20 @@ pub(crate) fn parse(key: &RecordKey, data: &Map) -> Result<RecordData, String> {
             base_url: r.name("base_url")?,
             models: r.names("models")?,
             sort_order: r.order()?,
+            context_window: r.later(
+                |r| match r.0.get("context_window") {
+                    Some(Value::Null) => Ok(None),
+                    _ => r
+                        .number(
+                            "context_window",
+                            *AI_CONTEXT_WINDOW.start(),
+                            *AI_CONTEXT_WINDOW.end(),
+                        )
+                        .map(Some),
+                },
+                "context_window",
+                None,
+            )?,
         }),
         Kind::SecretAiKey => RecordData::AiKey(r.secret()?),
         Kind::Secret(_) | Kind::Other(_) => return Err(format!("unknown kind {}", key.kind)),
@@ -593,7 +614,14 @@ fn known_fields(kind: &Kind) -> &'static [&'static str] {
             "sort_order",
         ],
         Kind::SecretPassword | Kind::SecretProxy => &["user", "host", "port", "value"],
-        Kind::AiProvider => &["name", "protocol", "base_url", "models", "sort_order"],
+        Kind::AiProvider => &[
+            "name",
+            "protocol",
+            "base_url",
+            "models",
+            "sort_order",
+            "context_window",
+        ],
         Kind::SecretCredential
         | Kind::SecretPassphrase
         | Kind::SecretPrivateKey
@@ -726,6 +754,7 @@ fn fields(data: &RecordData) -> Vec<(&'static str, Value)> {
             ("base_url", json!(provider.base_url)),
             ("models", json!(provider.models)),
             ("sort_order", json!(provider.sort_order)),
+            ("context_window", json!(provider.context_window)),
         ],
         RecordData::CredentialPassword(value)
         | RecordData::Passphrase(value)
@@ -1372,8 +1401,10 @@ pub(crate) mod tests {
             base_url: "https://api.deepseek.com".into(),
             models: vec!["deepseek-chat".into(), "deepseek-reasoner".into()],
             sort_order: 2,
+            context_window: Some(64_000),
         };
         let written = write_into(&RecordData::AiProvider(provider.clone()), None);
+        assert_eq!(written["context_window"], json!(64_000));
         assert_eq!(written["protocol"], json!("openai"));
         assert_eq!(
             written["models"],
@@ -1395,11 +1426,25 @@ pub(crate) mod tests {
             ("models", json!(["m", ""])),
             ("models", json!("deepseek-chat")),
             ("base_url", json!(null)),
+            ("context_window", json!(999)),
+            ("context_window", json!(100_000_001)),
+            ("context_window", json!("128K")),
         ] {
             let mut fields = written.clone();
             fields.insert(field.into(), wrong.clone());
             assert!(parse(&key, &fields).is_err(), "{field} {wrong}");
         }
+        // Null goes by the address; so does a copy an older version wrote,
+        // which has no such field.
+        let by_address = |fields: &Map| match parse(&key, fields) {
+            Ok(RecordData::AiProvider(provider)) => provider.context_window,
+            other => panic!("{other:?}"),
+        };
+        let mut fields = written.clone();
+        fields.insert("context_window".into(), json!(null));
+        assert_eq!(by_address(&fields), None);
+        fields.remove("context_window");
+        assert_eq!(by_address(&fields), None);
 
         // The key is a record of its own, under the service's id.
         let secret = RecordKey::new(Kind::SecretAiKey, "p1");
