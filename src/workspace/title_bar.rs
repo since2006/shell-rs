@@ -1,9 +1,8 @@
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Selectable as _, Sizable as _, TitleBar,
-    button::{Button, ButtonGroup, ButtonVariants as _},
+    ActiveTheme as _, IconName, Selectable as _, TitleBar,
+    button::{Button, ButtonGroup, ButtonRounded, ButtonVariants as _},
     h_flex,
 };
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
@@ -22,9 +21,14 @@ use super::sidebar::SidebarMode;
 /// 设置. Every button dispatches an action on `target` (the workspace's
 /// focus handle) so the workspace handles it even when nothing is focused.
 ///
+/// The buttons keep their default, medium size, as the right sidebar's
+/// tool switch does: small ones drew the icons too small, 12 pixels on
+/// Windows.
+///
 /// `sidebar` is what the left dock is showing, or `None` while it is hidden;
-/// `forwards` is how many port forwards are running; `update` is the
-/// newer ShellRS waiting to be installed, when there is one.
+/// `forwards` is how many port forwards are running, which only assistive
+/// technology is told; `update` is the newer ShellRS waiting to be
+/// installed, when there is one.
 pub fn render_title_bar(
     sidebar: Option<SidebarMode>,
     forwards: usize,
@@ -45,10 +49,15 @@ pub fn render_title_bar(
     // A list's button shows that list, or hides the sidebar when it is the
     // one up, as the right sidebar's tool buttons do. Up, it says so, with
     // ⌘B, which hides the sidebar as well and brings the same list back.
+    // Square: the group fills the title bar's height, and its ends looked
+    // clipped with the round corners.
     let list_button =
         |id: &'static str, icon: CatalogIcon, mode: SidebarMode, name: SharedString| {
             let showing = sidebar == Some(mode);
-            let button = Button::new(id).icon(icon).selected(showing);
+            let button = Button::new(id)
+                .icon(icon)
+                .rounded(ButtonRounded::None)
+                .selected(showing);
             if showing {
                 button.tooltip_with_action(
                     t!("workspace.title_bar.hide_sidebar"),
@@ -82,7 +91,6 @@ pub fn render_title_bar(
                             // sidebar marks none.
                             ButtonGroup::new("sidebar-mode")
                                 .ghost()
-                                .small()
                                 .child(
                                     list_button(
                                         "show-hosts",
@@ -99,21 +107,19 @@ pub fn render_title_bar(
                                         SidebarMode::Forwards,
                                         t!("workspace.title_bar.forwards"),
                                     )
-                                    // Forwards run whether or not their list
-                                    // is showing, so the count is said here.
-                                    .map(|button| {
+                                    // An icon like the others, no count beside
+                                    // it (issue #170). Forwards run whether or
+                                    // not their list is showing, so assistive
+                                    // technology still hears how many.
+                                    .accessibility_label(
                                         match forwards {
-                                            0 => button.accessibility_label(t!(
-                                                "workspace.title_bar.forwards"
-                                            )),
-                                            running => button
-                                                .label(running.to_string())
-                                                .accessibility_label(t!(
-                                                    "workspace.title_bar.forwards_running",
-                                                    count = running
-                                                )),
-                                        }
-                                    }),
+                                            0 => t!("workspace.title_bar.forwards"),
+                                            running => t!(
+                                                "workspace.title_bar.forwards_running",
+                                                count = running
+                                            ),
+                                        },
+                                    ),
                                 )
                                 .child(
                                     list_button(
@@ -144,7 +150,6 @@ pub fn render_title_bar(
                             // outside their group, so it is never marked.
                             Button::new("new-local-terminal")
                                 .ghost()
-                                .small()
                                 .icon(CatalogIcon::Terminal)
                                 .accessibility_label(t!("workspace.title_bar.local_terminal"))
                                 .tooltip_with_action(
@@ -167,7 +172,6 @@ pub fn render_title_bar(
                 .child(
                     Button::new("title-quick-connect")
                         .ghost()
-                        .small()
                         .icon(IconName::Search)
                         .tooltip(t!("workspace.title_bar.quick_connect"))
                         .accessibility_label(t!("workspace.title_bar.quick_connect"))
@@ -180,7 +184,6 @@ pub fn render_title_bar(
                     // quick way in, to a host that is not saved.
                     Button::new("temporary-connection")
                         .ghost()
-                        .small()
                         .icon(CatalogIcon::Zap)
                         .accessibility_label(t!("workspace.title_bar.temporary_connection"))
                         .tooltip(t!("workspace.title_bar.temporary_connection_tooltip"))
@@ -200,7 +203,6 @@ pub fn render_title_bar(
                             },
                             cx,
                         ))
-                        .small()
                         .icon(CatalogIcon::CircleArrowUp)
                         .tooltip(update.label.clone())
                         .accessibility_label(update.label)
@@ -211,7 +213,6 @@ pub fn render_title_bar(
                 .child(
                     Button::new("theme-toggle")
                         .ghost()
-                        .small()
                         .icon(if dark { IconName::Sun } else { IconName::Moon })
                         .tooltip(if dark {
                             t!("workspace.title_bar.to_light")
@@ -225,7 +226,6 @@ pub fn render_title_bar(
                 .child(
                     Button::new("open-settings")
                         .ghost()
-                        .small()
                         .icon(CatalogIcon::Settings)
                         .accessibility_label(t!("workspace.title_bar.settings"))
                         .tooltip_with_action(

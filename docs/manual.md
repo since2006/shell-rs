@@ -108,7 +108,7 @@ Hosts you want to keep are created with “+” at the top of the host list, the
 
 ## Port forwarding
 
-Click the port forwarding icon in the title bar and the left sidebar switches to the list of forwards. Each forwarding rule goes through a saved host and opens an SSH connection of its own when it starts, independent of that host’s terminal or SFTP tabs: closing the tabs or choosing “Disconnect” on the host doesn’t affect it, and the host’s connection state doesn’t count it. While forwards are running, the number running appears next to the port forwarding icon in the title bar.
+Click the port forwarding icon in the title bar and the left sidebar switches to the list of forwards. Each forwarding rule goes through a saved host and opens an SSH connection of its own when it starts, independent of that host’s terminal or SFTP tabs: closing the tabs or choosing “Disconnect” on the host doesn’t affect it, and the host’s connection state doesn’t count it. The list of forwards shows which are running.
 
 There are three kinds of forward. Think of each as “entrance → exit → destination”: a connection comes in at the entrance, goes through the SSH tunnel to the exit, and the exit connects to the destination:
 

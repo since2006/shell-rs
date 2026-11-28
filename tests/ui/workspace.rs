@@ -244,6 +244,8 @@ async fn quick_connect_finds_saved_hosts_and_connects_one(cx: &mut TestAppContex
             assert!(pair[0].right() <= pair[1].left(), "{pair:?}");
             assert_eq!(pair[0].size, pair[1].size);
         }
+        // Medium buttons, whose icons are 1 rem: small ones were too small.
+        assert_eq!(controls[0].size.height, window.rem_size() * 2.);
         // Up in the title bar, the window's commands at its far end.
         let sidebar = window.find("workspace-sidebar").bounds();
         assert!(

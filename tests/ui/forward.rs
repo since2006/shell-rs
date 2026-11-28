@@ -316,10 +316,15 @@ async fn a_forward_starts_and_stops_from_its_row_and_from_the_keyboard(cx: &mut 
     assert_eq!(runs[0].rule.id, first);
     assert_eq!(runs[0].host, HostId(DB_01));
     in_frame(cx, handle, |window, _| {
-        // The title bar says a forward is running, whatever list is up.
+        // The title bar says a forward is running, whatever list is up, to
+        // assistive technology: no count beside the icon (issue #170).
         assert_eq!(
             window.find("show-forwards").label(),
             Some("端口转发，1 条运行中")
+        );
+        assert_eq!(
+            window.find("show-forwards").bounds().size,
+            window.find("show-hosts").bounds().size
         );
     });
 
