@@ -117,6 +117,12 @@ pub struct ExplorerPanel {
     /// frame another tab is shown instead: coming back would reset them.
     panes_split: Entity<ResizableState>,
     queue_split: Entity<ResizableState>,
+    /// The side the local pane is on, as `panes_split` laid them out, and
+    /// its share of the width the split starts from: half when the tab
+    /// opens, the one it had when the panes last changed sides, so that
+    /// each keeps its width on the other side.
+    pane_layout: SftpPaneLayout,
+    local_share: f32,
     /// The queue's rows, scrolled to a batch as it is added, which goes in
     /// last. Kept here for the same reason as the splits.
     pub(super) queue_scroll: ScrollHandle,
@@ -252,6 +258,7 @@ impl ExplorerPanel {
             }),
             // The main window closed, and the workspace with it.
             cx.on_release(|this, cx| this.close_find(cx)),
+            cx.observe_global::<SftpPaneLayout>(Self::follow_pane_layout),
         ];
         Self {
             id,
@@ -287,6 +294,8 @@ impl ExplorerPanel {
             follow_target: None,
             panes_split: cx.new(|_| ResizableState::default()),
             queue_split: cx.new(|_| ResizableState::default()),
+            pane_layout: SftpPaneLayout::current(cx),
+            local_share: 0.5,
             queue_scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
             _events: events_task,
@@ -451,6 +460,28 @@ impl ExplorerPanel {
     /// Anything not yet done: running, stopped or waiting its turn.
     pub fn is_transferring(&self) -> bool {
         self.queue.unfinished_count() > 0
+    }
+    /// 左右分栏顺序 changed: the panes change sides, each keeping its width.
+    /// The split's sizes go by position, so it starts again from the local
+    /// pane's share.
+    fn follow_pane_layout(&mut self, cx: &mut Context<Self>) {
+        let layout = SftpPaneLayout::current(cx);
+        if layout == self.pane_layout {
+            return;
+        }
+        if let [left, right] = self.panes_split.read(cx).sizes()[..] {
+            let local = match self.pane_layout {
+                SftpPaneLayout::LocalLeft => left,
+                SftpPaneLayout::RemoteLeft => right,
+            };
+            let total = left + right;
+            if total > px(0.) {
+                self.local_share = local / total;
+            }
+        }
+        self.pane_layout = layout;
+        self.panes_split = cx.new(|_| ResizableState::default());
+        cx.notify();
     }
     /// Transfers that end while the user is in the tab leave nothing on it
     /// to come back for.
@@ -1307,17 +1338,18 @@ impl Render for ExplorerPanel {
         let panes = if self.sidebar {
             self.remote.clone().into_any_element()
         } else {
-            // Half and half when the tab opens; the state then keeps
-            // where the user puts the divider.
+            // Half and half when the tab opens, and as they were when the
+            // panes change sides; the state then keeps where the user puts
+            // the divider.
             let local = resizable_panel()
-                .flex_basis(relative(0.5))
+                .flex_basis(relative(self.local_share))
                 .size_range(px(320.)..Pixels::MAX)
                 .child(self.local.clone());
             let remote = resizable_panel()
-                .flex_basis(relative(0.5))
+                .flex_basis(relative(1. - self.local_share))
                 .size_range(px(280.)..Pixels::MAX)
                 .child(self.remote.clone());
-            let (left, right) = match SftpPaneLayout::current(cx) {
+            let (left, right) = match self.pane_layout {
                 SftpPaneLayout::LocalLeft => (local, remote),
                 SftpPaneLayout::RemoteLeft => (remote, local),
             };

@@ -385,17 +385,17 @@ settings.sftp.pane_layout:
   zh-CN: 左右分栏顺序
   en: Pane order
 settings.sftp.pane_layout_description:
-  zh-CN: 选择 SFTP 双栏中本地与远程文件列表的左右位置。
-  en: Choose whether local or remote files appear on the left in SFTP tabs.
+  zh-CN: SFTP 标签里本地、远程两个文件列表各在哪一边，改了立即作用于已打开的标签。
+  en: Which side of SFTP tabs the local and remote file lists take. Open tabs change at once.
 settings.sftp.pane_layout_keywords:
   zh-CN: 分栏,左右,对换,交换,布局,本地,远程
   en: panes,layout,swap,order,left,right,local,remote
 settings.sftp_pane_layout.local_left:
-  zh-CN: 本地左，远程右
-  en: Local left, remote right
+  zh-CN: 本地在左，远程在右
+  en: Local on the left, remote on the right
 settings.sftp_pane_layout.remote_left:
-  zh-CN: 远程左，本地右
-  en: Remote left, local right
+  zh-CN: 远程在左，本地在右
+  en: Remote on the left, local on the right
 
 settings.highlight.options:
   zh-CN: 常规

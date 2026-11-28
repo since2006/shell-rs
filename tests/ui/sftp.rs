@@ -378,12 +378,13 @@ async fn sftp_lists_show_color_icons_until_monochrome_is_chosen(cx: &mut TestApp
         window.within("settings").click("0-2", cx)
     });
     in_frame(cx, handle, |window, _| {
-        // 传输 first, then 文件侧栏, then 文件列表 with the icons.
+        // 传输 first, then 文件侧栏, then 文件列表 with the pane order and
+        // the icons.
         let icon_style = dropdown_value(
             window
                 .within("settings")
                 .within("group-2")
-                .within("item-0")
+                .within("item-1")
                 .find("btn")
                 .label(),
         );
@@ -3049,9 +3050,9 @@ async fn find_files_results_open_their_menu_on_a_right_click(cx: &mut TestAppCon
     .unwrap();
 }
 
-/// 设置 › SFTP › 左右分栏顺序 (issue #61): local pane is on the left by
-/// default and swaps sides with the remote pane immediately when RemoteLeft is
-/// chosen.
+/// 设置 › SFTP › 左右分栏顺序 (issue #61): local on the left by default; the
+/// other choice swaps the panes of an open tab at once, each keeping the
+/// width the divider gave it.
 #[gpui_kit::test]
 async fn sftp_panes_swap_sides_when_remote_left_is_chosen(cx: &mut TestAppContext) {
     use shellrs::explorer::SftpPaneLayout;
@@ -3059,51 +3060,47 @@ async fn sftp_panes_swap_sides_when_remote_left_is_chosen(cx: &mut TestAppContex
     let (handle, workspace) = open_workspace_with_sftp(cx, provider);
     open_test_explorer(cx, handle).await;
 
-    let pane_lefts = |cx: &mut TestAppContext| {
+    let panes = |cx: &mut TestAppContext| {
         in_frame(cx, handle, |window, _| {
-            let local = window.find(("local-pane", SFTP_TAB)).bounds().left();
-            let remote = window.find(("remote-pane", SFTP_TAB)).bounds().left();
+            let local = window.find(("local-pane", SFTP_TAB)).bounds();
+            let remote = window.find(("remote-pane", SFTP_TAB)).bounds();
             (local, remote)
         })
     };
+    let (local, remote) = panes(cx);
+    assert!(local.left() < remote.left(), "{local:?} {remote:?}");
 
-    let (local, remote) = pane_lefts(cx);
-    assert!(
-        local < remote,
-        "default expects local left: {local:?} vs {remote:?}"
-    );
+    // The local pane made narrower than half.
+    in_frame(cx, handle, |window, cx| {
+        let divider = gpui_kit::point(local.right(), local.center().y);
+        window.drag(divider, divider - gpui_kit::point(px(120.), px(0.)), cx);
+    });
+    cx.run_until_parked();
+    let narrow = panes(cx).0.size.width;
+    assert!(narrow < local.size.width - px(100.), "{narrow:?}");
+    let keeps_its_width = |width: gpui_kit::Pixels| (width - narrow).abs() <= px(2.);
 
     let settings = cx.update(|cx| workspace.read(cx).settings().clone());
-    cx.update(|cx| {
-        settings.update(cx, |settings, cx| {
-            settings.update(
-                |settings| settings.sftp_pane_layout = SftpPaneLayout::RemoteLeft,
-                cx,
-            )
-        })
-    });
-    cx.run_until_parked();
-    let (local, remote) = pane_lefts(cx);
-    assert!(
-        remote < local,
-        "RemoteLeft expects remote left: {remote:?} vs {local:?}"
-    );
+    let choose = |cx: &mut TestAppContext, layout: SftpPaneLayout| {
+        cx.update(|cx| {
+            settings.update(cx, |settings, cx| {
+                settings.update(|settings| settings.sftp_pane_layout = layout, cx)
+            })
+        });
+        cx.run_until_parked();
+    };
 
-    cx.update(|cx| {
-        settings.update(cx, |settings, cx| {
-            settings.update(
-                |settings| settings.sftp_pane_layout = SftpPaneLayout::LocalLeft,
-                cx,
-            )
-        })
-    });
-    cx.run_until_parked();
-    let (local, remote) = pane_lefts(cx);
-    assert!(
-        local < remote,
-        "LocalLeft restores local left: {local:?} vs {remote:?}"
-    );
+    choose(cx, SftpPaneLayout::RemoteLeft);
+    let (local, remote) = panes(cx);
+    assert!(remote.left() < local.left(), "{local:?} {remote:?}");
+    assert!(keeps_its_width(local.size.width), "{local:?}");
 
+    choose(cx, SftpPaneLayout::LocalLeft);
+    let (local, remote) = panes(cx);
+    assert!(local.left() < remote.left(), "{local:?} {remote:?}");
+    assert!(keeps_its_width(local.size.width), "{local:?}");
+
+    // First in 文件列表, ahead of the icons and their preview.
     in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
     in_frame(cx, handle, |window, cx| {
         window.within("settings").click("0-2", cx)
@@ -3113,10 +3110,10 @@ async fn sftp_panes_swap_sides_when_remote_left_is_chosen(cx: &mut TestAppContex
             window
                 .within("settings")
                 .within("group-2")
-                .within("item-2")
+                .within("item-0")
                 .find("btn")
                 .label(),
         );
-        assert_eq!(pane_layout.as_deref(), Some("本地左，远程右"));
+        assert_eq!(pane_layout.as_deref(), Some("本地在左，远程在右"));
     });
 }
