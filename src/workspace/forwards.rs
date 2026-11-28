@@ -7,7 +7,8 @@ use gpui_kit::component::{WindowExt as _, dock::DockPlacement, notification::Not
 use gpui_kit::*;
 
 use crate::app::{
-    DeleteForward, EditForward, NewForward, ShowForwards, ShowHosts, StartForward, StopForward,
+    DeleteForward, EditForward, NewForward, StartForward, StopForward, ToggleCredentialList,
+    ToggleForwardList, ToggleHostList,
 };
 use crate::forward::{ForwardManagerEvent, open_forward_dialog};
 use crate::host::ForwardId;
@@ -36,9 +37,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if !self.dock_area.read(cx).is_dock_open(DockPlacement::Left) {
-            self.dock_area.update(cx, |area, cx| {
-                area.toggle_dock(DockPlacement::Left, window, cx);
-            });
+            self.toggle_sidebar(window, cx);
         }
         self.sidebar
             .update(cx, |sidebar, cx| sidebar.show(mode, window, cx));
@@ -46,22 +45,66 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn on_show_hosts(
-        &mut self,
-        _: &ShowHosts,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.show_sidebar(SidebarMode::Hosts, window, cx);
+    /// Show or hide the sidebar, keeping the list it shows: ⌘B.
+    pub(super) fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A focus inside the sidebar would go off screen with it, and take
+        // every shortcut's dispatch path along, ⌘B's to bring it back too.
+        let focus_inside = self.dock_area.read(cx).is_dock_open(DockPlacement::Left)
+            && self
+                .sidebar
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx);
+        self.dock_area.update(cx, |area, cx| {
+            area.toggle_dock(DockPlacement::Left, window, cx);
+        });
+        if focus_inside {
+            self.focus_center(window, cx);
+        }
+        cx.notify();
     }
 
-    pub(super) fn on_show_forwards(
+    /// A list's button in the title bar: show that list, or hide the
+    /// sidebar when it is the one showing, as the right sidebar's tool
+    /// buttons do (issue #170). ⌘B then brings the same list back.
+    fn toggle_sidebar_list(
         &mut self,
-        _: &ShowForwards,
+        mode: SidebarMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.show_sidebar(SidebarMode::Forwards, window, cx);
+        if self.sidebar_showing(cx) == Some(mode) {
+            self.toggle_sidebar(window, cx);
+        } else {
+            self.show_sidebar(mode, window, cx);
+        }
+    }
+
+    pub(super) fn on_toggle_host_list(
+        &mut self,
+        _: &ToggleHostList,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_sidebar_list(SidebarMode::Hosts, window, cx);
+    }
+
+    pub(super) fn on_toggle_forward_list(
+        &mut self,
+        _: &ToggleForwardList,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_sidebar_list(SidebarMode::Forwards, window, cx);
+    }
+
+    pub(super) fn on_toggle_credential_list(
+        &mut self,
+        _: &ToggleCredentialList,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.toggle_sidebar_list(SidebarMode::Credentials, window, cx);
     }
 
     pub(super) fn on_new_forward(

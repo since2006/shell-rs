@@ -39,10 +39,9 @@ async fn the_title_bar_switches_the_sidebar_to_credentials(cx: &mut TestAppConte
         assert_eq!(window.find("show-hosts").checked(), Some(false));
         assert_eq!(window.find("show-forwards").checked(), Some(false));
         assert_eq!(window.find("credential-empty").label(), Some("还没有凭据"));
-        // The dock's toolbar follows the list; the settings footer stays.
+        // The dock's toolbar follows the list.
         assert!(window.find("new-credential").visible());
         assert!(window.try_find("new-group").is_none());
-        assert!(window.find("open-settings").visible());
         assert!(window.try_find("host-search").is_none());
     });
 

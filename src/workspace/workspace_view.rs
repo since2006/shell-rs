@@ -96,7 +96,7 @@ use super::{
     sidebar::{Sidebar, SidebarMode},
     sidebar_widths::opening_widths,
     status_bar::WorkspaceStatus,
-    title_bar::{SwitchEnd, render_sidebar_toggle, render_title_bar},
+    title_bar::render_title_bar,
     tool_sidebar::{ToolSidebar, render_tool_switch},
     tools::set_right_dock_open,
     window_state::{WindowState, window_placement},
@@ -255,8 +255,6 @@ pub struct Workspace {
     pub(super) sidebar_widths_save: Option<Task<()>>,
     /// The right sidebar is sized for AI 助手, which is wider.
     pub(super) assistant_width: bool,
-    /// Where the title bar's list switch ends, for the sidebar toggle.
-    pub(super) switch_end: SwitchEnd,
     /// Where 导入 reads `~/.ssh/config` and `known_hosts`. Production only:
     /// UI tests hand in a temporary one, so nothing reads the home
     /// directory.
@@ -483,7 +481,6 @@ impl Workspace {
         // Before the first frame, so a dark theme never starts out light.
         crate::settings::apply(settings.read(cx).settings(), window, cx);
 
-        let mut sidebar_width = dock_area.read(cx).dock_size(DockPlacement::Left);
         let mut subscriptions = vec![
             // What the saved terminals show, for the next launch to draw: the
             // workspace goes with its window, as ShellRS quits (and on
@@ -503,15 +500,13 @@ impl Workspace {
                 // switches that reopen the sidebar, for the next launch.
                 let collapsed = !area.read(cx).is_dock_open(DockPlacement::Left);
                 if this.settings.read(cx).settings().sidebar_collapsed != collapsed {
+                    // The title bar marks the list showing, none while the
+                    // sidebar is hidden, however it was hidden (a drag
+                    // too).
+                    cx.notify();
                     this.settings.update(cx, |store, cx| {
                         store.update(|settings| settings.sidebar_collapsed = collapsed, cx);
                     });
-                }
-                // The title-bar toggle follows the left dock's current width.
-                let width = area.read(cx).dock_size(DockPlacement::Left);
-                if sidebar_width != width {
-                    sidebar_width = width;
-                    cx.notify();
                 }
             }),
             cx.observe_in(&store, window, |this, _, window, cx| {
@@ -800,7 +795,6 @@ impl Workspace {
             sidebar_widths: launch_settings.sidebar_widths,
             sidebar_widths_save: None,
             assistant_width: false,
-            switch_end: SwitchEnd::default(),
             ssh_dir: None,
             recording_folder: None,
             _subscriptions: subscriptions,
@@ -2721,10 +2715,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dock_area.update(cx, |area, cx| {
-            area.toggle_dock(DockPlacement::Left, window, cx);
-        });
-        cx.notify();
+        self.toggle_sidebar(window, cx);
     }
 
     fn on_maximize_window(
@@ -3421,14 +3412,14 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_show_docker_object))
             .on_action(cx.listener(Self::on_control_containers))
             .on_action(cx.listener(Self::on_remove_docker_object))
-            .on_action(cx.listener(Self::on_show_hosts))
-            .on_action(cx.listener(Self::on_show_forwards))
+            .on_action(cx.listener(Self::on_toggle_host_list))
+            .on_action(cx.listener(Self::on_toggle_forward_list))
             .on_action(cx.listener(Self::on_new_forward))
             .on_action(cx.listener(Self::on_edit_forward))
             .on_action(cx.listener(Self::on_delete_forward))
             .on_action(cx.listener(Self::on_start_forward))
             .on_action(cx.listener(Self::on_stop_forward))
-            .on_action(cx.listener(Self::on_show_credentials))
+            .on_action(cx.listener(Self::on_toggle_credential_list))
             .on_action(cx.listener(Self::on_new_credential))
             .on_action(cx.listener(Self::on_generate_credential_key))
             .on_action(cx.listener(Self::on_edit_credential))
@@ -3451,19 +3442,8 @@ impl Render for Workspace {
                 sidebar,
                 running_forwards,
                 self.updater.read(cx).snapshot().badge(),
-                &self.switch_end,
-                cx.entity_id(),
                 &self.focus_handle,
                 cx,
-            ))
-            .child(render_sidebar_toggle(
-                sidebar.is_some(),
-                self.dock_area
-                    .read(cx)
-                    .dock_size(DockPlacement::Left)
-                    .unwrap_or_default(),
-                &self.switch_end,
-                &self.focus_handle,
             ))
             .child(
                 h_flex()

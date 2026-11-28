@@ -80,7 +80,8 @@ pub(super) struct WorkspaceDockSkin {
     // The center's bars: always tabs, so a lone tab looks selected as it
     // does among others, while the sidebars keep their plain title. The
     // leading one adds the broadcast control. Center bars hide the built-in
-    // sidebar toggle, which the workspace title bar provides.
+    // sidebar toggle: the title bar's list buttons show and hide the
+    // sidebar.
     center_skin: Rc<DockSkin>,
     /// The center's tab groups, which the workspace keeps in step with the
     /// layout (`set_center_groups`).

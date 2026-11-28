@@ -71,8 +71,6 @@ async fn the_title_bar_switches_the_sidebar_between_hosts_and_forwards(cx: &mut 
     // The dock's title bar and toolbar follow the list.
     assert!(showing(cx, "new-forward"));
     assert!(!showing(cx, "new-group"));
-    // What both lists share stays.
-    assert!(showing(cx, "open-settings"));
     in_frame(cx, handle, |window, _| {
         assert_eq!(window.find("show-hosts").checked(), Some(false));
         assert_eq!(window.find("show-forwards").checked(), Some(true));

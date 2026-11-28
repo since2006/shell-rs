@@ -40,7 +40,7 @@ fn theme_toggle_flips_mode(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn settings_open_from_the_host_list_as_one_tab(cx: &mut TestAppContext) {
+fn settings_open_from_the_title_bar_as_one_tab(cx: &mut TestAppContext) {
     let (handle, workspace) = open_workspace(cx);
 
     cx.update_window(handle.into(), |_, window, cx| {

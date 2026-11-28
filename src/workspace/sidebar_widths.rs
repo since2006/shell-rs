@@ -24,8 +24,7 @@ const SAVE_DELAY: Duration = Duration::from_millis(500);
 /// The left sidebar's width on a first launch and after a reset.
 /// Dock geometry is an API boundary that takes `Pixels`.
 pub(super) const SIDEBAR_WIDTH: Pixels = px(280.);
-/// The narrowest the left sidebar can be dragged. The title bar's sidebar
-/// toggle keeps clear of the list switch, which can be wider.
+/// The narrowest the left sidebar can be dragged.
 pub(super) const SIDEBAR_MIN_WIDTH: Pixels = px(180.);
 
 /// The right sidebar's width on a first launch and after a reset: the

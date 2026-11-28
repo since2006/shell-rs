@@ -227,24 +227,31 @@ async fn quick_connect_finds_saved_hosts_and_connects_one(cx: &mut TestAppContex
     let row = |id: HostId| ("quick-connect-host", id.0);
 
     in_frame(cx, handle, |window, cx| {
+        // The lists, then a new local terminal beside them on the left
+        // (issue #170); on the right the connections, the theme and 设置.
         let controls = [
-            "toggle-hosts",
+            "show-hosts",
+            "show-forwards",
+            "show-credentials",
+            "new-local-terminal",
             "title-quick-connect",
             "temporary-connection",
-            "new-local-terminal",
+            "theme-toggle",
+            "open-settings",
         ]
         .map(|id| window.find(id).bounds());
         for pair in controls.windows(2) {
-            assert!(pair[0].right() <= pair[1].left());
+            assert!(pair[0].right() <= pair[1].left(), "{pair:?}");
             assert_eq!(pair[0].size, pair[1].size);
         }
+        // Up in the title bar, the window's commands at its far end.
+        let sidebar = window.find("workspace-sidebar").bounds();
         assert!(
-            (controls[0].left()
-                - window.find("workspace-sidebar").bounds().right()
-                - window.rem_size() * 0.5)
-                .abs()
-                <= px(1.)
+            controls
+                .iter()
+                .all(|button| button.bottom() <= sidebar.top())
         );
+        assert!(controls[4].left() > sidebar.right());
         assert_eq!(
             window.find("title-quick-connect").label(),
             Some("快速连接…")
@@ -531,7 +538,7 @@ async fn double_clicking_a_tab_toggles_the_host_sidebar(cx: &mut TestAppContext)
 /// has a keyboard dispatch path when the sidebar starts hidden.
 #[gpui_kit::test]
 fn the_left_sidebar_keeps_its_visibility_after_reopening(cx: &mut TestAppContext) {
-    use shellrs::app::ShowForwards;
+    use shellrs::app::ToggleForwardList;
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("settings.json");
@@ -547,7 +554,7 @@ fn the_left_sidebar_keeps_its_visibility_after_reopening(cx: &mut TestAppContext
             Arc::new(FakeConnectionTester::default()),
         )
     };
-    let assert_shown = |cx: &mut TestAppContext, handle, shown| {
+    let assert_shown = |cx: &mut TestAppContext, handle, shown: bool| {
         in_frame(cx, handle, |window, _| {
             assert_eq!(
                 window
@@ -555,14 +562,11 @@ fn the_left_sidebar_keeps_its_visibility_after_reopening(cx: &mut TestAppContext
                     .is_some_and(|sidebar| sidebar.visible()),
                 shown
             );
-            assert_eq!(
-                window.find("toggle-hosts").label(),
-                Some(if shown {
-                    "隐藏侧栏"
-                } else {
-                    "显示侧栏"
-                })
-            );
+            // Hidden, the sidebar marks no list.
+            let marked = ["show-hosts", "show-forwards", "show-credentials"]
+                .iter()
+                .any(|id| window.find(*id).checked() == Some(true));
+            assert_eq!(marked, shown);
         });
         let (settings, problem) = SettingsStore::load(path.clone());
         assert!(problem.is_none());
@@ -571,7 +575,7 @@ fn the_left_sidebar_keeps_its_visibility_after_reopening(cx: &mut TestAppContext
 
     let (handle, _) = open(cx, HostStore::empty());
     assert_shown(cx, handle, true);
-    in_frame(cx, handle, |window, cx| window.click("toggle-hosts", cx));
+    in_frame(cx, handle, |window, cx| window.click("show-hosts", cx));
     assert_shown(cx, handle, false);
 
     let (handle, _) = open(cx, HostStore::empty());
@@ -584,15 +588,74 @@ fn the_left_sidebar_keeps_its_visibility_after_reopening(cx: &mut TestAppContext
 
     let (handle, _) = open(cx, HostStore::seed());
     assert_shown(cx, handle, true);
-    in_frame(cx, handle, |window, cx| window.click("toggle-hosts", cx));
+    in_frame(cx, handle, |window, cx| window.click("show-hosts", cx));
     assert_shown(cx, handle, false);
 
     let (handle, _) = open(cx, HostStore::seed());
     assert_shown(cx, handle, false);
     in_frame(cx, handle, |window, cx| {
-        window.dispatch_action(Box::new(ShowForwards), cx);
+        window.dispatch_action(Box::new(ToggleForwardList), cx);
     });
     assert_shown(cx, handle, true);
+}
+
+/// Each list's button in the title bar shows its list, or hides the sidebar
+/// when its list is up (issue #170). ⌘B hides it as well and brings back
+/// the list it last showed, and the keys still work with the sidebar gone.
+#[gpui_kit::test]
+fn a_list_button_hides_the_sidebar_showing_its_list(cx: &mut TestAppContext) {
+    let (handle, workspace) = open_workspace(cx);
+    let state = |cx: &mut TestAppContext| {
+        in_frame(cx, handle, |window, cx| {
+            let open = workspace
+                .read(cx)
+                .dock_area()
+                .read(cx)
+                .is_dock_open(DockPlacement::Left);
+            let marked = ["show-hosts", "show-forwards", "show-credentials"]
+                .map(|id| window.find(id).checked() == Some(true));
+            assert_eq!(marked.contains(&true), open, "{marked:?}");
+            let showing = |id| window.try_find(id).is_some_and(|it| it.visible());
+            (
+                open,
+                marked,
+                showing("host-search"),
+                showing("credential-search"),
+            )
+        })
+    };
+    assert_eq!(state(cx), (true, [true, false, false], true, false));
+
+    // Another list's button switches; the one up hides the sidebar.
+    in_frame(cx, handle, |window, cx| {
+        window.click("show-credentials", cx)
+    });
+    assert_eq!(state(cx), (true, [false, false, true], false, true));
+    in_frame(cx, handle, |window, cx| {
+        window.click("show-credentials", cx)
+    });
+    assert_eq!(state(cx), (false, [false; 3], false, false));
+
+    // ⌘B, from the keyboard, brings the credentials back, and hides them.
+    for open in [true, false] {
+        in_frame(cx, handle, |window, cx| {
+            window.dispatch_action(Box::new(ToggleHostPanel), cx);
+        });
+        assert_eq!(state(cx), (open, [false, false, open], false, open));
+    }
+
+    // Hidden, a list's button shows that list, not the last one.
+    in_frame(cx, handle, |window, cx| window.click("show-hosts", cx));
+    assert_eq!(state(cx), (true, [true, false, false], true, false));
+    in_frame(cx, handle, |window, cx| window.click("show-hosts", cx));
+    assert_eq!(state(cx), (false, [false; 3], false, false));
+
+    // 设置 is in the title bar, there with the sidebar hidden.
+    in_frame(cx, handle, |window, cx| window.click("open-settings", cx));
+    in_frame(cx, handle, |window, _| {
+        assert!(window.find("settings").visible());
+        assert_eq!(window.find("settings-tab").label(), Some("设置"));
+    });
 }
 
 /// A middle click on a tab's title closes the tab, as its × does; the
@@ -1585,87 +1648,6 @@ fn the_tool_sidebar_drags_wider_and_down_to_its_minimum(cx: &mut TestAppContext)
         (narrowed.size.width - (opened.size.width - px(100.))).abs() < px(1.),
         "{opened:?} → {narrowed:?}"
     );
-}
-
-/// The title-bar toggle sits just past the actual dock edge, including
-/// after a pointer resize, interface zoom and a hide/show round trip; past
-/// the list switch instead, beside a sidebar narrower than that.
-#[gpui_kit::test]
-fn the_sidebar_toggle_tracks_the_host_panel_edge(cx: &mut TestAppContext) {
-    use gpui_kit::component::dock::DockPlacement;
-
-    let (handle, workspace) = open_workspace(cx);
-    let aligned = |cx: &mut TestAppContext| {
-        in_frame(cx, handle, |window, cx| {
-            let button = window.find("toggle-hosts");
-            let panel = window.find("workspace-sidebar").bounds();
-            let gap = window.rem_size() * 0.5;
-            let switch = window.find("show-credentials").bounds();
-            assert!(
-                (button.bounds().left() - panel.right().max(switch.right()) - gap).abs() <= px(1.),
-                "button {:?}, panel {:?}, gap {:?}",
-                button.bounds(),
-                panel,
-                gap
-            );
-            assert!(button.bounds().left() >= window.find("show-credentials").bounds().right());
-            assert_eq!(button.label(), Some("隐藏侧栏"));
-            let area = workspace.read(cx).dock_area().read(cx);
-            assert!(area.is_dock_open(DockPlacement::Left));
-            (button.bounds(), panel)
-        })
-    };
-    let (opened, panel) = aligned(cx);
-    in_frame(cx, handle, |window, cx| {
-        let from = point(panel.right() - px(2.), panel.center().y);
-        window.drag(from, point(from.x + px(100.), from.y), cx);
-    });
-    let (resized, resized_panel) = aligned(cx);
-    assert!(resized_panel.size.width > panel.size.width + px(80.));
-    assert!(
-        (resized.left() - opened.left() - (resized_panel.right() - panel.right())).abs() <= px(1.)
-    );
-
-    in_frame(cx, handle, |window, cx| window.click("toggle-hosts", cx));
-    in_frame(cx, handle, |window, cx| {
-        let button = window.find("toggle-hosts");
-        assert_eq!(button.label(), Some("显示侧栏"));
-        assert_eq!(button.bounds().left(), resized.left());
-        assert!(
-            !workspace
-                .read(cx)
-                .dock_area()
-                .read(cx)
-                .is_dock_open(DockPlacement::Left)
-        );
-        window.click("toggle-hosts", cx);
-    });
-    aligned(cx);
-    for font_size in [12., 20., 16.] {
-        cx.update(|cx| {
-            workspace
-                .read(cx)
-                .settings()
-                .clone()
-                .update(cx, |store, cx| {
-                    store.update(|settings| settings.interface.font_size = font_size, cx);
-                });
-        });
-        cx.run_until_parked();
-        aligned(cx);
-    }
-    cx.simulate_window_resize(handle.into(), size(px(1000.), px(700.)));
-    aligned(cx);
-    // Dragged back past its minimum, 100 narrower than it opened, it stops
-    // there. The toggle follows the clamped edge, or stays past the list
-    // switch where that ends later, as after the macOS window buttons.
-    in_frame(cx, handle, |window, cx| {
-        let wide = window.find("workspace-sidebar").bounds();
-        let from = point(wide.right() - px(2.), wide.center().y);
-        window.drag(from, point(panel.right() - px(200.), from.y), cx);
-    });
-    let (_, narrowed_panel) = aligned(cx);
-    assert_eq!(narrowed_panel.size.width, panel.size.width - px(100.));
 }
 
 /// Both sidebars open at the widths they were dragged to, once a drag has

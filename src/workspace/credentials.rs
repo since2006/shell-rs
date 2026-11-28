@@ -1,5 +1,5 @@
-//! The workspace's share of credentials: the sidebar's switch and the
-//! commands of the credential list.
+//! The workspace's share of credentials: the commands of the credential
+//! list.
 
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -8,26 +8,16 @@ use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::*;
 
 use crate::app::{
-    CopyCredentialPublicKey, DeleteCredential, EditCredential, GenerateCredentialKey,
-    NewCredential, ShowCredentials,
+    CopyCredentialPublicKey, DeleteCredential, EditCredential, GenerateCredentialKey, NewCredential,
 };
 use crate::credential::{CredentialDialog, open_credential_dialog};
 use crate::host::{AuthKind, CredentialKind, read_public_key};
 use crate::i18n::{t, tn};
 use crate::shared::confirm_delete;
 
-use super::{sidebar::SidebarMode, workspace_view::Workspace};
+use super::workspace_view::Workspace;
 
 impl Workspace {
-    pub(super) fn on_show_credentials(
-        &mut self,
-        _: &ShowCredentials,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.show_sidebar(SidebarMode::Credentials, window, cx);
-    }
-
     pub(super) fn on_new_credential(
         &mut self,
         _: &NewCredential,

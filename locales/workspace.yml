@@ -78,9 +78,6 @@ workspace.title_bar.credentials:
 workspace.title_bar.hide_sidebar:
   zh-CN: 隐藏侧栏
   en: Hide sidebar
-workspace.title_bar.show_sidebar:
-  zh-CN: 显示侧栏
-  en: Show sidebar
 workspace.title_bar.quick_connect:
   zh-CN: 快速连接…
   en: Find a host…
@@ -102,11 +99,10 @@ workspace.title_bar.to_light:
 workspace.title_bar.to_dark:
   zh-CN: 切换为深色
   en: Switch to dark
-
-workspace.sidebar.settings:
+workspace.title_bar.settings:
   zh-CN: 设置
   en: Settings
-workspace.sidebar.open_settings:
+workspace.title_bar.open_settings:
   zh-CN: 打开设置
   en: Open settings
 

@@ -1,8 +1,5 @@
-use std::cell::Cell;
-use std::rc::Rc;
-
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Selectable as _, Sizable as _, TITLE_BAR_HEIGHT, TitleBar,
+    ActiveTheme as _, IconName, Selectable as _, Sizable as _, TitleBar,
     button::{Button, ButtonGroup, ButtonVariants as _},
     h_flex,
 };
@@ -10,8 +7,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::app::{
-    CatalogIcon, NewLocalTerminal, NewTemporaryConnection, QuickConnect, ShowCredentials,
-    ShowForwards, ShowHosts, ShowUpdate, ToggleHostPanel, ToggleTheme,
+    CatalogIcon, NewLocalTerminal, NewTemporaryConnection, OpenSettings, QuickConnect, ShowUpdate,
+    ToggleCredentialList, ToggleForwardList, ToggleHostList, ToggleHostPanel, ToggleTheme,
 };
 use crate::i18n::t;
 use crate::shared::tinted;
@@ -19,28 +16,25 @@ use crate::update::UpdateBadge;
 
 use super::sidebar::SidebarMode;
 
-/// The custom title bar: the app name and the sidebar's switch on the left,
-/// window-level commands on the right. Every button dispatches an action on
-/// `target` (the workspace's focus handle) so the workspace handles it even
-/// when nothing is focused.
+/// The custom title bar (issue #170). On the left the app name, the
+/// sidebar's lists and a new local terminal; on the right the connections
+/// that need no saved host, the update when one waits, the theme and
+/// 设置. Every button dispatches an action on `target` (the workspace's
+/// focus handle) so the workspace handles it even when nothing is focused.
 ///
 /// `sidebar` is what the left dock is showing, or `None` while it is hidden;
 /// `forwards` is how many port forwards are running; `update` is the
 /// newer ShellRS waiting to be installed, when there is one.
-///
-/// `switch_end` learns where the list switch ends, and `view` is redrawn
-/// when that moves.
 pub fn render_title_bar(
     sidebar: Option<SidebarMode>,
     forwards: usize,
     update: Option<UpdateBadge>,
-    switch_end: &SwitchEnd,
-    view: EntityId,
     target: &FocusHandle,
     cx: &App,
 ) -> TitleBar {
     let dark = cx.theme().is_dark();
-    let (mode, quick, temporary, new_local, theme, show_update) = (
+    let (lists, new_local, quick, temporary, theme, show_update, settings) = (
+        target.clone(),
         target.clone(),
         target.clone(),
         target.clone(),
@@ -48,6 +42,23 @@ pub fn render_title_bar(
         target.clone(),
         target.clone(),
     );
+    // A list's button shows that list, or hides the sidebar when it is the
+    // one up, as the right sidebar's tool buttons do. Up, it says so, with
+    // ⌘B, which hides the sidebar as well and brings the same list back.
+    let list_button =
+        |id: &'static str, icon: CatalogIcon, mode: SidebarMode, name: SharedString| {
+            let showing = sidebar == Some(mode);
+            let button = Button::new(id).icon(icon).selected(showing);
+            if showing {
+                button.tooltip_with_action(
+                    t!("workspace.title_bar.hide_sidebar"),
+                    &ToggleHostPanel,
+                    None,
+                )
+            } else {
+                button.tooltip(name)
+            }
+        };
     // The title bar drags the window on mouse down; keep clicks on its
     // controls from starting a drag.
     let no_drag = |_: &MouseDownEvent, _: &mut Window, cx: &mut App| cx.stop_propagation();
@@ -62,31 +73,36 @@ pub fn render_title_bar(
                         .child("ShellRS"),
                 )
                 .child(
-                    // Which list the sidebar shows. The choice stays marked
-                    // while that list is up, and a hidden sidebar marks none.
-                    div()
-                        .relative()
+                    h_flex()
+                        .gap_1()
                         .on_mouse_down(MouseButton::Left, no_drag)
-                        .child(switch_end.measure(view))
                         .child(
+                            // Which list the sidebar shows. The choice stays
+                            // marked while that list is up, and a hidden
+                            // sidebar marks none.
                             ButtonGroup::new("sidebar-mode")
                                 .ghost()
                                 .small()
                                 .child(
-                                    Button::new("show-hosts")
-                                        .icon(CatalogIcon::Server)
-                                        .tooltip(t!("workspace.title_bar.hosts"))
-                                        .accessibility_label(t!("workspace.title_bar.hosts"))
-                                        .selected(sidebar == Some(SidebarMode::Hosts)),
+                                    list_button(
+                                        "show-hosts",
+                                        CatalogIcon::Server,
+                                        SidebarMode::Hosts,
+                                        t!("workspace.title_bar.hosts"),
+                                    )
+                                    .accessibility_label(t!("workspace.title_bar.hosts")),
                                 )
                                 .child(
-                                    Button::new("show-forwards")
-                                        .icon(CatalogIcon::ArrowLeftRight)
-                                        .tooltip(t!("workspace.title_bar.forwards"))
-                                        .selected(sidebar == Some(SidebarMode::Forwards))
-                                        // Forwards run whether or not their list
-                                        // is showing, so the count is said here.
-                                        .map(|button| match forwards {
+                                    list_button(
+                                        "show-forwards",
+                                        CatalogIcon::ArrowLeftRight,
+                                        SidebarMode::Forwards,
+                                        t!("workspace.title_bar.forwards"),
+                                    )
+                                    // Forwards run whether or not their list
+                                    // is showing, so the count is said here.
+                                    .map(|button| {
+                                        match forwards {
                                             0 => button.accessibility_label(t!(
                                                 "workspace.title_bar.forwards"
                                             )),
@@ -96,24 +112,48 @@ pub fn render_title_bar(
                                                     "workspace.title_bar.forwards_running",
                                                     count = running
                                                 )),
-                                        }),
+                                        }
+                                    }),
                                 )
                                 .child(
-                                    Button::new("show-credentials")
-                                        .icon(CatalogIcon::KeyRound)
-                                        .tooltip(t!("workspace.title_bar.credentials"))
-                                        .accessibility_label(t!("workspace.title_bar.credentials"))
-                                        .selected(sidebar == Some(SidebarMode::Credentials)),
+                                    list_button(
+                                        "show-credentials",
+                                        CatalogIcon::KeyRound,
+                                        SidebarMode::Credentials,
+                                        t!("workspace.title_bar.credentials"),
+                                    )
+                                    .accessibility_label(t!("workspace.title_bar.credentials")),
                                 )
                                 .on_click(move |picked: &Vec<usize>, window, cx| {
                                     match picked.first() {
-                                        Some(0) => mode.dispatch_action(&ShowHosts, window, cx),
-                                        Some(1) => mode.dispatch_action(&ShowForwards, window, cx),
+                                        Some(0) => {
+                                            lists.dispatch_action(&ToggleHostList, window, cx)
+                                        }
+                                        Some(1) => {
+                                            lists.dispatch_action(&ToggleForwardList, window, cx)
+                                        }
                                         Some(2) => {
-                                            mode.dispatch_action(&ShowCredentials, window, cx)
+                                            lists.dispatch_action(&ToggleCredentialList, window, cx)
                                         }
                                         _ => {}
                                     }
+                                }),
+                        )
+                        .child(
+                            // A command beside the lists, not one of them:
+                            // outside their group, so it is never marked.
+                            Button::new("new-local-terminal")
+                                .ghost()
+                                .small()
+                                .icon(CatalogIcon::Terminal)
+                                .accessibility_label(t!("workspace.title_bar.local_terminal"))
+                                .tooltip_with_action(
+                                    t!("workspace.title_bar.new_local_terminal"),
+                                    &NewLocalTerminal,
+                                    None,
+                                )
+                                .on_click(move |_, window, cx| {
+                                    new_local.dispatch_action(&NewLocalTerminal, window, cx)
                                 }),
                         ),
                 ),
@@ -146,21 +186,6 @@ pub fn render_title_bar(
                         .tooltip(t!("workspace.title_bar.temporary_connection_tooltip"))
                         .on_click(move |_, window, cx| {
                             temporary.dispatch_action(&NewTemporaryConnection, window, cx)
-                        }),
-                )
-                .child(
-                    Button::new("new-local-terminal")
-                        .ghost()
-                        .small()
-                        .icon(CatalogIcon::Terminal)
-                        .accessibility_label(t!("workspace.title_bar.local_terminal"))
-                        .tooltip_with_action(
-                            t!("workspace.title_bar.new_local_terminal"),
-                            &NewLocalTerminal,
-                            None,
-                        )
-                        .on_click(move |_, window, cx| {
-                            new_local.dispatch_action(&NewLocalTerminal, window, cx)
                         }),
                 )
                 .children(update.map(|update| {
@@ -196,73 +221,21 @@ pub fn render_title_bar(
                         .on_click(move |_, window, cx| {
                             theme.dispatch_action(&ToggleTheme, window, cx)
                         }),
+                )
+                .child(
+                    Button::new("open-settings")
+                        .ghost()
+                        .small()
+                        .icon(CatalogIcon::Settings)
+                        .accessibility_label(t!("workspace.title_bar.settings"))
+                        .tooltip_with_action(
+                            t!("workspace.title_bar.open_settings"),
+                            &OpenSettings,
+                            None,
+                        )
+                        .on_click(move |_, window, cx| {
+                            settings.dispatch_action(&OpenSettings, window, cx)
+                        }),
                 ),
-        )
-}
-
-/// Where the title bar's list switch ends, as the last frame drew it: past
-/// a narrow sidebar's edge on macOS, after the window buttons.
-#[derive(Clone, Default)]
-pub(super) struct SwitchEnd(Rc<Cell<Pixels>>);
-
-impl SwitchEnd {
-    /// Fills the switch's box to learn its right edge as it is drawn, and
-    /// redraws `view` when that moves.
-    fn measure(&self, view: EntityId) -> impl IntoElement + use<> {
-        let end = self.0.clone();
-        canvas(
-            move |bounds, window, _| {
-                if end.get() != bounds.right() {
-                    end.set(bounds.right());
-                    window.on_next_frame(move |_, cx| cx.notify(view));
-                }
-            },
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
-    }
-}
-
-/// Position against the workspace, whose left edge is also the dock's,
-/// rather than against TitleBar's platform-dependent traffic-light inset:
-/// just past the sidebar's edge, or past the list switch when the sidebar
-/// is narrower than that. The closed dock keeps its width, so the reopen
-/// button stays put.
-pub(super) fn render_sidebar_toggle(
-    open: bool,
-    sidebar_width: Pixels,
-    switch_end: &SwitchEnd,
-    target: &FocusHandle,
-) -> impl IntoElement {
-    let target = target.clone();
-    let label = if open {
-        t!("workspace.title_bar.hide_sidebar")
-    } else {
-        t!("workspace.title_bar.show_sidebar")
-    };
-    h_flex()
-        .absolute()
-        .top_0()
-        .left(sidebar_width.max(switch_end.0.get()))
-        .h(TITLE_BAR_HEIGHT)
-        .pl_2()
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-        .child(
-            Button::new("toggle-hosts")
-                .ghost()
-                .small()
-                .icon(if open {
-                    IconName::PanelLeft
-                } else {
-                    IconName::PanelLeftOpen
-                })
-                .tooltip(label.clone())
-                .accessibility_label(label)
-                .on_click(move |_, window, cx| {
-                    target.dispatch_action(&ToggleHostPanel, window, cx)
-                }),
         )
 }

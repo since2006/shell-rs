@@ -170,10 +170,12 @@ gpui_kit::actions!(
         NewSnippetCategory,
         /// Open the new-group dialog of 项目.
         NewTerminalGroup,
-        /// Show the host list in the left dock.
-        ShowHosts,
-        /// Show the port-forwarding list in the left dock.
-        ShowForwards,
+        /// Show the host list in the left dock, or hide the dock when the
+        /// host list is what it shows (issue #170).
+        ToggleHostList,
+        /// Show the port-forwarding list in the left dock, or hide the dock
+        /// when that list is what it shows.
+        ToggleForwardList,
         /// Open the new-forward dialog.
         NewForward,
         /// Start the forward selected in the forward list, or stop it if it
@@ -183,8 +185,9 @@ gpui_kit::actions!(
         SelectPreviousForward,
         /// Move the forward list's selection to the row below.
         SelectNextForward,
-        /// Show the credential list in the left dock.
-        ShowCredentials,
+        /// Show the credential list in the left dock, or hide the dock when
+        /// that list is what it shows.
+        ToggleCredentialList,
         /// Open the new-credential dialog.
         NewCredential,
         /// Open the new-credential dialog at a key it generates.

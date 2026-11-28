@@ -36,9 +36,7 @@ impl Workspace {
                 // The tab is what the bastion host opened ShellRS for: the
                 // hosts make way, as with ⌘B, which brings them back.
                 if self.dock_area.read(cx).is_dock_open(DockPlacement::Left) {
-                    self.dock_area.update(cx, |area, cx| {
-                        area.toggle_dock(DockPlacement::Left, window, cx);
-                    });
+                    self.toggle_sidebar(window, cx);
                 }
             }
             Err(problem) => window.push_notification(

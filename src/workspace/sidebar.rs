@@ -1,18 +1,15 @@
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Sizable as _,
-    button::{Button, ButtonVariants as _},
+    ActiveTheme as _,
+    button::Button,
     dock::{BasePanel, Panel, PanelControl, PanelEvent},
-    h_flex,
     menu::PopupMenu,
     v_flex,
 };
 use gpui_kit::*;
 
-use crate::app::{CatalogIcon, OpenSettings};
 use crate::credential::CredentialPanel;
 use crate::forward::ForwardPanel;
 use crate::host::{HostPanel, import_menu_items};
-use crate::i18n::t;
 
 /// Which list the left dock is showing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -24,8 +21,8 @@ pub enum SidebarMode {
 }
 
 /// The left dock's one panel: the host tree, the port-forwarding list or
-/// the credential list, whichever the title bar's switch picked, over the
-/// 设置 button they share.
+/// the credential list, whichever the title bar's switch picked. 设置 is
+/// in the title bar, so the list has the dock to itself (issue #170).
 ///
 /// One panel showing either list rather than two panels swapped in the dock:
 /// swapping would take the displaced list out of the dock (and the focus
@@ -157,27 +154,5 @@ impl Render for Sidebar {
             .bg(cx.theme().sidebar)
             .text_color(cx.theme().sidebar_foreground)
             .child(div().flex_1().min_h_0().child(list))
-            .child(
-                // Pinned under the list, where desktop apps keep settings.
-                h_flex()
-                    .p_2()
-                    .border_t_1()
-                    .border_color(cx.theme().sidebar_border)
-                    .child(
-                        Button::new("open-settings")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(CatalogIcon::Settings))
-                            .label(t!("workspace.sidebar.settings"))
-                            .tooltip_with_action(
-                                t!("workspace.sidebar.open_settings"),
-                                &OpenSettings,
-                                None,
-                            )
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(OpenSettings), cx)
-                            }),
-                    ),
-            )
     }
 }
