@@ -72,10 +72,14 @@ fn type_text(cx: &mut TestAppContext, handle: WindowHandle<Root>, text: &str) {
 }
 
 /// Until the fake server has seen `count` writes, and the tab its answer:
-/// the SFTP tab polls its worker every 16 ms.
+/// the SFTP tab polls its worker every 16 ms. The fake server is a thread
+/// of its own, which a busy machine runs late, so this waits by the clock
+/// on the wall: turns of the test's own take next to no time.
 async fn wait_for_writes(cx: &mut TestAppContext, provider: &FakeSftpProvider, count: usize) {
     let writes = provider.writes.clone();
-    for _ in 0..200 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut turns = 0;
+    while std::time::Instant::now() < deadline {
         if writes.lock().unwrap().len() >= count {
             for _ in 0..5 {
                 cx.executor().advance_clock(Duration::from_millis(20));
@@ -84,7 +88,13 @@ async fn wait_for_writes(cx: &mut TestAppContext, provider: &FakeSftpProvider, c
             return;
         }
         cx.run_until_parked();
-        cx.executor().advance_clock(Duration::from_millis(20));
+        // As far as the tab's own timers went before; then only the wall
+        // clock moves.
+        if turns < 200 {
+            cx.executor().advance_clock(Duration::from_millis(20));
+            turns += 1;
+        }
+        std::thread::sleep(Duration::from_millis(1));
     }
     panic!("expected {count} writes");
 }
