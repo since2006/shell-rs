@@ -1461,8 +1461,15 @@ pub(super) fn transfer_indicator_icon(
 ) -> (AnyElement, Hsla) {
     let theme = cx.theme();
     match indicator {
+        // loader-circle, turning at an even pace: an arc that speeds up
+        // and slows down each turn looks as if it stalls.
         TransferIndicator::Transferring => (
-            Spinner::new().xsmall().color(theme.info).into_any_element(),
+            Spinner::new()
+                .icon(Icon::new(CatalogIcon::LoaderCircle))
+                .ease(linear)
+                .xsmall()
+                .color(theme.info)
+                .into_any_element(),
             theme.info,
         ),
         TransferIndicator::Completed => (
