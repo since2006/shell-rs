@@ -19,6 +19,7 @@ use super::{
     ExplorerPanel, FileSizeFormat, QueueEntry, QueueState, TransferIndicator, format_size, percent,
 };
 use crate::app::{CatalogIcon, ExplorerAction, ExplorerCommand, ExplorerDispatch as _};
+use crate::host::ConnectionState;
 use crate::i18n::t;
 use crate::sftp::{TransferDirection, TransferOutcome, TransferPhase};
 
@@ -81,6 +82,7 @@ impl ExplorerPanel {
                 .on_click(on(command))
         };
         let unfinished = queue.unfinished_count();
+        let indicator = queue.indicator(self.connection_state() == ConnectionState::Connected);
         let size_format = cx
             .try_global::<FileSizeFormat>()
             .copied()
@@ -108,7 +110,7 @@ impl ExplorerPanel {
                                 t!("explorer.queue.title")
                             }),
                     )
-                    .when_some(queue.indicator(), |bar, indicator| {
+                    .when_some(indicator, |bar, indicator| {
                         bar.child(transfer_queue_indicator(sid, indicator, cx))
                     })
                     .child(div().flex_1())

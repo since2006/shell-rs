@@ -103,19 +103,21 @@ impl QueueState {
     }
 }
 
-/// Overall transfer state of the queue, shown on the SFTP tab and the queue
-/// header so progress and completion are visible without scrolling the queue.
+/// Where the queue stands as a whole, shown on the SFTP tab and in the
+/// queue's header so that a transfer's progress and end show without the
+/// tab in front or the list scrolled (issue #133).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferIndicator {
-    /// At least one batch is currently running (scanning, transferring,
-    /// waiting on a prompt, or reconnecting).
+    /// A batch is running (scanning, transferring, waiting on a question,
+    /// reconnecting), or batches wait their turn and will start by
+    /// themselves.
     Transferring,
-    /// Nothing is actively running, and at least one batch is stopped or
-    /// waiting.
+    /// Nothing moves until the user acts: the head stopped, or batches wait
+    /// for the connection to come back.
     Stopped,
-    /// Every batch has finished, and at least one completed with failed items.
+    /// The last run has ended, with items that failed.
     PartlyFailed,
-    /// Every batch has finished cleanly, with at least one completed batch.
+    /// The last run has ended, every item done or skipped.
     Completed,
 }
 
@@ -128,11 +130,20 @@ impl TransferIndicator {
             TransferIndicator::Completed => t!("explorer.transfer_indicator.completed"),
         }
     }
+
+    /// How a run ended, rather than where one stands.
+    fn is_result(self) -> bool {
+        matches!(
+            self,
+            TransferIndicator::PartlyFailed | TransferIndicator::Completed
+        )
+    }
 }
 
 pub struct QueueEntry {
     id: QueueId,
     job: TransferJob,
+    run: u64,
     started: bool,
     removed: Option<Removal>,
     progress: Option<TransferProgress>,
@@ -208,15 +219,25 @@ pub struct TransferQueue {
     next_id: u64,
     selected: Option<QueueId>,
     expanded: HashSet<QueueId>,
+    /// The latest run: the batches added since the queue last had nothing
+    /// left to do. Once it ends, the indicators show how it went.
+    run: u64,
+    /// The latest run that ended while the user was in the tab, or before
+    /// they came back to it: the tab no longer shows how it went.
+    seen_run: u64,
 }
 
 impl TransferQueue {
     pub fn push(&mut self, job: TransferJob) -> QueueId {
+        if self.unfinished_count() == 0 {
+            self.run += 1;
+        }
         self.next_id += 1;
         let id = QueueId(self.next_id);
         self.entries.push(QueueEntry {
             id,
             job,
+            run: self.run,
             started: false,
             removed: None,
             progress: None,
@@ -339,41 +360,53 @@ impl TransferQueue {
             .count()
     }
 
-    /// Overall status of the queue for the tab and queue header indicators.
-    pub fn indicator(&self) -> Option<TransferIndicator> {
-        if self
-            .entries
-            .iter()
-            .any(|entry| entry.state() == QueueState::Active)
-        {
-            return Some(TransferIndicator::Transferring);
-        }
-        if self
-            .entries
-            .iter()
-            .any(|entry| matches!(entry.state(), QueueState::Stopped | QueueState::Pending))
-        {
-            return Some(TransferIndicator::Stopped);
-        }
-        let mut completed = false;
-        let mut partly_failed = false;
-        for entry in &self.entries {
-            if entry.state() == QueueState::Done {
-                completed = true;
-                if entry
-                    .progress()
-                    .is_some_and(|progress| progress.failed() > 0)
-                {
-                    partly_failed = true;
-                }
+    /// Where the queue stands, for its header. `connected`: whether batches
+    /// waiting their turn can start, which without the connection they do
+    /// not until the user reconnects. Once everything has ended, how the
+    /// latest run went: an earlier run's failures no longer count.
+    pub fn indicator(&self, connected: bool) -> Option<TransferIndicator> {
+        match self.head().map(QueueEntry::state) {
+            Some(QueueState::Stopped) => return Some(TransferIndicator::Stopped),
+            Some(_) => return Some(TransferIndicator::Transferring),
+            None if self.unfinished_count() > 0 => {
+                return Some(if connected {
+                    TransferIndicator::Transferring
+                } else {
+                    TransferIndicator::Stopped
+                });
             }
+            None => {}
         }
-        if partly_failed {
-            Some(TransferIndicator::PartlyFailed)
-        } else if completed {
-            Some(TransferIndicator::Completed)
-        } else {
-            None
+        let mut result = None;
+        for entry in self
+            .entries
+            .iter()
+            .filter(|entry| entry.run == self.run && entry.state() == QueueState::Done)
+        {
+            if entry
+                .progress()
+                .is_some_and(|progress| progress.failed() > 0)
+            {
+                return Some(TransferIndicator::PartlyFailed);
+            }
+            result = Some(TransferIndicator::Completed);
+        }
+        result
+    }
+
+    /// The same for the tab, where how a run went shows only until the user
+    /// has seen it ([`TransferQueue::mark_seen`]); the header keeps it.
+    pub fn tab_indicator(&self, connected: bool) -> Option<TransferIndicator> {
+        self.indicator(connected)
+            .filter(|indicator| !indicator.is_result() || self.seen_run != self.run)
+    }
+
+    /// The user is in the tab: a run that has ended leaves the tab's
+    /// indicator. One still going has nothing to show yet, so it stays
+    /// unseen and its result shows once it ends.
+    pub fn mark_seen(&mut self) {
+        if self.unfinished_count() == 0 {
+            self.seen_run = self.run;
         }
     }
 
@@ -412,6 +445,7 @@ impl TransferQueue {
 mod tests {
     use std::path::PathBuf;
 
+    use super::TransferIndicator::{Completed, PartlyFailed, Stopped, Transferring};
     use super::{QueueId, QueueState, Removal, TransferJob, TransferQueue};
     use crate::sftp::{TransferDetail, TransferPhase, TransferProgress};
 
@@ -552,45 +586,85 @@ mod tests {
         assert_eq!(root.source_label(), "/");
     }
 
-    #[test]
-    fn indicator_reflects_queue_progress_and_completion() {
-        use super::TransferIndicator;
-        let mut queue = TransferQueue::default();
-        assert_eq!(queue.indicator(), None);
-
-        queue.push(upload("a"));
-        queue.start_next();
-        assert_eq!(queue.indicator(), Some(TransferIndicator::Transferring));
-
-        report(&mut queue, TransferPhase::Stopped);
-        assert_eq!(queue.indicator(), Some(TransferIndicator::Stopped));
-
-        report(&mut queue, TransferPhase::Transferring);
-        assert_eq!(queue.indicator(), Some(TransferIndicator::Transferring));
-
-        report(&mut queue, TransferPhase::Completed);
-        assert_eq!(queue.indicator(), Some(TransferIndicator::Completed));
-
-        // A new batch running overrides the previous completion indicator.
-        queue.push(upload("b"));
-        queue.start_next();
-        assert_eq!(queue.indicator(), Some(TransferIndicator::Transferring));
-
+    fn fail(queue: &mut TransferQueue, path: &str) {
         queue.on_progress(
             TransferProgress::new(TransferPhase::Completed).with_details(vec![
-                TransferDetail::failed("/srv/b", anyhow::anyhow!("denied")),
+                TransferDetail::failed(path, anyhow::anyhow!("denied")),
             ]),
         );
-        assert_eq!(queue.indicator(), Some(TransferIndicator::PartlyFailed));
+    }
+
+    #[test]
+    fn the_indicator_follows_the_head_and_then_shows_how_the_run_went() {
+        let mut queue = TransferQueue::default();
+        assert_eq!(queue.indicator(true), None);
+
+        queue.push(upload("a"));
+        queue.push(upload("b"));
+        queue.start_next();
+        assert_eq!(queue.indicator(true), Some(Transferring));
+        report(&mut queue, TransferPhase::Stopped);
+        assert_eq!(queue.indicator(true), Some(Stopped));
+        report(&mut queue, TransferPhase::Transferring);
+        report(&mut queue, TransferPhase::Completed);
+        // Between two batches the next one only waits its turn.
+        assert_eq!(queue.indicator(true), Some(Transferring));
+        // Without the connection it waits for the user to reconnect.
+        assert_eq!(queue.indicator(false), Some(Stopped));
+
+        queue.start_next();
+        fail(&mut queue, "/srv/b");
+        // One failed batch is enough, whichever ended last.
+        assert_eq!(queue.indicator(true), Some(PartlyFailed));
 
         queue.clear_finished();
-        assert_eq!(queue.indicator(), None);
+        assert_eq!(queue.indicator(true), None);
 
-        // A discarded batch alone is not reported as completed.
+        // A run whose batches were all discarded or taken off has no result.
         queue.push(upload("c"));
         queue.start_next();
         report(&mut queue, TransferPhase::Stopped);
         queue.abandon_head(Removal::Discarded);
-        assert_eq!(queue.indicator(), None);
+        assert_eq!(queue.indicator(true), None);
+    }
+
+    #[test]
+    fn a_new_run_drops_the_last_ones_failures() {
+        let mut queue = TransferQueue::default();
+        queue.push(upload("a"));
+        queue.start_next();
+        fail(&mut queue, "/srv/a");
+        assert_eq!(queue.indicator(true), Some(PartlyFailed));
+
+        // Added after everything ended: a run of its own.
+        queue.push(upload("b"));
+        queue.start_next();
+        assert_eq!(queue.indicator(true), Some(Transferring));
+        report(&mut queue, TransferPhase::Completed);
+        assert_eq!(queue.indicator(true), Some(Completed));
+    }
+
+    #[test]
+    fn the_tab_shows_how_a_run_went_until_it_is_seen() {
+        let mut queue = TransferQueue::default();
+        queue.push(upload("a"));
+        queue.start_next();
+        // Seen while it runs: the run has no result yet, so it stays unseen.
+        queue.mark_seen();
+        assert_eq!(queue.tab_indicator(true), Some(Transferring));
+        report(&mut queue, TransferPhase::Completed);
+        assert_eq!(queue.tab_indicator(true), Some(Completed));
+
+        queue.mark_seen();
+        assert_eq!(queue.tab_indicator(true), None);
+        // The header keeps it until cleared or the next run.
+        assert_eq!(queue.indicator(true), Some(Completed));
+
+        // The next run shows on the tab again.
+        queue.push(upload("b"));
+        assert_eq!(queue.tab_indicator(true), Some(Transferring));
+        queue.start_next();
+        fail(&mut queue, "/srv/b");
+        assert_eq!(queue.tab_indicator(true), Some(PartlyFailed));
     }
 }

@@ -31,6 +31,7 @@ use gpui_kit::component::{
     notification::Notification,
     resizable::{ResizableState, h_resizable, resizable_panel, v_resizable},
     spinner::Spinner,
+    tooltip::Tooltip,
     v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -219,6 +220,7 @@ impl ExplorerPanel {
                 }
             }
         });
+        let focus_handle = cx.focus_handle();
         let local_focus = local.read(cx).focus_handle(cx);
         let remote_focus = remote.read(cx).focus_handle(cx);
         let problem_changed = |this: &mut Self, _, _: &FilePaneEvent, cx: &mut Context<Self>| {
@@ -236,6 +238,13 @@ impl ExplorerPanel {
             }),
             cx.on_focus_in(&remote_focus, window, |_, window, cx| {
                 cx.defer_in(window, |this, _, cx| this.set_current_pane(true, cx))
+            }),
+            // Back in the tab: how the last transfers went has been seen.
+            cx.on_focus_in(&focus_handle, window, |_, window, cx| {
+                cx.defer_in(window, |this, _, cx| {
+                    this.queue.mark_seen();
+                    cx.notify();
+                })
             }),
             cx.on_app_quit(|this, _| {
                 this.send(SftpCommand::Shutdown);
@@ -269,7 +278,7 @@ impl ExplorerPanel {
             question_shown: false,
             dialog_open: false,
             dispatch,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             tab_group: None,
             custom_title: None,
             last_remote: true,
@@ -442,6 +451,13 @@ impl ExplorerPanel {
     /// Anything not yet done: running, stopped or waiting its turn.
     pub fn is_transferring(&self) -> bool {
         self.queue.unfinished_count() > 0
+    }
+    /// Transfers that end while the user is in the tab leave nothing on it
+    /// to come back for.
+    fn note_queue_seen(&mut self, window: &Window, cx: &App) {
+        if self.contains_focus(window, cx) {
+            self.queue.mark_seen();
+        }
     }
     /// A stopped batch holds the head, waiting for 继续.
     fn head_stopped(&self) -> bool {
@@ -651,6 +667,7 @@ impl ExplorerPanel {
             }
             SftpEvent::Latency(latency) => self.latency = Some(latency),
         }
+        self.note_queue_seen(window, cx);
         self.sync_available(cx);
         cx.notify();
     }
@@ -987,6 +1004,7 @@ impl ExplorerPanel {
             ExplorerCommand::ClearFinishedTransfers => self.queue.clear_finished(),
             ExplorerCommand::CloseConfirmed => {}
         }
+        self.note_queue_seen(window, cx);
         self.sync_available(cx);
         cx.notify();
     }
@@ -1057,7 +1075,7 @@ impl Panel for ExplorerPanel {
             .small();
         let transfer = self
             .queue
-            .indicator()
+            .tab_indicator(state == ConnectionState::Connected)
             .map(|indicator| transfer_tab_indicator(id, indicator, cx));
         ClosableTabTitle::new(("explorer-tab", id.0), mark, self.tab_title(cx))
             .connection_state(state)
@@ -1374,10 +1392,12 @@ fn transfer_tab_indicator(
     cx: &App,
 ) -> impl IntoElement {
     let (icon, _) = transfer_indicator_icon(indicator, cx);
+    let label = indicator.label();
     div()
         .id(("explorer-tab-transfer", id.0))
         .test_support()
-        .aria_label(indicator.label())
+        .aria_label(label.clone())
+        .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
         .flex()
         .items_center()
         .flex_none()

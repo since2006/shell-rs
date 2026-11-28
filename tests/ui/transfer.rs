@@ -741,9 +741,24 @@ async fn sftp_a_file_drag_shows_its_preview_only_over_the_other_pane(cx: &mut Te
     .unwrap();
 }
 
-/// SFTP tab and transfer queue header show transfer status indicators
-/// (transferring, stopped, completed, partly failed) without scrolling the
-/// queue (issue #133).
+async fn wait_for_entry_status(
+    cx: &mut TestAppContext,
+    handle: WindowHandle<Root>,
+    entry: u64,
+    status: &'static str,
+) {
+    cx.wait_for(handle.into(), Duration::from_secs(2), move |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(("queue-entry", entry))
+            .is_some_and(|row| row.label() == Some(status))
+    })
+    .await;
+}
+
+/// The SFTP tab and the queue's header show where the transfers stand, and
+/// how the latest run went, without the tab in front or the list scrolled
+/// (issue #133). The tab drops the result once the user has seen it.
 #[gpui_kit::test]
 async fn sftp_shows_transfer_status_indicators_on_tab_and_queue_header(cx: &mut TestAppContext) {
     use shellrs::app::{ExplorerAction, ExplorerCommand};
@@ -752,6 +767,10 @@ async fn sftp_shows_transfer_status_indicators_on_tab_and_queue_header(cx: &mut 
     let provider = Arc::new(FakeSftpProvider::default());
     let (handle, _) = open_workspace_with_sftp(cx, provider.clone());
     open_test_explorer(cx, handle).await;
+    // Focus events only reach an active window.
+    cx.update_window(handle.into(), |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
 
     let indicators = |cx: &mut TestAppContext| {
         cx.update_window(handle.into(), |_, window, cx| {
@@ -827,59 +846,62 @@ async fn sftp_shows_transfer_status_indicators_on_tab_and_queue_header(cx: &mut 
         (Some("正在传输".into()), Some("正在传输".into()))
     );
 
-    // Complete upload cleanly -> completed indicator.
     let send = |event: SftpEvent| {
         provider.events.lock().unwrap()[0]
             .send_blocking(event)
             .unwrap()
     };
-    send(SftpEvent::Progress(TransferProgress::new(
-        TransferPhase::Completed,
-    )));
-    send(SftpEvent::Idle);
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+    // The engine ends the batch at the head, cleanly or with `failed`.
+    let finish = |failed: Option<&str>| {
+        let details = failed
+            .map(|path| vec![TransferDetail::failed(path, anyhow::anyhow!("denied"))])
+            .unwrap_or_default();
+        send(SftpEvent::Progress(
+            TransferProgress::new(TransferPhase::Completed).with_details(details),
+        ));
+        send(SftpEvent::Idle);
+        if failed.is_some() {
+            "部分失败（1 项）"
+        } else {
+            "已完成"
+        }
+    };
+
+    // Ended while the user is in the tab: only the header keeps the result.
+    wait_for_entry_status(cx, handle, 1, finish(None)).await;
+    assert_eq!(indicators(cx), (None, Some("传输完成".into())));
+
+    // Ended while the user is elsewhere: the tab shows it too.
+    start_upload(cx, "b.txt");
+    wait_for_head_status(cx, handle, "正在扫描").await;
+    cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window
-            .try_find(("queue-entry", 1u64))
-            .is_some_and(|row| row.label() == Some("已完成"))
+        window.click("host-search", cx);
     })
-    .await;
+    .unwrap();
     assert_eq!(
         indicators(cx),
-        (Some("传输完成".into()), Some("传输完成".into()))
+        (Some("正在传输".into()), Some("正在传输".into()))
     );
-
-    // Start a second upload -> switches back to transferring, then partly failed.
-    start_upload(cx, "b.txt");
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
-        window.render_frame(cx);
-        window
-            .try_find(("explorer-tab-transfer", SFTP_TAB))
-            .and_then(|el| el.label().map(str::to_string))
-            .as_deref()
-            == Some("正在传输")
-    })
-    .await;
-    send(SftpEvent::Progress(
-        TransferProgress::new(TransferPhase::Completed).with_details(vec![TransferDetail::failed(
-            "/home/tester/b.txt",
-            anyhow::anyhow!("denied"),
-        )]),
-    ));
-    send(SftpEvent::Idle);
-    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
-        window.render_frame(cx);
-        window
-            .try_find(("explorer-tab-transfer", SFTP_TAB))
-            .and_then(|el| el.label().map(str::to_string))
-            .as_deref()
-            == Some("部分失败")
-    })
-    .await;
+    wait_for_entry_status(cx, handle, 2, finish(Some("/home/tester/b.txt"))).await;
     assert_eq!(
         indicators(cx),
         (Some("部分失败".into()), Some("部分失败".into()))
     );
+    // Back in the tab, the result leaves it; the header keeps it.
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("remote-path", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(indicators(cx), (None, Some("部分失败".into())));
+
+    // A later run's result replaces the earlier failure.
+    start_upload(cx, "c.txt");
+    wait_for_head_status(cx, handle, "正在扫描").await;
+    wait_for_entry_status(cx, handle, 3, finish(None)).await;
+    assert_eq!(indicators(cx), (None, Some("传输完成".into())));
 
     // Clearing finished batches removes both indicators.
     cx.update_window(handle.into(), |_, window, cx| {
