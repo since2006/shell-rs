@@ -4,6 +4,16 @@
 
 One section per version, titled `## [version]`, optionally followed by a date. Each section is written in English here and in Chinese in [CHANGELOG.zh.md](CHANGELOG.zh.md), in the same change. The release workflow (`.github/workflows/release.yml`) takes the section with the tag’s version, as it is, for the GitHub release. The website’s changelog shows this file in English and Japanese and CHANGELOG.zh.md in Chinese (ShellRS’s update dialog opens it with What’s new). Written in Markdown, for users.
 
+## [0.1.21-beta.2]
+
+### Improved
+
+- On Windows, the title bar’s icons are back to the size of the rest of the interface (28-pixel buttons with 14-pixel icons): in the previous beta they matched macOS and looked too large on Windows. The title bar still doesn’t scale with Interface font size. ([#170](https://github.com/since2006/shell-rs/issues/170))
+
+### Fixed
+
+- On Windows, the window didn’t keep its place: closing it with the close button while only the start page was open brought it back where it had been before, or even off screen. Its place is now recorded when you click the close button and when ShellRS quits. If its display has been unplugged, it opens in the middle of the main screen; if a change of resolution or scaling would leave it partly off screen, it’s moved back on.
+
 ## [0.1.21-beta.1]
 
 ### Improved
